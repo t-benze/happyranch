@@ -208,7 +208,8 @@ participants list, and a chronological message log.
 **Web UI (primary surface).** Build the bundle once, then launch:
 
 ```bash
-scripts/build_web.sh        # builds web/dist/ — npm ci + npm run build
+scripts/build_web.sh               # local UI flag profile; builds web/dist/
+scripts/build_web.sh --production  # production UI flag profile; builds web/dist/
 happyranch web                     # opens http://127.0.0.1:<port>/ in your browser
 happyranch web --no-open           # print the URL only
 ```
@@ -220,6 +221,18 @@ single interactive interface for founders. Keyboard shortcuts: `N` new,
 `Ctrl+Enter` send, `?` help. Archived threads expose a "Resume thread" button
 to reopen them. The dev server (`cd web && npm run dev`)
 proxies to the daemon for hot-reload development.
+
+Unfinished screens sit behind build-time UI flags. `scripts/build_web.sh`
+defaults to `npm run build:local`: like the dev server, it uses
+`web/config/features.development.json`, then optional gitignored
+`web/config/features.local.json` overrides, then the existing explicit
+`VITE_ENABLE_KB_COMPOSE` compatibility input. Release builds
+(`scripts/build_web.sh --production`, `cd web && npm run build`, and Mac
+packaging) use only the production profile and hide unfinished UI such as
+Work Hours. The shell script installs dependencies with `npm ci` when
+`node_modules` or its `.package-lock.json` is missing. Flags only change what
+the UI shows; daemon behavior and saved settings are unchanged. See
+`web/ARCHITECTURE.md`.
 
 (The previous Textual TUI under `src/tui/` was removed in favor of the
 web UI; `happyranch threads` with no subcommand now points you at `happyranch web`.)
@@ -361,7 +374,7 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 ```
 
 The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
-`scripts/daemon.sh start` waits up to 30 seconds for the daemon's public
+`scripts/daemon.sh start` waits up to 120 seconds for the daemon's public
 `GET /api/v1/health` endpoint to answer. Set
 `HAPPYRANCH_DAEMON_START_TIMEOUT=<seconds>` to another positive integer for a
 slower host. If the daemon process exits during startup, the command fails

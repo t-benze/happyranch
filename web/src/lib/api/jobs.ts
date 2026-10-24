@@ -67,6 +67,7 @@ export const waitJob = (
     params: { timeout_seconds },
   });
 
+/** Acknowledges a Stop signal request, never durable termination. */
 export const stopJob = (
   slug: string,
   job_id: string,

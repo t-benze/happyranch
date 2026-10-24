@@ -68,6 +68,47 @@ class SessionTracker:
         # themselves provide the per-binding synchronization.
         self._binding_leases: dict[tuple[str, str], Lock] = {}
 
+    @contextmanager
+    def _thread_release_observation_guard(self, org_slug, agent_id, selected_sid, budget):
+        """Current task bindings only; absence never certifies thread retirement."""
+        from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
+        if type(self) is not SessionTracker:
+            raise ReleaseUnavailable("tracker_topology_unavailable")
+        if not self._lock.acquire(timeout=budget.lock_timeout()):
+            raise ReleaseUnavailable("tracker_busy")
+        try:
+            budget.population(self._active)
+            if type(self._context_by_session) is not dict:
+                raise ReleaseUnavailable("tracker_context_unavailable")
+            records, seen = [], set()
+            for key, sid in self._active.items():
+                if type(key) is not tuple or len(key) != 2:
+                    raise ReleaseUnavailable("tracker_identity_unavailable")
+                task, agent = key
+                budget.text(task)
+                budget.text(agent)
+                budget.text(sid)
+                context = self._context_by_session.get(sid)
+                if type(context) is not tuple or len(context) != 3:
+                    raise ReleaseUnavailable("tracker_context_unavailable")
+                org, native_task, native_agent = context
+                budget.text(org)
+                budget.text(native_task)
+                budget.text(native_agent)
+                if org != org_slug or (native_task, native_agent) != key or sid in seen:
+                    raise ReleaseUnavailable("tracker_context_unavailable")
+                seen.add(sid)
+                if agent == agent_id or sid == selected_sid:
+                    raise ReleaseUnavailable("tracker_current_owner")
+                records.append((task, agent, sid))
+            # Exact indexed lookup only; never copy/iterate historical context.
+            if self._context_by_session.get(selected_sid) is not None:
+                raise ReleaseUnavailable("tracker_context_unavailable")
+            budget.check()
+            yield tuple(records)
+        finally:
+            self._lock.release()
+
     def _get_binding_lease(self, task_id: str, agent: str) -> Lock:
         """Return the per-binding Lock for (task_id, agent).
 

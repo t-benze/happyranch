@@ -164,7 +164,10 @@
     "POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions",
     "GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}",
     "GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification",
-    "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
+    "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection",
+    "GET /api/v1/orgs/{slug}/settings/coding",
+    "GET /api/v1/orgs/{slug}/settings/coding/options",
+    "PUT /api/v1/orgs/{slug}/settings/coding"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",
@@ -226,6 +229,13 @@
     "POST /api/v1/orgs/{slug}/team-moves": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
     "GET /api/v1/orgs/{slug}/team-moves/by-key/{operation_key}": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
     "GET /api/v1/orgs/{slug}/team-moves/{operation_id}": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
-    "POST /api/v1/orgs/{slug}/team-moves/{operation_id}/recover": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement."
+    "POST /api/v1/orgs/{slug}/team-moves/{operation_id}/recover": "Founder-controlled team-move CLI/operator service; no browser flow. Existing shared bearer/human boundary; apply/recover disabled until F enablement.",
+    "POST /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant",
+    "GET /api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": "Founder-only CLI fixed release import/receipt; no browser or remote grant",
+    "GET /api/v1/orgs/{slug}/workflows/coding/mappings": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
+    "POST /api/v1/orgs/{slug}/workflows/coding/mappings": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
+    "POST /api/v1/orgs/{slug}/workflows/coding/role-selections": "current agent-manager CLI-only role defaults/selection; no browser, repository access or coding allocation grant",
+    "GET /api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}": "current source-manager CLI-only queued run metadata; no browser, remote connector or execution grant",
+    "GET /api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}/final-manager": "own current original final-manager CLI-only selected read; no browser, remote connector or execution grant"
   }
 }

@@ -498,9 +498,181 @@ def cmd_workflow_release_template(args: argparse.Namespace) -> None:
               "enabled=false reason=release_catalog_only")
 
 
+
+def cmd_workflow_coding_release_import(args: argparse.Namespace) -> None:
+    import hashlib
+    from runtime.workflows._coding_release_history import COMMAND_LIMIT, parse_import_command
+    from runtime.workflows.coding_release_import import ImportReceipt
+    raw = None
+    command = None
+    try:
+        if args.coding_command == 'release-import':
+            absolute = require_absolute_payload_path(args.from_file, kind='coding-release-import')
+            with Path(absolute).open('rb') as source:
+                raw = source.read(COMMAND_LIMIT + 1)
+            command = parse_import_command(raw)
+        with _founder_client() as client:
+            slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+            path = f'/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import'
+            if raw is None:
+                response = client.get(path)
+            else:
+                # Human-only transport, complete original bytes and stable key.
+                # Transport loss preserves the file; never issue another POST.
+                response = client.post(path, content=raw, headers={'Content-Type': 'application/json'})
+        if response.status_code not in ((200,) if raw is None else (200, 201)):
+            _print_error(response)
+        receipt = ImportReceipt.model_validate(response.json()).model_dump()
+        if command is not None and (receipt['operation_key'] != command['operation_key']
+                or receipt['request_digest'] != hashlib.sha256(raw).hexdigest()
+                or receipt['replayed'] != (response.status_code == 200)):
+            raise ValueError('coding_release_import_receipt_mismatch')
+        if command is None and receipt['replayed']:
+            raise ValueError('coding_release_import_receipt_mismatch')
+    except (OSError, ValueError, httpx.HTTPError):
+        print('error: coding release import command, transport or receipt unavailable; preserve original file/key',
+              file=sys.stderr)
+        raise SystemExit(1) from None
+    if args.json:
+        print(json.dumps(receipt, sort_keys=True))
+    else:
+        print(f"{receipt['version_id']} current={receipt['current']['state']} "
+              f"replayed={str(receipt['replayed']).lower()} coding-enabled=false")
+
+
+def cmd_workflow_coding_run(args: argparse.Namespace) -> None:
+    from runtime.workflows.coding_start_records import START_LIMIT, CodingRunReceipt, parse_start
+    from runtime.workflows.coding_saved_records import _canonical
+    try:
+        if args.coding_command == 'run-start':
+            # Pure composition for the manager's OWN final callback. This branch
+            # does not resolve a daemon, org, token, session or HTTP client.
+            absolute = require_absolute_payload_path(args.from_file, kind='coding-start')
+            with Path(absolute).open('rb') as stream:
+                raw = stream.read(START_LIMIT + 1)
+            command = parse_start(raw)
+            print(_canonical(dict(action='workflow_start', workflow=command)).decode('utf8'))
+            return
+        slug = resolve_org_slug(args_org=args.org, available=[])
+        from runtime.workflows.coding_saved_records import _token
+        _token(args.instance_id)
+        path = port_file()
+        if not path.exists():
+            raise DaemonNotRunning('daemon not running')
+        with httpx.Client(base_url=f'http://127.0.0.1:{path.read_text().strip()}',
+                headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0) as client:
+            response = client.get(f'/api/v1/orgs/{slug}/workflows/coding/runs/{args.instance_id}',
+                                  params={'session_id': args.session_id})
+            if response.status_code != 200:
+                _print_error(response)
+            result = CodingRunReceipt.model_validate(response.json()).model_dump()
+            if result['instance_id'] != args.instance_id:
+                raise ValueError('coding_run_selection_mismatch')
+        print(json.dumps(result, sort_keys=True))
+    except (OSError, ValueError, httpx.HTTPError, DaemonNotRunning):
+        print('error: coding command or selected run unavailable; preserve original start file/key', file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+def cmd_workflow_coding_roles(args: argparse.Namespace) -> None:
+    from runtime.workflows._coding_role_records import (
+        COMMAND_LIMIT, RoleReceipt, SelectionReceipt, parse_role_command, parse_selection,
+    )
+    from runtime.workflows.coding_saved_records import _canonical, _hash
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    form = args.coding_command
+    command, raw = None, None
+    try:
+        if form != 'mapping-show':
+            absolute = require_absolute_payload_path(args.from_file, kind='coding-roles')
+            with Path(absolute).open('rb') as stream:
+                raw = stream.read(COMMAND_LIMIT + 1)
+            command = (parse_selection(raw) if form == 'role-select' else
+                       parse_role_command(raw, org_slug=slug))
+        path = port_file()
+        if not path.exists():
+            raise DaemonNotRunning('daemon not running')
+        endpoint = 'role-selections' if form == 'role-select' else 'mappings'
+        with httpx.Client(base_url=f'http://127.0.0.1:{path.read_text().strip()}',
+                headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0) as client:
+            url = f'/api/v1/orgs/{slug}/workflows/coding/{endpoint}'
+            if form == 'mapping-show':
+                response = client.get(url, params={'session_id': args.session_id})
+            else:
+                response = client.post(url, params={'session_id': args.session_id},
+                    content=raw, headers={'Content-Type': 'application/json'})
+        if response.status_code not in (200, 201):
+            _print_error(response)
+        model = SelectionReceipt if form == 'role-select' else RoleReceipt
+        receipt = model.model_validate(response.json()).model_dump()
+        if form == 'role-select':
+            if receipt['mapping'] != command['mapping'] or receipt['subject'] != command['subject']:
+                raise ValueError('coding_role_selection_mismatch')
+            if (receipt['overridden'] != (command['implementer_override'] is not None)
+                    or (command['implementer_override'] is not None
+                        and receipt['roles']['implementer'] != command['implementer_override'])
+                    or len({role['principal'] for role in receipt['roles'].values()}) != 4):
+                raise ValueError('coding_role_selection_mismatch')
+        else:
+            mapping = receipt['mapping']
+            if mapping['authority']['namespace'] != 'org/' + slug:
+                raise ValueError('coding_role_receipt_mismatch')
+            for reference in mapping['repository_references']:
+                if reference['repository_id'] != 'workflow-repository:' + _hash(_canonical(
+                        [slug, reference['repo_key'], reference['origin_digest']])):
+                    raise ValueError('coding_role_receipt_mismatch')
+            if command is not None and (mapping != command['mapping']
+                    or receipt['generation'] != command['expected_generation'] + 1):
+                raise ValueError('coding_role_receipt_mismatch')
+    except (ValueError, OSError, httpx.HTTPError, DaemonNotRunning) as exc:
+        print('error: coding roles command, transport or receipt unavailable; preserve original file/key',
+              file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(json.dumps(receipt, sort_keys=True))
+    else:
+        print(json.dumps(receipt, sort_keys=True))
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    coding = workflow_sub.add_parser('coding', help='Fixed release import and agent-manager role defaults; no coding run allocation')
+    coding_sub = coding.add_subparsers(dest='coding_command', required=True)
+    start = coding_sub.add_parser('run-start', help='Compose settings-pinned start@2 or historical start@1; allocates nothing')
+    start.add_argument('--from-file', required=True)
+    start.add_argument('--emit-decision', action='store_true', required=True)
+    start.set_defaults(func=cmd_workflow_coding_run)
+    show = coding_sub.add_parser('run-show', help='Selected source-manager development lifecycle metadata')
+    show.add_argument('instance_id')
+    show.add_argument('--org', required=True)
+    show.add_argument('--session-id', required=True)
+    show.add_argument('--json', action='store_true')
+    show.set_defaults(func=cmd_workflow_coding_run)
+
+    from cli.commands.workflow_coding_finalize import cmd_workflow_coding_finalize
+    finalize = coding_sub.add_parser('finalize', help='Own live final-manager local guarded action; no daemon effect')
+    finalize.add_argument('--org', required=True)
+    finalize.add_argument('--session-id', required=True)
+    finalize.add_argument('--from-file', required=True)
+    finalize.add_argument('--json', action='store_true', required=True)
+    finalize.set_defaults(func=cmd_workflow_coding_finalize)
+
+    for form in ('mapping-publish', 'mapping-show', 'role-select'):
+        command = coding_sub.add_parser(form, help='Agent-manager role defaults or nonallocating pinned selection')
+        command.add_argument('--org')
+        command.add_argument('--session-id', required=True)
+        command.add_argument('--json', action='store_true')
+        if form != 'mapping-show':
+            command.add_argument('--from-file', required=True)
+        command.set_defaults(func=cmd_workflow_coding_roles)
+    for form in ('release-import', 'release-import-show'):
+        command = coding_sub.add_parser(form, help='Explicit fixed coding v1 import or saved receipt')
+        command.add_argument('--org', required=True)
+        command.add_argument('--json', action='store_true')
+        if form == 'release-import':
+            command.add_argument('--from-file', required=True)
+        command.set_defaults(func=cmd_workflow_coding_release_import)
     release = workflow_sub.add_parser("release-template", help="Read the disabled release catalog")
     release.add_argument("kind", choices=["coding"])
     release.add_argument("--version", required=True, type=int, choices=[1])

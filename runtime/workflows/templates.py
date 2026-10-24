@@ -531,6 +531,11 @@ class WorkflowTemplateStore:
         template_name: str,
         version: int,
     ) -> WorkflowTemplateVersion:
+        if namespace == 'release/happyranch':
+            if template_name != 'coding' or type(version) is not int or version != 1:
+                raise WorkflowTemplateError('template_version_not_found')
+            with self._db._lock:
+                return self._read_release(self._db._conn, org_slug=org_slug)
         expected_prefix = f"org/{_component(org_slug, code='invalid_template_namespace')}/team/"
         if not isinstance(namespace, str) or not namespace.startswith(expected_prefix):
             raise WorkflowTemplateError("invalid_template_namespace")
@@ -550,6 +555,10 @@ class WorkflowTemplateStore:
     def list(
         self, *, org_slug: str, namespace: str,
     ) -> tuple[WorkflowTemplateVersion, ...]:
+        if namespace == 'release/happyranch':
+            with self._db._lock:
+                item = self._read_release(self._db._conn, org_slug=org_slug, allow_absent=True)
+                return () if item is None else (item,)
         prefix = f"org/{_component(org_slug, code='invalid_template_namespace')}/team/"
         if not isinstance(namespace, str) or not namespace.startswith(prefix):
             raise WorkflowTemplateError("invalid_template_namespace")
@@ -563,7 +572,7 @@ class WorkflowTemplateStore:
                 "WHERE i.namespace=? ORDER BY i.template_name,m.version",
                 (namespace,),
             ).fetchall()
-            return tuple(
+            result = tuple(
                 self._read_version(
                     self._db._conn,
                     identity_id=str(row["id"]),
@@ -571,6 +580,33 @@ class WorkflowTemplateStore:
                 )
                 for row in rows
             )
+            imported = self._read_release(self._db._conn, org_slug=org_slug, allow_absent=True)
+            return result + (() if imported is None else (imported,))
+
+    @staticmethod
+    def _read_release(conn: sqlite3.Connection, *, org_slug: str | None,
+                      allow_absent: bool = False) -> WorkflowTemplateVersion | None:
+        from runtime.workflows._coding_release_history import read_release_import
+        owned = not conn.in_transaction
+        if owned:
+            conn.execute('BEGIN')
+        try:
+            imported = read_release_import(conn, expected_org_slug=org_slug)
+            if imported is None:
+                if allow_absent:
+                    return None
+                raise WorkflowTemplateError('template_version_not_found')
+            from runtime.infrastructure.workflow_schema import validate_workflow_schema
+            if validate_workflow_schema(conn, expected_org_slug=imported.provenance['org_slug']) != 'J':
+                raise WorkflowTemplateError('template_storage_corrupt')
+            return imported.template()
+        except WorkflowTemplateError:
+            raise
+        except ValueError:
+            raise WorkflowTemplateError('template_storage_corrupt') from None
+        finally:
+            if owned:
+                conn.rollback()
 
     @staticmethod
     def _read_version(
@@ -594,6 +630,12 @@ class WorkflowTemplateStore:
             raise WorkflowTemplateError("template_version_not_found")
         if expected_version_id is not None and row["template_version_id"] != expected_version_id:
             raise WorkflowTemplateError("template_storage_corrupt")
+        if row['namespace'] == 'release/happyranch':
+            imported = WorkflowTemplateStore._read_release(conn, org_slug=None)
+            if (type(version) is not int or imported.identity_id != identity_id or imported.version != version
+                    or (expected_version_id is not None and imported.version_id != expected_version_id)):
+                raise WorkflowTemplateError('template_storage_corrupt')
+            return imported
         definition_bytes = bytes(row["definition_bytes"])
         if hashlib.sha256(definition_bytes).hexdigest() != row["definition_digest"]:
             raise WorkflowTemplateError("template_storage_corrupt")

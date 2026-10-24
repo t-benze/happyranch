@@ -806,7 +806,7 @@ export function TaskStatusCard({
   workStatus: WorkStatusResponse | null;
 }): JSX.Element {
   const { locale, t } = useTranslation();
-  const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
+  const threadId = task.originating_thread_id ?? task.dispatched_from_thread_id;
   const created = formatDateTime(task.created_at, locale);
 
   return (
@@ -845,11 +845,22 @@ export function TaskStatusCard({
           )}
           {typeof threadId === 'string' && threadId && (
             <RailRow label={t('tasks.rail.thread')}>
-              <IdBadge
-                id={threadId}
-                kind="thread"
-                to={slug ? `/orgs/${slug}/threads/${threadId}` : undefined}
-              />
+              <span className="flex flex-wrap items-center gap-1.5">
+                <IdBadge
+                  id={threadId}
+                  kind="thread"
+                  to={slug ? `/orgs/${slug}/threads/${threadId}` : undefined}
+                />
+                {task.originating_task_id && task.originating_task_id !== task.task_id && (
+                  <span title={t('tasks.detail.revisitOf', { id: task.originating_task_id })}>
+                    ↩ <IdBadge
+                      id={task.originating_task_id}
+                      kind="task"
+                      to={slug ? `/orgs/${slug}/tasks/${task.originating_task_id}` : undefined}
+                    />
+                  </span>
+                )}
+              </span>
             </RailRow>
           )}
           {jobs.length > 0 && (

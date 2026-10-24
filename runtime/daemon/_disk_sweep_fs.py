@@ -3,7 +3,7 @@
 Paths are walked from / with O_NOFOLLOW, then all tree operations are dir-fd
 relative. No chmod follows symlinks. Mountpoints (including same-device bind
 mounts) refuse. POSIX pathname syscalls cannot fence a hostile same-UID rename
-between a final identity check and unlink; neither this nor /proc is a writer
+between a final identity check and unlink; filesystem observations are not a writer
 lock. The daemon supervisor bounds the owning process group, not a thread.
 """
 from __future__ import annotations
@@ -13,7 +13,6 @@ import re
 import stat
 import time
 from collections import Counter
-from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -199,142 +198,3 @@ def mutate(path: Path, tree: dict, deadline: float, *, remove: bool) -> dict:
                     os.close(leaf)
         visit(parent, path.name, '')
     return repairs
-
-
-UNREADABLE_PROCESS_NAMES = frozenset({'systemd', '(sd-pam)', 'sshd-session', 'ssh-agent'})
-
-
-def process_use(path: Path, deadline: float, *, on_exemption: Callable[[dict], None] = lambda observation: None) -> None:
-    """Visible same-effective-UID scan with four exact unreadability exceptions.
-
-    Includes every thread's cwd/root/exe/fd and TMPDIR/TMP/TEMP. Other UIDs
-    are outside the stated scope, NOT claimed unused. Missing procfs, denied
-    credentials/identity, unstable census or PID reuse is unknown. Only denied
-    references for exact approved comm names can be exempted and reported;
-    readable candidate use always refuses. Names do not authenticate executables.
-    Confirmed disappearance differs from denial. Stable zombies have no live
-    references. A later opener remains a snapshot limitation.
-    """
-    if not Path('/proc/self/task').is_dir():
-        raise Retain('unknown_process_platform')
-    prefix = str(path) + '/'
-
-    def used(value):
-        value = value.removesuffix(' (deleted)')
-        if value == str(path) or value.startswith(prefix):
-            raise Retain('process_use')
-
-    def token(base):
-        raw = (base / 'stat').read_text()
-        start, end = raw.find(' ('), raw.rfind(') ')
-        fields = raw[end + 2:].split()
-        if (start < 1 or end <= start + 2 or raw[:start] != base.name
-                or len(fields) < 20 or not fields[19].isdecimal()):
-            raise Retain('unknown_process_identity')
-        return fields[19], fields[0], raw[start + 2:end]  # starttime, state, exact comm
-
-    check(deadline)
-    leaders = sorted(p for p in os.listdir('/proc') if p.isdecimal())
-    for pid in leaders:
-        check(deadline)
-        leader = Path('/proc') / pid
-        try:
-            status_lines = (leader / 'status').read_text().splitlines()
-            uid_rows = [line.split()[1:] for line in status_lines if line.startswith('Uid:')]
-            if len(uid_rows) != 1 or len(uid_rows[0]) != 4 or not all(v.isdecimal() for v in uid_rows[0]):
-                raise Retain('unknown_process_credentials')
-            if int(uid_rows[0][1]) != os.geteuid():
-                continue
-            before = token(leader)
-            taskdir = leader / 'task'
-            tids = sorted(os.listdir(taskdir))
-            for tid in tids:
-                check(deadline)
-                base = taskdir / tid
-                try:
-                    ident = token(base)
-                    if base.stat().st_uid != os.geteuid():
-                        raise Retain('unknown_process_credentials_changed')
-                    denied = False
-
-                    def reference(read):
-                        nonlocal denied
-                        try:
-                            return read()
-                        except PermissionError:
-                            if ident[2] not in UNREADABLE_PROCESS_NAMES:
-                                raise
-                            observed = token(base)
-                            if (ident[0] != observed[0] or ident[2] != observed[2]
-                                    or (ident[1] == 'Z') != (observed[1] == 'Z')):
-                                raise Retain('unknown_process_identity_changed')
-                            if base.stat().st_uid != os.geteuid():
-                                raise Retain('unknown_process_credentials_changed')
-                            if not denied:
-                                on_exemption(dict(pid=int(pid), tid=int(tid), starttime=ident[0],
-                                                  name=ident[2], uid=os.geteuid(), reason='unreadable'))
-                            denied = True
-                            return None
-
-                    if ident[1] != 'Z':
-                        # Zombies may lack ns/mnt as well as live-use references.
-                        # The identity/Z-state bracket below still covers every
-                        # thread, independently of its leader's state.
-                        namespace = reference(lambda: os.readlink(base / 'ns/mnt'))
-                        if namespace is not None and namespace != os.readlink('/proc/self/ns/mnt'):
-                            raise Retain('unknown_process_mount_namespace')
-                        for ref in ('cwd', 'root', 'exe'):
-                            check(deadline)
-                            value = reference(lambda: os.readlink(base / ref))
-                            if value is not None:
-                                used(value)
-                        fd_dir = base / 'fd'
-                        for fd in sorted(reference(lambda: os.listdir(fd_dir)) or []):
-                            check(deadline)
-                            try:
-                                value = reference(lambda: os.readlink(fd_dir / fd))
-                                if value is not None:
-                                    used(value)
-                            except FileNotFoundError:
-                                # An individual closed fd is distinguishable
-                                # from denial; the task identity is bracketed.
-                                continue
-                        check(deadline)
-                        environment = reference(lambda: (base / 'environ').read_bytes())
-                        for item in (environment or b'').split(b'\0'):
-                            key, _, value = item.partition(b'=')
-                            if key in (b'TMPDIR', b'TMP', b'TEMP'):
-                                text = os.fsdecode(value)
-                                if not text.startswith('/'):
-                                    raise Retain('unknown_relative_process_temp')
-                                used(os.path.normpath(text))
-                                # Resolve aliases through the inspected task's
-                                # root, never through an assumed host root.
-                                try:
-                                    resolved = reference(lambda: (base / 'root' / text.lstrip('/')).resolve(strict=True))
-                                except OSError as exc:
-                                    raise Retain('unknown_process_temp_resolution') from exc
-                                if resolved is not None:
-                                    used(str(resolved))
-                    after = token(base)
-                    if ident[0] != after[0] or ident[2] != after[2] or (ident[1] == 'Z') != (after[1] == 'Z'):
-                        raise Retain('unknown_process_identity_changed')
-                    if denied:
-                        if base.stat().st_uid != os.geteuid():
-                            raise Retain('unknown_process_credentials_changed')
-                except FileNotFoundError:
-                    if base.exists():
-                        raise Retain('unknown_missing_process_reference')
-                    # Observed absent task, not a permission-denied task.
-            if ([line.split()[1:] for line in (leader / 'status').read_text().splitlines() if line.startswith('Uid:')] != uid_rows
-                    or token(leader)[0] != before[0] or sorted(os.listdir(taskdir)) != tids):
-                raise Retain('unknown_process_census_changed')
-        except FileNotFoundError:
-            if leader.exists():
-                raise Retain('unknown_missing_process_reference')
-        except PermissionError as exc:
-            raise Retain('unknown_process_denied') from exc
-    check(deadline)
-    # New process arrivals are incomplete coverage. Departures were bracketed.
-    if set(p for p in os.listdir('/proc') if p.isdecimal()) - set(leaders):
-        raise Retain('unknown_process_census_changed')

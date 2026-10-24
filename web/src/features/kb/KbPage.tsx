@@ -37,8 +37,9 @@ import { ComposeKbEntryDialog } from './ComposeKbEntryDialog';
 import { useTranslation } from '@/hooks/i18n';
 import { formatCountFor } from '@/lib/i18n';
 import type { DreamKbCandidate } from '@/hooks/dreams';
+import { features } from '@/config/features';
 
-const COMPOSE_ENABLED = import.meta.env.VITE_ENABLE_KB_COMPOSE === 'true';
+const COMPOSE_ENABLED = features.kb_compose_ui;
 
 /* ------------------------------------------------------------------ */
 /*  Crescent moon icon                                                 */

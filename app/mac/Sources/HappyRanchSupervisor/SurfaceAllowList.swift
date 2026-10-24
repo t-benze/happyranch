@@ -101,6 +101,15 @@ public struct SurfaceAllowList: Sendable {
             // Org-portability (CLI-only / founder-only — no browser consumer)
             ("GET", "/portability-preflight"),
             ("POST", "/reconcile-portability"),
+            // Fixed release import is CLI-only; no remote/browser grant.
+            ("POST", "/workflows/release-templates/coding/1/import"),
+            ("GET", "/workflows/release-templates/coding/1/import"),
+            // Agent-read role defaults/selection remain CLI-only.
+            ("POST", "/workflows/coding/mappings"),
+            ("GET", "/workflows/coding/mappings"),
+            ("POST", "/workflows/coding/role-selections"),
+            ("GET", "/workflows/coding/runs/*"),
+            ("GET", "/workflows/coding/runs/*/final-manager"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
@@ -247,6 +256,36 @@ public struct SurfaceAllowList: Sendable {
     ///   - rawPath: The original raw path from the request.
     /// - Returns: `true` if the request is allowed, `false` if it is denied.
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        if ["POST", "GET"].contains(method),
+           deniedMethods.contains("\(method) /workflows/release-templates/coding/1/import"),
+           [rawPath, path].contains(where: {
+               Self.stageDenialCandidate($0) == "/workflows/release-templates/coding/1/import"
+           }) {
+            return false
+        }
+        for family in ["/workflows/coding/mappings", "/workflows/coding/role-selections"] {
+            if deniedMethods.contains("\(method) \(family)"),
+               [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == family }) {
+                return false
+            }
+        }
+        if method == "GET", deniedMethods.contains("GET /workflows/coding/runs/*"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 5 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "coding" && parts[3] == "runs" && !parts[4].isEmpty
+           }) {
+            return false
+        }
+        if method == "GET", deniedMethods.contains("GET /workflows/coding/runs/*/final-manager"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 6 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "coding" && parts[3] == "runs" && !parts[4].isEmpty
+                   && parts[5] == "final-manager"
+           }) {
+            return false
+        }
         if method == "POST", deniedMethods.contains("POST /workflows/reviews/stages"),
            [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/reviews/stages" }) {
             return false

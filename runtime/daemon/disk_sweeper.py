@@ -5,9 +5,10 @@ phases, checks, Git and removal. No cursor/count cap or fairness guarantee.
 All blocking work runs in an owned worker process group: cancellation of a
 Python thread would not stop deletion. Public manual entry is DRY RUN ONLY:
     python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime
-Default org disk_sweep.mode is dry_run; off does no inventory. No legacy cleanup
-code/flags are invoked. Output is never a candidate. See the maintained THR307
-spec for snapshot/process scope and nonpreemptible kernel-I/O limitations.
+Scheduled deletion applies to every admitted org (THR307 seq134); obsolete org
+disk_sweep input is ignored. Explicit manual dry run remains nonmutating. No
+legacy cleanup code/flags are invoked. Output is never a candidate. See the
+maintained THR307 spec for filesystem observation scope and nonpreemptible kernel-I/O limitations.
 """
 from __future__ import annotations
 
@@ -32,11 +33,12 @@ from pathlib import Path
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
-    process_use, signature, snapshot,
+    signature, snapshot,
 )
 
 LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
+PROCESS_SCOPE = 'not checked under THR307 seq117; ended task and structural root required; no process absence or authentication claim'
 TERMINAL = {'completed', 'failed', 'cancelled', 'superseded'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
 
@@ -348,7 +350,7 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
         raise Retain('unique_head_commit')
     return row.get("HEAD"), row.get("branch"), common, metadata
 
-def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None, checkpoint: Callable[[], None] = lambda: None) -> dict:
+def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | None = None, repairs: dict | None = None) -> dict:
     """Fresh common gates before each candidate mutation/retry admission."""
     path, workspace = Path(candidate['path']), Path(candidate['workspace'])
     task_id = path.name
@@ -385,15 +387,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             raise Retain('changed_within_hour')
     if candidate['phase'] == 'scratch' and any(Path(p).name == '.git' for p in tree):
         raise Retain('unknown_repository_in_scratch')
-    def report_exemption(observation: dict) -> None:
-        records = candidate.setdefault('process_exemptions', [])
-        if observation not in records:
-            records.append(observation)
-            # Preserve actual applied exceptions even if a later gate refuses.
-            checkpoint()
-
-    process_use(path, deadline, on_exemption=report_exemption)
-    # Re-read durable state after slow filesystem/process/Git observations.
+    # Re-read durable state after slow filesystem/Git observations.
     evidence.ownership(path, workspace, task_id)
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
         raise Retain('git_identity_changed_during_admission')
@@ -490,23 +484,62 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
     return candidates
 
 
+def _read_json(path: Path) -> dict:
+    """Read reports/markers through literal parents and one regular inode."""
+    with directory(path.parent, float('inf')) as parent:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        with os.fdopen(fd) as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise Retain('ambiguous_disk_sweep_metadata')
+            value = json.load(stream)
+            if (signature(os.fstat(stream.fileno())) != signature(before)
+                    or signature(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) != signature(before)):
+                raise Retain('disk_sweep_metadata_changed')
+            with directory(path.parent, float('inf')) as current:
+                if identity(os.fstat(current)) != identity(os.fstat(parent)):
+                    raise Retain('disk_sweep_parent_changed')
+            return value
+
+
 def atomic_json(path: Path, value: dict) -> None:
-    # Summary only, never candidate/cursor state. Fixed owned daemon directory.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_suffix(path.suffix + '.pending')
-    fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as stream:
-        json.dump(value, stream, sort_keys=True, indent=2)
-        stream.flush()
-    os.replace(pending, path)
+    # Every caller, including the schedule marker, uses literal parents. Never
+    # create a missing scheduled control parent or truncate an unowned pending
+    # inode (which could be a hardlink into a candidate). Ambiguity refuses.
+    with directory(path.parent, float('inf')) as parent:
+        def target_signature():
+            try:
+                observed = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise Retain('ambiguous_disk_sweep_publication_target')
+            return signature(observed)
+        before = target_signature()
+        pending = path.name + '.pending'
+        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        # Retain a pending file on failure as uncertainty; never retry or remove
+        # someone else's pending evidence. Successful replace consumes ours.
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream, sort_keys=True, indent=2)
+            stream.flush()
+            with directory(path.parent, float('inf')) as current:
+                if identity(os.fstat(current)) != identity(os.fstat(parent)):
+                    raise Retain('disk_sweep_publication_parent_changed')
+            if (target_signature() != before
+                    or signature(os.stat(pending, dir_fd=parent, follow_symlinks=False)) != signature(os.fstat(stream.fileno()))
+                    or os.fstat(stream.fileno()).st_nlink != 1):
+                raise Retain('disk_sweep_publication_changed')
+            os.replace(pending, path.name, src_dir_fd=parent, dst_dir_fd=parent)
 
 
 def _summarize_org(result: dict) -> None:
     candidates = result.get('candidates', [])
     result['measurement_scope'] = 'eligible scanned inodes only; retained/unreached allocation is unknown; removed allocation is not physical freed space'
     result['physical_freed_bytes'] = None
-    result['process_exemptions'] = [dict(observation, candidate=c['path'])
-                                    for c in candidates for observation in c.get('process_exemptions', [])]
+    result['process_scope'] = PROCESS_SCOPE
+    # Compatibility field: unused since seq117 removed process inspection.
+    result['process_exemptions'] = []
     result['retained_allocation_unknown_count'] = sum(c.get('allocated_bytes') is None for c in candidates)
     result['retained_count'] = sum(c.get('state') == 'retained' for c in candidates)
     result['partial_unknown_count'] = sum(c.get('state') in ('mutation_in_flight', 'partial_or_unknown') for c in candidates)
@@ -531,9 +564,6 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     result = result if result is not None else {}
     result.update(org=org.name, mode=mode, outcome='incomplete', discovery='unknown', candidates=[], unreached=None,
                   phases={p: dict(measured_allocated_bytes=0, removed_attributable_bytes=0, attribution_unknown=False) for p in ('scratch', 'worktree')})
-    if mode == 'off':
-        result.update(outcome='off', discovery='not_performed')
-        return result
     def report_checkpoint() -> None:
         _summarize_org(result)
         checkpoint()
@@ -543,11 +573,6 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     removed_inodes = removal_seen if removal_seen is not None else set()
     uncertain_repos = set()
 
-    def on_config():
-        from runtime.orchestrator.org_config import load_org_config
-        from runtime.orchestrator._paths import OrgPaths
-        if load_org_config(OrgPaths(org)).disk_sweep_mode != 'on':
-            raise Retain('configuration_no_longer_on')
     try:
         candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint)
         report_checkpoint()
@@ -560,7 +585,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
             try:
                 if candidate.get('repo') in uncertain_repos:
                     raise _RegistrationUnknown('unknown_repository_registration_scope')
-                tree = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
+                tree = admit(candidate, evidence, deadline, now=now)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount
                 candidate['allocated_bytes'] = amount
@@ -575,9 +600,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 candidate['state'] = 'mutation_in_flight'
                 phase['attribution_unknown'] = True
                 report_checkpoint()
-                on_config()
-                fresh = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
-                on_config()
+                fresh = admit(candidate, evidence, deadline, now=now)
                 if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
@@ -585,7 +608,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     mutate(Path(candidate['path']), fresh, deadline, remove=True)
                 else:
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
-                    # Last local metadata check after config/tree comparisons;
+                    # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
                     registrations(repo, deadline)
                     mutation_started = True
@@ -597,13 +620,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # contained repair AND again before Git retry. Own
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
-                        on_config()
-                        retry_tree = admit(candidate, evidence, deadline, now=now, checkpoint=report_checkpoint)
-                        on_config()
+                        retry_tree = admit(candidate, evidence, deadline, now=now)
                         registrations(repo, deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
-                        admit(candidate, evidence, deadline, now=now, repairs=repairs, checkpoint=report_checkpoint)
-                        on_config()
+                        admit(candidate, evidence, deadline, now=now, repairs=repairs)
                         registrations(repo, deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -639,7 +659,6 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
         if mode == 'on' and result['discovery'] == 'complete':
             for repo in sorted({c['repo'] for c in candidates if 'repo' in c}):
                 try:
-                    on_config()
                     rows = registrations(Path(repo), deadline)
                 except _RegistrationUnknown as exc:
                     result['discovery_scopes'].append(dict(path=repo, reason=str(exc), candidate_count=None))
@@ -681,7 +700,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=datetime.now().astimezone().isoformat(), deadline_monotonic=deadline,
                   budget_seconds=deadline - started_monotonic if started_monotonic is not None else BUDGET_SECONDS,
-                  process_scope='visible Linux same-effective-UID processes, all threads; PermissionError-only denied-reference exceptions for exact program names systemd, (sd-pam), sshd-session, ssh-agent with stable identity/credential/census checks; names do not authenticate executables; readable candidate use still retains; snapshot, not host-wide absence',
+                  process_scope=PROCESS_SCOPE,
                   outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)))
     def checkpoint():
         atomic_json(summary, report)
@@ -709,10 +728,11 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
             checkpoint()
             try:
                 config_path = Path(root) / 'org/config.yaml'
-                cfg = load_org_config(OrgPaths(Path(root)))
+                load_org_config(OrgPaths(Path(root)))
                 item['config_sha256'] = hashlib.sha256(config_path.read_bytes() if config_path.exists() else b'').hexdigest()
-                item['configured_mode'] = cfg.disk_sweep_mode
-                mode = 'off' if cfg.disk_sweep_mode == 'off' else 'dry_run' if dry_run else cfg.disk_sweep_mode
+                # Policy is independent of org config; loading above preserves
+                # unrelated validation. Only explicit preview suppresses writes.
+                mode = 'dry_run' if dry_run else 'on'
                 sweep_org(Path(root), deadline, mode=mode, checkpoint=checkpoint, result=item, measurement_seen=measurement_seen, removal_seen=removal_seen,
                           writer_id=(native_writers or {}).get(root))
             except Expired:
@@ -720,7 +740,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
             except Exception as exc:
                 item.update(outcome='error', error=str(exc) or type(exc).__name__)
             checkpoint()
-        report['outcome'] = 'complete' if all(o['outcome'] in ('complete', 'off') for o in report['orgs']) else 'incomplete'
+        report['outcome'] = 'complete' if all(o['outcome'] == 'complete' for o in report['orgs']) else 'incomplete'
     except Expired as exc:
         report['error'] = str(exc)
     report['finished_at'] = datetime.now().astimezone().isoformat()
@@ -762,6 +782,21 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
                    started_at=datetime.now().astimezone().isoformat(),
                    timezone=datetime.now().astimezone().tzname(),
                    timezone_offset=datetime.now().astimezone().strftime('%z'))
+    def preview_parents():
+        # Public preview remains usable with no control directory. Creation is
+        # manual-only and descriptor-relative; aliases still refuse before write.
+        for component in reversed((summary.parent, *summary.parent.parents)):
+            if component == component.parent:
+                continue
+            with directory(component.parent, deadline) as parent:
+                try:
+                    os.mkdir(component.name, 0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
+                with directory(component, deadline):
+                    pass
+    if dry_run:
+        await asyncio.to_thread(preview_parents)
     await asyncio.to_thread(atomic_json, summary, initial)
     spawn = asyncio.create_task(asyncio.create_subprocess_exec(
         *argv, start_new_session=True, stdin=subprocess.DEVNULL,
@@ -797,7 +832,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         await process.wait()
     def finish():
         try:
-            report = json.loads(summary.read_text())
+            report = _read_json(summary)
         except Exception:
             report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision)
         for item in report.get('orgs', []):
@@ -815,10 +850,84 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     return report
 
 
+def _scheduled_admission(deadline: float) -> dict:
+    """Observe the daemon-wide stop once, before any scheduled writer work.
+
+    Only a missing literal file or the exact Boolean false allows admission.
+    This is an ordinary bounded filesystem observation, not an in-flight fence.
+    """
+    from runtime.runtime import daemon_home
+    path = daemon_home() / 'disk-sweep/stop.json'
+    admission = dict(scope='daemon', path=str(path), state='suspended', reason='invalid_control')
+    try:
+        with directory(path.parent, deadline) as parent:
+            parent_identity = identity(os.fstat(parent))
+            try:
+                before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                # ENOENT on this final literal name only; parent failure is not
+                # absence. Reopen parents to reject aliases/replacement.
+                with directory(path.parent, deadline) as current:
+                    if identity(os.fstat(current)) != parent_identity:
+                        raise Retain('stop_parent_changed')
+                check(deadline)
+                return dict(admission, state='allowed', reason='absent')
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise Retain('stop_not_regular_or_hardlinked')
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                if signature(os.fstat(fd)) != signature(before):
+                    raise Retain('stop_changed_before_read')
+                raw = os.read(fd, 65537)
+                if len(raw) > 65536 or len(raw) != before.st_size:
+                    raise Retain('stop_oversized_or_short_read')
+                if signature(os.fstat(fd)) != signature(before):
+                    raise Retain('stop_changed_during_read')
+                if signature(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) != signature(before):
+                    raise Retain('stop_replaced_during_read')
+                with directory(path.parent, deadline) as current:
+                    if identity(os.fstat(current)) != parent_identity:
+                        raise Retain('stop_parent_changed')
+                check(deadline)
+            finally:
+                os.close(fd)
+        # Retain duplicate keys as pairs, so even duplicate identical false
+        # values cannot silently pass the closed one-key object contract.
+        pairs = json.loads(raw.decode('utf-8', errors='strict'), object_pairs_hook=lambda value: value)
+        if (not isinstance(pairs, list) or len(pairs) != 1
+                or not isinstance(pairs[0], tuple) or pairs[0][0] != 'stop'
+                or type(pairs[0][1]) is not bool):
+            raise Retain('stop_requires_only_boolean_stop')
+        check(deadline)
+        return dict(admission, state='suspended' if pairs[0][1] else 'allowed',
+                    reason='stop_true' if pairs[0][1] else 'stop_false')
+    except Exception as exc:
+        return dict(admission, error=f'{type(exc).__name__}: {exc}')
+
+
 async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     from runtime.orchestrator.producer_move import native_writer
     from runtime.orchestrator.team_move import DeferredTeamMove
-    deadline = time.monotonic() + BUDGET_SECONDS
+    started = time.monotonic()
+    started_at = datetime.now().astimezone().isoformat()
+    deadline = started + BUDGET_SECONDS
+    admission = await asyncio.to_thread(_scheduled_admission, deadline)
+    report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
+                  timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
+                  started_at=started_at, deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
+                  process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
+                  unreached_orgs=[str(org.root) for _, org in sorted(state.orgs.items())],
+                  scheduled_admission=admission)
+    if admission['state'] == 'suspended':
+        report.update(outcome='suspended', finished_at=datetime.now().astimezone().isoformat())
+        LOG.warning('Disk sweep globally suspended: %s', admission)
+    # Publish the actual initial summary before ANY durable native reservation.
+    # An unsafe target/pending inode must refuse while all orgs are unstarted.
+    # Worker checkpoints still publish independently; a later failure retains
+    # genuine reservation uncertainty rather than claiming this check fences it.
+    await asyncio.to_thread(atomic_json, summary, report)
+    if admission['state'] == 'suspended':
+        return report
     # Reservations span filesystem/process work; their short gate/transaction
     # does not. Retain active evidence on process loss; D reads the same history.
     with ExitStack() as stack:
@@ -842,19 +951,20 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
         check(deadline)
         report = await run_worker(roots, summary, dry_run=False, scheduled_date=date,
                                   native_writers=writers, budget=deadline - time.monotonic())
+        report['scheduled_admission'] = admission
+        if deferred:
+            report.update(outcome='incomplete', move_deferred_orgs=deferred)
+        await asyncio.to_thread(atomic_json, summary, report)
         for slug, disposition in dispositions.items():
             items = [item for item in report.get('orgs', []) if item.get('org') == slug]
             if (len(items) == 1
-                    and (items[0].get('mode') in ('dry_run', 'off')
-                         or items[0].get('outcome') == 'complete')
+                    and items[0].get('mode') == 'on'
+                    and items[0].get('outcome') == 'complete'
                     and not report.get('interruption')
                     and report.get('worker_group_stop')
                     and not any(c.get('state') in ('mutation_in_flight', 'partial_or_unknown')
                                 for c in items[0].get('candidates', []))):
                 disposition.uncertain = False
-        if deferred:
-            report.update(outcome='incomplete', move_deferred_orgs=deferred)
-            await asyncio.to_thread(atomic_json, summary, report)
         return report
 
 
@@ -888,8 +998,17 @@ async def disk_sweeper_loop(state) -> None:
         def reserve():
             # Mark BEFORE launching. An interrupted night's partial run is not
             # retried after restart. Corrupt metadata refuses, never duplicates.
-            if marker.exists():
-                old = json.loads(marker.read_text())
+            # Validate literal parents BEFORE interpreting final-file ENOENT.
+            # No marker/control directory creation on the scheduled path.
+            with directory(data, float('inf')):
+                try:
+                    old = _read_json(marker)
+                except FileNotFoundError:
+                    old = None
+                else:
+                    if not isinstance(old, dict):
+                        raise ValueError('invalid disk sweep date metadata')
+            if old is not None:
                 if not isinstance(old.get('scheduled_date'), str):
                     raise ValueError('invalid disk sweep date metadata')
                 if old['scheduled_date'] >= date:
@@ -909,15 +1028,16 @@ async def disk_sweeper_loop(state) -> None:
                     raise
                 cancelled = exc
             if state.broken_orgs:
-                report.update(outcome='incomplete', unloaded_orgs_unknown=sorted(state.broken_orgs))
+                report.update(unloaded_orgs_unknown=sorted(state.broken_orgs))
+                if report.get('outcome') != 'suspended':
+                    report['outcome'] = 'incomplete'
                 await asyncio.to_thread(atomic_json, summary, report)
             # Existing audit interface and row shape, one summary per swept org.
             # No notification interface suitable for a disk alert exists here;
             # below-20% context is carried in this audit/JSON, as approved.
             for slug, org in sorted(state.orgs.items()):
                 item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
-                if item is None or item.get('mode') != 'off':
-                    await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
+                await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
             if cancelled is not None:
                 raise cancelled
         except asyncio.CancelledError:
@@ -933,6 +1053,7 @@ def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
         'timezone': report.get('timezone'), 'timezone_offset': report.get('timezone_offset'),
         'started_at': report.get('started_at'), 'finished_at': report.get('finished_at'),
         'budget_seconds': report.get('budget_seconds'), 'outcome': report.get('outcome'),
+        'scheduled_admission': report.get('scheduled_admission'),
         'org': item, 'unreached_orgs': report.get('unreached_orgs'),
         'interruption': report.get('interruption'),
         'move_deferred_orgs': report.get('move_deferred_orgs'),
@@ -955,8 +1076,6 @@ def _manual_audit(report: dict, roots: list[str], summary: Path) -> None:
 
     for root in roots:
         item = next((o for o in report.get('orgs', []) if o['org'] == Path(root).name), None)
-        if item is not None and item.get('mode') == 'off':
-            continue
         conn = sqlite3.connect((Path(root) / 'happyranch.db').as_uri() + '?mode=rw', uri=True, timeout=.1)
         try:
             SummaryWriter(conn).insert_audit_log('', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))

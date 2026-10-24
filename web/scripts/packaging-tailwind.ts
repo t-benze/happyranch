@@ -1,3 +1,4 @@
+/** RETIRED / NONSHIPPING (THR104 seq369): Vite no longer imports this historical instrumentation. */
 /** One explicit-input compiler path for the bound packaging build. */
 import path from 'node:path';
 import { compile } from 'tailwindcss';

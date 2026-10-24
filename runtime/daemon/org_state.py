@@ -14,10 +14,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.infrastructure.memory_collection import CollectionObserver
+    from runtime.daemon.cleanup_diagnostics import _Attachment
 
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
@@ -40,6 +41,9 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
+from runtime.workflows.coding_release_import import CodingReleaseImportStore
+from runtime.workflows.coding_roles import CodingRoleStore
+from runtime.workflows.coding_start import CodingStartStore
 from runtime.workflows.activation import WorkflowActivationStore
 from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
 from runtime.workflows.submissions import WorkflowSubmissionStore
@@ -79,7 +83,11 @@ class OrgState:
     orchestrator: Orchestrator
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
+    workflow_coding_release_import: CodingReleaseImportStore = field(init=False)
+    workflow_coding_roles: CodingRoleStore = field(init=False)
+    workflow_coding_start: CodingStartStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
+    workflow_coding_dispatch: Any = field(init=False)
     workflow_submissions: WorkflowSubmissionStore = field(init=False)
     workflow_revisions: WorkflowRevisionStore = field(init=False)
     workflow_reviews: WorkflowReviewDispatcher = field(init=False)
@@ -114,6 +122,56 @@ class OrgState:
     # actual runner callers through native finish, not durable owner clearance.
     _runner_admission_closed: bool = field(init=False, default=False, repr=False)
     _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
+    # Queue tokens survive consumer cancellation through native retirement.
+    _native_task_users: set[object] = field(init=False, default_factory=set, repr=False)
+
+    # Diagnostic acquisition is separate from ordinary runner/task busy state.
+    # A revoked attachment is never re-admitted by detach refusal or reload.
+    _cleanup_diagnostic_attachment: _Attachment | None = field(init=False, default=None, repr=False)
+    _cleanup_diagnostic_unavailable: str | None = field(init=False, default="not_initial_attachment", repr=False)
+    _cleanup_diagnostic_users: set[object] = field(init=False, default_factory=set, repr=False)
+
+    # C is independent of diagnostic B and ordinary runner/task ownership.
+    _thread_release_attachment: Any = field(init=False, default=None, repr=False)
+    _thread_release_users: set[object] = field(init=False, default_factory=set, repr=False)
+
+    def _acquire_thread_release(self, operation) -> bool:
+        a = self._thread_release_attachment
+        if (self._runner_admission_closed or a is None or operation.attachment is not a
+                or not a.intake or a.revoked or not a.current()):
+            return False
+        self._thread_release_users.add(operation)
+        return True
+
+    def _release_thread_release(self, operation) -> None:
+        self._thread_release_users.remove(operation)
+
+    def _revoke_thread_releases(self) -> None:
+        if self._thread_release_attachment is not None:
+            self._thread_release_attachment.revoke()
+
+    def _assert_thread_releases_idle(self) -> None:
+        if self._thread_release_users or getattr(self.db, "_thread_release_settings_unsafe", False):
+            raise _OrgBusyError("thread_release_native_in_flight_or_unsafe")
+
+    def _acquire_cleanup_diagnostic(self, token: _Attachment) -> bool:
+        if (self._runner_admission_closed or self._cleanup_diagnostic_attachment is not token
+                or token.revoked.is_set()):
+            return False
+        self._cleanup_diagnostic_users.add(token)
+        return True
+
+    def _release_cleanup_diagnostic(self, token: _Attachment) -> None:
+        self._cleanup_diagnostic_users.remove(token)
+
+    def _revoke_cleanup_diagnostics(self) -> None:
+        if self._cleanup_diagnostic_attachment is not None:
+            self._cleanup_diagnostic_attachment.revoke()
+        self._cleanup_diagnostic_unavailable = "attachment_revoked"
+
+    def _assert_cleanup_diagnostics_idle(self) -> None:
+        if self._cleanup_diagnostic_users:
+            raise _OrgBusyError("cleanup_diagnostic_native_in_flight_or_unsafe")
 
     @contextmanager
     def _runner_lifetime(self) -> Iterator[bool]:
@@ -133,7 +191,21 @@ class OrgState:
             if registered:
                 self._runner_tasks.remove(task)
 
-    def _assert_runners_idle(self) -> None:
+    def _acquire_native_task(self, owner: object) -> bool:
+        # Like runner registration, submission/close is event-loop-only.
+        if self._runner_admission_closed:
+            return False
+        self._native_task_users.add(owner)
+        return True
+
+    def _release_native_task(self, owner: object) -> None:
+        self._native_task_users.remove(owner)
+
+    def _assert_runners_idle(self, *, thread_releases: bool = True) -> None:
+        if thread_releases:
+            self._assert_thread_releases_idle()
+        if self._native_task_users:
+            raise _OrgBusyError("native_tasks_in_flight")
         if self._runner_tasks:
             raise _OrgBusyError("active_runners_in_flight")
 
@@ -175,17 +247,26 @@ class OrgState:
             teams=self.teams,
         )
         self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_coding_release_import = CodingReleaseImportStore(self)
+        self.workflow_coding_roles = CodingRoleStore(self)
+        self.workflow_coding_start = CodingStartStore(self)
+        self.db._workflow_coding_start = self.workflow_coding_start
         self.workflow_drafts = WorkflowDraftDispatcher(self)
+        from runtime.workflows.coding_dispatch import CodingDispatcher
+        self.workflow_coding_dispatch = CodingDispatcher(self)
         self.workflow_submissions = WorkflowSubmissionStore(self)
         self.workflow_revisions = WorkflowRevisionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
         self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
         self.workflow_repository_artifacts = WorkflowRepositoryArtifactService()
         if self.orchestrator is not None:
+            self.orchestrator._workflow_coding_start = self.workflow_coding_start
             self.orchestrator._workflow_drafts = self.workflow_drafts
+            self.orchestrator._workflow_coding_dispatch = self.workflow_coding_dispatch
             self.orchestrator._workflow_submissions = self.workflow_submissions
             self.orchestrator._workflow_reviews = self.workflow_reviews
         self.db._workflow_drafts = self.workflow_drafts
+        self.db._workflow_coding_dispatch = self.workflow_coding_dispatch
         self.db._workflow_reviews = self.workflow_reviews
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
@@ -226,8 +307,9 @@ class OrgState:
     def memory_collection_observation(self) -> dict:
         """Read this serving org; observation failure never changes launch state."""
         try:
-            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references
-            return current_epoch_references(self, serving_observation(self))
+            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references, _census_budget
+            with _census_budget(captures=2):
+                return current_epoch_references(self, serving_observation(self))
         except Exception:
             # Module/constructor acquisition can itself be unavailable. Keep the
             # ordinary audit route usable without importing a second observer.
@@ -405,10 +487,15 @@ class OrgState:
                 )
             return state
         except Exception:
+            # Unpublished construction has no queue/runner admission yet.
             db.close()
             raise
 
     def close(self) -> None:
+        self._revoke_thread_releases()
+        self._assert_thread_releases_idle()
+        self._revoke_cleanup_diagnostics()
+        self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()
         self._runner_admission_closed = True
         self.db.close()

@@ -1,13 +1,15 @@
-"""Unmounted SELECT-only K2a2b1 native setup issuance history.
+"""SELECT-only native setup issuance history and K2b complete cold closure.
 
 Caller must first admit the complete native schema and own a coherent SQLite
 read transaction, connection and lock for the whole call (raw native values,
 no custom converters). This reader neither begins nor ends that transaction.
 It establishes retained row/command/admission/publication and setup containment
 facts only. It never authenticates a live human, grants current access, proves
-task/session/result ancestry or admits populated J. No current pointer, cache,
-roster, file, object or network is read. Later relational/current-use owners
-must establish those separate facts before any producer can be mounted.
+task/session/result ancestry. The historical public reader selects no current
+pointer. K2b's complete storage composition additionally validates the latest
+pointer without treating it as current authority. No cache, roster, file,
+object or network is read. Each producer supplies its own complete current-use
+consumers; future-stage readers do not precede human setup production.
 """
 from __future__ import annotations
 
@@ -133,7 +135,8 @@ class _Budget:
                 _check(math.isfinite(value))
         return values
 
-    def row(self, row: tuple, types: tuple[str, ...], *, counted: bool = False) -> tuple:
+    def row(self, row: tuple, types: tuple[str, ...], *, counted: bool = False,
+            charged: bool = False) -> tuple:
         if not counted:
             self.candidate()
         count = len(types)
@@ -145,9 +148,94 @@ class _Budget:
             if storage in ('text', 'blob'):
                 size = len(value.encode('utf8')) if storage == 'text' else len(value)
                 _check(0 < size <= _VALUE_LIMIT)
-                self.consumed += size
-                _check(self.consumed <= _BYTE_LIMIT)
+                if not charged:
+                    self.consumed += size
+                    _check(self.consumed <= _BYTE_LIMIT)
         return values
+
+
+def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...],
+                  allowed: tuple[tuple[str, ...], ...], budget: _Budget, *,
+                  where: str = '1', args: tuple = (), maximum: int = _CALL_ROW_LIMIT,
+                  with_rowid: bool = False, value_limit: int = _VALUE_LIMIT) -> Iterator[tuple]:
+    """Private trusted-schema composition; singleton keyset pages, no OFFSET.
+
+    Every payload cell is withheld unless the WHOLE row fits its original
+    storage classes, per-value byte caps and the current shared row/byte budget.
+    Original typeof and a separate validity sentinel distinguish a refused
+    projection from genuine nullable NULL. No raw oversize/invalid cell reaches
+    Python. SQL-engine work/memory and decoded object memory are not bounded.
+    """
+    def quote(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+    _check(type(value_limit) is int and 0 < value_limit <= 16777216)
+    names = tuple(map(quote, columns))
+    _check(len(names) == len(allowed) and bool(names))
+    size = '+'.join(f"CASE WHEN typeof({name}) IN ('text','blob') "
+                    f"THEN length(CAST({name} AS BLOB)) ELSE 0 END" for name in names)
+    gates = []
+    for name, choices in zip(names, allowed, strict=True):
+        kinds = ','.join("'" + kind + "'" for kind in choices)
+        gates.append(f"(typeof({name}) IN ({kinds}) AND (typeof({name}) NOT IN ('text','blob') "
+                     f"OR length(CAST({name} AS BLOB))<={value_limit}))")
+    valid = ' AND '.join(gates) + ' AND ? > 0 AND (' + size + ')<=?'
+    query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
+             + ' FROM ' + quote(table) + ' WHERE (' + where
+             + ') AND rowid>=? ORDER BY rowid LIMIT 1), '
+             + 'gated AS (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
+             + 'SELECT _scan_rowid,_scan_valid,'
+             + ','.join(f'CASE WHEN _scan_valid THEN {name} ELSE NULL END' for name in names)
+             + ',' + ','.join(f'typeof({name})' for name in names) + ' FROM gated')
+    after = -9223372036854775808
+    count = 0
+    cursor = conn.cursor()
+    cursor.row_factory = None
+    try:
+        while True:
+            budget.step()  # includes terminal/overflow page traversal
+            cursor.execute(query, args + (after, min(maximum - count,
+                _CALL_ROW_LIMIT - budget.accepted_rows), budget.remaining_bytes))
+            row = cursor.fetchone()
+            if row is None:
+                return
+            budget.candidate()  # charge rejected/overflow candidates too
+            count += 1
+            _check(count <= maximum and row[1] == 1)
+            identity, values, types = row[0], row[2:2 + len(names)], row[2 + len(names):]
+            _check(type(identity) is int and identity >= after)
+            native = {'text': str, 'blob': bytes, 'integer': int,
+                      'real': float, 'null': type(None)}
+            for value, storage, choices in zip(values, types, allowed, strict=True):
+                budget.step()
+                _check(storage in choices and type(value) is native[storage])
+                if storage in ('text', 'blob'):
+                    raw = value.encode('utf8') if storage == 'text' else value
+                    budget.consumed += len(raw)
+                    _check(len(raw) <= value_limit and budget.remaining_bytes >= 0)
+                elif storage == 'real':
+                    _check(math.isfinite(value))
+            yield (identity, *values, *types) if with_rowid else (*values, *types)
+            if identity == _INTEGER_MAX:
+                return
+            after = identity + 1
+    except (sqlite3.Error, UnicodeError, OverflowError):
+        raise CodingAuthorityHistoryError(_REFUSAL) from None
+    finally:
+        cursor.close()
+
+
+def _decoded(value: object, budget: _Budget) -> object:
+    """Account traversal of an already decoded bounded value, no new parser."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        budget.step()
+        if type(item) is dict:
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif type(item) is list:
+            pending.extend(item)
+    return value
 
 
 def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
@@ -187,41 +275,26 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
                        capture: dict, budget: _Budget) -> None:
     # Private composition only: callers first parse the complete saved owner
     # and derive all five expected columns from its original command/capture.
-    rows = list(_rows(conn,
-        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
-        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
-        "CASE WHEN typeof(generation)='integer' THEN generation ELSE NULL END,"
-        "CASE WHEN typeof(request_digest)='text' AND length(CAST(request_digest AS BLOB))<=1048576 THEN request_digest ELSE NULL END,"
-        "CASE WHEN typeof(admitted_by)='text' AND length(CAST(admitted_by AS BLOB))<=1048576 THEN admitted_by ELSE NULL END,"
-        'typeof(id),typeof(namespace),typeof(generation),typeof(request_digest),typeof(admitted_by) '
-        'FROM workflow_admission_records WHERE id=? LIMIT 2', (expected['id'],), 1, budget))
+    rows = list(_bounded_rows(conn, 'workflow_admission_records',
+        ('id', 'namespace', 'generation', 'request_digest', 'admitted_by'),
+        (('text',), ('text',), ('integer',), ('text',), ('text',)), budget,
+        where='id=?', args=(expected['id'],), maximum=1))
     _check(len(rows) == 1)
-    actual = budget.row(rows[0], ('text', 'text', 'integer', 'text', 'text'), counted=True)
+    actual = budget.row(rows[0], ('text', 'text', 'integer', 'text', 'text'), counted=True, charged=True)
     _check(actual == tuple(expected[key] for key in (
         'id', 'namespace', 'generation', 'request_digest', 'admitted_by')))
     evidence = capture['profile_evidence']
     pointer = evidence['pointer']
     ready = evidence['ready']
-    journals = list(_rows(conn,
-        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
-        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
-        "CASE WHEN typeof(generation)='integer' THEN generation ELSE NULL END,"
-        "CASE WHEN typeof(expected_generation)='integer' THEN expected_generation ELSE NULL END,"
-        "CASE WHEN typeof(snapshot_bytes)='blob' AND length(snapshot_bytes)<=? THEN snapshot_bytes ELSE NULL END,"
-        "CASE WHEN typeof(snapshot_digest)='text' AND length(CAST(snapshot_digest AS BLOB))<=1048576 THEN snapshot_digest ELSE NULL END,"
-        "CASE WHEN typeof(publisher)='text' AND length(CAST(publisher AS BLOB))<=1048576 THEN publisher ELSE NULL END,"
-        "CASE WHEN typeof(publisher_invocation)='text' AND length(CAST(publisher_invocation AS BLOB))<=1048576 THEN publisher_invocation ELSE NULL END,"
-        "CASE WHEN typeof(profile_fence)='integer' THEN profile_fence ELSE NULL END,"
-        "CASE WHEN typeof(state)='text' AND length(CAST(state AS BLOB))<=1048576 THEN state ELSE NULL END,"
-        "CASE WHEN typeof(recovery_owner)='text' AND length(CAST(recovery_owner AS BLOB))<=1048576 THEN recovery_owner ELSE NULL END,"
-        "CASE WHEN typeof(file_phase_owner)='text' AND length(CAST(file_phase_owner AS BLOB))<=1048576 THEN file_phase_owner ELSE NULL END,"
-        'typeof(id),typeof(namespace),typeof(generation),typeof(expected_generation),'
-        'typeof(snapshot_bytes),typeof(snapshot_digest),typeof(publisher),typeof(publisher_invocation),'
-        'typeof(profile_fence),typeof(state),typeof(recovery_owner),typeof(file_phase_owner) '
-        'FROM workflow_publication_journals WHERE id=? OR '
-        '(namespace=? AND generation=? AND snapshot_digest=?) LIMIT 3',
-        (_VALUE_LIMIT, pointer['journal_id'], ready['namespace'], ready['generation'],
-         ready['snapshot_digest']), 1, budget))
+    journals = list(_bounded_rows(conn, 'workflow_publication_journals',
+        ('id', 'namespace', 'generation', 'expected_generation', 'snapshot_bytes',
+         'snapshot_digest', 'publisher', 'publisher_invocation', 'profile_fence',
+         'state', 'recovery_owner', 'file_phase_owner'),
+        (('text',), ('text',), ('integer',), ('integer',), ('blob',), ('text',),
+         ('text',), ('text',), ('integer',), ('text',), ('text',), ('null', 'text')),
+        budget, where='id=? OR (namespace=? AND generation=? AND snapshot_digest=?)',
+        args=(pointer['journal_id'], ready['namespace'], ready['generation'],
+              ready['snapshot_digest']), maximum=1))
     _check(len(journals) == 1)
     # All twelve native columns are retained and type-checked; the nullable
     # file-phase owner stays NULL or TEXT exactly as stored, never coerced.
@@ -229,7 +302,7 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
     _check(owner_type in ('null', 'text'))
     journal = budget.row(journals[0], (
         'text', 'text', 'integer', 'integer', 'blob', 'text', 'text', 'text',
-        'integer', 'text', 'text', owner_type), counted=True)
+        'integer', 'text', 'text', owner_type), counted=True, charged=True)
     (identity, namespace, generation, previous, raw, digest, publisher, invocation,
      fence, state, recovery, owner) = journal
     _token(identity)
@@ -250,6 +323,38 @@ def _capture_admission(conn: sqlite3.Connection, expected: dict,
     # profiles and full mirror. Today's cache/roster/mirror are not witnesses.
 
 
+def _setup_configuration(scope: dict, snapshot: dict) -> None:
+    """Exact published manager/repository/store configuration, no live I/O.
+
+    Used at original issuance and independently at current use. This proves
+    configured eligibility only, never adoption, task or executor permission.
+    """
+    agents = {agent['name']: agent for agent in snapshot['agents'] if agent['status'] == 'active'}
+    selector = scope['manager_selector']
+    manager = agents.get(selector['principal'])
+    teams = [team for team in snapshot['teams'] if team['name'] == selector['team']]
+    if (manager is None or manager['role'] != 'manager' or manager['team'] != selector['team']
+            or not manager['executor'] or len(teams) != 1):
+        raise CodingAuthorityHistoryError(_REFUSAL)
+    lead = teams[0]['manager']
+    if lead != (selector['principal'] if snapshot['schema_version'] == 1 else
+                dict(kind='agent', principal=selector['principal'])):
+        raise CodingAuthorityHistoryError(_REFUSAL)
+    repositories = []
+    for key, origin in manager['repos'].items():
+        identity = 'workflow-repository:' + _digest(_canonical(
+            [snapshot['org_slug'], key, _digest(origin.encode('utf8'))]))
+        if identity == scope['repository_id']:
+            repositories.append((key, origin))
+    if len(repositories) != 1:
+        raise CodingAuthorityHistoryError(_REFUSAL)
+    key, origin = repositories[0]
+    for owner_id in scope['scope']['store_owners']:
+        owner = agents.get(owner_id)
+        if owner is None or owner['repos'].get(key) != origin or not owner['executor']:
+            raise CodingAuthorityHistoryError(_REFUSAL)
+
+
 def _inventory(conn: sqlite3.Connection, org_slug: str,
                budget: _Budget) -> list[tuple[HistoricalSetupIssuance, dict, dict]]:
     prefix = f'org/{org_slug}/coding-setup/'
@@ -263,21 +368,12 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
     # Every CASE gates type and caps variable-size values before Python fetch.
     # The shared budget counts accepted raw inventory/admission/journal bytes;
     # the bounded overflow row is fetched only to refuse, never retained.
-    for row in _rows(conn,
-        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
-        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
-        "CASE WHEN typeof(revision)='integer' THEN revision ELSE NULL END,"
-        "CASE WHEN typeof(authority_bytes)='blob' AND length(authority_bytes)<=? THEN authority_bytes ELSE NULL END,"
-        "CASE WHEN typeof(authority_digest)='text' AND length(CAST(authority_digest AS BLOB))<=1048576 THEN authority_digest ELSE NULL END,"
-        "CASE WHEN typeof(source_pin)='text' AND length(CAST(source_pin AS BLOB))<=1048576 THEN source_pin ELSE NULL END,"
-        "CASE WHEN typeof(created_at)='text' AND length(CAST(created_at AS BLOB))<=1048576 THEN created_at ELSE NULL END,"
-        'typeof(id),typeof(namespace),typeof(revision),typeof(authority_bytes),'
-        'typeof(authority_digest),typeof(source_pin),typeof(created_at) '
-        'FROM workflow_authorization_revisions WHERE substr(namespace,1,?)=? '
-        'ORDER BY namespace,revision,id LIMIT ?',
-        (_VALUE_LIMIT, len(prefix), prefix, _ROW_LIMIT + 1), _ROW_LIMIT, budget):
+    for row in _bounded_rows(conn, 'workflow_authorization_revisions',
+        ('id', 'namespace', 'revision', 'authority_bytes', 'authority_digest', 'source_pin', 'created_at'),
+        (('text',), ('text',), ('integer',), ('blob',), ('text',), ('text',), ('text',)),
+        budget, where='substr(namespace,1,?)=?', args=(len(prefix), prefix), maximum=_ROW_LIMIT):
         identity, namespace, revision, raw, digest, source, created_at = budget.row(
-            row, ('text', 'text', 'integer', 'blob', 'text', 'text', 'text'), counted=True)
+            row, ('text', 'text', 'integer', 'blob', 'text', 'text', 'text'), counted=True, charged=True)
         _token(identity)
         _integer(revision, 1)
         _check(source == _SOURCE_PIN and digest == _digest(raw)
@@ -286,8 +382,8 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
         revisions.add((namespace, revision))
         saved = read_saved_issuance(raw, expected_org_slug=org_slug)
         _check(saved.command_bytes is not None)
-        record = json.loads(raw)
-        command = json.loads(saved.command_bytes)
+        record = _decoded(json.loads(raw), budget)
+        command = _decoded(json.loads(saved.command_bytes), budget)
         _check(namespace == prefix + command['setup_key']
                and command['expected_authorization_revision'] == revision - 1
                and created_at == record['created_at']
@@ -302,6 +398,7 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
             setups.add(setup_id)
         inventory.append((HistoricalSetupIssuance(
             identity, namespace, revision, raw, digest, created_at, setup_bytes), record, command))
+    inventory.sort(key=lambda item: (item[0].namespace, item[0].revision, item[0].authorization_id))
     return inventory
 
 
@@ -403,8 +500,9 @@ def read_setup_issuance_history(conn: sqlite3.Connection, *, expected_org_slug: 
     are prerequisites. At most1024 accepted org setup rows, 1MiB per native
     text/BLOB value before fetch, and exact native INTEGER scalar projections.
     Original typeof accompanies every value, including nullable owner NULL.
-    After each bounded fetch, 16MiB aggregate accepted raw text/BLOB bytes is
-    enforced; this is not a total memory/SQLite/decoded-copy ceiling. A bounded
+    Fresh remaining row/byte gates precede each singleton keyset fetch;
+    16MiB aggregate accepted raw text/BLOB bytes is enforced; this is not a
+    total memory/SQLite/decoded-copy ceiling. A bounded
     overflow row is fetched only to refuse; no evidence is truncated/coerced.
     Org-wide wrapper inventory establishes unique operations and
     setup subtrees. Admissions/journals are proved for every revision through
@@ -421,3 +519,70 @@ def read_setup_issuance_history(conn: sqlite3.Connection, *, expected_org_slug: 
     except (sqlite3.Error, CodingSavedRecordError, ValueError, TypeError,
             KeyError, UnicodeError, RecursionError, OverflowError):
         raise CodingAuthorityHistoryError(_REFUSAL) from None
+
+
+@dataclass(frozen=True)
+class SetupStorage:
+    """Complete cold setup closure, without any claim of current authority."""
+
+    issuances: tuple[HistoricalSetupIssuance, ...]
+    pointers: tuple[tuple[str, str], ...]
+
+
+def _read_setup_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
+                        reader: _SetupHistoryReader) -> SetupStorage:
+    """Validate every setup prefix and its exact latest native pointer.
+
+    Caller owns the coherent transaction and independently recognized complete
+    J schema. No schema reader is called here, avoiding recursive admission.
+    Revocation/current configuration never changes historical validity.
+    """
+    try:
+        _check(type(conn) is sqlite3.Connection and conn.in_transaction)
+        _check(type(expected_org_slug) is str
+               and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
+        reader._load()
+        admissions: set[str] = set()
+        for entries in reader.namespaces.values():
+            reader.history(entries[-1][0].authorization_id)
+            for _, record, _ in entries:
+                if record['mode'] == 'issue':
+                    _setup_configuration(record['setup'], _decoded(json.loads(base64.b64decode(
+                        record['admission']['capture']['snapshot_bytes_base64'], validate=True)), reader.budget))
+                identity = record['admission']['record']['id']
+                _check(identity not in admissions)
+                admissions.add(identity)
+        prefix = f'org/{expected_org_slug}/coding-setup/'
+        pointers = []
+        for row in _bounded_rows(conn, 'workflow_active_authorizations',
+            ('namespace', 'authorization_revision_id'), (('text',), ('text',)), reader.budget,
+            where='substr(namespace,1,?)=?', args=(len(prefix), prefix), maximum=_ROW_LIMIT):
+            namespace, identity = reader.budget.row(row, ('text', 'text'), counted=True, charged=True)
+            _check(namespace in reader.namespaces
+                   and identity == reader.namespaces[namespace][-1][0].authorization_id)
+            pointers.append((namespace, identity))
+        _check(len(pointers) == len(reader.namespaces)
+               and len({namespace for namespace, _ in pointers}) == len(pointers))
+        for identity in reader.identities:
+            aliases = list(_bounded_rows(conn, 'workflow_active_authorizations',
+                ('namespace', 'authorization_revision_id'), (('text',), ('text',)), reader.budget,
+                where='authorization_revision_id=?', args=(identity,), maximum=1))
+            if aliases:
+                alias = reader.budget.row(aliases[0], ('text', 'text'), counted=True, charged=True)
+                _check(alias in pointers)
+            reader.budget.step()
+            bound = conn.execute('SELECT 1 FROM workflow_binding_snapshots '
+                                 'WHERE authorization_revision_id=? LIMIT 1', (identity,)).fetchone()
+            if bound is not None:
+                reader.budget.candidate()
+                _check(False)
+        return SetupStorage(tuple(reader.identities.values()), tuple(pointers))
+    except (sqlite3.Error, CodingSavedRecordError, ValueError, TypeError,
+            KeyError, UnicodeError, RecursionError, OverflowError):
+        raise CodingAuthorityHistoryError(_REFUSAL) from None
+
+
+def read_setup_storage(conn: sqlite3.Connection, *, expected_org_slug: str) -> SetupStorage:
+    """Complete cold setup closure with a fresh public-call budget."""
+    return _read_setup_storage(conn, expected_org_slug=expected_org_slug,
+        reader=_SetupHistoryReader(conn, expected_org_slug, _Budget()))

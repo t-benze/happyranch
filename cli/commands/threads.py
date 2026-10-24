@@ -854,3 +854,195 @@ def register(sub) -> None:
     p_threads_forward.add_argument("--note-file", dest="note_file", default=None)
     p_threads_forward.add_argument("--subject", default=None)
     p_threads_forward.set_defaults(func=cmd_threads_forward)
+
+
+# Dormant C1-13 human tool: register_release is intentionally NOT called by
+# register above, cli/main, or any alternate bootstrap.
+def register_release(subparser: argparse._SubParsersAction) -> None:
+    """Future integration point for the existing threads subparser only."""
+    from cli.thread_delivery_release_requests import identifier, hex_digest
+
+    def safe_id(value: str) -> str:
+        try:
+            return identifier(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("expected an ASCII release identity") from None
+
+    def safe_key(value: str) -> str:
+        try:
+            return identifier(value, key=True)
+        except ValueError:
+            raise argparse.ArgumentTypeError("expected an ASCII operation key, 1..128 characters") from None
+
+    def safe_digest(value: str) -> str:
+        try:
+            return hex_digest(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("expected a lowercase SHA256 digest") from None
+
+    def native_integer(value: str) -> int:
+        if re.fullmatch(r"[1-9][0-9]{0,18}", value) is None or int(value) >= 2**63:
+            raise argparse.ArgumentTypeError("expected a positive native INTEGER")
+        return int(value)
+
+    parser = subparser.add_parser("release", help="Human risk release (dormant source; not installed)")
+    commands = parser.add_subparsers(dest="release_command", required=True)
+    for name in ("capability", "preview", "apply", "show"):
+        command = commands.add_parser(name)
+        command.add_argument("--org", required=True, type=safe_id)
+        command.set_defaults(func=cmd_threads_release)
+        if name != "capability":
+            command.add_argument("--operation-key", required=True, type=safe_key)
+        if name == "preview":
+            command.add_argument("--thread-id", required=True, type=safe_id)
+            command.add_argument("--invocation-id", required=True, type=native_integer)
+            command.add_argument("--agent-id", required=True, type=safe_id)
+            command.add_argument("--owner-session-id", required=True, type=safe_id,
+                                 help="Historical subject SID; never caller execution authority")
+            command.add_argument("--preparation-id", required=True, type=safe_id)
+            command.add_argument("--token-digest", required=True, type=safe_digest)
+        if name == "apply":
+            command.add_argument("--expected-digest", required=True, type=safe_digest)
+            command.add_argument("--confirm-risk-override", required=True, action="store_true",
+                                 help="Accept all four saved preview risks for this operation")
+
+
+def _release_emit(value: dict, *, status: int, interpretation: str) -> None:
+    from cli.thread_delivery_release_requests import RESPONSE_LIMIT
+    from runtime.infrastructure.thread_delivery_release import canonical
+    raw = canonical({"http_status": status, "interpretation": interpretation, "result": value})
+    if len(raw) + 1 > RESPONSE_LIMIT:
+        _release_failure("release_output_bound")
+    print(raw.decode("ascii"))
+
+
+def _release_failure(code: str, *, exit_code: int = 1, status: int | None = None) -> None:
+    import json
+    print(json.dumps({"code": code, "http_status": status, "next_action": "preserve_key_and_show_same_key"}),
+          file=sys.stderr)
+    raise SystemExit(exit_code)
+
+
+def _release_result(response: object, *, kind: str, key: str | None,
+                    selection: object = None, command: object = None,
+                    disposition: str | None = None) -> dict:
+    from cli.thread_delivery_release_requests import (
+        capability_result, operation_result, preview_result, strict_json,
+    )
+    if response.status_code == 202:
+        # Actual accepted/in-flight always wins over even a misleading body.
+        _release_failure("accepted_in_flight", exit_code=3, status=202)
+    if response.status_code != 200:
+        # No raw error body or exception can become absence or safe retry.
+        _release_failure("release_refused_or_unknown", status=response.status_code)
+    try:
+        value = strict_json(response.content)
+        if kind == "capability":
+            return capability_result(value)
+        if kind == "preview":
+            return preview_result(value, selection)
+        operation_result(value, key, command)
+        if disposition is not None and value["disposition"] != disposition:
+            raise ValueError("release_disposition_mismatch")
+        return value
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        _release_failure("invalid_or_incomplete_release_response", status=response.status_code)
+
+
+def cmd_threads_release(args: argparse.Namespace) -> None:
+    """Dormant handler: local validation AND positive custody precede client."""
+    import httpx
+    from cli.thread_delivery_release_requests import (
+        PrivateReleaseRequests, command_from_preview, identifier, preview_result,
+        strict_json,
+    )
+    from runtime.infrastructure.thread_delivery_release import (
+        PreviewRequest, ReleaseCommand, canonical, decode,
+    )
+
+    kind, key = args.release_command, getattr(args, "operation_key", None)
+    selection = command = None
+    expected_disposition = None
+    request_bytes = None
+    try:
+        slug = identifier(args.org)
+        if key is not None:
+            identifier(key, key=True)
+        if kind not in {"capability", "preview", "apply", "show"}:
+            raise ValueError("invalid_release_action")
+        cache = PrivateReleaseRequests(slug)
+        if kind == "preview":
+            selection = decode(PreviewRequest, canonical({"version": 1,
+                "operation_key": key, "mode": "human_risk_override", "selection": {
+                    "org_slug": slug, "thread_id": args.thread_id, "invocation_id": args.invocation_id,
+                    "agent_id": args.agent_id, "session_id": args.owner_session_id,
+                    "preparation_id": args.preparation_id, "token_digest": args.token_digest,
+                }}).decode("utf8"))
+            cache.save(key, "selection", selection.model_dump(mode="json"))
+            request_bytes = cache.read(key, "selection")
+        elif kind == "apply":
+            selection = decode(PreviewRequest, cache.read(key, "selection").decode("utf8"))
+            saved = preview_result(strict_json(cache.read(key, "preview")), selection)
+            if args.confirm_risk_override is not True or saved["preview_digest"] != args.expected_digest:
+                raise ValueError("release_confirmation_mismatch")
+            command = command_from_preview(saved)
+            expected_disposition = saved["disposition"]
+            cache.save(key, "apply", command.model_dump(mode="json"))
+            request_bytes = cache.read(key, "apply")
+            if decode(ReleaseCommand, request_bytes.decode("utf8")) != command:
+                raise ValueError("release_saved_command_mismatch")
+        elif kind == "show":
+            try:
+                command = decode(ReleaseCommand, cache.read(key, "apply").decode("utf8"))
+            except FileNotFoundError:
+                pass  # A strict historical read cannot claim absent local intent.
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        _release_failure("local_release_selection_or_custody_failed", exit_code=2)
+
+    try:
+        client = OpcClient.from_env()
+    except Exception:
+        _release_failure("release_transport_unavailable")
+    try:
+        try:
+            if kind == "capability":
+                response = client.thread_delivery_release_capability(slug)
+            elif kind == "show":
+                response = client.thread_delivery_release_show(slug, key)
+            elif kind == "preview":
+                response = client.thread_delivery_release_preview(slug, request_bytes)
+            else:
+                response = client.thread_delivery_release_apply(slug, request_bytes)
+        except httpx.TransportError:
+            if kind not in {"preview", "apply"}:
+                _release_failure("release_transport_unknown")
+            # One read only. Never resend/rekey/poll; failed/absent readback
+            # does not resolve the uncertain original request.
+            try:
+                response = client.thread_delivery_release_show(slug, key)
+            except httpx.TransportError:
+                _release_failure("release_readback_unknown")
+            if kind == "preview":
+                if response.status_code == 202:
+                    _release_failure("accepted_in_flight", exit_code=3, status=202)
+                _release_failure("preview_transport_unknown", status=response.status_code)
+            kind = "show"
+        value = _release_result(response, kind=kind, key=key, selection=selection,
+                                command=command, disposition=expected_disposition)
+        if kind == "preview":
+            try:
+                cache.save(key, "preview", value)
+                cache.read(key, "preview")
+            except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+                _release_failure("local_release_preview_custody_failed", exit_code=2)
+        interpretation = ("complete_read" if kind in {"capability", "preview"} else
+                          "matched_committed_operation_history" if command is not None else
+                          "strict_historical_read_without_saved_intent")
+        _release_emit(value, status=response.status_code, interpretation=interpretation)
+    finally:
+        primary = sys.exc_info()[1]
+        try:
+            client.close()
+        except Exception:
+            if primary is None:
+                _release_failure("release_transport_close_unavailable")

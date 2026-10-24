@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from typing import Literal, Any
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
-from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, validate_empty_coding_data
+from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, validate_coding_data
 
 
 @dataclass(frozen=True)
 class WorkflowTaskOwnership:
-    kind: Literal["legacy", "draft", "f5", "reconciliation_required"]
+    kind: Literal["legacy", "draft", "f5", "coding_source_waiting", "coding_carrier", "coding_attempt", "reconciliation_required"]
     intent_id: str | None = None
     state: str | None = None
 
@@ -27,10 +27,10 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
     try:
         conn = db._conn
         try:
+            # Complete setup/import/mapping originals validate before legacy recovery.
             # Native coding decisions/authority may be orphaned, with no old
             # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
             # either legacy return, under the same lock and exception fence.
-            validate_empty_coding_data(conn, layout='recovery')
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
                       if row[0].startswith('workflow_')}
             if has_coding_schema_objects(conn):
@@ -39,6 +39,16 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                 # Unknown/case-changed tables, views, indexes and triggers must
                 # reach the complete reader before either legacy return.
                 validate_workflow_schema(conn, expected_org_slug=org_slug)
+            else:
+                # No J means no setup family can be accepted, even if native
+                # coding metadata has no workflow root/draft/F5 alias.
+                validate_coding_data(conn, layout='recovery', expected_org_slug=org_slug)
+            if has_coding_schema_objects(conn):
+                from runtime.workflows.coding_start import queued_storage
+                saved = queued_storage(conn, org_slug)
+                if task_id in saved.owners:
+                    kind, instance = saved.owners[task_id]
+                    return WorkflowTaskOwnership(kind, instance, saved.runs[instance]["attempt"]["state"])
             if not tables:
                 return WorkflowTaskOwnership("legacy")
             roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
@@ -115,6 +125,10 @@ def route_owned_task(orch: Any, task_id: str) -> bool:
         reviewer = getattr(orch, '_workflow_reviews', None)
         if reviewer is not None:
             reviewer.dispatch(task_id)
+    elif ownership.kind == "coding_attempt":
+        coding = getattr(orch, "_workflow_coding_dispatch", None)
+        if coding is not None and coding.queue_admission_allowed(task_id):
+            coding.dispatch(task_id)
     # An unavailable dispatcher/host is pending execution, never permission
     # to call legacy launch, retry, delegation or parent propagation. Existing
     # F5 producers remain deferred and reconciliation-owned.
@@ -125,7 +139,14 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     ownership = classify_task(db, task_id, org_slug=slug)
     if ownership.kind == "legacy":
         return False
-    if ownership.kind in ('draft', 'f5') and ownership.state == "queued":
+    if ownership.kind in ('coding_attempt', 'coding_source_waiting', 'coding_carrier'):
+        coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
+        if coding is not None:
+            from runtime.workflows.coding_progression import reconcile_run
+            reconcile_run(coding, ownership.intent_id, queue)
+            if ownership.kind == 'coding_attempt':
+                coding.notify_queued(task_id, queue)
+    elif ownership.kind in ('draft', 'f5') and ownership.state == "queued":
         # This is discovery of the committed intent, not reinsertion or host
         # launch. All ownership effects occur at the dispatcher claim seam.
         queue.enqueue_if_absent(slug, task_id)

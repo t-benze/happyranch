@@ -2027,7 +2027,10 @@
         ],
         "responses": [
           "200",
-          "422"
+          "404",
+          "409",
+          "422",
+          "503"
         ]
       }
     },
@@ -2509,6 +2512,77 @@
         "responses": [
           "200",
           "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/settings/coding": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_key",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      },
+      "PUT": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/settings/coding/options": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
         ]
       }
     },
@@ -3315,6 +3389,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -3334,6 +3412,10 @@
     "/api/v1/orgs/{slug}/team-moves/by-key/{operation_key}": {
       "GET": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "operation_key",
             "path"
@@ -3359,6 +3441,10 @@
       "GET": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -3378,6 +3464,10 @@
       "POST": {
         "params": [
           [
+            "authorization",
+            "header"
+          ],
+          [
             "slug",
             "path"
           ]
@@ -3396,6 +3486,10 @@
     "/api/v1/orgs/{slug}/team-moves/{operation_id}": {
       "GET": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "operation_id",
             "path"
@@ -3420,6 +3514,10 @@
     "/api/v1/orgs/{slug}/team-moves/{operation_id}/recover": {
       "POST": {
         "params": [
+          [
+            "authorization",
+            "header"
+          ],
           [
             "operation_id",
             "path"
@@ -4415,6 +4513,123 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/coding/mappings": {
+      "GET": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/coding/role-selections": {
+      "POST": {
+        "params": [
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}": {
+      "GET": {
+        "params": [
+          [
+            "instance_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}/final-manager": {
+      "GET": {
+        "params": [
+          [
+            "instance_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/cutover": {
       "GET": {
         "params": [
@@ -4521,6 +4736,53 @@
         "responses": [
           "200",
           "401",
+          "404",
+          "409",
+          "422",
+          "500",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500",
+          "503"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
+          "401",
+          "403",
           "404",
           "409",
           "422",

@@ -1,7 +1,7 @@
 """Installed U1A workflow schema and compatibility boundary.
 
 F is the unchanged inert version-one foundation. Existing OrgState.load installs
-only F and validates complete F/E/G/H/I/J (empty coding only); explicit new-org creation initializes I.
+only F and validates complete F/E/G/H/I/J (including closed queued coding); explicit new-org creation initializes I.
 The explicit operator scripts alone upgrade existing F/E. Generic Database construction,
 including runtime-audit.db, has no workflow side effect.
 """
@@ -13,12 +13,15 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_coding_schema import _CodingInventory
+    from runtime.workflows.coding_authority_history import _Budget
 
 
 CANONICAL_WORKFLOW_DDL = """\
@@ -587,7 +590,31 @@ def _validate_cutover_data(
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
+    advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> Literal["F", "E", "G", "H", "I", "J"]:
+    with _schema_snapshot(conn):
+        return _read_installed(conn, expected_org_slug=expected_org_slug,
+                               validate_data=validate_data, advances=advances)[0]
+
+
+@contextmanager
+def _schema_snapshot(conn: sqlite3.Connection):
+    """Keep all local inventory consumers in the same read interval."""
+    owned = not conn.in_transaction
+    if owned:
+        conn.execute('BEGIN')
+    try:
+        yield
+    finally:
+        if owned:
+            conn.rollback()
+
+
+def _read_installed(
+    conn: sqlite3.Connection, *, expected_org_slug: str | None,
+    validate_data: bool = True, budget: _Budget | None = None,
+    advances: list[tuple[tuple[int, int], int]] | None = None,
+) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
     actual = _layout(conn)
     names = {row[1] for row in actual[0]}
     layout = "J" if any(name.startswith("workflow_coding_") for name in names) else "I" if "workflow_document_revision_operations" in names else "H" if "workflow_author_handoffs" in names else ("G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F"))
@@ -597,17 +624,18 @@ def _validate_installed(
     if actual != expected:
         raise ValueError("workflow_schema_layout_mismatch")
 
-    from runtime.infrastructure.workflow_coding_schema import validate_empty_coding_data
-    validate_empty_coding_data(conn, layout=layout)
-    # Unknown native admission owners (including coding without its reader)
+    from runtime.infrastructure.workflow_coding_schema import _read_coding_data
+    coding = _read_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
+                               budget=budget, advances=advances)
+    # Unknown native admission owners (including unsupported coding families)
     # never become a legacy observation on an earlier workflow layout.
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
     validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
-    # Empty-only J still requires all retained I/document/native readers even
+    # J with complete setup closure still requires all retained I/document/native readers even
     # on cutover's metadata path. The flag never bypasses the new boundary.
     if layout == "J":
         validate_data = True
-        _validate_source_data(conn)
+        _validate_source_data(conn, coding=coding)
         from runtime.identities.schema import validate_names
         from runtime.infrastructure.team_move_store import validate_team_move_schema
         validate_names(conn, org_slug=expected_org_slug)
@@ -642,7 +670,7 @@ def _validate_installed(
     if layout in ("I", "J") and validate_data:
         from runtime.workflows.revisions import validate_revision_storage
         validate_revision_storage(conn, expected_org_slug=expected_org_slug)
-    return layout
+    return layout, coding
 
 
 class WorkflowCompatibilityStore:
@@ -657,16 +685,26 @@ class WorkflowCompatibilityStore:
         before_commit: Callable[[], None] | None = None,
         expected_org_slug: str | None = None,
     ) -> Literal["installed_legacy_only", "reopened"]:
-        with self._database.workflow_schema_transaction() as conn:
-            actual = _layout(conn)
-            if actual[0]:
-                _validate_installed(conn, expected_org_slug=expected_org_slug)
-                return "reopened"
-
-            _install_foundation(conn, expected_org_slug=expected_org_slug)
-            if before_commit is not None:
-                before_commit()
-            return "installed_legacy_only"
+        # Keep the connection exclusively owned through transaction exit AND
+        # publication. Only this existing-layout branch is write-free.
+        with self._database._lock:
+            advances: list[tuple[tuple[int, int], int]] = []
+            with self._database.workflow_schema_transaction() as conn:
+                actual = _layout(conn)
+                if actual[0]:
+                    _validate_installed(conn, expected_org_slug=expected_org_slug,
+                                        advances=advances)
+                    result = "reopened"
+                else:
+                    _install_foundation(conn, expected_org_slug=expected_org_slug)
+                    if before_commit is not None:
+                        before_commit()
+                    result = "installed_legacy_only"
+            # No exception/interruption/failed COMMIT reaches publication.
+            from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
+            for file_key, last_id in advances:
+                _advance_audit_log_watermark(conn, file_key, last_id)
+            return result
 
 
 def install_or_recover(
@@ -737,7 +775,7 @@ def _stored_json(raw: object, digest: object, *, code: str = "workflow_source_da
         raise ValueError(code) from exc
 
 
-def _validate_source_data(conn: sqlite3.Connection) -> None:
+def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory | None = None) -> None:
     """DB-resident contracts only; historical eligibility is not re-authorized."""
     if ([row[0] for row in conn.execute('PRAGMA integrity_check')] != ['ok']
             or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
@@ -752,6 +790,22 @@ def _validate_source_data(conn: sqlite3.Connection) -> None:
         for row in _records(conn, f'SELECT * FROM {table}'):
             value = _stored_json(row[column], row[digest])
             if table.startswith('workflow_template_'):
+                if row['namespace'] == 'release/happyranch':
+                    if coding is not None:
+                        # Only the internally reconstructed same-snapshot result
+                        # reaches here. Preserve original-row equality and JSON
+                        # checks without an uncharged per-row history reread.
+                        imported = coding.imported
+                        for _, expected in imported.rows if imported is not None else ():
+                            for _ in expected:
+                                coding.budget.step()
+                    else:
+                        from runtime.workflows._coding_release_history import read_release_import
+                        with _schema_snapshot(conn):
+                            imported = read_release_import(conn, expected_org_slug=None)
+                    if imported is None or not imported.matches(table, row):
+                        raise ValueError('workflow_source_data_corrupt')
+                    continue
                 from runtime.workflows.templates import _validate_definition_pins
                 if _validate_definition_pins(value, compiler_pin=row['compiler_pin'],
                         validator_pin=row['validator_pin'], source_pin=row['source_pin']) != row[column]:
@@ -974,13 +1028,21 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
 
 def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G', 'H', 'I', 'J']:
     """Complete layout/discriminator/history and stored source/data validation."""
-    layout = _validate_installed(conn, expected_org_slug=expected_org_slug)
-    _validate_source_data(conn)
-    # Optional org extension: validation only, never install or operational
-    # admission. Complete producer/startup recovery closure belongs to D.
-    from runtime.infrastructure.team_move_store import validate_team_move_schema
-    validate_team_move_schema(conn, org_slug=expected_org_slug)
-    return layout
+    return _read_workflow_schema(conn, expected_org_slug=expected_org_slug)[0]
+
+
+def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
+                          budget: _Budget | None = None
+                          ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
+    """Private complete-schema composition; accepts work allowance only."""
+    with _schema_snapshot(conn):
+        layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_source_data(conn, coding=coding)
+        # Optional org extension: validation only, never install or operational
+        # admission. Complete producer/startup recovery closure belongs to D.
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        validate_team_move_schema(conn, org_slug=expected_org_slug)
+        return layout, coding
 
 
 def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:

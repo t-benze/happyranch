@@ -1,6 +1,8 @@
 """Task submission and inspection endpoints."""
 from __future__ import annotations
 
+from runtime.infrastructure.memory_collection import CensusReadUnavailable
+
 import asyncio
 import json as _json
 import logging
@@ -9,13 +11,13 @@ import signal
 import sqlite3
 import uuid
 from collections.abc import Callable
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.auth import require_token
@@ -24,7 +26,8 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
-from runtime.infrastructure.db.tasks import InvalidLineage, _RetryEvidenceRefusal
+from runtime.workflows.coding_start_records import start_decision_schema
+from runtime.infrastructure.db.tasks import InvalidLineage, TaskThreadOriginUnavailable, _RetryEvidenceRefusal
 from runtime.infrastructure.db.task_reconciliation import (
     SCOPE, HistoricalReceiptResponse, PreflightResponse, ReconcileFailedContinuationBody,
     ReconciliationError, ReconciliationRefusal, ReconciliationResponse,
@@ -236,12 +239,13 @@ def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
         )
 
 
-def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget) -> dict:
+def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget, origins: dict[str, dict]) -> dict:
     # Wire convention: every other task-shaped response (submit POST, recall)
     # exposes the primary key as `task_id`; thread routes do the same via
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump(exclude={"executor_pid"})
     d["task_id"] = d.pop("id")
+    d.update(origins[t.id])
     d["child_wait"] = derive_child_wait(org.db, t, budget)
     return d
 
@@ -486,18 +490,22 @@ def list_tasks(
     # queries (e.g. `tasks --status in_progress --block-kind delegated`).
     # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
     # cascade — finds tasks blocked on a specific job id.
-    with org.db.coherent_read_view():
-        tasks = org.db.list_tasks(
-            limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-            status=status, block_kind=block_kind,
-            blocked_on_job_id=blocked_on_job_id,
-        )
-        budget = ChildWaitBudget()
-        next_cursor = tasks[-1].id if len(tasks) == limit else None
-        return {
-            "tasks": [{**_task_to_dict(t, org, budget), "pause": _pause_projection(org, t.id)} for t in tasks],
-            "next_cursor": next_cursor,
-        }
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            tasks = org.db.list_tasks(
+                limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+                status=status, block_kind=block_kind,
+                blocked_on_job_id=blocked_on_job_id,
+            )
+            budget = ChildWaitBudget()
+            origins = org.db.get_task_thread_origins([t.id for t in tasks])
+            next_cursor = tasks[-1].id if len(tasks) == limit else None
+            return {
+                "tasks": [{**_task_to_dict(t, org, budget, origins), "pause": _pause_projection(org, t.id)} for t in tasks],
+                "next_cursor": next_cursor,
+            }
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/tasks/roots")
@@ -518,27 +526,31 @@ def list_roots(
     descendant whose same-parent revisit lineage leaves no unresolved FAILED
     leaf does not dominate). The field name and response shape are unchanged.
     """
-    with org.db.coherent_read_view():
-        tasks = org.db.list_roots(
-            limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-            status=status, block_kind=block_kind,
-        )
-        budget = ChildWaitBudget()
-        next_cursor = tasks[-1].id if len(tasks) == limit else None
-        # Batch-fetch direct revisits for all returned roots (avoid N+1).
-        root_ids = [t.id for t in tasks]
-        revisits_map = org.db.batch_get_direct_revisits(root_ids)
-        result_tasks: list[dict] = []
-        for t in tasks:
-            d = _task_to_dict(t, org, budget)
-            d["pause"] = _pause_projection(org, t.id)
-            d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
-            d["direct_revisits"] = revisits_map.get(t.id, [])
-            result_tasks.append(d)
-        return {
-            "tasks": result_tasks,
-            "next_cursor": next_cursor,
-        }
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            tasks = org.db.list_roots(
+                limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+                status=status, block_kind=block_kind,
+            )
+            budget = ChildWaitBudget()
+            origins = org.db.get_task_thread_origins([t.id for t in tasks])
+            next_cursor = tasks[-1].id if len(tasks) == limit else None
+            # Batch-fetch direct revisits for all returned roots (avoid N+1).
+            root_ids = [t.id for t in tasks]
+            revisits_map = org.db.batch_get_direct_revisits(root_ids)
+            result_tasks: list[dict] = []
+            for t in tasks:
+                d = _task_to_dict(t, org, budget, origins)
+                d["pause"] = _pause_projection(org, t.id)
+                d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
+                d["direct_revisits"] = revisits_map.get(t.id, [])
+                result_tasks.append(d)
+            return {
+                "tasks": result_tasks,
+                "next_cursor": next_cursor,
+            }
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _pause_projection(org: OrgState, task_id: str) -> dict:
@@ -591,77 +603,81 @@ async def resume_task(task_id: str, body: TaskPauseControlRequest, org: OrgDep) 
 
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str, org: OrgDep) -> dict:
-    with org.db.coherent_read_view():
-        task = org.db.get_task(task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            task = org.db.get_task(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
-        # Revisit context: chain (this task back to original), direct revisits
-        # (tasks that revisit THIS task), and the predecessor's normalized
-        # prior_status (pulled from the revisit_of audit entry).
-        # truncate=True: revisit history grows naturally over a task's lifetime,
-        # so the read path must not 500 once the chain exceeds the defensive bound.
-        chain = [t.id for t in org.db.walk_revisit_chain(task_id, truncate=True)]
-        direct_revisits = org.db.get_direct_revisits(task_id)
-        audit_log = org.db.get_audit_logs(task_id)
-        prior_status = None
-        if task.revisit_of_task_id is not None:
-            for entry in audit_log:
-                if entry["action"] == "revisit_of":
+            # Revisit context: chain (this task back to original), direct revisits
+            # (tasks that revisit THIS task), and the predecessor's normalized
+            # prior_status (pulled from the revisit_of audit entry).
+            # truncate=True: revisit history grows naturally over a task's lifetime,
+            # so the read path must not 500 once the chain exceeds the defensive bound.
+            chain = [t.id for t in org.db.walk_revisit_chain(task_id, truncate=True)]
+            direct_revisits = org.db.get_direct_revisits(task_id)
+            audit_log = org.db.get_audit_logs(task_id)
+            prior_status = None
+            if task.revisit_of_task_id is not None:
+                for entry in audit_log:
+                    if entry["action"] == "revisit_of":
+                        payload = entry.get("payload") or {}
+                        prior_status = payload.get("prior_status")
+                        break
+
+            # When a task is blocked waiting for jobs, include the id+status of each
+            # blocking job so `happyranch details` can show the founder what to act on.
+            blocked_on_jobs: list[dict] | None = None
+            if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status == TaskStatus.IN_PROGRESS:
+                job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+                blocked_on_jobs = [
+                    {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
+                    for jid in job_ids
+                ]
+
+            active_chain = None
+            if task.active_chain is not None:
+                try:
+                    active_chain = _json.loads(task.active_chain)
+                except _json.JSONDecodeError:
+                    active_chain = None  # defensive — never 500 on malformed on-disk state
+
+            # DERIVE: a superseded predecessor is cited by the
+            # escalation_superseded audit row whose structured successor_root
+            # payload names the continuation task that superseded it.
+            superseded_by_task_id: str | None = None
+            for entry in reversed(audit_log):
+                if entry["action"] == "escalation_superseded":
                     payload = entry.get("payload") or {}
-                    prior_status = payload.get("prior_status")
+                    succ = payload.get("successor_root")
+                    if isinstance(succ, str) and succ:
+                        superseded_by_task_id = succ
                     break
 
-        # When a task is blocked waiting for jobs, include the id+status of each
-        # blocking job so `happyranch details` can show the founder what to act on.
-        blocked_on_jobs: list[dict] | None = None
-        if task.block_kind == BlockKind.BLOCKED_ON_JOB and task.status == TaskStatus.IN_PROGRESS:
-            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
-            blocked_on_jobs = [
-                {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
-                for jid in job_ids
-            ]
-
-        active_chain = None
-        if task.active_chain is not None:
-            try:
-                active_chain = _json.loads(task.active_chain)
-            except _json.JSONDecodeError:
-                active_chain = None  # defensive — never 500 on malformed on-disk state
-
-        # DERIVE: a superseded predecessor is cited by the
-        # escalation_superseded audit row whose structured successor_root
-        # payload names the continuation task that superseded it.
-        superseded_by_task_id: str | None = None
-        for entry in reversed(audit_log):
-            if entry["action"] == "escalation_superseded":
-                payload = entry.get("payload") or {}
-                succ = payload.get("successor_root")
-                if isinstance(succ, str) and succ:
-                    superseded_by_task_id = succ
-                break
-
-        return {
-            "task": _task_to_dict(task, org, ChildWaitBudget()),
-            "results": org.db.get_task_results(task_id),
-            "audit_log": audit_log,
-            "revisit_chain": chain,
-            "direct_revisits": direct_revisits,
-            "predecessor_prior_status": prior_status,
-            "blocked_on_jobs": blocked_on_jobs,
-            "active_chain": active_chain,
-            "superseded_by_task_id": superseded_by_task_id,
-            "escalation_reason": derive_current_escalation_reason(
-                task_status=task.status.value,
-                audit_rows=org.db.get_escalation_episode_audit_tail(task_id),
-            ),
-            # TASK-5522: read-only derived work-status summary. Built from the
-            # task record (last_heartbeat) plus the existing audit rows
-            # (session_start / progress) — no schema, no synthetic audits, no
-            # background monitor. See runtime/daemon/work_status.py.
-            "work_status": derive_work_status(task, audit_log),
-            "pause": _pause_projection(org, task_id),
-        }
+            origins = org.db.get_task_thread_origins([task.id])
+            return {
+                "task": _task_to_dict(task, org, ChildWaitBudget(), origins),
+                "results": org.db.get_task_results(task_id),
+                "audit_log": audit_log,
+                "revisit_chain": chain,
+                "direct_revisits": direct_revisits,
+                "predecessor_prior_status": prior_status,
+                "blocked_on_jobs": blocked_on_jobs,
+                "active_chain": active_chain,
+                "superseded_by_task_id": superseded_by_task_id,
+                "escalation_reason": derive_current_escalation_reason(
+                    task_status=task.status.value,
+                    audit_rows=org.db.get_escalation_episode_audit_tail(task_id),
+                ),
+                # TASK-5522: read-only derived work-status summary. Built from the
+                # task record (last_heartbeat) plus the existing audit rows
+                # (session_start / progress) — no schema, no synthetic audits, no
+                # background monitor. See runtime/daemon/work_status.py.
+                "work_status": derive_work_status(task, audit_log),
+                "pause": _pause_projection(org, task_id),
+            }
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _read_output(
@@ -706,7 +722,11 @@ def _read_output(
 def _recall_node(
     org: OrgState, task_id: str, tree: bool, include_output: bool,
 ) -> dict | None:
-    payload = org.db.get_recall_payload(task_id)
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            payload = org.db.get_recall_payload(task_id)
+    except CensusReadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload is None:
         return None
     if include_output:
@@ -746,7 +766,10 @@ class CompletionBody(BaseModel):
     # Manager-only. Structured next-step decision; workers omit or pass null.
     # Must be a dict matching the NextStep schema if present — validated
     # on the orchestrator side when the parser runs.
-    decision: dict | None = None
+    decision: dict | None = Field(default=None, json_schema_extra={
+        'if': {'type': 'object', 'properties': {'action': {'const': 'workflow_start'}}, 'required': ['action']},
+        'then': start_decision_schema(),
+    })
     # Manager-only S6a semantic evidence. Kept raw at the HTTP boundary so a
     # malformed attempt can be reduced to a digest-only durable diagnostic;
     # raw invalid content is never persisted.
@@ -864,9 +887,9 @@ async def task_events(task_id: str, org: OrgDep):
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-    workflow_draft = ownership.kind in {"draft", "f5"}
-    workflow_owner = (org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
-    if ownership.kind not in {"legacy", "draft", "f5"}:
+    workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt"}
+    workflow_owner = (org.workflow_coding_dispatch if ownership.kind == "coding_attempt" else org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
+    if ownership.kind not in {"legacy", "draft", "f5", "coding_attempt", "coding_source_waiting"}:
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
@@ -881,6 +904,16 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # Server-reserved carrier key: a client-injected value is never
         # authority and is discarded here.
         decision_payload.pop("_manager_self_evaluation", None)
+    if decision_payload is not None and decision_payload.get('action') == 'workflow_start':
+        from runtime.workflows.coding_start_records import CodingStartDecision
+        try:
+            CodingStartDecision.model_validate(decision_payload)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={'code': 'coding_start_invalid_decision'}) from None
+        owner = org.db.get_task(task_id)
+        if (owner is None or owner.task_type != 'task' or owner.assigned_agent != body.agent
+                or org.teams.executable_manager_for_team(owner.team) != body.agent):
+            raise HTTPException(status_code=409, detail={'code': 'coding_start_manager_result_required'})
     v2_admission: dict | None = None
     mse_present = "manager_self_evaluation" in body.model_fields_set
     _teams = getattr(org, "teams", None)
@@ -961,6 +994,23 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                     valid = False
                 if not valid:
                     raise HTTPException(status_code=409, detail={"code": "workflow_callback_payload_mismatch"})
+            if ownership.kind == 'coding_source_waiting':
+                from runtime.infrastructure.database import completion_result_payload_matches
+                from runtime.workflows.coding_start import queued_storage
+                with org.db._lock:
+                    saved = queued_storage(org.db._conn, org.slug)
+                    selected = saved.runs.get(ownership.intent_id)
+                    source = None if selected is None else selected['source']
+                    if (source is None or source['result']['id'] != prior['id']
+                            or (source['task_id'], source['principal'], source['session_id']) !=
+                               (task_id, body.agent, body.session_id)
+                            or not completion_result_payload_matches(prior,
+                                output_summary=body.output_summary, confidence_score=body.confidence,
+                                status=body.status, risks_flagged=body.risks_flagged, output_dir=body.output_dir,
+                                decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                                waiting_on_job_ids=body.waiting_on_job_ids or None, verdict=body.verdict,
+                                local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None)):
+                        raise HTTPException(status_code=409, detail={'code': 'coding_start_operation_conflict'})
             if v2_admission is None:
                 return {"ok": True}
             # Narrowed v2 retry seam: an exact transport retry is read-only
@@ -1120,52 +1170,72 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             )
     local_ci_json = _json.dumps(local_ci.model_dump()) if local_ci is not None else None
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
-    async with org.db_lock:
-        current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-        if current_ownership.kind != ownership.kind:
-            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
-        # The pre-await guards above give callers stable error ordering.  They
-        # are not admission authority: cancellation or a newer generation can
-        # land while this callback waits for the shared DB lock.
-        if not workflow_draft or org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None:
-            _require_task_active(task_id, org.db.get_task(task_id))
-        # Do not await under this lease.  It bridges get_active() and the
-        # synchronized SQLite transaction, closing the old post-get_active
-        # generation-replacement gap without inverting the DB RLock.
-        with org.sessions.binding_lease(task_id, body.agent):
-            current = org.sessions.get_active(task_id, body.agent)
-            if current != body.session_id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "unknown_session" if current is None else "session_mismatch",
-                            "task_id": task_id, "agent": body.agent},
-                )
-            recovery_deadline_monotonic = org.sessions.recovery_deadline_monotonic(
-                task_id, body.agent, body.session_id,
-            )
-            # The recovery ledger is the durable authority for a callback after a
-            # clean provider omission.  In particular, a late callback from the
-            # origin invocation must not overwrite a recovery claim.
-            if not org.db.admit_task_completion_callback(
-                task_id=task_id,
-                agent=body.agent,
-                session_id=body.session_id,
-                status=body.status,
-                output_summary=body.output_summary,
-                decision_json=decision_json,
-                confidence_score=body.confidence,
-                risks_flagged=body.risks_flagged,
-                output_dir=body.output_dir,
-                waiting_on_job_ids=body.waiting_on_job_ids or None,
-                verdict=body.verdict,
-                local_ci_json=local_ci_json,
-                recovery_deadline_monotonic=recovery_deadline_monotonic,
-                v2_admission=v2_admission,
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "recovery_callback_not_admissible"},
-                )
+    from runtime.workflows.coding_start import CodingStartError
+    coding_owner = org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None
+    try:
+        admission_context = coding_owner.callback_admission(task_id) if coding_owner is not None else nullcontext(None)
+        async with admission_context as coding_capture:
+            async with org.db_lock if coding_owner is None else nullcontext():
+                current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
+                if current_ownership.kind != ownership.kind:
+                    raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
+                # The pre-await guards above give callers stable error ordering.  They
+                # are not admission authority: cancellation or a newer generation can
+                # land while this callback waits for the shared DB lock.
+                if not workflow_draft or org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None:
+                    _require_task_active(task_id, org.db.get_task(task_id))
+                # Do not await under this lease.  It bridges get_active() and the
+                # synchronized SQLite transaction, closing the old post-get_active
+                # generation-replacement gap without inverting the DB RLock.
+                with org.sessions.binding_lease(task_id, body.agent):
+                    current = org.sessions.get_active(task_id, body.agent)
+                    if current != body.session_id:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": "unknown_session" if current is None else "session_mismatch",
+                                    "task_id": task_id, "agent": body.agent},
+                        )
+                    recovery_deadline_monotonic = org.sessions.recovery_deadline_monotonic(
+                        task_id, body.agent, body.session_id,
+                    )
+                    # The recovery ledger is the durable authority for a callback after a
+                    # clean provider omission.  In particular, a late callback from the
+                    # origin invocation must not overwrite a recovery claim.
+                    if (ownership.kind == 'legacy' and decision_payload is not None
+                            and decision_payload.get('action') == 'workflow_start'):
+                        from runtime.workflows.coding_start import CodingStartError, require_start_ready
+                        try:
+                            require_start_ready(org.db._conn, org.slug, decision_payload['workflow'])
+                        except CodingStartError as exc:
+                            # Refuse before persisting a fresh unsupported start result,
+                            # including on I; never poison old/native history or spend
+                            # the genuine manager's result-action claim while disabled.
+                            raise HTTPException(status_code=409, detail={'code': exc.code}) from None
+                    if not org.db.admit_task_completion_callback(
+                        task_id=task_id,
+                        agent=body.agent,
+                        session_id=body.session_id,
+                        status=body.status,
+                        output_summary=body.output_summary,
+                        decision_json=decision_json,
+                        confidence_score=body.confidence,
+                        risks_flagged=body.risks_flagged,
+                        output_dir=body.output_dir,
+                        waiting_on_job_ids=body.waiting_on_job_ids or None,
+                        verdict=body.verdict,
+                        local_ci_json=local_ci_json,
+                        recovery_deadline_monotonic=recovery_deadline_monotonic,
+                        v2_admission=v2_admission,
+                        coding_admission=coding_capture,
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": "recovery_callback_not_admissible"},
+                        )
+    except CodingStartError as exc:
+        if coding_owner is None:
+            raise
+        raise HTTPException(status_code=409, detail={'code': exc.code}) from None
     # Generation-owned cleanup preserves a newer invocation that may have
     # replaced this callback while the route was awaiting its DB lock.
     if not workflow_draft:
@@ -2040,7 +2110,7 @@ async def cancel_task(
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         from runtime.workflows.recovery import classify_task
         ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-        if ownership.kind != "legacy":
+        if ownership.kind != "legacy" and not ownership.kind.startswith("coding_"):
             if ownership.kind not in {"draft", "f5"}:
                 raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
             # Workflow-owned execution has no ordinary delegated subtree. Its durable fence
@@ -2051,34 +2121,17 @@ async def cancel_task(
                     return await _await_worktree_cleanup(owner.cancel, task_id)
                 finally:
                     root_tail_failed |= delivery['teardown_incomplete']
-        if root.status in _TERMINAL_TASK_STATUSES:
+        if root.status in _TERMINAL_TASK_STATUSES and not (
+                root.status == TaskStatus.CANCELLED and ownership.kind.startswith("coding_")):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "task_already_terminal", "current_status": root.status.value},
             )
 
-        # BFS subtree walk (cascade=True) or single-task (cascade=False). Only
-        # non-terminal rows are collected — anything already COMPLETED/FAILED
-        # stays untouched.  Also capture prior statuses so Phase 1 can route
-        # PENDING-only followup calls without a second DB round-trip.
+        coding = getattr(org, 'workflow_coding_start', None)
         to_cancel: list[str] = []
         prior_statuses: dict[str, TaskStatus] = {}
-        # Path B: capture the prior block_kind too. A parked task is now
-        # in_progress(delegated|blocked_on_job) with no live subprocess; the
-        # discriminant is what tells "parked" apart from "running" so Phase 1b
-        # fires the thread followup for exactly the right set (see below).
         prior_block_kinds: dict[str, BlockKind | None] = {}
-        stack = [task_id]
-        while stack:
-            tid = stack.pop()
-            t = org.db.get_task(tid)
-            if t is None or t.status in _TERMINAL_TASK_STATUSES:
-                continue
-            to_cancel.append(tid)
-            prior_statuses[tid] = t.status
-            prior_block_kinds[tid] = t.block_kind
-            if body.cascade:
-                stack.extend(org.db.get_children(tid))
 
         now = datetime.now(timezone.utc).isoformat()
         rationale = body.rationale.strip()
@@ -2093,22 +2146,56 @@ async def cancel_task(
         pids_without_control: list[tuple[str, str, int]] = []
         audit = AuditLogger(org.db)
         async with org.db_lock:
+            cancellation = None
+            try:
+                if coding is not None:
+                    cancellation = coding.guard_cancellation(task_id, cascade=body.cascade,
+                        rationale=rationale, actor=actor, transitions=root_transitions)
+                else:
+                    # Retained ownership during disabled admission/rollback
+                    # still belongs to the cancellation owner, never legacy.
+                    from runtime.workflows.coding_cancellation import cancel_locked
+                    cancellation = cancel_locked(org, task_id, cascade=body.cascade,
+                        rationale=rationale, actor=actor, transitions=root_transitions)
+            except (ValueError, TypeError, KeyError, sqlite3.Error):
+                raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
+            if cancellation is not None:
+                to_cancel = cancellation['tasks']
+                prior_statuses = cancellation['prior']
+                prior_block_kinds = cancellation['block_kinds']
+                root_tail_failed |= cancellation.get('teardown_incomplete', False)
+            else:
+                # Rediscover ordinary membership after the actual lock wait too.
+                to_cancel, prior_statuses, prior_block_kinds = [], {}, {}
+                stack, visited = [task_id], set()
+                while stack:
+                    tid = stack.pop()
+                    if tid in visited:
+                        continue
+                    visited.add(tid)
+                    t = org.db.get_task(tid)
+                    if t is None or t.status in _TERMINAL_TASK_STATUSES:
+                        if tid == task_id:
+                            raise HTTPException(status_code=409, detail={'code': 'task_already_terminal'})
+                        continue
+                    to_cancel.append(tid)
+                    prior_statuses[tid], prior_block_kinds[tid] = t.status, t.block_kind
+                    if body.cascade:
+                        stack.extend(org.db.get_children(tid))
             for tid in to_cancel:
-                # Path B: a founder cancel writes the dedicated terminal CANCELLED
-                # status (was FAILED + cancelled_at). cancelled_at is still set so
-                # the cancel-race guards and cancellation derivations are unchanged.
-                with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
-                    org.db.update_task(
-                        tid,
-                        status=TaskStatus.CANCELLED,
-                        block_kind=None,
-                        note=note,
-                        cancelled_at=now,
-                        completed_at=now,
-                    )
+                if cancellation is None:
+                    with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
+                        org.db.update_task(tid, status=TaskStatus.CANCELLED, block_kind=None,
+                            note=note, cancelled_at=now, completed_at=now)
+                    audit.log_task_cancelled(task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor)
                 from runtime.orchestrator.task_pause import prepared_cancel_controls
                 controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
                 controls_by_agent.update(prepared_cancel_controls(org.db, tid))
+                coding_task = cancellation is not None and tid in cancellation.get('coding_tasks', ())
+                if (coding_task and not controls_by_agent
+                        and prior_statuses[tid] == TaskStatus.IN_PROGRESS
+                        and prior_block_kinds[tid] is None):
+                    root_tail_failed = True
                 for agent, control in controls_by_agent.items():
                     controls_to_invoke.append((tid, agent, control))
                 # THR-207: a wired session's PID is diagnostic/restart evidence
@@ -2119,10 +2206,9 @@ async def cancel_task(
                 # the control is registered before launch).
                 for agent, pid in org.sessions.iter_task_pids(tid):
                     if agent not in controls_by_agent:
-                        pids_without_control.append((tid, agent, pid))
-                audit.log_task_cancelled(
-                    task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor,
-                )
+                        root_tail_failed |= cancellation is not None
+                        if not coding_task:
+                            pids_without_control.append((tid, agent, pid))
 
         # Phase 1b: fire thread followup for every cancelled task that had NO live
         # subprocess at cancel time.
@@ -2168,14 +2254,16 @@ async def cancel_task(
                 await asyncio.to_thread(control)
                 killed.append({"task_id": tid, "agent": agent})
             except Exception as exc:
+                root_tail_failed |= cancellation is not None
                 logger.warning(
                     "cancel %s: opaque cancel control invocation failed: %s",
                     tid, exc,
                 )
-            # Clear the tracker entry so a parent auto-resume (if one gets
-            # enqueued via run_step's dependent-child check) can't find a stale
-            # pid/control and mis-route a subsequent cancel.
-            org.sessions.clear(tid, agent)
+            # Coding batches retain both coding and ordinary outer owners.
+            # A control return cannot substitute for their owned settlement.
+            # Preserve the ordinary-only route's existing tracker semantics.
+            if cancellation is None:
+                org.sessions.clear(tid, agent)
         for tid, agent, pid in pids_without_control:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -2183,10 +2271,12 @@ async def cancel_task(
             except ProcessLookupError:
                 pass
             except OSError as exc:
+                root_tail_failed |= cancellation is not None
                 logger.warning(
                     "cancel %s: os.kill(%s, SIGTERM) failed: %s", tid, pid, exc,
                 )
-            org.sessions.clear(tid, agent)
+            if cancellation is None:
+                org.sessions.clear(tid, agent)
 
         # Phase 3: publish terminal events for any live SSE tails. EventBus
         # recognises `task_failed` as terminal (see _TERMINAL_TYPES in

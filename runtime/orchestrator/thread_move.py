@@ -10,7 +10,7 @@ import time
 import uuid
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.thread_admission import ThreadAdmissionStore, ThreadAttempt, ThreadLifecycle
 from runtime.infrastructure.team_move_store import MoveRequest, _decode
@@ -294,6 +294,8 @@ class ThreadMoveAdmission:
             if inv is None:
                 return None
             self.check_agent_uncommitted(inv.agent_name)
+            if not self.db._thread_release_pair_permitted_uncommitted(inv.thread_id, inv.agent_name):
+                raise DeferredTeamMove("thread_delivery_release_permission_revoked")
             # These are trusted persisted permanent owners. No request actor,
             # logical-ID parsing, prompt file or display name supplies identity.
             thread = self.db.get_thread(inv.thread_id)
@@ -322,6 +324,8 @@ class ThreadMoveAdmission:
         if self.live.get(owner.inv.id) is not owner or not owner.owner_live:
             raise DeferredTeamMove("team_move_thread_preparation_missing")
         self.check_agent_uncommitted(owner.identity.agent_id)
+        if not self.db._thread_release_pair_permitted_uncommitted(owner.inv.thread_id, owner.identity.agent_id):
+            raise DeferredTeamMove("thread_delivery_release_permission_revoked")
         inv = self.db.get_pending_invocation(owner.inv.invocation_token)
         if inv is None or (inv.id, inv.thread_id, inv.agent_name) != (owner.inv.id, owner.inv.thread_id, owner.identity.agent_id):
             raise DeferredTeamMove("team_move_thread_invocation_changed")
@@ -546,16 +550,36 @@ class ThreadMoveAdmission:
         # Held/uncertain evidence is NEVER reaped/rekeyed to claim clearance.
         if self.held_uncommitted(inv.agent_name) is not None:
             return True
+        from runtime.infrastructure.thread_delivery_release import delivery_view, pair_permission
+        view = delivery_view(self.db, inv.thread_id)
+        if not pair_permission(view, inv.thread_id, inv.agent_name):
+            return True
         state = self.store.read_uncommitted(inv)
         return state is not None and not self._settled_without_owner(inv, state)
 
     def preserve_pair_uncommitted(self, thread_id: str, agent_id: str) -> bool:
+        from runtime.infrastructure.thread_delivery_release import delivery_view
+        return self._preserve_pair_uncommitted(thread_id, agent_id,
+            view=lambda: delivery_view(self.db, thread_id), read_state=self.store.read_uncommitted)
+
+    def _preserve_pair_uncommitted(
+        self, thread_id: str, agent_id: str, *, view: Callable[[], Any],
+        read_state: Callable[[Any], ThreadLifecycle | None],
+    ) -> bool:
+        # Cutover supplies only local lazy readers, never permission/live/hold
+        # conclusions. Every other caller retains fresh ordinary reads.
         if self.held_uncommitted(agent_id) is not None:
+            return True
+        from runtime.infrastructure.thread_delivery_release import pair_permission
+        materialized = view()
+        if not pair_permission(materialized, thread_id, agent_id):
             return True
         for raw in self.db._conn.execute("SELECT * FROM thread_invocations WHERE thread_id=? AND agent_name=?",
                 (thread_id, agent_id)):
             inv = self.db._row_to_invocation(raw)
-            state = self.store.read_uncommitted(inv)
+            if materialized is not None and materialized.released(inv.id):
+                continue  # Delivery interpretation only; census remains raw.
+            state = read_state(inv)
             if state is None:
                 continue
             if inv.status is ThreadInvocationStatus.PENDING and self._settled_without_owner(inv, state):
@@ -589,6 +613,8 @@ class ThreadMoveAdmission:
             result = []
             for inv in self.db.list_pending_thread_invocations():
                 if self.held_uncommitted(inv.agent_name) is not None or inv.id in self.live:
+                    continue
+                if not self.db._thread_release_pair_permitted_uncommitted(inv.thread_id, inv.agent_name):
                     continue
                 state = self.store.read_uncommitted(inv)
                 if state is not None:

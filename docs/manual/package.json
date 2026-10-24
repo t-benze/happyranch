@@ -9,7 +9,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "build:static-export": "HAPPYRANCH_BUILD_TARGET=static-export next build",
+    "assemble:static-export": "node scripts/assemble-static-export.mjs"
   },
   "dependencies": {
     "@headlessui/react": "2.2.10",

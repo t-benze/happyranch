@@ -84,6 +84,13 @@ settled known-quiescent original adds no unknown blocker; an unclaimed
 recovery alone is not execution, while actual recovery launch has its own
 drain evidence.
 Passthrough receipts describe absence of containment, not descendant cleanup.
+The original job owner commits its running-only terminal row, one original-trigger
+audit, actual producer observation and this strict Pause entry disposition in one
+short root-gated DB writer; local release and durable hint/wake follow COMMIT.
+Lost CAS has no duplicate effects; rollback/ambiguous COMMIT retains unknown
+ownership. Stop200 is a real owned signal request, never terminal or hold clearance.
+Startup retains unproven running jobs rather than inventing orphan/cleanup proof.
+
 The existing job runner returns its genuine process status and streams, without a containment/tree receipt. Its terminal result settles normally while missing descendant closure remains an unknown job blocker. A failure before runner entry can discharge the proven no-launch reservation. Direct process communicate/wait closes that process only; missing tree evidence
 remains an explicit unknown blocker, including after terminal lifecycle or
 restart. Interrupted possible launch or cleanup ACTION never becomes safe zero
@@ -269,3 +276,66 @@ platform and actual callback source/fences remain; they are not automatic merge
 requirements. No ad hoc E2E, execution-mode or cap change is authorized.
 Final immutable-head independent review/scoped QA, normal
 publication and manager-guarded merges remain separate gates.
+
+### Bounded ordinary native launch refusals (THR-315)
+
+Actual non-hold refusals before durable preparation allow at most THREE consecutive
+attempts for the same logical task continuation. Existing audit rows
+`task_native_launch_boundary` retain the original fingerprint/owner/agent/generation
+key, actual reserved SID, invocation and attempt identities, cumulative count and
+first safe cause; the latest three bounded payloads suffice without new schema or
+journal fields. Reconstruction/redelivery does not reset this count. A genuine
+positive-PID native launch callback records a zero-count boundary before fallible
+phase persistence. A reserved SID and memory telemetry never prove launch.
+
+Human-team failed-recovery history treats this exact launch/refusal audit action
+as informational. It neither selects a result nor grants recovery authority;
+selected result/session/worker/team and replay fences still apply, and unrelated
+or unknown causal actions still refuse before terminal or parent effects.
+
+An actual refusal after durable preparation fails earlier: the existing outer
+settlement makes an unclosed preparation unknown, and unknown owners cannot safely
+be adopted for another launch. FAILED with `launch_refused` uses normal failure,
+parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
+journal/process evidence, retry lineage or worktree guards. Existing smaller host,
+provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
+allowance. Current-owner and authentic callback fences precede evidence and are
+rechecked inside failure transition; later continuations have separate keys.
+Terminal deferred owners are not republished, even when unknown evidence remains.
+
+Each new retry or recovery launch boundary resets only local launch attribution
+before fallible initialization; a previous positive PID cannot mask a new refusal.
+Original launch/unknown evidence remains intact. Deferred owners are authenticated
+read-only before adoption writes, then revalidated under the native writer. Refusals
+retain the durable original SID/agent/generation/continuation; no fallback SID counts
+for that owner. An unclaimed recovery uses its exact original-SID journal proof and
+existing claim exclusions, never ordinary pending/carrier eligibility. Callback,
+current-owner, cancellation and intentional hold winners still exclude accounting.
+
+The first preparation cause is kept separately from the final Pause/cleanup error:
+bounded stage, exception class/stable Pause code and source locations. A
+failed task refresh can additionally retain a safe repo identifier, optional
+explicit operation=refresh_ff_only and closed refresh_phase=precheck|fetch|
+between_stages|merge|submodule_update. Absent selector retains legacy pull_ff_only
+shape/meaning; old dictionaries are unchanged. repository_pull is aggregate.
+Only the actual failing child's returned exit is recorded; nonchild precheck/
+between-stage failures invent no exit or successful-child diagnostic reuse.
+Phase identifies operation, not root/network cause. The cause may also retain a
+safe exception class and the existing optional closed advisory
+`diagnostic_category`/`diagnostic_rule` with exact Boolean `capture_complete`,
+`capture_truncated` and `timed_out` facts. Categories are lock/network/auth/other/
+unknown; non-fast-forward remains other. Only complete, untruncated, strictly
+decoded whole-stream grammar can select a specific wording label; ambiguity,
+unsafe structure, timeout or unavailable/failed capture is unknown. Labels never
+prove provenance or historical cause; missing/old exit128 stays unknown. Existing
+first causes and historical dictionaries are reused unchanged, and no non-task
+cause fields are added. Skipped unsupported/unavailable admission stays a stale-source
+warning and creates no refresh-failure cause. No exception messages, output, argv, URLs,
+environment or locals enter this evidence. Refresh failures latch sticky cleanup
+before attribution, attempt the first cause even after an evidence-save failure,
+and propagate only fixed safe errors without captured exception chains. An
+audit/storage save failure remains an explicit
+persistence limitation, not a durable count or terminal-success claim. No new timer,
+service, automatic successor or permission follows. Source/scoped verification is
+separate from deployment, running-code identity and operational acceptance.

@@ -5,7 +5,8 @@ SQLite read transaction, connection and lock throughout. Native envelopes,
 own admissions, historical publications and complete parent/setup containment
 are retained facts only. They prove no real mint order, source execution,
 task/SID/result/assignment/policy/J graph or current permission. Those separate
-readers remain prerequisites before every producer and current-use admission.
+readers must ship with each corresponding capability producer/current-use
+consumer. They do not block the separate human setup producer.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 
 from runtime.workflows.coding_authority_history import (
     CodingAuthorityHistoryError, SetupIssuanceHistory, _Budget,
-    _SetupHistoryReader, _capture_admission, _digest, _rows, _token,
+    _SetupHistoryReader, _capture_admission, _digest, _bounded_rows, _token,
 )
 from runtime.workflows.coding_saved_records import (
     CodingSavedRecordError, read_saved_capability,
@@ -97,21 +98,14 @@ def _native_capability(conn: sqlite3.Connection, org_slug: str,
     # is fetched from it. Structural native admission includes ID/digest UNIQUE.
     # Every returned field gates storage class/byte length BEFORE fetch and
     # retains original typeof for refusal, including wrong-type NULL sentinels.
-    rows = list(_rows(conn,
-        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
-        "CASE WHEN typeof(namespace)='text' AND length(CAST(namespace AS BLOB))<=1048576 THEN namespace ELSE NULL END,"
-        "CASE WHEN typeof(revision)='integer' THEN revision ELSE NULL END,"
-        "CASE WHEN typeof(authority_bytes)='blob' AND length(authority_bytes)<=1048576 THEN authority_bytes ELSE NULL END,"
-        "CASE WHEN typeof(authority_digest)='text' AND length(CAST(authority_digest AS BLOB))<=1048576 THEN authority_digest ELSE NULL END,"
-        "CASE WHEN typeof(source_pin)='text' AND length(CAST(source_pin AS BLOB))<=1048576 THEN source_pin ELSE NULL END,"
-        "CASE WHEN typeof(created_at)='text' AND length(CAST(created_at AS BLOB))<=1048576 THEN created_at ELSE NULL END,"
-        'typeof(id),typeof(namespace),typeof(revision),typeof(authority_bytes),'
-        'typeof(authority_digest),typeof(source_pin),typeof(created_at) '
-        'FROM workflow_authorization_revisions WHERE id=? OR namespace=? OR '
-        'authority_digest=(SELECT authority_digest FROM workflow_authorization_revisions WHERE id=? LIMIT 1) '
-        'LIMIT 2', (authorization_id, namespace, authorization_id), 1, budget))
+    columns = ('id', 'namespace', 'revision', 'authority_bytes', 'authority_digest', 'source_pin', 'created_at')
+    rows = list(_bounded_rows(conn, 'workflow_authorization_revisions', columns,
+        tuple((kind,) for kind in _TYPES), budget,
+        where='id=? OR namespace=? OR authority_digest=(SELECT authority_digest '
+              'FROM workflow_authorization_revisions WHERE id=? LIMIT 1)',
+        args=(authorization_id, namespace, authorization_id), maximum=1))
     _check(len(rows) == 1)
-    values = budget.row(rows[0], _TYPES, counted=True)
+    values = budget.row(rows[0], _TYPES, counted=True, charged=True)
     _check(values[0] == authorization_id and values[1] == namespace
            and values[2] == 1 and values[4] == _digest(values[3])
            and values[5] == _SOURCE_PIN)

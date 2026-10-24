@@ -433,7 +433,9 @@ reset/audit helper, while preserving thread delivery and breaker continuity.
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > THR-291 seq69: merge CI/default/all/pre-push are lint/static only; normal hooks
-> remain enabled. Daily-only E2E at19:00UTC is separate, first scheduled run PENDING.
+> remain enabled. Daily E2E at19:00UTC is separate; THR291seq247 additionally
+> allocates ONE reviewed main-only dispatch under TASK-11897. This entry grants
+> no standing execution authority; actual health remains separately observed.
 > Retained platform/callback sources are not automatic merge gates. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
@@ -669,10 +671,23 @@ Terminal observation never clears another SessionTracker generation. Direct
 executor/manual/thread/dream launches create no task-bootstrap census binding.
 Observation failures do not change executor results, retries or application
 exceptions. Callback sealing performs no history acquisition; diagnostic seals
-remain `census_not_reconciled`. Bounded exhaustive read validation rejects
+remain `census_not_reconciled`. Bounded seq480 activity/reference read validation rejects
 moving captures and unresolved authoritative task/parent/type facts without
 changing ordinary launch/refusal behavior. These source facts confer no
 installed/epoch/collection authority.
+
+The seq480 census uses boot/epoch activity and its required lifecycle, ancestry,
+retry, QA/job and control dependencies, including current activity with preboot
+retired SIDs. It removes unrelated global same-SID searches under PR1084's known
+supplied-liveSID limit; related contradictions still refuse. Closing/atomic reads
+recompute membership, never only prepared IDs. Historical memory_read closure
+selects payload.task_id for required full-history owners, preserving outer AGENT
+scope. One bounded complete existing action read per capture includes late
+preboot rows; exhaustion refuses without an absence claim.
+The corrective memory spec states
+finite work/transport/SQL/lock refusal, including guarded existing public reads,
+and scan-measurement/RSS limitations. No
+reader acquires execution, writer-repair, health or collection authority.
 
 The seq428 closed failed-before-exposure census class requires complete bounded
 actual task/result/audit evidence, one ordered authenticated tuple and a strict
@@ -1209,7 +1224,21 @@ management reads/writes, not registration):
 
 ## Executor Notes
 
-All executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
+Contained builtin and custom-envelope communication shares the host supervisor
+lifecycle. Under THR307seq117, its process-group backend uses the factory-wired
+1s sampler, retained authenticated identities and a fresh checked terminal
+observation. Each group signal needs a matching original or previously
+observed live same-group witness; unrelated current group members confer no
+ownership. Unreadable, partial or capped evidence remains unknown and closes
+admission. In-flight sampling settles before finish/publication/release; finish
+waits the direct Popen even when a pre-bind terminal winner skips communication.
+Known escaped survivors remain visible. Unobserved between-sample escapes,
+arbitrary escaped-group cleanup, grandchild reaping, uncontained fallback and
+daemon-crash cleanup remain outside that guarantee. Linux retains kernel
+provenance; Linux fixture results establish neither genuine macOS behavior nor
+historical process ownership. No permission, sandbox or credential rule changes.
+
+Built-in executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
 
 Codex: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The workspace-write sandbox blocks localhost by default, which would prevent `happyranch report-completion` callbacks to `127.0.0.1`.
 
@@ -1588,3 +1617,103 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
+
+<!-- K3b native development: TASK12023 / ROOT10693 step91 -->
+## Disabled first-development native ownership (K3b)
+
+The production CodingDispatcher is mounted beside the coding start owner. Actual
+owned routing, queue admission and TaskInvocation use the explicit `coding`
+owner; source-wait and carrier remain structural. Both global start/callback
+readiness and actual coding queue/dispatch admission remain unconditionally
+unavailable before SID/host effects. No caller/config readiness Boolean exists.
+This source slice does not enable the coding engine or allocate a next stage.
+
+The first-development journal pairs full native rows with session_bound,
+launch_reserved, actual handle/PID launch_observed/host_reconciled, own INTEGER
+callback_recorded, terminal_recorded and late cleanup_settled observations.
+Callback alone cannot complete or advance. Real terminal success still waits
+for tracker/reconciliation/task-tail/root-worktree-batch/settle_live closure.
+Original captures remain unchanged; unknown teardown retains the same owner.
+The fixed native coding_task_heartbeat audit overlays exactly last_heartbeat and
+updated_at under the actual queue worker lifetime. Unattributed full-row drift
+and unsupported stage/control/cancel/retry/successor mutations refuse.
+Complete mixed saved/native/J/schema(data=False)/cold/reopen/recovery/drain
+consumers use the same closed first-development reader and full27 task equality.
+New native `coding` journal values require compatible code, including on empty J.
+F–J DDL/reference bytes and ordinary native owner/permission/host meanings stay.
+
+The consumed development supplement pins original brief/repository/object format/
+fixed base/paths and actual run/attempt/task/role/generation. The agent uses its
+existing authorized tools; references grant no access or inspection assertion.
+Head remains absent until genuine output. The final callback belongs to that
+actual task/SID; no unavailable staging/advancement command is advertised.
+
+Independent FULL code review then same-final-head scoped SOURCE QA remain
+required. Local all and hosted Source Boundary Lint/Web Lint(Node24) are static
+only. Python units RETIRED; integration INCLUDING callback SKIPPED24342. All
+behavior/SQL/parser/security/race/rollback/negative/mutation/red-green/repetition/
+native-build/E2E/protected/executable/test-authoring proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430. K3 control/recovery and K4–K6 plus actual agent/two-org/
+override/backup-copy acceptance stay ROOT10693-owned. No live operation follows.
+<!-- /K3b native development: TASK12023 / ROOT10693 step91 -->
+
+<!-- K3b four-finding correction: TASK12029 / ROOT10693 step92 -->
+The K3b correction separates fresh launch from the original admitted owner's
+callback. Once enabled by the still-missing whole-engine prerequisites, a genuine
+running owner may submit its first full INTEGER callback after root Pause;
+cancellation, foreign identity, stale ownership or revoked current authority
+still refuse. Launch hold/capacity/session-list checks are not callback admission.
+Exact historical callback replay is read-only, including while readiness is false.
+Fresh callbacks and all coding launch entrypoints remain unconditionally disabled.
+
+Bootstrap run_started stays literal event@1 and retains its original authority A.
+Native lifecycle event@2/internal-command@2 adds a closed native-admission@1
+observation at session_bound and callback_recorded: the actual full authority B
+capture/publication, original native invocation/Pause, bounded causal task/move
+closure, effective bindings, original limits and launch-only capacity facts.
+Independent saved/native/current/cold/schema(data=False)/recovery/drain readers
+reconstruct source-time predicates; today's roster or the unchanged bootstrap
+capture cannot substitute for original dispatch or callback admission. Unsupported
+old native events/heartbeats lacking these proofs refuse without rewriting bytes.
+
+Before the first coding heartbeat, the actual queue worker prepares its real
+TaskInvocation. Heartbeat@2 carries that native entry's invocation/claim and native
+Pause admission generation; current task SID may still be null. The same identity
+survives real SID binding and worker retirement. No synthetic claim is replaced;
+ordinary duplicate delivery retains native ownership and teardown semantics.
+
+Native cleanup consumes the actual committed close disposition and final move
+release observation. Every development cleanup independently joins original
+invocation/claim/task/agent/SID/owner/fingerprint and sticky uncertainty. Null,
+foreign, unknown, missing close, failed save/release or retained unknown journals
+cannot certify safe settlement. Positive removal requires owned close evidence;
+missing-owner gaps retain the original owner and uncertainty. Ordinary close,
+deferred ownership and exception ordering remain native; no host protocol or
+persistence mechanism is added. F–J/Pause DDL and references remain unchanged.
+
+These are disabled source corrections. Runtime case results remain MISSING;
+Python units RETIRED, integration INCLUDING callback SKIPPED24342. Behavioral,
+security/race/rollback/negative/mutation/red-green/repetition/native-build/E2E/
+protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
+<!-- /K3b four-finding correction: TASK12029 / ROOT10693 step92 -->
+
+
+<!-- K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+Native lifecycle event@2 service attribution is independently fixed to
+`service:coding-dispatcher:` plus the authenticated org. The saved reader requires
+both the event column and operation principal to equal that value and derives
+the deterministic event identity from it. Recomputed keys/digests/pointers cannot
+admit a foreign service, agent principal or another org's dispatcher. Genuine
+worker/source evidence.origin and original native claim/admission/callback/cleanup
+proofs remain separate and independently checked. Valid dispatcher history keeps
+its original meaning; unsupported attribution refuses without rewriting history.
+The common saved/native/J/schema(data=False)/cold/reopen/recovery/drain readers
+apply this same check. All coding readiness remains false before SID/host effects.
+Runtime observations MISSING; Python units RETIRED; integration INCLUDING callback
+SKIPPED24342. Behavioral/security/negative/mutation/red-green/repetition/native-build/
+E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430.
+Fresh FULL independent review then same-final-head scoped SOURCE QA return to
+ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
+<!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->

@@ -36,7 +36,7 @@ MAX_GENERATION = 2**63 - 1
 PHASES = frozenset({"prepared", "possible_launch", "action_started", "running",
                     "result_processing", "retry_deferred", "recovery_deferred",
                     "pending_job", "unknown"})
-OWNERS = frozenset({"ordinary", "v2", "draft", "recovery", "job"})
+OWNERS = frozenset({"ordinary", "v2", "draft", "coding", "recovery", "job"})
 ENTRY_KEYS = frozenset({"id", "org", "root_task_id", "task_id", "agent", "session_id",
                         "owner", "owner_identity", "fingerprint", "generation", "phase",
                         "retry", "context", "started_at", "captured_generation"})

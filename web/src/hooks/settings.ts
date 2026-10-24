@@ -25,7 +25,24 @@ export const useUpdateOrgSettings: ReturnType<
 export const useDaemonCapacity = () => useData().settings.useDaemonCapacity();
 export const useUpdateDaemonCapacity = () => useData().settings.useUpdateDaemonCapacity();
 
-export const useNextWakes: ReturnType<
+export const useCodingSettings = () => useData().settings.useCodingSettings();
+export const useCodingSettingsOptions = () => useData().settings.useCodingSettingsOptions();
+export const useCodingSettingsActions = () => useData().settings.useCodingSettingsActions();
+export const useCodingSendFence = () => useData().settings.useCodingSendFence();
+export type { CodingSendFence } from '@/design-system/providers/DataContext';
+export type {
+  CodingSettingsCommand,
+  CodingSettingsOptions,
+  CodingSettingsCurrent,
+  CodingSettingsReceipt,
+  CodingSettingsSave,
+  CodingSettingsView,
+  CodingConfiguration,
+  CodingRoles,
+  CodingAgentBinding,
+} from '@/lib/api/types';
+
+export const useNextWakes:ReturnType<
   typeof useData
 >['settings']['useNextWakes'] = (agent, count) =>
   useData().settings.useNextWakes(agent, count);

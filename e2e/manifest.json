@@ -53,7 +53,7 @@
     "Pause.drain-final",
     "Pause.exact-closure",
     "E04.approve-exit0",
-    "E04.reject",
+    "E04.review-required-refused",
     "E04.completed-exit7",
     "E04.failed-timeout",
     "E04.two-jobs-A-first",

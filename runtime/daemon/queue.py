@@ -1,7 +1,7 @@
 """Asyncio queue + worker pool for invoking Orchestrator.run_step.
 
 Items are ``(slug, task_id, metadata)`` tuples. The worker loop unpacks each
-item, looks up ``state.get_org(slug)``, and calls that org's
+item, captures ``state.get_org(slug)`` before submission, and calls that org's
 ``Orchestrator.run_step(task_id, metadata=metadata)`` on a thread.
 ``metadata`` is an optional dict that callers can use to pass trigger context
 (e.g. ``{"trigger": "job_terminal", "triggering_job_id": "JOB-5"}``); it is
@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass, field
+from functools import partial
 import logging
 import threading
 import time
@@ -18,7 +20,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 
 if TYPE_CHECKING:
     from runtime.daemon.metrics import MetricsRegistry
-    from runtime.daemon.state import DaemonState
+    from runtime.daemon.org_state import OrgState
 
 logger = logging.getLogger("happyranch.daemon.queue")
 
@@ -30,12 +32,37 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 class _Dispatcher(Protocol):
-    def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None: ...
-    def heartbeat(self, slug: str, task_id: str) -> None: ...
-    def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None) -> bool: ...
+    def task_attachment(self, slug: str) -> OrgState | None: ...
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None, **kwargs: object) -> None: ...
+    def heartbeat(self, slug: str, task_id: str, queue_owner: object = None, **kwargs: object) -> None: ...
+    def worker_started(self, slug: str, task_id: str, **kwargs: object) -> object: ...
+    def worker_finished(self, slug: str, task_id: str, owner: object) -> None: ...
+    def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None, **kwargs: object) -> bool: ...
 
 
 _QueueItem = tuple[str, str, dict | None]
+
+
+@dataclass(eq=False)
+class _NativeWork:
+    """One queue delivery, owned beyond cancellation of its consumer."""
+
+    dispatcher: _Dispatcher
+    item: _QueueItem
+    attachment: OrgState | None = None
+    task: asyncio.Task | None = None
+    preparation: asyncio.Future | None = None
+    run: asyncio.Future | None = None
+    retirement: asyncio.Future | None = None
+    owner: object = None
+    abandoned: bool = False
+    failures: list[BaseException] = field(default_factory=list)
+
+    def call(self, method: str, *args: object) -> Callable[[], object]:
+        callback = getattr(self.dispatcher, method)
+        if self.attachment is not None:
+            return partial(callback, *args, attachment=self.attachment)
+        return partial(callback, *args)
 
 
 class _TrackedAsyncQueue(asyncio.Queue[_QueueItem]):
@@ -72,6 +99,8 @@ class TaskQueue:
         )
         self._worker_tasks: list[asyncio.Task] = []
         self._stopping = False
+        self._native_work: set[_NativeWork] = set()
+        self._stop_task: asyncio.Task | None = None
         self._metrics_registry: MetricsRegistry | None = None  # set by daemon wiring
 
     def _record_dequeue(self, item: _QueueItem) -> None:
@@ -139,57 +168,122 @@ class TaskQueue:
                 self._admission_reservations.discard(key)
 
     @staticmethod
-    async def _heartbeat(dispatcher: _Dispatcher, slug: str, task_id: str) -> None:
-        """Stamp tasks.last_heartbeat every HEARTBEAT_INTERVAL_SECONDS.
-
-        Lives alongside the run_in_executor call in `_worker_loop`. Cancelled
-        when run_step returns (success or failure). The dispatcher resolves
-        ``slug`` to the correct OrgState and updates that org's database.
-        Database.update_task is thread-safe via its internal RLock, so writes
-        from this event-loop coroutine race-safely with the run_step thread
-        holding state.db_lock for higher-level transactions.
-        """
-        # Tap once up front so a task that finishes faster than the interval
-        # still leaves a non-null marker that the worker actually picked it up.
-        try:
-            dispatcher.heartbeat(slug, task_id)
-        except Exception:
-            logger.exception("initial heartbeat for %s/%s failed", slug, task_id)
+    async def _heartbeat(work: _NativeWork) -> None:
+        """Keep attribution on the captured attachment until native return."""
+        slug, task_id, _metadata = work.item
         while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
             try:
-                dispatcher.heartbeat(slug, task_id)
+                work.call("heartbeat", slug, task_id, work.owner)()
             except Exception:
                 logger.exception("heartbeat for %s/%s failed", slug, task_id)
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+    @staticmethod
+    async def _join_native(work: _NativeWork, future: asyncio.Future) -> object:
+        # Only this lifetime owns native futures. Consumer/stop cancellation
+        # never reaches them. Even loop-shutdown cancellation must not abandon
+        # an already submitted future or its SAME-owner retirement.
+        while True:
+            try:
+                return await asyncio.shield(future)
+            except asyncio.CancelledError:
+                work.abandoned = True
+                if future.done():
+                    # Observe cancellation of the wrapper OR CancelledError
+                    # raised by the native callable itself. Neither is a
+                    # successful retirement; do not spin on a done future.
+                    return future.result()
+
+    def _submit(self, dispatcher: _Dispatcher, item: _QueueItem) -> _NativeWork | None:
+        # Submission and org close/preflight are synchronous on the event loop.
+        # Register the obligation before creating any executor future/await.
+        if self._stopping:
+            return None
+        attachment_reader = getattr(dispatcher, "task_attachment", None)
+        attachment = attachment_reader(item[0]) if attachment_reader else None
+        if attachment_reader is not None and attachment is None:
+            return None
+        work = _NativeWork(dispatcher, item, attachment)
+        if attachment is not None and not attachment._acquire_native_task(work):
+            return None
+        with self._admission_lock:
+            self._native_work.add(work)
+        work.task = asyncio.create_task(self._run_owned(work))
+        return work
+
+    async def _run_owned(self, work: _NativeWork) -> None:
+        loop = asyncio.get_running_loop()
+        slug, task_id, metadata = work.item
+        hb = None
+        t0 = time.monotonic()
+        try:
+            if self._stopping or work.abandoned:
+                return
+            admission = getattr(work.dispatcher, "task_admission_allowed", None)
+            if admission is not None and not work.call(
+                "task_admission_allowed", slug, task_id, metadata,
+            )():
+                return
+            if getattr(work.dispatcher, "worker_started", None) is not None:
+                work.preparation = loop.run_in_executor(
+                    None, work.call("worker_started", slug, task_id),
+                )
+                work.owner = await self._join_native(work, work.preparation)
+            # Late preparation after cancellation must retire its returned
+            # owner, without launching another native run during shutdown.
+            if not self._stopping and not work.abandoned:
+                hb = asyncio.create_task(self._heartbeat(work))
+                work.run = loop.run_in_executor(
+                    None, work.call("run_step", slug, task_id, metadata),
+                )
+                await self._join_native(work, work.run)
+        except BaseException as exc:
+            work.failures.append(exc)
+            logger.exception("native task %s/%s failed; retaining close barrier", slug, task_id)
+        finally:
+            if hb is not None:
+                hb.cancel()
+                # Join teardown independently of repeated lifetime cancellation.
+                await self._join_native(work, asyncio.gather(hb, return_exceptions=True))
+            # A failed run still genuinely returned and can retire its owner;
+            # cancellation of its future is NOT that proof. Retain failures
+            # even when worker_finished succeeds; never infer settlement.
+            returned = work.run is None or (work.run.done() and not work.run.cancelled())
+            if work.owner is not None and returned:
+                try:
+                    work.retirement = loop.run_in_executor(
+                        None, work.dispatcher.worker_finished, slug, task_id, work.owner,
+                    )
+                    await self._join_native(work, work.retirement)
+                except BaseException as exc:
+                    work.failures.append(exc)
+                    logger.exception("native retirement %s/%s failed; retaining close barrier", slug, task_id)
+            if not work.failures:
+                if work.attachment is not None:
+                    work.attachment._release_native_task(work)
+                with self._admission_lock:
+                    self._native_work.remove(work)
+            self._queue.task_done()
+            if self._metrics_registry is not None:
+                self._metrics_registry.record_loop_tick(
+                    "run_step_worker", 0, time.monotonic() - t0,
+                )
+
+    async def _consume(self, dispatcher: _Dispatcher, item: _QueueItem) -> None:
+        work = self._submit(dispatcher, item)
+        if work is None:
+            self._queue.task_done()
+            return
+        try:
+            await asyncio.shield(work.task)
+        except asyncio.CancelledError:
+            work.abandoned = True
+            raise
 
     async def _worker_loop(self, dispatcher: _Dispatcher) -> None:
-        loop = asyncio.get_running_loop()
         while not self._stopping:
-            slug, task_id, metadata = await self._queue.get()
-            admission = getattr(dispatcher, "task_admission_allowed", None)
-            if admission is not None and not admission(slug, task_id, metadata):
-                self._queue.task_done()
-                continue
-            hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id))
-            t0 = time.monotonic()
-            try:
-                await loop.run_in_executor(
-                    None, dispatcher.run_step, slug, task_id, metadata,
-                )
-            except Exception:
-                logger.exception(
-                    "run_step %s/%s raised — continuing", slug, task_id,
-                )
-            finally:
-                duration = time.monotonic() - t0
-                if self._metrics_registry is not None:
-                    self._metrics_registry.record_loop_tick("run_step_worker", 0, duration)
-                hb.cancel()
-                try:
-                    await hb
-                except asyncio.CancelledError:
-                    pass
-                self._queue.task_done()
+            item = await self._queue.get()
+            await self._consume(dispatcher, item)
 
     def start_workers(self, dispatcher: _Dispatcher, n: int = 6) -> None:
         for _ in range(n):
@@ -198,40 +292,91 @@ class TaskQueue:
             )
 
     def is_running(self) -> bool:
-        return any(not t.done() for t in self._worker_tasks)
+        with self._admission_lock:
+            return bool(self._native_work) or any(not t.done() for t in self._worker_tasks)
 
     def pending_slugs(self) -> set[str]:
-        """Snapshot the set of slugs with at least one queued item.
+        """Snapshot slugs with queued items or unretired native work.
 
         Read-only; used by the portability preflight quiescence check as
         defense-in-depth on top of the DB nonterminal-task predicate. The
-        queue-owned pending counts are read under the admission lock; the DB
-        check remains the authoritative backstop.
+        queue-owned pending counts are read under the admission lock. Native
+        obligations remain visible even after a consumer/task became terminal.
         """
         with self._admission_lock:
             return {
                 slug for (slug, _task_id), count in self._pending_counts.items()
                 if count > 0
-            }
+            } | {work.item[0] for work in self._native_work}
 
-    async def stop(self, *, timeout: float = 5.0) -> None:
+    def close_admission(self) -> None:
         with self._admission_lock:
             self._stopping = True
-        for t in self._worker_tasks:
-            t.cancel()
-        await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+
+    def assert_native_idle(self) -> None:
+        with self._admission_lock:
+            if self._native_work:
+                raise RuntimeError("native_task_drain_incomplete")
+
+    async def _drain(self) -> None:
+        for task in self._worker_tasks:
+            task.cancel()
+        # This join is itself queue-owned, never canceled by stop's waiter.
+        # Shield both groups even if shutdown directly cancels the drain task.
+        workers_done = asyncio.gather(*self._worker_tasks, return_exceptions=True)
+        while not workers_done.done():
+            try:
+                await asyncio.shield(workers_done)
+            except asyncio.CancelledError:
+                pass
+        workers_done.result()
+        native_done = asyncio.gather(
+            *(work.task for work in self._native_work), return_exceptions=True,
+        )
+        while not native_done.done():
+            try:
+                await asyncio.shield(native_done)
+            except asyncio.CancelledError:
+                pass
+        native_done.result()
+        self.assert_native_idle()
+
+    async def stop(self, *, timeout: float = 5.0) -> None:
+        self.close_admission()
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._drain())
+            # Observe a late error after timeout without dropping its owned
+            # task or the native obligations. No DB work lives in callbacks.
+            self._stop_task.add_done_callback(self._observe_drain)
+        deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+        cancellation = None
+        while not self._stop_task.done():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError("native_task_drain_incomplete")
+            try:
+                done, _pending = await asyncio.wait(
+                    [self._stop_task],
+                    timeout=remaining,
+                )
+                if not done:
+                    raise TimeoutError("native_task_drain_incomplete")
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                # Keep the same deadline and owned join on repeated cancel.
+        self._stop_task.result()
+        if cancellation is not None:
+            raise cancellation
+
+    @staticmethod
+    def _observe_drain(task: asyncio.Task) -> None:
+        if task.cancelled():
+            logger.error("native task drain canceled; close barrier retained")
+        elif task.exception() is not None:
+            logger.error("native task drain incomplete: %r", task.exception())
 
     async def drain_sync(self, dispatcher: _Dispatcher) -> None:
-        loop = asyncio.get_running_loop()
-        while not self._queue.empty():
-            slug, task_id, metadata = self._queue.get_nowait()
-            try:
-                await loop.run_in_executor(
-                    None, dispatcher.run_step, slug, task_id, metadata,
-                )
-            except Exception:
-                logger.exception(
-                    "run_step %s/%s raised during drain", slug, task_id,
-                )
-            finally:
-                self._queue.task_done()
+        # Retained alternative entrypoint: use exactly the same owned native
+        # submission/retirement as the worker pool, including cancellation.
+        while not self._stopping and not self._queue.empty():
+            await self._consume(dispatcher, self._queue.get_nowait())

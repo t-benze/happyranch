@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 CASES = (
     ("E04.approve-exit0", "OK", 0, 20, "E04_OK completed exit0"),
-    ("E04.reject", "REJECT", None, 15, "E04_REJECT rejected E04_REJECTED_BY_REVIEW"),
+    ("E04.review-required-refused", "REFUSED", None, 15, "E04_REVIEW_REQUIRED_REFUSED no job submitted"),
     ("E04.completed-exit7", "EXIT7", 7, 20, "E04_EXIT7 completed exit7; operation nonzero"),
     ("E04.failed-timeout", "TIMEOUT", -9, 25, "E04_TIMEOUT failed timeout exit-9"),
     ("E04.two-jobs-A-first", "PAIR", 0, 25, "E04_PAIR A completed exit0; B completed exit7"),
@@ -413,6 +413,171 @@ def final_task(c: Controller, task: str, starts: list[dict], jobs: list[dict], s
     return snap
 
 
+def refusal_processes(c: Controller, start: dict) -> dict:
+    """Bounded actual descendants of the two known owned roots; unknown refuses."""
+    entered = time.monotonic()
+    pending = [(c.daemon.pid, identity(c.daemon.pid)), (start["pid"], start["pid_start"])]
+    rows = {}
+    while pending:
+        c.remaining()
+        pid, expected = pending.pop()
+        require(len(rows) < 512, "refusal descendant bound")
+        if pid in rows:
+            continue
+        actual = identity(pid)
+        if actual is None:
+            continue
+        require(actual == expected and actual is not None, "known process start ownership")
+        proc = Path(f"/proc/{pid}")
+        stat_text = (proc / "stat").read_text()
+        fields = stat_text.rsplit(")", 1)[1].split()
+        env_entries = (proc / "environ").read_bytes().split(b"\0")
+        marker = f"E2E_ROOT={c.root}".encode()
+        require(marker in env_entries, "refusal descendant private run ownership")
+        children = sorted({int(child) for thread in (proc / "task").iterdir()
+                           for child in (thread / "children").read_text().split()})
+        require(fields[19] == actual and identity(pid) == actual, "stable raw descendant start ownership")
+        rows[pid] = dict(pid=pid, start=actual, ppid=int(fields[1]), children=children,
+                         stat=stat_text, root_marker=env_entries[env_entries.index(marker)].decode("utf-8"))
+        for child in children:
+            child_start = identity(child)
+            require(child_start is not None, "unknown descendant fails closed")
+            pending.append((child, child_start))
+    return dict(entered=entered, finished=time.monotonic(), rows=sorted(rows.values(), key=lambda r: r["pid"]))
+
+
+def refusal_frame(c: Controller, start: dict, refusal: dict, server: socket.socket) -> dict:
+    frame = dict(entered=time.monotonic(), provider_start=identity(start["pid"]), sql={})
+    refusal["frames"].append(frame)  # Preserve partial reads on failure.
+    for org, store in c.stores.items():
+        begin = time.monotonic()
+        value = store.cancellation_frame()
+        frame["sql"][org] = dict(entered=begin, finished=time.monotonic(), content=value)
+    frame["job_files"] = {}
+    for org in ("alpha", "beta"):
+        begin = time.monotonic()
+        directory = c.root / "runtime/orgs" / org / "jobs"
+        files = []
+        for path in sorted(directory.rglob("*")) if directory.exists() else []:
+            c.remaining()
+            require(not path.is_symlink(), "refusal product output symlink")
+            if path.is_file():
+                raw = path.read_bytes()
+                files.append(dict(path=str(path.relative_to(directory)), hex=raw.hex(), bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        frame["job_files"][org] = dict(entered=begin, finished=time.monotonic(), files=files)
+    frame["coord_entries"] = sorted(p.name for p in (c.root / "coord").iterdir())
+    frame["peer_ready"] = [s.fileno() for s in select.select([server], [], [], 0)[0]]
+    frame["socket"] = dict(path=str(c.root / "coord/jobs.sock"), fd=server.fileno())
+    frame.update(processes=refusal_processes(c, start), sentinel_absent=not Path(refusal["sentinel"]).exists(),
+                 peer_pending=bool(select.select([server], [], [], 0)[0]), finished=time.monotonic())
+    require(Path(refusal["sentinel"]).name not in frame["coord_entries"] and frame["peer_ready"] == []
+            and frame["sentinel_absent"] and not frame["peer_pending"], "refused script sentinel/socket absent", frame)
+    return frame
+
+
+def refusal_unchanged(old: dict, new: dict, task: str) -> None:
+    from datetime import datetime
+    for org in ("alpha", "beta"):
+        a, b = old["sql"][org]["content"], new["sql"][org]["content"]
+        require(a.keys() == b.keys() and a["files"] == b["files"] and a["tables"].keys() == b["tables"].keys(), "whole refusal frame membership/files")
+        for table, rows in a["tables"].items():
+            now = b["tables"][table]
+            require(len(rows) == len(now), "no refusal row allocation " + table)
+            for left, right in zip(rows, now):
+                if org == "alpha" and table == "tasks" and left["id"] == task:
+                    require(left.keys() == right.keys() and all(left[k] == right[k] for k in left if k not in {"last_heartbeat", "updated_at"}), "refusal task fields unchanged")
+                    stamps = []
+                    for row in (left, right):
+                        values = [datetime.fromisoformat(row[k]) for k in ("last_heartbeat", "updated_at")]
+                        require(all(v.tzinfo is not None and v.utcoffset() is not None for v in values) and values[1] >= values[0], "initialized aware heartbeat pair")
+                        stamps.append(values)
+                    require(stamps[0] == stamps[1] and all(left[k] == right[k] for k in ("last_heartbeat", "updated_at"))
+                            or all(y > x for x, y in zip(*stamps)), "only joint strictly forward heartbeat movement")
+                else:
+                    require(left == right, "complete unchanged refusal row " + table)
+        require(old["job_files"][org]["files"] == new["job_files"][org]["files"], "all product job/output bytes unchanged")
+    keys = ("pid", "start", "ppid", "children", "root_marker")
+    require([{k:r[k] for k in keys} for r in old["processes"]["rows"]] ==
+            [{k:r[k] for k in keys} for r in new["processes"]["rows"]], "no new owned descendants through refusal")
+
+
+def refusal_final(c: Controller, record: dict, summary: str) -> None:
+    task, start = record["task"], record["starts"][0]
+    snap = c.stores["alpha"].jobs(task)
+    record["final_snapshot"] = snap
+    row = snap["tasks"][0]
+    require(len(snap["tasks"]) == 1 and row["id"] == task and row["status"] == "completed" and row["completed_at"] is not None
+            and row["current_session_id"] == start["session"] and row["assigned_agent"] == "case_manager"
+            and row["parent_task_id"] is None and row["orchestration_step_count"] == 1
+            and all(row[k] is None for k in ("block_kind", "blocked_on_job_ids", "active_chain", "active_fanout"))
+            and snap["jobs"] == [] and len(snap["results"]) == 1, "one-SID refusal final task/result, zero jobs")
+    result = snap["results"][0]
+    done = dict(action="done", summary=summary)
+    expanded = dict(done, then=[], children=[], **{k: None for k in (
+        "agent", "prompt", "expect_verdict", "width_cap_ack", "revisit_of_task_id", "attachments",
+        "join_summary", "reason", "successor_brief", "rationale", "attestation")})
+    command = record["final_callback"]
+    require(command["payload"] == dict(task_id=task, session_id=start["session"], agent="case_manager", status="completed",
+        confidence=90, summary=summary, decision=done), "literal original-SID refusal completion")
+    require(type(result["id"]) is int and result["id"] > 0 and result["task_id"] == task and result["session_id"] == start["session"]
+            and result["agent"] == "case_manager" and result["status"] == "completed" and type(result["confidence_score"]) is int
+            and result["confidence_score"] == 90 and result["output_summary"] == summary and result["verdict"] is None
+            and result["waiting_on_job_ids"] is None and json.loads(result["decision_json"]) == done, "genuine one positive result and truthful outcome")
+    actions = {kind: [a for a in snap["audit"] if a["action"] == kind] for kind in
+        ("session_start", "session_end", "completion_report", "orchestration_step", "task_blocked_on_jobs", "task_resumed_from_jobs")}
+    require([len(v) for v in actions.values()] == [1, 1, 1, 1, 0, 0], "one-generation audit counts, no wait/wake")
+    a, b, d, step = [actions[k][0] for k in ("session_start", "session_end", "completion_report", "orchestration_step")]
+    require(a["id"] < b["id"] < d["id"] < step["id"] and all(x["task_id"] == task for x in (a,b,d,step))
+            and all(x["agent"] == "case_manager" for x in (a,b,d)) and step["agent"] == "orchestrator"
+            and json.loads(a["payload"])["session_id"] == start["session"], "ordered actual same-SID callback consumption")
+    consumed = json.loads(d["payload"])
+    require(consumed["task_id"] == task and consumed["agent"] == "case_manager" and consumed["status"] == "completed"
+            and type(consumed["confidence"]) is int and consumed["confidence"] == 90 and consumed["output_summary"] == summary
+            and consumed["verdict"] is None and consumed["decision"] == expanded and consumed["waiting_on_job_ids"] == []
+            and json.loads(step["payload"]) == dict(step_number=1, decision=dict(done, then=[], children=[])), "literal final semantics/step1")
+    initial = record["refusal"]["frames"][0]["sql"]["alpha"]["content"]["tables"]["audit_log"]
+    by_id = {a["id"]: a for a in snap["audit"]}
+    require(all(by_id[a["id"]] == a for a in initial if a["task_id"] == task), "original audit bytes retained")
+
+
+def review_refused(c: Controller, record: dict, server: socket.socket, socket_path: Path, positive: dict) -> None:
+    start, task = record["starts"][0], record["task"]
+    token = hashlib.sha256((c.revision + start["session"] + "REFUSED").encode()).hexdigest()[:24]
+    program, sentinel = script(c, token, "REFUSED", 0, socket_path)
+    # Imports prepare the first visible effect: a persistent sentinel write.
+    program = program.replace("if False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n", "")
+    refusal = dict(token=token, script=program, sentinel=sentinel, effective_end=c.effective_end(), frames=[], positive_case=0, positive_job=positive["id"],
+                   positive_sentinel=Path(positive["sentinel"]).read_text(), positive_oracle=positive["oracle"], positive_peer=positive["peer"])
+    record["refusal"] = refusal
+    require(json.loads(refusal["positive_sentinel"]) == positive["peer"]["hello"] and positive["code"] == 0
+            and positive["oracle"]["row"]["exit_code"] == 0 and positive["oracle"]["outputs"][0]["text"] == "E04_OK_OUT\n"
+            and positive["closure"]["observed_start"] != positive["peer"]["start"], "preceding real automatic positive observation control")
+    def initialized():
+        snap = c.stores["alpha"].jobs(task)
+        rows = snap["tasks"]
+        return snap if len(rows) == 1 and rows[0]["last_heartbeat"] is not None and rows[0]["updated_at"] is not None else None
+    c.poll(initialized, "live refusal baseline initialized heartbeat", cap=2)
+    before = refusal_frame(c, start, refusal, server)
+    row = next(t for t in before["sql"]["alpha"]["content"]["tables"]["tasks"] if t["id"] == task)
+    require(row["status"] == "in_progress" and row["current_session_id"] == start["session"] and row["assigned_agent"] == "case_manager"
+            and row["parent_task_id"] is None and row["orchestration_step_count"] == 1
+            and all(row[k] is None for k in ("block_kind", "blocked_on_job_ids", "active_chain", "active_fanout"))
+            and not any(r["task_id"] == task for r in before["sql"]["alpha"]["content"]["tables"]["task_results"])
+            and before["provider_start"] == start["pid_start"], "genuine ordinary live no-result/no-wait baseline")
+    payload = dict(title="E04 review refusal", rationale="Authorization mode removed", script=program, interpreter="python3",
+                   cwd_hint=None, review_required=True, persistent=False, max_runtime_seconds=30)
+    refusal["cli"] = c.provider_cli(start, "jobs-refuse-review", payload=payload)
+    after_cli = refusal_frame(c, start, refusal, server)
+    refusal_unchanged(before, after_cli, task)
+    refusal["http_index"] = len(c.http)
+    status, body = c.api("POST", "/api/v1/orgs/alpha/jobs/submit", refusal["cli"]["payload"], review_refusal_file=refusal["cli"]["payload_file"])
+    after_api = refusal_frame(c, start, refusal, server)
+    require(status == 422 and body == {"detail": {"code": "review_required_removed", "message":
+        "Obtain any required authorization in a thread before submitting; omit review_required or set it to false. This request was not submitted."}}, "exact genuine public API refusal")
+    refusal_unchanged(after_cli, after_api, task)
+    require(after_api["provider_start"] == start["pid_start"], "same provider remains live through both refusals")
+
+
 def exercise(c: Controller) -> None:
     require(len(c.results) == 42 and len(c.starts) == 18, "unchanged full baseline/Pause before E04")
     c.job_connections = []
@@ -428,24 +593,42 @@ def exercise(c: Controller) -> None:
             entered = time.monotonic()
             c.case_deadline = min(c.deadline, entered + allowance)
             c.publish_end()
-            pre = anchor(c, variant + ":pre", 6 + 2 * index, previous)
+            pre = anchor(c, variant + ":pre", (6, 8, 9, 11, 13, 15)[index], previous)
             record = dict(method="serial-public-metrics-window-causal-v1", variant=variant, index=index, entered=entered, deadline=c.case_deadline, jobs=[], anchors=[pre],
                           source_sha=c.revision, observer_begin=len(c.observer), commands_begin=len(c.provider_commands))
             records.append(record)
-            if variant == "E04.reject":
-                # THR311 manager disposition: no new fixture infrastructure or fake SID.
-                # Preserve identity/order and every historical no-launch/reject/wake
-                # oracle below; missing genuine fixture is a prerequisite FAILURE.
-                record["missing_prerequisite"] = (
-                    "Authorized legacy pending reviewed-job fixture with genuine eligible waiter provenance; "
-                    "new true submissions refuse before allocation, not rejection coverage."
-                )
-                require(False, "E04.reject MISSING prerequisite; historical rejection/wake UNEXECUTED", record)
             handles: dict[str, tuple[socket.socket, BinaryIO]] = {}
             task = c.create("alpha", variant)
             record["task"] = task
             first = c.start("alpha", task, "case_manager")
             record["starts"] = [first]
+            if index == 1:
+                review_refused(c, record, server, path, records[0]["jobs"][0])
+                record["final_callback"] = c.provider_cli(first, "jobs-final", payload=dict(status="completed", confidence=90,
+                    summary=summary, decision=dict(action="done", summary=summary)))
+                c.release(first)
+                c.finish("alpha", task)
+                c.poll(lambda: len(c.stores["alpha"].query("SELECT id FROM audit_log WHERE task_id=? AND action='orchestration_step'", (task,))) == 1,
+                       "original-SID refusal final consumption", cap=3)
+                refusal_final(c, record, summary)
+                c.poll(lambda: identity(first["pid"]) is None, "refusal natural provider exit", cap=2)
+                record["refusal"]["closure"] = refusal_frame(c, first, record["refusal"], server)
+                previous = anchor(c, variant + ":final", 9, pre)
+                record["anchors"].append(previous)
+                row = record["final_snapshot"]["tasks"][0]
+                expected = dict(task=dict(task_id=task, brief=variant, team="engineering", status="completed", parent_task_id=None,
+                    assigned_agent="case_manager", block_kind=None, current_session_id=first["session"], note=row["note"]))
+                roots = dict(org="alpha", task=dict(expected["task"], note=summary), severity_rollup="completed")
+                c.browser.open_task("alpha", task, variant, expected=expected, roots_expected=roots, ready=lambda:
+                    c.browser.completed("alpha", task, variant, summary, shot="e04-task-1"))
+                record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(c.browser.page_timeout)*1000),
+                    screenshot="e04-task-1.png", at=time.monotonic())
+                record.update(finished=time.monotonic(), observer_end=len(c.observer), commands_end=len(c.provider_commands))
+                require(record["finished"] < record["deadline"], "original15s refusal allowance")
+                c.mark(variant, dict(host_cleanup_attribution=record))
+                del c.case_deadline
+                c.publish_end()
+                continue
             plan = [(label, code)] if label != "PAIR" else ([("A", 0), ("B", 7)] if code == 0 else [("B", 7), ("A", 0)])
             for job_label, job_code in plan:
                 token = hashlib.sha256((c.revision + first["session"] + job_label).encode()).hexdigest()[:24]
@@ -469,7 +652,7 @@ def exercise(c: Controller) -> None:
             record["block"] = block
             c.release(first)
             record["parked"] = c.poll(lambda: c.stores["alpha"].jobs_parked(task, first["session"], ids), "consumed S1 park", cap=10)
-            s1 = anchor(c, variant + ":S1", 7 + 2 * index, pre)
+            s1 = anchor(c, variant + ":S1", (7, 9, 10, 12, 14, 16)[index], pre)
             record["anchors"].append(s1)
             for job in record["jobs"]:
                 pending(c, task, job, server)
@@ -501,8 +684,8 @@ def exercise(c: Controller) -> None:
                             "actual CLI waiting pair", command.stdout)
                     record["first_terminal_cli"] = c.commands[-1]
                     record["first_terminal_browser"] = c.browser.jobs_waiting(task, ids, expected=waiting_expected(record["first_terminal"]))
-                    record["anchors"].append(anchor(c, variant + ":first-terminal", 7 + 2 * index, s1))
-                    record["anchors"].append(anchor(c, variant + ":pre-second-action", 7 + 2 * index, s1))
+                    record["anchors"].append(anchor(c, variant + ":first-terminal", (7, 9, 10, 12, 14, 16)[index], s1))
+                    record["anchors"].append(anchor(c, variant + ":pre-second-action", (7, 9, 10, 12, 14, 16)[index], s1))
             second = c.start("alpha", task, "case_manager")
             record["starts"].append(second)
             live = dict(source_sha=c.revision, provider=dict(second), entered=time.monotonic())
@@ -548,13 +731,16 @@ def exercise(c: Controller) -> None:
             c.poll(lambda: len(c.stores["alpha"].query("SELECT id FROM audit_log WHERE task_id=? AND action='orchestration_step'", (task,))) == 1,
                    "final done consumption audit", cap=3)
             final_task(c, task, record["starts"], record["jobs"], summary, record)
-            previous = anchor(c, variant + ":final", 8 + 2 * index, s1)
+            previous = anchor(c, variant + ":final", (8, 9, 11, 13, 15, 17)[index], s1)
             record["anchors"].append(previous)
             final_row = record["final_snapshot"]["tasks"][0]
             expected = dict(task=dict(task_id=task, brief=variant, team="engineering", status="completed",
                 parent_task_id=None, assigned_agent="case_manager", block_kind=None,
                 current_session_id=second["session"], note=final_row["note"]))
-            c.browser.open_task("alpha", task, variant, expected=expected, ready=lambda:
+            roots_expected = dict(org="alpha", task=dict(task_id=task, brief=variant, team="engineering", status="completed",
+                parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+                current_session_id=second["session"], note=summary), severity_rollup="completed")
+            c.browser.open_task("alpha", task, variant, expected=expected, roots_expected=roots_expected, ready=lambda:
                 c.browser.completed("alpha", task, variant, summary, shot="e04-task-" + str(index)))
             record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(c.browser.page_timeout)*1000),
                                           screenshot=f"e04-task-{index}.png", at=time.monotonic())
@@ -564,21 +750,23 @@ def exercise(c: Controller) -> None:
             c.mark(variant, dict(host_cleanup_attribution=record))
             del c.case_deadline
             c.publish_end()
-        final = anchor(c, "final-drain-B", 18, previous)
-        require(len(c.starts) == 30 and len(c.results) == 48 and sum(len(r["jobs"]) for r in records) == 8
+        final = anchor(c, "final-drain-B", 17, previous)
+        require(len(c.starts) == 29 and len(c.results) == 48 and sum(len(r["jobs"]) for r in records) == 7
                 and sum("peer" in j for r in records for j in r["jobs"]) == 7, "exact E04 prefix workload")
-        for org, tasks, results in (("alpha", 19, 29), ("beta", 1, 1)):
+        for org, tasks, results in (("alpha", 19, 28), ("beta", 1, 1)):
             snap = c.stores[org].snapshot()
             require(len(snap["tasks"]) == tasks and len(snap["results"]) == results and all(r["status"] == "completed" for r in snap["tasks"]), "literal final org closure")
             c.durable.append(dict(jobs_final_org=org, snapshot=snap))
-        require(len(c.stores["alpha"].query("SELECT id FROM jobs")) == 8 and not c.stores["beta"].query("SELECT id FROM jobs"), "exact whole-org jobs, no extras")
+        require(len(c.stores["alpha"].query("SELECT id FROM jobs")) == 7 and not c.stores["beta"].query("SELECT id FROM jobs"), "exact whole-org jobs, no extras")
+        refusal_record = records[1]
+        refusal_record["refusal"]["final_drain"] = refusal_frame(c, refusal_record["starts"][0], refusal_record["refusal"], server)
         for record in records:
             for job in record["jobs"]:
                 if job["code"] is None:
                     job["rejection_drain"] = terminal_oracle(c, record["task"], job)
         rows = witnesses(c)
         calls = [r for r in rows if r["kind"] == "callback"]
-        require(len(calls) == len(c.commands) + len(c.provider_commands) and sum(r["kind"] == "stub" for r in rows) == 30, "all controller/provider CLI calls and starts accounted")
+        require(len(calls) == len(c.commands) + len(c.provider_commands) and sum(r["kind"] == "stub" for r in rows) == 29, "all controller/provider CLI calls and starts accounted")
         for command in c.provider_commands:
             digest = hashlib.sha256(json.dumps(command["argv"][1:]).encode()).hexdigest()
             matches = [r for r in calls if r["pid"] == command["child_pid"] and r["ppid"] == command["provider"]["pid"] and r["argv_sha256"] == digest]

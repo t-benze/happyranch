@@ -446,6 +446,13 @@ def _sweep_on_startup(
         # keep the generic daemon_restart reaping below.
         _now = datetime.now(timezone.utc).isoformat()
 
+        # C1a: orphan/raw reaper paths below may never visit a participant
+        # pair. Validate the COMPLETE companion family before any thread
+        # recovery/rekeying. This is a reader, never an automatic release.
+        from runtime.infrastructure.thread_delivery_release import delivery_view
+        with db._lock:
+            delivery_view(db)
+
         # 6a. Activate per-pair reply delivery state for every OPEN thread
         # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
         move = getattr(db, "_team_move_coordinator", None)
@@ -625,17 +632,17 @@ def _bind_port(host: str, port: int = 0) -> tuple[socket.socket, int]:
 def _install_signal_handlers(state: DaemonState) -> None:
     def _handle(signum: int, _frame: FrameType | None) -> None:
         logger.info("received signal %s — shutting down", signum)
-        # uvicorn handles its own SIGTERM/SIGINT to drain workers; here
-        # we just make sure the lifecycle files get cleaned up.
+        # Uvicorn re-emits captured signals after its lifespan has run. Only
+        # positive completion of the shared close barrier is a clean shutdown.
+        # A direct/early signal or a timed-out drain never closes DBs here and
+        # leaves lifecycle files as uncertainty rather than advertising clean.
+        if not state._shutdown_complete:
+            logger.error("shutdown incomplete; retaining database/lifecycle barriers")
+            sys.exit(1)
         for f in (paths.pid_file(), paths.port_file()):
             try:
                 f.unlink()
             except FileNotFoundError:
-                pass
-        for org in state.orgs.values():
-            try:
-                org.db.close()
-            except Exception:
                 pass
         sys.exit(0)
 
@@ -795,6 +802,38 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _DiagnosticServer(uvicorn.Server):
+    """Signal only after actual ASGI startup AND listener creation returned."""
+
+    def __init__(self, config: uvicorn.Config, app) -> None:
+        super().__init__(config)
+        self._diagnostic_app = app
+        self._diagnostic_signalled = False
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets=sockets)
+        if (self._diagnostic_signalled or not self.started or self.should_exit
+                or self.lifespan.should_exit or self.config.app is not self._diagnostic_app):
+            return
+        self._diagnostic_signalled = True
+        try:
+            app = self._diagnostic_app
+            coordinator = app.state.daemon._cleanup_diagnostics
+            if coordinator is not None:
+                coordinator.signal_ready(app)
+        except Exception:
+            # Scheduling/logging/diagnostic results never gate successful serve.
+            pass
+        # Independent of B's signalling outcome. Only actual successful ASGI
+        # AND listener startup admits this dormant private service.
+        try:
+            service = self._diagnostic_app.state.daemon._thread_release_service
+            if service is not None:
+                service.signal_ready(self._diagnostic_app)
+        except Exception:
+            pass  # C stays unavailable, never substitutes readiness success
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -837,10 +876,10 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
     config = uvicorn.Config(app, log_level="info", lifespan="on")
-    server = uvicorn.Server(config)
+    server = _DiagnosticServer(config, app)
     # Hand the bound socket to uvicorn so we don't race the port number.
     server.run(sockets=[sock])
-    return 0
+    return 0 if state._shutdown_complete else 1
 
 
 if __name__ == "__main__":

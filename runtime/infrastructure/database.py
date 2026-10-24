@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time as _time
@@ -31,7 +32,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from types import SimpleNamespace
+from typing import Any, Callable
 
 from pydantic import ValidationError
 
@@ -364,6 +366,82 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
 
 
 
+class _CleanupReadRefused(Exception):
+    """Category-only refusal; no raw native error or evidence in diagnostics."""
+
+    def __init__(self, code: str, *, settings_restored: bool = True) -> None:
+        super().__init__(code)
+        self.code = code
+        self.settings_restored = settings_restored
+
+
+@dataclass
+class _CleanupReadBudget:
+    """One caller-owned boot budget. Deadline is fixed at REAL readiness.
+
+    The serving coordinator owns eight-context admission and serial use of this
+    object. These are cooperative refusal limits, never hard wall/RSS bounds.
+    """
+
+    deadline: float
+    owners: int = 0
+    rows: int = 0
+    raw_bytes: int = 0
+    statements: int = 0
+    vm_steps: int = 0
+
+    def check(self, revoked: threading.Event) -> None:
+        if revoked.is_set():
+            raise _CleanupReadRefused("revoked")
+        if not isinstance(self.deadline, (int, float)) or not math.isfinite(self.deadline):
+            raise _CleanupReadRefused("deadline_invalid")
+        if _time.monotonic() >= self.deadline:
+            raise _CleanupReadRefused("deadline")
+
+    def charge(self, kind: str, amount: int) -> None:
+        limits = {"owners": 64, "rows": 1024, "raw_bytes": 4 * 1024 * 1024,
+                  "statements": 256, "vm_steps": 5_000_000}
+        value = getattr(self, kind) + amount
+        setattr(self, kind, value)
+        if value > limits[kind]:
+            raise _CleanupReadRefused(kind + "_limit")
+
+    def counters(self) -> tuple[int, ...]:
+        return self.owners, self.rows, self.raw_bytes, self.statements, self.vm_steps
+
+
+@dataclass(frozen=True)
+class _CleanupReadEvidence:
+    # Complete means only the selected histories agreed with closing rereads.
+    # It is NOT global snapshot, process/effect closure or release permission.
+    status: str
+    reason: str
+    settings_restored: bool
+    counters: tuple[int, ...]
+    threads: tuple[dict[str, Any], ...] = ()
+    pauses: tuple[dict[str, Any], ...] = ()
+
+
+# Closed internal query vocabulary. No caller-supplied SQL or credential field.
+_CLEANUP_INV_COLUMNS = "id,thread_id,agent_name,session_id,purpose,status,started_at,consumed_at"
+_CLEANUP_PAUSE_COLUMNS = (
+    "root_task_id,schema_version,held,generation,paused_at,resumed_at,updated_at,"
+    "actor,release_pending_generation,admission_journal_json"
+)
+_CLEANUP_TASK_COLUMNS = "id,parent_task_id,assigned_agent,current_session_id,status,block_kind,cancelled_at"
+_CLEANUP_READ_SHAPES = {
+    "threads_first": "SELECT " + _CLEANUP_INV_COLUMNS + " FROM thread_invocations ORDER BY id DESC LIMIT ?",
+    "threads_next": "SELECT " + _CLEANUP_INV_COLUMNS + " FROM thread_invocations WHERE id<? ORDER BY id DESC LIMIT ?",
+    "thread": "SELECT " + _CLEANUP_INV_COLUMNS + " FROM thread_invocations WHERE id=?",
+    "audit": "SELECT id,task_id,agent,action,payload FROM audit_log INDEXED BY idx_audit_log_task_id "
+             "WHERE task_id=? AND id>? ORDER BY id LIMIT ?",
+    "pauses_first": "SELECT " + _CLEANUP_PAUSE_COLUMNS + " FROM task_pause_controls ORDER BY root_task_id LIMIT ?",
+    "pauses_next": "SELECT " + _CLEANUP_PAUSE_COLUMNS + " FROM task_pause_controls WHERE root_task_id>? ORDER BY root_task_id LIMIT ?",
+    "pause": "SELECT " + _CLEANUP_PAUSE_COLUMNS + " FROM task_pause_controls WHERE root_task_id=?",
+    "task": "SELECT " + _CLEANUP_TASK_COLUMNS + " FROM tasks WHERE id=?",
+}
+
+
 class Database(
     TasksMixin,
     DreamsMixin,
@@ -440,6 +518,7 @@ class Database(
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._thread_release_serving_binding = None
         db_path.parent.mkdir(parents=True, exist_ok=True)
         # See `_synchronized` for the threading model. RLock (not Lock) because
         # e.g. `walk_ancestors` → `get_task` and `get_recall_payload` → `get_task`
@@ -982,29 +1061,518 @@ class Database(
         """
         return self._conn.execute(sql, params).fetchall()
 
-    @_synchronized
-    def read_memory_collection_evidence(self, *, audit_actions: tuple[str, ...] | None = None) -> dict:
-        """Bounded SELECT-only snapshot; acceptance callers always read all history.
+    def _cleanup_diagnostic_batch(
+        self, shape: str, keys: tuple, limit: int | None, *,
+        budget: _CleanupReadBudget, revoked: threading.Event,
+    ) -> list[dict[str, Any]]:
+        """One fixed bounded read; restores connection state before returning.
 
-        No-epoch reports may select their complete diagnostic action set. This
-        filter never supplies collection authority or changes the default view.
+        All known same-connection progress ownership is either absent or the
+        collection reader's active deadline. Refuse the latter, never nest it.
+        Disk-sweeper handlers belong to separate connections. A failed restore
+        poisons this seam; the future coordinator must retain its close guard.
         """
-        from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS, AcceptanceUnavailable
-        tables = {}
-        with self.coherent_read_view() as conn:
-            for table in ("tasks", "task_results", "jobs", "audit_log"):
-                where, params = "", ()
-                if table == "audit_log" and audit_actions is not None:
-                    if not audit_actions:
-                        raise AcceptanceUnavailable("acceptance_read_actions")
-                    where = " WHERE action IN (" + ",".join("?" for _ in audit_actions) + ")"
-                    params = audit_actions
-                rows = conn.execute(f"SELECT * FROM {table}{where} ORDER BY id LIMIT ?",
-                                    (*params, MAX_CENSUS_READ_ROWS + 1)).fetchall()
-                if len(rows) > MAX_CENSUS_READ_ROWS:
-                    raise AcceptanceUnavailable("acceptance_read_limit")
-                tables[table] = [dict(row) for row in rows]
-        return tables
+        budget.check(revoked)
+        if shape not in _CLEANUP_READ_SHAPES:
+            raise _CleanupReadRefused("read_shape")
+        if limit is not None and (type(limit) is not int or not 1 <= limit <= 16):
+            raise _CleanupReadRefused("read_limit")
+        # Reserve all three settings statements, including unconditional restore,
+        # before touching the connection. Conservative VM charge covers short
+        # statements that don't reach the progress-handler sampling interval.
+        budget.charge("statements", 4)
+        budget.charge("vm_steps", 4000)
+        if not self._lock.acquire(timeout=min(0.025, max(0, budget.deadline - _time.monotonic()))):
+            raise _CleanupReadRefused("database_busy")
+        old_factory = None
+        old_length = old_timeout = None
+        changed = False
+        cursor = None
+        failure: _CleanupReadRefused | None = None
+        batch_deadline = min(budget.deadline, _time.monotonic() + 0.050)
+
+        def check() -> None:
+            budget.check(revoked)
+            if _time.monotonic() >= batch_deadline:
+                raise _CleanupReadRefused("batch_deadline")
+
+        def progress() -> int:
+            nonlocal failure
+            try:
+                budget.charge("vm_steps", 1000)
+                check()
+                return 0
+            except _CleanupReadRefused as exc:
+                failure = exc
+                return 1
+
+        def row_factory(cur: sqlite3.Cursor, values: tuple) -> sqlite3.Row:
+            # SQLite LENGTH rejects oversized records before Python allocation;
+            # charge all fetched values (including sentinels/unrelated audits)
+            # before exposing a row to JSON/Pydantic or caller composition.
+            budget.charge("rows", 1)
+            amount = sum(len(v.encode("utf8")) if isinstance(v, str)
+                         else len(v) if isinstance(v, bytes) else 8 for v in values)
+            budget.charge("raw_bytes", amount)
+            check()
+            return sqlite3.Row(cur, values)
+
+        try:
+            check()
+            if getattr(self, "_cleanup_diagnostic_settings_unsafe", False):
+                raise _CleanupReadRefused("settings_unrestored", settings_restored=False)
+            if (self._conn.in_transaction
+                    or getattr(self, "_collection_read_deadline", None) is not None
+                    or getattr(self, "_cleanup_diagnostic_read_active", False)):
+                raise _CleanupReadRefused("database_owned")
+            old_factory = self._conn.row_factory
+            if old_factory not in (None, sqlite3.Row):
+                raise _CleanupReadRefused("row_factory_unsupported")
+            self._cleanup_diagnostic_read_active = True
+            changed = True
+            old_length = self._conn.setlimit(
+                sqlite3.SQLITE_LIMIT_LENGTH, min(self._conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH), 1024 * 1024 + 4096),
+            )
+            self._conn.row_factory = row_factory
+            self._conn.set_progress_handler(progress, 1000)
+            cursor = self._conn.execute("PRAGMA busy_timeout")
+            try:
+                old_timeout = cursor.fetchone()[0]
+            finally:
+                cursor.close()
+                cursor = None
+            # No caller-supplied SQL: timeout is a bounded internally derived int.
+            timeout = min(25, max(0, int((budget.deadline - _time.monotonic()) * 1000)))
+            cursor = self._conn.execute(f"PRAGMA busy_timeout={timeout}")
+            cursor.close()
+            cursor = None
+            check()
+            params = keys if limit is None else (*keys, limit)
+            cursor = self._conn.execute(_CLEANUP_READ_SHAPES[shape], params)
+            rows = []
+            while True:
+                check()
+                row = cursor.fetchone()
+                if row is None:
+                    break
+                rows.append(dict(row))
+                # Exact-PK shapes must never expose an unbounded accidental query.
+                if len(rows) > (limit if limit is not None else 1):
+                    raise _CleanupReadRefused("read_shape")
+            check()
+            return rows
+        except sqlite3.Error as exc:
+            if failure is not None:
+                raise failure from None
+            code = "record_size" if isinstance(exc, sqlite3.DataError) else "native_read_unavailable"
+            raise _CleanupReadRefused(code) from None
+        finally:
+            restored = True
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except BaseException:
+                    restored = False
+            if changed:
+                # Attempt EVERY restoration even if another one failed. None is
+                # the known previous handler, after competing ownership refusal.
+                try:
+                    self._conn.set_progress_handler(None, 0)
+                except BaseException:
+                    restored = False
+                try:
+                    self._conn.row_factory = old_factory
+                except BaseException:
+                    restored = False
+                if old_length is not None:
+                    try:
+                        self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, old_length)
+                    except BaseException:
+                        restored = False
+                if old_timeout is not None:
+                    try:
+                        restore_cursor = self._conn.execute(f"PRAGMA busy_timeout={int(old_timeout)}")
+                        restore_cursor.close()
+                    except BaseException:
+                        restored = False
+                if restored:
+                    self._cleanup_diagnostic_read_active = False
+                else:
+                    self._cleanup_diagnostic_settings_unsafe = True
+            self._lock.release()
+            if not restored:
+                raise _CleanupReadRefused("settings_unrestored", settings_restored=False)
+
+    def _read_cleanup_diagnostic_evidence(
+        self, *, org_slug: str, budget: _CleanupReadBudget, revoked: threading.Event,
+    ) -> _CleanupReadEvidence:
+        """Selected-history diagnostics for the private post-readiness coordinator.
+
+        Supply ONE boot-wide budget with the already fixed readiness deadline;
+        never reset it per org/read. All SQL/decode/closing work shares it. No
+        transaction, ancestor projection, release, logger or process operation.
+        Raw payloads and secret-bearing model/cleanup fields never leave here.
+        """
+        from runtime.infrastructure.task_pause_controls import decode_journal, PauseControlError
+        from runtime.infrastructure.thread_admission import ThreadAdmissionStore
+
+        def check() -> None:
+            budget.check(revoked)
+
+        def read(shape: str, keys: tuple) -> list[dict[str, Any]]:
+            check()
+            return self._cleanup_diagnostic_batch(shape, keys, None, budget=budget, revoked=revoked)
+
+        def population(kind: str, column: str) -> list[dict[str, Any]]:
+            result: list[dict[str, Any]] = []
+            after = None
+            while True:
+                check()
+                # Remaining-owner + 1 sentinel, additionally paged at <=16.
+                limit = min(16, max(1, 64 - budget.owners + 1), max(1, 1024 - budget.rows + 1))
+                rows = self._cleanup_diagnostic_batch(
+                    kind + ("_first" if after is None else "_next"),
+                    () if after is None else (after,), limit, budget=budget, revoked=revoked,
+                )
+                for row in rows:
+                    check()
+                    budget.charge("owners", 1)  # Includes sentinel and empty Pause roots.
+                    result.append(row)
+                if len(rows) < limit:
+                    return result
+                after = rows[-1][column]
+
+        def history(thread_id: str) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            after = 0
+            while True:
+                check()
+                limit = min(16, max(1, 1024 - budget.rows + 1))
+                batch = self._cleanup_diagnostic_batch(
+                    "audit", (thread_id, after), limit, budget=budget, revoked=revoked,
+                )
+                for row in batch:
+                    check()
+                    if type(row["id"]) is not int or row["id"] <= after or row["task_id"] != thread_id:
+                        raise _CleanupReadRefused("audit_identity")
+                    after = row["id"]
+                    rows.append(row)  # Unrelated actions are charged and compared too.
+                if len(batch) < limit:
+                    return rows
+
+        def identity(value: Any) -> None:
+            if type(value) is not str or not 1 <= len(value) <= 256 or len(value.encode("utf8")) > 1024:
+                raise _CleanupReadRefused("owner_identity")
+
+        def task(task_id: str) -> dict[str, Any]:
+            identity(task_id)
+            rows = read("task", (task_id,))
+            if len(rows) != 1 or rows[0]["id"] != task_id:
+                raise _CleanupReadRefused("task_missing")
+            return rows[0]
+
+        try:
+            check()
+            identity(org_slug)
+            native_threads = population("threads", "id")
+            scopes: dict[str, list[dict[str, Any]]] = {}
+            thread_evidence = []
+            store = ThreadAdmissionStore(self, org_slug)
+            for inv in native_threads:
+                check()
+                if type(inv["id"]) is not int or inv["id"] <= 0:
+                    raise _CleanupReadRefused("owner_identity")
+                for key in ("thread_id", "agent_name"):
+                    identity(inv[key])
+                identity(inv["session_id"])
+                if (inv["purpose"] not in {"reply", "bootstrap", "task_followup"}
+                        or inv["status"] not in {"pending", "consumed", "declined", "timeout", "failed"}):
+                    raise _CleanupReadRefused("invocation_shape")
+                for key in ("started_at", "consumed_at"):
+                    if inv[key] is not None and datetime.fromisoformat(inv[key]).tzinfo is None:
+                        raise _CleanupReadRefused("invocation_timestamp")
+                if inv["thread_id"] not in scopes:
+                    scopes[inv["thread_id"]] = history(inv["thread_id"])
+                lifecycle_rows = []
+                for row in scopes[inv["thread_id"]]:
+                    check()
+                    if row["action"] == "thread_move_lifecycle":
+                        lifecycle_rows.append(row)
+                states = store._replay_bounded(SimpleNamespace(**inv), lifecycle_rows, check=check)
+                facts = []
+                for _, state in states:
+                    check()
+                    # Keep complete ordered prior/final facts, but never model,
+                    # executor, raw audit JSON or invocation credentials.
+                    facts.append({
+                        "preparation_id": state.preparation_id, "session_id": state.session_id,
+                        "phase": state.phase, "boundary": state.boundary,
+                        "retry_initialized": state.retry_initialized, "ordinal": state.ordinal,
+                        "schedule": state.schedule, "deferred": state.deferred,
+                        "producer_settled": state.producer_settled, "failed_cleanup": state.failed_cleanup,
+                        "attempts": tuple({k: getattr(a, k) for k in (
+                            "attempt_id", "phase", "boundary", "ordinal", "possible_launch",
+                            "launched", "no_launch_deferred", "settled", "quiescent",
+                        )} for a in state.attempts),
+                    })
+                thread_evidence.append({"native": inv, "audit_ids": tuple(audit_id for audit_id, _ in states),
+                                        "history": tuple(facts)})
+            native_pauses = population("pauses", "root_task_id")
+            native_tasks: dict[str, dict[str, Any]] = {}
+            pause_evidence = []
+            for control in native_pauses:
+                check()
+                root_id = control["root_task_id"]
+                root = task(root_id)
+                if root_id in native_tasks and native_tasks[root_id] != root:
+                    raise _CleanupReadRefused("evidence_moved")
+                native_tasks[root_id] = root
+                generation = control["generation"]
+                if (root["parent_task_id"] is not None
+                        or type(control["schema_version"]) is not int or control["schema_version"] != 1
+                        or type(control["held"]) is not int or control["updated_at"] is None
+                        or type(generation) is not int or not 0 <= generation <= 2**63 - 1
+                        or control["held"] not in (0, 1) or control["held"] != generation % 2
+                        or (generation == 0 and (control["paused_at"] is not None or control["resumed_at"] is not None))
+                        or (generation > 0 and control["paused_at"] is None)
+                        or (generation > 1 and control["resumed_at"] is None)
+                        or (control["release_pending_generation"] is not None
+                            and (type(control["release_pending_generation"]) is not int
+                                 or control["release_pending_generation"] != generation or control["held"]))):
+                    raise _CleanupReadRefused("pause_identity")
+                identity(control["actor"])
+                for key in ("paused_at", "resumed_at", "updated_at"):
+                    if control[key] is not None and datetime.fromisoformat(control[key]).tzinfo is None:
+                        raise _CleanupReadRefused("pause_timestamp")
+                check()
+                if type(control["admission_journal_json"]) is not str:
+                    raise _CleanupReadRefused("journal_shape")
+                journal = decode_journal(control["admission_journal_json"])
+                check()
+                entries = []
+                for entry in journal["entries"]:
+                    check()
+                    budget.charge("owners", 1)  # Jobs/terminal/unknown entries also consume work.
+                    if (entry["org"] != org_slug or entry["root_task_id"] != root_id
+                            or entry["generation"] > generation):
+                        raise _CleanupReadRefused("journal_identity")
+                    current = task(entry["task_id"])
+                    if current["id"] in native_tasks and current != native_tasks[current["id"]]:
+                        raise _CleanupReadRefused("evidence_moved")
+                    native_tasks[current["id"]] = current
+                    # Job owners are uninterpreted blockers, not task-session or
+                    # process evidence. Recovery keeps its native origin SID.
+                    if entry["owner"] != "job":
+                        sid = (entry["context"]["recovery_return"]["origin_session_id"]
+                               if entry["phase"] == "recovery_deferred" and "recovery_return" in entry["context"]
+                               else entry["session_id"])
+                        if (current["assigned_agent"], current["current_session_id"]) != (entry["agent"], sid):
+                            raise _CleanupReadRefused("task_owner_conflict")
+                    entries.append({k: entry[k] for k in (
+                        "id", "org", "root_task_id", "task_id", "agent", "session_id", "owner",
+                        "generation", "phase", "started_at", "captured_generation",
+                    )} | {"execution_unknown": entry["context"].get("execution_unknown"),
+                         "producer_settled": entry["context"].get("producer_settled")})
+                pause_evidence.append({"root_task_id": root_id, "held": control["held"],
+                                       "generation": generation, "entries": tuple(entries),
+                                       "journal_digest": hashlib.sha256(control["admission_journal_json"].encode()).hexdigest()})
+            # Closing reads share the SAME counters/deadline, with no retry on
+            # movement. Compare full selected histories and exact native rows.
+            for scope, original in scopes.items():
+                if history(scope) != original:
+                    raise _CleanupReadRefused("evidence_moved")
+            for inv in native_threads:
+                if read("thread", (inv["id"],)) != [inv]:
+                    raise _CleanupReadRefused("evidence_moved")
+            for control in native_pauses:
+                if read("pause", (control["root_task_id"],)) != [control]:
+                    raise _CleanupReadRefused("evidence_moved")
+            for task_id, original_task in native_tasks.items():
+                if read("task", (task_id,)) != [original_task]:
+                    raise _CleanupReadRefused("evidence_moved")
+            check()
+            return _CleanupReadEvidence("selected_history_only", "closing_reads_agree", True,
+                                        budget.counters(), tuple(thread_evidence), tuple(pause_evidence))
+        except _CleanupReadRefused as exc:
+            return _CleanupReadEvidence("incomplete", exc.code, exc.settings_restored, budget.counters())
+        except (ValueError, TypeError, KeyError, OverflowError, RecursionError, PauseControlError):
+            return _CleanupReadEvidence("incomplete", "evidence_invalid", True, budget.counters())
+
+    @contextmanager
+    def _memory_collection_read_budget(self, *, publication: bool = False):
+        """Bound selected reads, including their transitive SQL and decoding.
+
+        Enter BEFORE any coherent/synchronized lock. Nested readers share the
+        original work/deadline; no callback, file or network I/O belongs here.
+        SQLite VM sampling and cooperative checks are not hard wall/RSS bounds.
+        """
+        from runtime.infrastructure.memory_collection import _census_budget
+        with _census_budget() as budget:
+            yield from self._memory_collection_read_scope(budget, publication=publication)
+
+    def _memory_collection_read_scope(self, budget, *, publication: bool):
+        """Existing connection owner; released SQL scopes share cumulative work."""
+        from runtime.infrastructure.memory_collection import (
+            CensusReadUnavailable, MAX_CENSUS_READ_ROWS, MAX_CENSUS_READ_BYTES,
+            MAX_CENSUS_ROW_BYTES, MAX_CENSUS_SECONDS,
+        )
+        admitted = _time.monotonic()
+        deadline = min(budget.started + MAX_CENSUS_SECONDS, admitted + max(0.0, 3.0 - budget.sql_seconds))
+        budget.acquire(self._lock, deadline)
+        nested = getattr(self, "_collection_read_deadline", None) is not None
+        old_factory = self._conn.row_factory
+        old_length = old_timeout = None
+        try:
+            if not nested:
+                self._collection_read_deadline = deadline
+                old_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                self._conn.execute("PRAGMA busy_timeout=100")
+                old_length = self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_CENSUS_ROW_BYTES)
+
+                def progress() -> int:
+                    budget.sql_work += 1000
+                    return int(budget.sql_work > 50_000_000 or _time.monotonic() > self._collection_read_deadline)
+
+                def bounded_row(cursor: sqlite3.Cursor, values: tuple) -> object:
+                    # SQLite's length limit rejects huge TEXT/BLOB/records before
+                    # Python allocation. Charge every fetched row before caller
+                    # JSON/Pydantic decoding, including nested projections.
+                    amount = sum(len(v.encode("utf-8")) if isinstance(v, str)
+                                 else len(v) if isinstance(v, bytes) else 8 for v in values)
+                    budget.sql_rows += 1
+                    budget.sql_bytes += amount
+                    if (amount > MAX_CENSUS_ROW_BYTES or budget.sql_rows > MAX_CENSUS_READ_ROWS
+                            or budget.sql_bytes > MAX_CENSUS_READ_BYTES):
+                        raise CensusReadUnavailable("census_database_size_limit")
+                    if _time.monotonic() > self._collection_read_deadline:
+                        raise CensusReadUnavailable("census_database_deadline")
+                    return old_factory(cursor, values) if old_factory else values
+
+                self._conn.row_factory = bounded_row
+                self._conn.set_progress_handler(progress, 1000)
+            if _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            yield
+            # Publication checks immediately BEFORE COMMIT. Do not turn a
+            # successful COMMIT into an apparent no-write read refusal here.
+            if not publication and _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+        except sqlite3.DataError as exc:
+            raise CensusReadUnavailable("census_database_size_limit") from exc
+        except sqlite3.OperationalError as exc:
+            if str(exc) == "interrupted":
+                raise CensusReadUnavailable("census_database_scan_limit") from exc
+            if str(exc) in {"database is locked", "database table is locked"}:
+                raise CensusReadUnavailable("census_database_busy") from exc
+            raise
+        finally:
+            try:
+                if not nested:
+                    self._conn.set_progress_handler(None, 0)
+                    self._conn.row_factory = old_factory
+                    if old_length is not None:
+                        self._conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, old_length)
+                    if old_timeout is not None:
+                        self._conn.execute(f"PRAGMA busy_timeout={int(old_timeout)}")
+                    self._collection_read_deadline = None
+                    budget.sql_seconds += _time.monotonic() - admitted
+            finally:
+                self._lock.release()
+
+    def read_memory_collection_evidence(self, *, view: dict | None = None, result_row_id: int | None = None) -> dict:
+        """Select boot activity and its genuine reference closure, read-only.
+
+        Recompute population on every call, including inside BEGIN IMMEDIATE.
+        Native retry verification remains separate and retains its authority.
+        """
+        from runtime.infrastructure.memory_collection import (
+            _scoped_collection_evidence, _strict_json,
+            MAX_CENSUS_READ_ROWS, CensusReadUnavailable, _census_budget,
+        )
+        if view is None:
+            org = getattr(self, "_memory_collection_context", None)
+            if org is None or org.memory_collection is None:
+                raise CensusReadUnavailable("census_context_missing")
+            view = org.memory_collection.snapshot()  # before DB lock: observer -> DB
+        with _census_budget() as budget, self._memory_collection_read_budget(), self.coherent_read_view() as conn:
+            def read(sql, params=()):
+                budget.check()
+                cursor = conn.execute(sql, params)
+                result = []
+                for raw in cursor:
+                    row = dict(raw)
+                    budget.record(row)
+                    result.append(row)
+                return result
+            def audit(filters, *, boot=None):
+                clauses, values = [], []
+                for key, value in filters.items():
+                    if key not in {"task_id", "agent", "action", "since"}:
+                        raise CensusReadUnavailable("census_read_filter")
+                    clauses.append("timestamp >= ?" if key == "since" else key + " = ?")
+                    values.append(value)
+                if boot is not None:
+                    # Native equivalent of the public paged intent discovery:
+                    # one bounded scan, never repeated scans of unrelated boots.
+                    clauses.extend(("json_valid(payload)", "json_extract(payload, '$.boot_id') = ?",
+                                    "json_extract(payload, '$.ordinal') = 1"))
+                    values.append(boot)
+                rows = read("SELECT * FROM audit_log WHERE " + " AND ".join(clauses)
+                            + " ORDER BY id LIMIT ?", (*values, MAX_CENSUS_READ_ROWS + 1))
+                for row in rows:
+                    row["payload"] = _strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+                return rows
+            def task(tid, *, history, children):
+                columns = "*" if history else "id, parent_task_id, revisit_of_task_id"
+                owners = read("SELECT " + columns + " FROM tasks WHERE id=?", (tid,))
+                if len(owners) != 1:
+                    raise CensusReadUnavailable("census_task_missing")
+                if not history:
+                    return owners[0], [], []
+                results = read("SELECT * FROM task_results WHERE task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1))
+                revisits = read("SELECT id FROM tasks WHERE revisit_of_task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1))
+                related = [row["id"] for row in revisits]
+                if children:
+                    related.extend(row["id"] for row in read(
+                        "SELECT id FROM tasks WHERE parent_task_id=? ORDER BY id LIMIT ?", (tid, MAX_CENSUS_READ_ROWS + 1)))
+                return owners[0], results, related
+            def candidates(agent, start, end):
+                from runtime.infrastructure.memory_telemetry_report import aware_utc
+                beginning, ending = aware_utc(start), aware_utc(end)
+                if ending < beginning:
+                    raise CensusReadUnavailable("census_probe_window")
+                found, anchor = [], None
+                cursor = conn.execute(
+                    "SELECT id, created_at FROM tasks WHERE assigned_agent=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (agent, MAX_CENSUS_READ_ROWS + 1))
+                for raw in cursor:
+                    row = dict(raw)
+                    budget.record(row)
+                    stamp = aware_utc(row["created_at"])
+                    key = (stamp, row["id"])
+                    if anchor is not None and key >= anchor:
+                        raise CensusReadUnavailable("census_probe_order")
+                    if stamp < beginning:
+                        break
+                    if stamp <= ending:
+                        found.append(row["id"])
+                    anchor = key
+                return found
+            def job(jid):
+                records = read("SELECT * FROM jobs WHERE id=?", (jid,))
+                if len(records) != 1:
+                    raise CensusReadUnavailable("census_job_missing")
+                return records[0]
+            seed = None
+            if result_row_id is not None:
+                results = read("SELECT task_id FROM task_results WHERE id=?", (result_row_id,))
+                if len(results) != 1:
+                    raise CensusReadUnavailable("census_result_missing")
+                seed = results[0]["task_id"]
+            tables = _scoped_collection_evidence(view, audit, task, job, candidates, budget=budget, seed_task=seed)
+            if _time.monotonic() > self._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            return tables
 
     def append_memory_collection_transition(self, *, result_row_id: int) -> dict:
         """Acquire actual org evidence before the observer->DB atomic publication.
@@ -1026,14 +1594,14 @@ class Database(
             payload = {"boot_id": prepared["view"]["boot_id"],
                        "base_assigned_intents": prepared["view"]["assigned_intents"],
                        "accepted_at": candidate["published_at"], "projection": candidate}
-            with org.memory_collection._lock, self._lock:
+            with org.memory_collection._lock, self._memory_collection_read_budget(publication=True):
                 current_observer = org.memory_collection._snapshot()
                 if any(current_observer[key] != prepared["view"][key] for key in (
                     "boot_id", "generation", "assigned_intents", "phase_counts", "phase_digests", "observation_error")):
                     raise AcceptanceUnavailable("acceptance_observer_moving")
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
-                    current = self.read_memory_collection_evidence()
+                    current = self.read_memory_collection_evidence(view=prepared["view"], result_row_id=result_row_id)
                     from runtime.infrastructure.memory_telemetry_report import aware_utc
                     original = equivalent_collection_control(current, candidate)
                     admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
@@ -1093,6 +1661,8 @@ class Database(
                         for boundary in (aware_utc(row["timestamp"]), datetime.now(timezone.utc)):
                             validate_acceptance_evidence(current, result_row_id, prepared["view"], prepared["outputs"],
                                                          current_time=boundary, retry_verifier=self.verify_retry_link)
+                    if _time.monotonic() > self._collection_read_deadline:
+                        raise AcceptanceUnavailable("acceptance_lock_deadline")
                     self._conn.commit()
                     return {**row, "payload": body}
                 except BaseException:
@@ -1100,7 +1670,6 @@ class Database(
                     raise
 
 
-    @_synchronized
     def query_audit_logs(
         self,
         task_id: str | None = None,
@@ -1121,75 +1690,76 @@ class Database(
         encoding the (timestamp, id) of the last row in the prior page.
         ``next_cursor`` is ``None`` exactly when the result set is exhausted.
         """
-        import base64
+        with self._memory_collection_read_budget():
+            import base64
 
-        clauses: list[str] = []
-        params: list[object] = []
+            clauses: list[str] = []
+            params: list[object] = []
 
-        # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
-        if cursor is not None:
-            cursor_ts, cursor_id = _decode_cursor(cursor)
-            clauses.append(
-                "(timestamp < ? OR (timestamp = ? AND id < ?))"
-            )
-            params.extend([cursor_ts, cursor_ts, cursor_id])
+            # Decode cursor into a keyset filter (rows BEFORE the cursor anchor)
+            if cursor is not None:
+                cursor_ts, cursor_id = _decode_cursor(cursor)
+                clauses.append(
+                    "(timestamp < ? OR (timestamp = ? AND id < ?))"
+                )
+                params.extend([cursor_ts, cursor_ts, cursor_id])
 
-        if task_id is not None:
-            clauses.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            clauses.append("agent = ?")
-            params.append(agent)
-        if action is not None:
-            clauses.append("action = ?")
-            params.append(action)
-        if since is not None:
-            clauses.append("timestamp >= ?")
-            params.append(since)
+            if task_id is not None:
+                clauses.append("task_id = ?")
+                params.append(task_id)
+            if agent is not None:
+                clauses.append("agent = ?")
+                params.append(agent)
+            if action is not None:
+                clauses.append("action = ?")
+                params.append(action)
+            if since is not None:
+                clauses.append("timestamp >= ?")
+                params.append(since)
 
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
-        # Defensive guard: non-positive limit short-circuits to empty result.
-        # Without this, limit=0 returns next_cursor anchored to a row that was
-        # never returned, and limit<0 produces an IndexError on result[limit-1].
-        if limit is not None and limit <= 0:
-            return [], None
+            # Defensive guard: non-positive limit short-circuits to empty result.
+            # Without this, limit=0 returns next_cursor anchored to a row that was
+            # never returned, and limit<0 produces an IndexError on result[limit-1].
+            if limit is not None and limit <= 0:
+                return [], None
 
-        if limit is not None:
-            # Fetch limit+1 to detect whether another page exists
-            sql = (
-                f"SELECT * FROM audit_log {where} "
-                f"ORDER BY timestamp DESC, id DESC LIMIT ?"
-            )
-            params.append(limit + 1)
-        else:
-            sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
+            if limit is not None:
+                # Fetch limit+1 to detect whether another page exists
+                sql = (
+                    f"SELECT * FROM audit_log {where} "
+                    f"ORDER BY timestamp DESC, id DESC LIMIT ?"
+                )
+                params.append(limit + 1)
+            else:
+                sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC, id DESC"
 
-        db_cursor = self._conn.execute(sql, tuple(params))
-        rows = db_cursor.fetchall()
+            db_cursor = self._conn.execute(sql, tuple(params))
+            rows = db_cursor.fetchall()
 
-        result: list[dict] = []
-        for row in rows:
-            d = dict(row)
-            if d.get("payload"):
-                d["payload"] = json.loads(d["payload"])
-            result.append(d)
+            result: list[dict] = []
+            for row in rows:
+                d = dict(row)
+                if d.get("payload"):
+                    d["payload"] = json.loads(d["payload"])
+                result.append(d)
 
-        next_cursor: str | None = None
-        if limit is not None and len(result) > limit:
-            # The extra row tells us there is a next page.
-            # Encode the (timestamp, id) of the last actual-page row as next_cursor.
-            last_of_page = result[limit - 1]
-            next_cursor = _encode_cursor(
-                last_of_page["timestamp"], last_of_page["id"]
-            )
-            # Trim to exactly the requested page size
-            result = result[:limit]
+            next_cursor: str | None = None
+            if limit is not None and len(result) > limit:
+                # The extra row tells us there is a next page.
+                # Encode the (timestamp, id) of the last actual-page row as next_cursor.
+                last_of_page = result[limit - 1]
+                next_cursor = _encode_cursor(
+                    last_of_page["timestamp"], last_of_page["id"]
+                )
+                # Trim to exactly the requested page size
+                result = result[:limit]
 
-        # Re-sort ascending so callers see chronological (oldest-first) order.
-        result.sort(key=lambda d: d["id"])
+            # Re-sort ascending so callers see chronological (oldest-first) order.
+            result.sort(key=lambda d: d["id"])
 
-        return result, next_cursor
+            return result, next_cursor
 
     # --- Task Results ---
 
@@ -1293,6 +1863,7 @@ class Database(
         verdict: str | None = None, local_ci_json: str | None = None,
         recovery_deadline_monotonic: float | None = None,
         v2_admission: dict | None = None,
+        coding_admission: Any = None,
     ) -> bool:
         """Atomically admit, persist, and ledger-accept one completion callback.
 
@@ -1313,6 +1884,19 @@ class Database(
             from runtime.workflows.recovery import classify_task
             drafts = getattr(self, "_workflow_drafts", None)
             ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None)
+            if ownership.kind == 'coding_attempt':
+                coding = getattr(self, '_workflow_coding_dispatch', None)
+                payload = dict(output_summary=output_summary, confidence_score=confidence_score, status=status,
+                               risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
+                               waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
+                if coding is None or v2_admission is not None or not coding.callback_uncommitted(
+                        task_id=task_id, agent=agent, session_id=session_id, payload=payload, capture=coding_admission):
+                    self._conn.rollback()
+                    return False
+                from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                validate_workflow_schema(self._conn, expected_org_slug=coding.org.slug)
+                self._conn.commit()
+                return True
             if ownership.kind == 'f5':
                 drafts = getattr(self, '_workflow_reviews', None)
             if ownership.kind != "legacy":

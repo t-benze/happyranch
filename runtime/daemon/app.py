@@ -123,6 +123,20 @@ async def _lifespan(app: FastAPI):
     from runtime.daemon.thread_queue import thread_worker_loop
 
     state: DaemonState = app.state.daemon
+    from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
+    # Dormant: construction captures references only; it performs no DB reads.
+    # Only the actual Server's successful startup adapter may signal this app.
+    if state._cleanup_diagnostics is None:
+        try:
+            state._cleanup_diagnostics = _CleanupDiagnostics(state, app)
+        except Exception:
+            # Diagnostics must not replace the mandatory startup outcome.
+            pass
+
+    from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
+    if state._thread_release_service is None:
+        # Binding only. No database read, operation, task or release at startup.
+        state._thread_release_service = _ThreadDeliveryReleaseService(state, app)
 
     # THR-109: wire the ThreadQueue + main loop BEFORE task workers start.
     # Uses _wire_then_start_workers to enforce ordering: wiring must precede
@@ -185,11 +199,12 @@ async def _lifespan(app: FastAPI):
                 "THR-106 skill-id rename migration error for org %s: %s",
                 org.slug, exc,
             )
-        recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
-        if recovered:
+        unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
+        if unknown_jobs:
             _logger.warning(
-                "recovered %d orphaned jobs in org %s: %s",
-                len(recovered), org.slug, recovered,
+                "job_liveness_unknown: retained %d running jobs in org %s: %s; "
+                "restart is not attributable orphan/cleanup proof",
+                len(unknown_jobs), org.slug, unknown_jobs,
             )
 
     # THR-195: observation (read-only) of stale never-started pending jobs.
@@ -393,6 +408,10 @@ async def _lifespan(app: FastAPI):
         # attachment before the first shutdown await. Native owners remain live
         # through worker completion, effects unwind and their final settlement.
         state._stop_runner_admission()
+        # C native work/outer retirement must be positively idle before host
+        # shutdown. Revoke or drain failure forbids every close fallthrough.
+        await state._drain_thread_releases()
+        state._revoke_cleanup_diagnostics()
         # HTTP disconnect never owns these tasks. Reap the bounded operation
         # owners before host shutdown or any org DB can close; retain holds.
         await state.team_move_service.close()
@@ -446,9 +465,20 @@ async def _lifespan(app: FastAPI):
         # Fence task consumers and every producer entrypoint before job
         # shutdown can fire a blocked-task resume check. The parked task then
         # stays blocked_on_job until the next startup recovery pass.
-        await state.queue.stop()
+        try:
+            await state.queue.stop()
+        except asyncio.CancelledError as exc:
+            # stop delays caller cancellation until its owned join completed.
+            # Renew the predicate before proceeding; canceled native futures
+            # or failed retirement must never reach close_all.
+            state.queue.assert_native_idle()
+            shutdown_cancellation = shutdown_cancellation or exc
+        except Exception:
+            logger.exception("Task drain incomplete; org databases remain open")
+            raise
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
+        await state._drain_cleanup_diagnostics()
         await state.close_all()
         if shutdown_cancellation is not None:
             raise shutdown_cancellation
@@ -518,6 +548,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(workflow_activations.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-activations"])
     app.include_router(workflow_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-templates"])
     app.include_router(workflow_release_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-release-templates"])
+    from runtime.daemon.routes import workflow_coding_roles
+    app.include_router(workflow_coding_roles.router, prefix="/api/v1/orgs/{slug}", tags=["workflows"])
     app.include_router(workflow_submissions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-submissions"])
     app.include_router(workflow_revisions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-revisions"])
     app.include_router(workflow_reviews.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-reviews"])

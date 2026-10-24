@@ -2,7 +2,7 @@
 # Read-only packaging inspection; never imports runtime or executes skill helpers.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-exec python3 - "$SCRIPT_DIR/asset_evidence.py" "$@" <<'PYTHON'
+exec python3 - "$SCRIPT_DIR/manifest_notices.py" "$@" <<'PYTHON'
 import argparse
 import hashlib
 import json
@@ -16,10 +16,10 @@ import zipfile
 from pathlib import Path
 
 # Only the private helper adjacent to this selected verifier is imported.
-ASSET_HELPER = sys.argv.pop(1)
-notices = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('manifest_notices.py')))
+NOTICE_HELPER = sys.argv.pop(1)
+notices = __import__('runpy').run_path(NOTICE_HELPER)
 
-# Same 29 required resource members; exact originals at fresh main 7812caa6.
+# Same 29 required resource members; exact originals at base 052e5dac.
 BASELINE = [{'path': 'LICENSE',
   'size': 11358,
   'sha256': 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30',
@@ -49,11 +49,11 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': '1dbe6352f801e9b4124b4fb47d19701341e9a983',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/jobs/SKILL.md',
-  'size': 32002,
-  'sha256': 'b12d8537d82284d0a37fefce4969077754bc27c1f4ba6ecc68efb92a399acd97',
+  'size': 34623,
+  'sha256': '890a5536a059161ee166842758746544e63b0d23353d22b4d992eaca9c67db05',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '8000371c8dd6f3f1b25276d88ece0affbab32a9c',
+  'blob_oid': '7752b2305e0ce3a995925f16005e7f6f7de22258',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/make-worktree/SKILL.md',
   'size': 7683,
@@ -77,11 +77,11 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': '6a29e7bd0a6b0efca64fb6270e82d9eeea17b972',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/manage-repo/SKILL.md',
-  'size': 3203,
-  'sha256': '14a2924e76ef7c796c07122c166e51f6f2cddf905b9213eae8fdc1fd19d067a9',
+  'size': 4444,
+  'sha256': '69044ddd5501eef9c2b5e5440d91bb5f46a40ed38173b4c066b0f076252a1e38',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'cd478bf73c3ebf053abfecd802a55ed5e1504ab3',
+  'blob_oid': '846d5e33899804e82cfc4705e4dea610933773e4',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/reflection/SKILL.md',
   'size': 4716,
@@ -91,18 +91,18 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': 'fd5fb640513d1bec3ef06cfa083d6e4baac28cbd',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/start-task/SKILL.md',
-  'size': 32358,
-  'sha256': '40d4fd4fa2ffe318cfbdb832cee39770c0adbc447712cc51c4f2628be1a97a01',
+  'size': 42403,
+  'sha256': '1c473622db4ee27d3731f4531c15fe7e63cf495d9cde6f81018a57a44376f644',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '1f89b3a11c0d8835dc1a59b26e10c363e95c7dc5',
+  'blob_oid': '9cb8dd21ce56ae46963384e0ce72ee1d8961e17a',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/thread/SKILL.md',
-  'size': 23922,
-  'sha256': 'f67b78f87d25ec04f7cd92be909581a9968c89340cae0f115886403bf56d23c1',
+  'size': 25987,
+  'sha256': 'c6e335d3eec9c4b66923f69e1516997a6df3a60a98c7c1d6ab398f27bac76d59',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': 'ede793ef2eb7d6a86d5a42d8d7ec5b5fa8716584',
+  'blob_oid': '91f963035b326e32ba0d626672bb05399097706f',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/todos/SKILL.md',
   'size': 26543,
@@ -112,11 +112,11 @@ BASELINE = [{'path': 'LICENSE',
   'blob_oid': '9eeaf04c8d84b78a794e448b453413704865d1b1',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/workspace-cleanup/SKILL.md',
-  'size': 57899,
-  'sha256': '7fb6a0271328e79f68c9f139d5871b51195b06b3d97ea0a79dbd5bef2c14aa8d',
+  'size': 61825,
+  'sha256': 'c5157e6aab3fcb664f070f732d39850615744b45ccf45808e8d13ad1d8dbc32b',
   'git_mode': '100644',
   'posix_mode': '0644',
-  'blob_oid': '36661d861e303889ee66a3ee84fae15e0a139323',
+  'blob_oid': 'ce71b9b6d3c1cdbff7fd4a6f697b8fdcc1e8eff6',
   'prior_member': True},
  {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py',
   'size': 82540,
@@ -355,6 +355,8 @@ def safe_new(path, source=None):
     parent = path.parent
     if not parent.is_dir() or parent.stat().st_uid != os.getuid():
         fail('OUTPUT_PARENT_NOT_OWNED', str(parent))
+    if stat.S_IMODE(parent.stat().st_mode) != 0o700:
+        fail('OUTPUT_PARENT_NOT_PRIVATE', str(parent))
     if not os.access(parent, os.W_OK):
         fail('OUTPUT_PARENT_NOT_WRITABLE', str(parent))
     home = Path.home().resolve()
@@ -657,6 +659,59 @@ def native(app, archive, link_map):
             'link_map_sha256': digest(link_map), 'minimum_os_execution': 'UNEXECUTED'}
 
 
+def basic(app):
+    """Concrete bundle contract and native architecture, without linker proof."""
+    import struct
+    notices['safe_path'](app, app)
+    resources(app)
+    info = plistlib.loads(notices['read'](app / 'Contents/Info.plist', app))
+    expected = {'CFBundleExecutable': 'HappyRanch', 'CFBundlePackageType': 'APPL',
+                'CFBundleIdentifier': 'ai.happyranch.HappyRanchApp',
+                'CFBundleIconFile': 'AppIcon', 'LSMinimumSystemVersion': '14.0',
+                'ReleaseArchitecture': 'arm64'}
+    for key, value in expected.items():
+        if info.get(key) != value:
+            fail('APP_PLIST_MISMATCH', key)
+    for key in ('CFBundleVersion', 'CFBundleShortVersionString'):
+        if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', str(info.get(key, ''))):
+            fail('APP_PLIST_MISMATCH', key)
+    for key in ('GitCommitSHA', 'GitTreeSHA'):
+        if not re.fullmatch('[0-9a-f]{40}', str(info.get(key, ''))):
+            fail('APP_PLIST_MISMATCH', key)
+    required = ('Contents/Resources/AppIcon.icns', 'Contents/Resources/web/dist/index.html',
+                'Contents/Resources/licenses/README.md', 'Contents/Resources/licenses/DEPENDENCIES.txt')
+    for name in required:
+        notices['read'](app / name, app, notices['MAX_JSON'])
+    binaries = ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                'Contents/Resources/daemon/happyranch')
+    architectures = {}
+    for name in binaries:
+        path = app / name
+        notices['safe_path'](path, app)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            fail('APP_EXECUTABLE_MISSING', name)
+        # Apple Mach-O cputype values, read directly so archive inspection is
+        # portable. This is a header check, not native execution or install proof.
+        with path.open('rb') as stream:
+            header = stream.read(4096)
+        if header[:4] == b'\xcf\xfa\xed\xfe' and len(header) >= 32:
+            cpus = [struct.unpack_from('<I', header, 4)[0]]
+        elif header[:4] in (b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf') and len(header) >= 8:
+            count = struct.unpack_from('>I', header, 4)[0]
+            width = 32 if header[3] == 0xbf else 20
+            if not 0 < count <= 32 or len(header) < 8 + count * width:
+                fail('APP_ARCH_MISMATCH', name)
+            cpus = [struct.unpack_from('>I', header, 8 + i * width)[0] for i in range(count)]
+        else:
+            fail('APP_ARCH_MISMATCH', name + ': expected Mach-O')
+        if 0x100000c not in cpus:
+            fail('APP_ARCH_MISMATCH', name + ': missing arm64')
+        architectures[name] = cpus
+    return {'bundle': expected, 'version': info['CFBundleShortVersionString'],
+            'build': info['CFBundleVersion'], 'architectures': architectures,
+            'minimum_os_execution': 'UNEXECUTED', 'native_execution': 'UNEXECUTED'}
+
+
 p = argparse.ArgumentParser(description=__doc__)
 s = p.add_subparsers(dest='mode', required=True)
 q = s.add_parser('preflight')
@@ -678,16 +733,12 @@ q.add_argument('--receipt', type=Path, required=True)
 q.add_argument('--transform-chain', type=Path, help='Read-only signed/submission/notary/staple/final relationship comparison; never public admission')
 for key in ('version', 'build', 'source-sha', 'source-tree', 'arch', 'run-id'):
     q.add_argument('--' + key, required=True)
-# Keep asset options closed and explicitly single-valued. Ordinary argparse
-# store actions accept duplicates; these options must refuse them instead.
-asset = __import__('runpy').run_path(ASSET_HELPER)
+q = s.add_parser('basic'); q.add_argument('--app', type=Path, required=True)
 q = s.add_parser('licenses', allow_abbrev=False)
-asset['add_arguments'](q, expectations=True)
-freezer = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('freezer_evidence.py')))
-freezer['add_arguments'](q)
-web_custody = __import__('runpy').run_path(str(Path(ASSET_HELPER).with_name('web_evidence.py')))
-web_custody['add_arguments'](q)
-q.add_argument('--mapping', type=Path, required=True, action=asset['Once'])
+q.add_argument('--source', type=Path, required=True)
+q.add_argument('--output-dir', type=Path, required=True)
+q.add_argument('--app', type=Path, required=True)
+q.add_argument('--mapping', type=Path, required=True)
 a = p.parse_args()
 if a.mode == 'native':
     NATIVE_EVIDENCE_DIR = a.evidence_dir
@@ -746,6 +797,7 @@ try:
               'classification': classification, 'installed_manual_semantics_review': 'REQUIRED',
               'signature_notary_staple_acceptance': 'UNPROVEN', 'available': False, 'approved_url': None})
     elif a.mode == 'archive':
+        basic(a.app)
         notice_receipt = notices['validate'](a.app)
         if notices['validate_archive'](a.archive) != notice_receipt:
             fail('MANIFEST_NOTICE_ARCHIVE_MISMATCH', 'candidate and archive notice receipts differ')
@@ -861,29 +913,11 @@ try:
             fail('RECEIPT_RECONCILIATION_FAILED', errors)
         emit({'local_reconciliation': 'MATCHED_TRANSFORM_RELATIONS' if a.transform_chain else 'MATCHED_UNSIGNED_INNER_BYTES', 'available': False,
               'approved_url': None, 'signing_chain': 'SUPPLIED_RELATIONS_ONLY' if a.transform_chain else 'UNEXECUTED', 'public_admission_owner': 'TASK-11196'})
+    elif a.mode == 'basic':
+        emit(basic(a.app))
     elif a.mode == 'licenses':
-        asset['verify_arguments'](a)
-        freezer['verify_arguments'](a)
-        web_custody['verify_arguments'](a)
-        a.app = Path(a.app)
-        mapping = json.loads(a.mapping.read_text())
-        errors = []
-        for row in mapping['components']:
-            if row['disposition'] != 'RETAINED_TEXT':
-                errors.append(row)
-                continue
-            if not row.get('notices'):
-                errors.append({'error': 'LICENSE_MISSING', 'component': row['component'], 'reason': 'no retained texts'})
-            for notice in row['notices']:
-                relative = Path(notice['destination'])
-                if relative.is_absolute() or '..' in relative.parts or relative.parts[:3] != ('Contents', 'Resources', 'licenses'):
-                    fail('LICENSE_PATH_UNSAFE', str(relative))
-                path = a.app / relative
-                if not path.resolve().is_relative_to(a.app.resolve()) or path.is_symlink() or not path.is_file() or digest(path) != notice['sha256']:
-                    errors.append({'error': 'LICENSE_MISSING', 'component': row['component'], 'notice': notice})
-        if not mapping['components'] or errors:
-            fail('MANIFEST_NOTICE_ORIGINALS_MISSING', {'components': errors, 'remediation': 'restore exact owner original texts and recollect'})
-        emit(notices['validate'](a.app, Path(a.exported_source), Path(a.output_dir), mapping))
+        mapping = json.loads(notices['read'](a.mapping, a.output_dir, notices['MAX_JSON']))
+        emit(notices['validate'](a.app, a.source, a.output_dir, mapping))
 
 except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
     fail('INSPECTION_INPUT_OR_TOOL_FAILURE', str(exc))

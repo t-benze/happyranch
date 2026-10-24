@@ -17,13 +17,62 @@ transport remains `@founder`. Metadata failure gives ID-only context.
 # start-task
 
 
-THR307's independent daemon disk sweeper defaults to dry_run and has its own
-terminal-task/root, fresh jobs/process, recursive-age and containment contract.
-It never grants an agent cleanup authority, replaces this skill's legacy gates,
-or disables the seven nightly agent sessions. Outputs and sibling task-scratch
-manifests/locks stay durable and excluded. Put regenerable fixture/cache trees
-in runtime task-tmp; retain only concise evidence in output. Do not run historical
-cleanup, activate on-mode, or use a manual fallback on this note's authority.
+One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
+Its only supported content is a JSON object containing exactly `stop` with a
+real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;
+`{"stop":false}` or a genuinely absent literal file permits the default policy.
+The control is read afresh once per regular scheduled attempt, after the normal
+same-night reservation and before native writer reservation or worker launch,
+inside the shared1800s budget. Invalid/unreadable/oversized/truncated/changed
+content, wrong/extra/duplicate keys or types, invalid UTF8, symlinks (including
+dangling links or aliased parents), hardlinks, directories and special files
+visibly suspend. Only final-file ENOENT means absent; other I/O failures suspend.
+Malformed control does not prevent daemon/org startup. Operators alone write or
+remove this local file; there is no per-org override, setting/API or new schedule.
+Suspension logs its cause and, when publication is safe, writes `outcome:
+suspended` with daemon-scoped `scheduled_admission` (`path,state,reason` and an
+error when invalid) in the existing summary/audit payload. All orgs remain
+unreached, with no worker/PID, reaping, removal-byte or successful-sweep claim.
+The existing audit empty-task/daemon envelope and org ordering remain. Marker
+and report reads/writes traverse literal no-follow parents; publication uses a
+new exclusive pending inode and descriptor-relative replacement. A missing or
+aliased parent, aliased/hardlinked/special final metadata or existing pending
+entry refuses without writing through that path. Scheduled work never creates
+a missing control parent. Refusal is visible through the existing daemon log;
+a summary or org audit may be unavailable and must not be claimed as persisted.
+Only manual preview can create missing report parents, with no-follow traversal.
+After the single stop observation, the actual initial date summary is published
+before any native writer reservation. Allowed admission initially records
+`incomplete`, empty org results and all orgs unreached, without a finished/PID or
+mutation claim. Unsafe date-summary or pending metadata therefore refuses with
+zero reservations or worker effects. Later checkpoint/publication failures after
+genuine reservation retain native uncertainty; this initial observation is not
+a fence against subsequent filesystem changes.
+These are filesystem observations, not a racing-rename fence or hard real-time
+certification. Publication failure never permits deletion. Manual `--dry-run` remains usable and nonmutating with
+true, invalid or absent control; it may write its existing reports/audits.
+Removing/fixing the file affects the NEXT existing scheduled attempt only:
+no same-night catchup/retry or marker reset. This is a run-admission boundary;
+writing stop does not cancel an already launched worker or promise a hard
+real-time stop. Existing deletion/ownership/age/containment gates still apply.
+
+Under Founder THR307seq134, the independent daemon disk sweeper deletes eligible
+scratch/worktrees for every normally admitted org on its nightly schedule. There
+is no per-org opt-out; obsolete disk_sweep config is ignored. Explicit manual
+--dry-run remains a nonmutating preview. The sweeper keeps its own ended-task/
+ended-structural-root, fresh jobs, recursive-age and containment contract. Under
+Founder seq117 it does not inspect OS-process usage: once both the task and its
+structural root have ended, nightly sweeping may remove their task scratch and eligible worktrees. Stop and reap task-owned processes before
+successful completion; do not rely on those folders afterward. Settle owned jobs;
+genuine authorized native job waits keep the existing blocked/wait callbacks,
+never fake completion. Filesystem mount containment remains in force.
+This grants no agent deletion authority or end-of-task deletion hook, replaces
+none of this skill's legacy gates, and disables none of the seven nightly agent
+sessions. Other cleanup owners' process gates and old flags remain unchanged.
+Durable output and sibling task-scratch manifests/locks stay excluded. Put
+regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
+in output. Do not run historical cleanup, change live configuration, deploy/
+restart, or use a manual cleanup fallback on this note's authority.
 
 ## THR-247 recovery-turn exception
 
@@ -98,6 +147,20 @@ callbacks remain unsigned; do not claim a receipt, joined approval or another
 principal's signature. Report unavailable dependencies honestly. In every lane,
 retain this skill's FINAL report-completion action and current session binding.
 
+## Disabled coding-start composition (ROOT10693 / K3a)
+
+Only an independently authorized current decision-owning agent manager may
+compose the closed `{action:workflow_start,workflow:workflow-coding-start@1}`
+decision for its OWN genuine final callback. `happyranch workflows coding
+run-start --from-file ABS --emit-decision` validates canonical pins/work and
+prints that decision only; it allocates nothing. Preserve the original key/file.
+The actual result owner refuses unavailable downstream coding readiness before
+claim consumption/allocation; K3a remains disabled. A descriptor, mapping or
+printed decision supplies no repository access, execution, approval or merge
+permission. Queued carriers/attempts have no launcher or execution supplement in
+this slice; do not substitute legacy delegate/chain/F5 or invent a callback.
+The skill's final report-completion and exact current-session binding still apply.
+
 ## Steps
 
 Each attachment storage_key can be claimed by one task only, including within
@@ -142,6 +205,12 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
       ```
    4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
+   Existing audit/task/job acquisition refuses exhausted scan/lock/row/byte work
+   with a non-success response. Never treat that as an empty completed census or
+   retry with a caller-selected subset. Output totals/truncation remain evidence;
+   missing/incomplete streams refuse collection validation. Cooperative budgets
+   and practical measurements do not certify hard RSS or wall time.
+
    Memory telemetry reports are observation-only. Valid collection requires
    independently admitted G1 role/job/probe evidence and current serving health;
    source fixtures, a summary tag, merge/deploy, or raw sample counts do not start
@@ -150,6 +219,43 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    boundary and recheck current full health. The root retains any explicitly
    requested independent durable within48h AFTER-epoch check and production
    observation follow-through; never infer a renewal, schedule or tuning action.
+   Seq480 census acquisition covers current boot/epoch activity and its required
+   lifecycle/ancestry/retry/QA/job/control references, including current calls on
+   old retired SIDs. Historical memory_read closure uses payload.task_id for
+   required full-history owners, preserving outer AGENT scope. Each capture
+   exhausts one bounded existing action read; closing/atomic rereads rediscover
+   late preboot rows. Exhaustion refuses without an absence claim.
+   Unrelated global SID sharing is the documented PR1084 trust
+   limit; related contradictions and missing evidence still refuse. Both reports
+   share closing/commit membership recomputation. Bounded refusal or source sizing
+   is not healthy observation, installed qualification or collection acceptance.
+   THR091seq557/559/560 allows0.5s CUMULATIVE DB admission waiting across
+   both serving revision bookends and every whole-pair attempt, clipped by the
+   ORIGINAL acquisition deadline. All attempts share SQL/work/file/row/byte and
+   transport limits; nested reads do not replenish them. Release DB ownership
+   before metadata/identity/file/network work. Only concurrent-write movement
+   retries a completely new pair; retain charged raw failed pairs in existing
+   bounded logs and accept one stable pair without stitching. Hard errors,
+   malformed/sticky state, observer replacement or source/identity/boot/cohort/
+   profile/provider/path drift refuse without retry. Capture task comparisons
+   may accept strictly forward aware-string last_heartbeat AND accompanying
+   updated_at only with every other projected field/membership/type identical;
+   unchanged pairs and valid rendering-time exclusions keep their meanings.
+   Missing/invalid/equal/reverse changed stamps or movement of only one stamp
+   refuse. Preserve raw tasks and exact locked publication/control checks.
+
+   Completed file, cohort, comparison and validation work is checked against the
+   same original deadline before successful serving/report/preparation/current-epoch
+   returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+   must validate every required counter/digest/reference/seal field before movement
+   can retry; the abbreviated public boot projection has a separate validation mode.
+   Retry requires a full write and flush of the raw pair through an existing standard
+   synchronous stream/file log sink, with filters and formatting applied. Disabled,
+   filtered, unavailable, short or failed delivery without another acknowledged sink
+   refuses; a normal warning return is insufficient. Serialization and formatted
+   bytes consume the original aggregate budget. This establishes synchronous delivery,
+   not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+   read results and never reclassify an already successful publication COMMIT.
 
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
@@ -568,6 +674,212 @@ are not covered by that rail — are documented in the **manage-agent** skill an
 `docs/agent-guides/agent-executors-and-permissions.md`.
 
 
+## Native launch-refusal outcomes
+
+Optional pull diagnostic labels describe advisory wording only; absent labels or historical exit128 remain unknown and grant no cleanup or retry authority.
+
+Ordinary native prelaunch refusals have a durable maximum of three consecutive
+attempts per logical continuation; an unclosed durable preparation can fail earlier
+because unknown ownership prevents safe retry. A `launch_refused` FAILED task uses
+normal manager/parent handling. Inspect its `task_native_launch_boundary` audits for
+the first safe cause and exact reserved SID/attempt; a reservation is not a running
+session. Failure never certifies cleanup or permits clearing unknown owners, replaying
+callbacks, resetting chains or retrying consumed failures. Intentional holds/waits and
+stale ownership do not consume this allowance. Resolve the evidenced preparation or
+storage cause through the existing owner before an explicit supported retry. A new
+retry/recovery refusal is distinct from its previous genuine launch. Deferred adoption
+refusals retain the authenticated original owner; unclaimed recovery uses its original
+SID and existing claim exclusions. Prior unknown evidence and callback/cancel/hold
+winners survive both boundaries. Human-team failed-recovery history treats the
+exact native launch/refusal audit action as informational, retaining selected
+result/session/worker/team, replay and foreign-history fences. Source
+publication/merge does not establish that the running daemon contains the correction.
+
 ## Root task Pause outcomes
 
 A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.
+
+A bound `workflow-coding-development@1` supplement selects only the actual
+first-development task. Preserve its repository/object-format/fixed-base/path
+identity and use existing authorized repository tools. A descriptor grants no
+access, inspection or execution authority. Head remains absent until you actually
+produce the commit. Report only your own result through the supplied genuine
+task/SID final callback. No coding staging or advancement command is available
+in this disabled slice; never substitute a document staging command.
+
+
+A bound workflow-coding-development@1 or workflow-coding-review@1 supplement
+selects only your actual assigned stage/task/SID. Preserve release/mapping,
+revision, repository/object-format/fixed-base/paths and the reviewer's exact
+produced head/PR/developer result. Use existing authorized repository tools;
+metadata grants no access. Development introduces only its genuinely produced
+full commit; reviewer independently inspects that exact subject and returns
+APPROVE, REQUEST_CHANGES or BLOCK (including unavailable access).
+For a completed stage, summary is the canonical UTF8 JSON STRING of the closed
+workflow-coding-stage-output@1 envelope: format, instance_id, attempt_id,
+revision=1, stage=development|code_review, subject, findings, outcome. subject
+uses workflow-code-change@1 with kind=code-change, repository:{id}, object_format,
+head, comparison:{base}, navigation:{branch,pr_url}; findings are nonblank and
+at most16384 UTF8 bytes. Serialize sorted keys, compact separators, Unicode
+verbatim, finite values, no duplicates/unknown fields or trailing newline.
+Development outcome=produced and top-level verdict=null; completed reviewer
+verdict equals its exact outcome. Report actual failed/blocked causes without
+inventing a subject or receipt. Use your own genuine final report-completion
+callback as the FINAL action. No staging/advancement command is available;
+never substitute document staging. Callback alone does not advance, and a
+review result does not grant QA/final-manager execution or merge authority.
+
+
+A bound workflow-coding-qa@1 supplement selects only the actual assigned qa
+stage, selected qa_engineer role, task and current SID. Preserve its full
+workflow-coding-qa-scope@1: release/mapping/revision/work, actual QA assignment,
+exact repository/object-format/B/H/branch/PR and original developer AND independent
+reviewer attempt/task/SID/INTEGER result/outcome/subject. Use only existing
+authorized repository tools. Independently inspect that exact subject and write
+your own findings; use BLOCK for unavailable access or required proof. Metadata
+and prior approval grant no permission and never substitute for your inspection.
+For a completed assessment, summary is a canonical UTF8 JSON STRING with exactly
+format=workflow-coding-stage-output@1, instance_id, attempt_id, revision=1,
+stage=qa, subject (unchanged full workflow-code-change@1), findings (nonblank,
+at most16384 UTF8 bytes), outcome=PASS|REVISE|BLOCK. Top-level verdict exactly
+matches outcome. Use sorted keys/compact separators, Unicode verbatim, finite
+values and no duplicates/extra keys/trailing newline. Report genuine own
+failed/blocked causes without copying another principal findings or inventing
+results/receipts. No coding decision/job wait, staging or advancement command.
+Use only your genuine task/agent/SID report-completion as FINAL action. Native
+host and positive outer settlement remain separate; settled QA output stays held,
+even PASS, pending final-manager implementation. Readiness remains disabled.
+
+
+A workflow-coding-final-manager@2 supplement belongs only to its actual assigned
+coding-owned agent_manager invocation. SQL manager_closeout is translated explicitly;
+never classify it as legacy or reuse source/upstream/recovery SIDs. Preserve exact
+scope/release/mapping/revision/subject and all three original task/SID/INTEGER
+result/outcome/digest pins. Supply the closed finalize-command@1 from the supplement
+with your existing absolute authorized repository_path, saved stable operation_key
+and current SID to `happyranch workflows coding finalize --org ORG --session-id CURRENT
+--from-file ABS --json`. Actual entitlement for that local command is separately
+required; descriptors grant no access. Preserve the selected authenticated repository
+reference and original native OrgPaths workspace capture. Only its repo_key checkout/
+authorized task worktrees and exact raw-origin digest/opaque ID may identify the
+GitHub target; navigation alone cannot. ONE captured workspace task/attempt
+reservation applies across cwd/key/path variants. Full selected/native/output/
+history identity must agree; missing, foreign or aliased roots refuse. Preserve
+existing/partial reservations even after failed recording; never choose a new cwd
+or key to repeat an uncertain action. It selects only your own current run evidence,
+observes exact successful checks once, saves task-local intent, immediately revalidates
+and calls the reviewed expected-head/no-admin guard. Preserve partial intent/action
+receipts and never rerun after uncertainty. Pending checks produce held output, no
+coding job/decision or automatic later manager allocation. Save exact canonical
+final-output@2 as your callback summary JSON STRING, stage=agent_manager, null verdict,
+no decisions/job waits; own findings and original causes only. Actual remote merge
+commit/aware time must be observed in THIS live session before claiming merged.
+Failed command remains failed/uncertain despite separate later effect observation.
+Callback through actual task/agent/SID is FINAL. Only genuine successful host and
+positive outer settlement can record performed work; daemon never performs PR I/O.
+Historical event@4 held QA PASS stays held; repaired event@6 accepts eligible settled QA
+PASS. Readiness remains disabled and source presence grants no execution/merge.
+
+The native-manager command/event@3 uncertainty records retain actual original
+preparation identity before binding, or original workspace/claim with missing
+current close after binding. Both remain held; no selected output, cleanup or
+successful settlement follows. Literal native-manager@1/@2 remain unchanged.
+The final-manager GET remains own-current-original CLI-only, browser-excluded and
+native-remote-denied. Source/static evidence supplies no runtime or authoring PASS.
+
+
+For a settings-pinned coding start, use the actual bound start@2 command with its
+settings generation/snapshot_digest and mapping Pin. `run-start --emit-decision`
+validates syntax and prints only the closed decision for the selected executable
+manager's own genuine callback; no allocation or authority follows. Historical
+start@1 retains its reader. Coding readiness remains unconditionally disabled.
+New-family stage supplements carry the original settings pin and authenticated
+scope; later defaults or disable publications do not replace that assignment.
+Each selected principal uses its own actual team and authorized tools. Preserve
+original owner/key/evidence on refusal or uncertainty; never fabricate an actor,
+callback, native settlement or clearance. Current native/Pause/move/repository
+authority and genuine final-session callback obligations remain unchanged.
+
+
+A bound workflow-coding-development@2 / review@2 / qa@2 supplement selects the
+actual new revision2/3 task/SID. Preserve its revision-scope@1, fixed original
+repository/object-format/base/paths/release/mapping/settings pins and actual
+attempt_sequence/assignment_generation. Development addresses EVERY attributed
+returned finding and produces a genuinely changed head; previous_subject is
+history, never output or authority. Review/QA independently assess the EXACT new
+subject and current upstream pins, using existing authorized tools and own
+findings. References grant no access. Return the supplied closed stage-output@2
+with revision2/3, same key inventory, stage-specific produced / APPROVE|
+REQUEST_CHANGES|BLOCK / PASS|REVISE|BLOCK. Summary is canonical UTF8 JSON STRING,
+completed status and null developer verdict or matching reviewer/QA outcome.
+Report real failed/blocked causes honestly; use only this task/agent/SID FINAL
+callback. No staging/coding decision/job wait or old receipt reuse. Historic @1
+supplements/outputs stay revision1. Fresh tasks/results are not new configured
+principal requirements on every revision.
+
+A bound workflow-coding-final-manager@3 selects current revision2/3 only. Preserve
+final-scope@3, actual native workspace/reference and ALL three fresh current-subject
+results. Supply finalize-command@2 from that supplement to the SAME LOCAL finalize
+command with actual current SID/authorized path and stable key. Preserve all existing
+reservation/current-selection/expected-head/non-admin/one-action/remote-observation
+rules above. Save canonical final-output@3 as own summary before actual FINAL
+callback; no daemon-owned merge/recovery, stale approvals or synthetic receipt.
+Readiness remains disabled; source is not installed/loaded/enabled acceptance.
+
+
+A bound workflow-coding-final-manager@4 is a NEW genuine same-subject attempt,
+not a content revision or permission to replay its predecessor. Preserve its
+final-scope@4/predecessor, actual current attempt/task/SID/workspace/reference,
+all retained contributors and three original current upstream results. Use only
+its own supplied LOCAL finalize-command@1 (r1) or @2 (r2/3), stable own key and
+existing authorized repository tools. Independently recheck repository/base/head,
+original results/checks/current entitlements in THIS live session. Never reuse
+an old intent/reservation/action/result/callback or infer safety from absent PID,
+ended SID, task label or held state. Partial/uncertain effects stay with the
+original owner. Only this actual new manager may perform its fresh expected-head
+non-admin guarded action and independently observe remote MERGED/full actual
+commit/aware time BEFORE preserving own final-output@2 (r1) or @3 (r2/3) and
+its own genuine FINAL callback. No daemon effect/recovery, new role selection,
+job wait or coding decision. Historical @2/@3 instructions retain their meanings;
+readiness remains false and no live allocation/enablement follows source delivery.
+
+
+Coding cancellation is a business stop. Stop fresh repository/stage/result/
+successor/finalize work when the authorized original task cancellation wins.
+Preserve original intent/action/receipt uncertainty and native preparation/
+terminal/outer ownership. Only a callback already committed under the exact
+original INTEGER/task/SID may drain or replay unchanged, without advancing.
+A stopped task, missing handle/control or transport loss supplies no cleanup,
+remote-effect clearance, reservation release or retry permission. A later ordinary
+ancestor batch preserves earlier cancelled graphs even without another live
+coding graph or ordinary sibling. After G1 then ordinary P are cancelled, a
+higher live Q retains G1 through terminal ordinary dependency paths. This is
+separate from live mutation: newly captured rows below the stopped path must
+be terminal, graphs already cancelled, and unrelated ordinary subtrees stay
+untouched. Hidden live work refuses. Only normally reachable live ordinary rows
+receive their sole overlay; a normally reachable fresh G2 is fenced once.
+With no fresh graph, a separate closed
+ordinary-operation audit anchors the original cancellation without another graph
+fence/control/result;
+complete readers authenticate every batch and the sole ordinary-row overlay
+against unchanged original admission bytes. Retained task originals compare at
+an independently reconstructed later capture boundary; authenticated event and
+heartbeat order must agree with its capture interval. Full native suffix replay
+and exact current SQL equality still include every field, including executor_pid,
+on the original shared copy/traversal allowance; no history rewrite or settlement
+inference follows. A point stop of a coding-dependent
+ordinary ancestor refuses before writes, independently of mutation cascade;
+ordinary-only point stops remain supported. Prepared/unknown ownership,
+missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
+without a PID and after a successful control return. Only positive original owner
+settlement permits the existing safe disposition; never clear tracker/journal
+ownership to force it. The existing Founder task-cancel route owns cancellation;
+this skill grants no control tool.
+Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
+availability as source-merge prerequisites under sole recovery ROOT12727.
+Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
+acceptance remains NOT RUN/open and required before ordinary work/activation.
+Readiness remains unconditionally disabled; this grants no live allocation.
+Deferred native recovery/reassignment remain unavailable separately. Genuine
+current task/SID report-completion remains the final action; never fabricate
+an earlier result or another task's callback to work around a refusal.

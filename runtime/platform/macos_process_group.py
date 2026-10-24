@@ -21,8 +21,8 @@ Truthful limitations (reported as capabilities, never hidden):
 
 Group-ownership safety: the group is signaled only when the census proves
 it is ours (the root's recorded start identity still matches, or at least
-one census member currently holds the captured pgid). A reused group number
-with no verified member is never signaled.
+one previously authenticated live identity still holds the captured pgid). A
+reused group number with no verified member is never signaled.
 """
 
 from __future__ import annotations
@@ -34,15 +34,16 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Callable
 
 from runtime.platform.process_census import (
     ProcessObservation,
+    ProcessObservationUnavailable,
     ProcessTreeCensus,
     default_process_reader,
     is_zombie,
     merge_sample_peaks,
-    pid_live,
     sample_gaps,
 )
 from runtime.platform.session_backend import (
@@ -67,6 +68,20 @@ logger = logging.getLogger(__name__)
 _BACKEND_NAME = "macos-process-group"
 _BACKEND_VERSION = "0.1"
 _POLL_INTERVAL = 0.05
+_MAX_TRUSTED_IDENTITIES = 1024
+
+
+@dataclass
+class _Session:
+    root_pid: int
+    root_identity: str
+    pgid: int
+    started: float
+    # Only identities authenticated while the root/known group was still ours.
+    members: dict[tuple[int, str], ProcessObservation] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    retired: bool = False
+    observation_error: str | None = None
 
 
 class MacOSProcessGroupBackend:
@@ -91,22 +106,23 @@ class MacOSProcessGroupBackend:
         self._sleep = sleep
         self._census = census or ProcessTreeCensus(default_process_reader())
         self._lock = threading.Lock()
-        # token -> (root_pid, root_identity, pgid, started_at, member snapshot)
-        self._sessions: dict[str, tuple] = {}
+        self._sessions: dict[str, _Session] = {}
 
     # ── capability probe (real operations) ─────────────────────────
 
     def probe(self) -> CapabilityReport:
         """Operationally verify process-group + census machinery.
 
-        Creates one disposable child in a new session/group, verifies the
-        group id, verifies ``killpg`` reaches it, reaps it, and verifies the
-        identity-safe census reader works. Leaves no residue. Reports
+        Runs sleep directly in a new session/group, verifies the group id
+        and ``killpg`` reachability, and waits for that nonforking child after
+        TERM or fallback KILL. Unknown disposal refuses health; census
+        enumeration alone does not prove cleanup. Reports
         ``best_effort`` cleanup/reporting and ``unavailable`` limits."""
         started = self._monotonic()
+        probe_error = None
         try:
             child = subprocess.Popen(
-                ["sh", "-c", "sleep 0.2"],
+                ["sleep", "0.2"],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -114,21 +130,32 @@ class MacOSProcessGroupBackend:
             try:
                 pgid = os.getpgid(child.pid)
                 if pgid != child.pid:
-                    return self._unhealthy(
-                        started, f"new session group mismatch: pgid={pgid} pid={child.pid}"
+                    raise RuntimeError(
+                        f"new session group mismatch: pgid={pgid} pid={child.pid}"
                     )
                 # killpg(0) must not raise for a live group we own.
                 os.killpg(child.pid, 0)
                 self._census.start_identity(child.pid)
+            except Exception as exc:  # retain the probe failure through disposal
+                probe_error = exc
             finally:
                 try:
-                    child.terminate()
-                    child.wait(timeout=5)
-                except (ProcessLookupError, subprocess.TimeoutExpired, OSError):
                     try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        pass
+                        child.terminate()
+                    except ProcessLookupError:
+                        pass  # Already exited still requires a direct wait.
+                    child.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    try:
+                        try:
+                            child.kill()
+                        except ProcessLookupError:
+                            pass
+                    finally:
+                        # Even a failed KILL must attempt the bounded direct wait.
+                        child.wait(timeout=5)
+            if probe_error is not None:
+                raise probe_error
             # A live census read proves enumeration is usable on this host.
             self._census.descendants(os.getpid())
             return CapabilityReport(
@@ -141,15 +168,19 @@ class MacOSProcessGroupBackend:
                     Capability.REPORTS_PROCESS_PEAK: CapabilityLevel.BEST_EFFORT,
                 },
                 evidence=(
-                    "probe: created + signaled + reaped a disposable process "
-                    "group; identity-safe census enumerated the live process "
+                    "probe: directly launched nonforking sleep in a new group; "
+                    "signaled and waited for the direct child; "
+                    "identity-safe census enumerated the live process "
                     "table"
                 ),
                 probed_at=started,
                 healthy=True,
             )
         except Exception as exc:  # noqa: BLE001 — probe must degrade honestly
-            return self._unhealthy(started, f"probe failed: {exc}")
+            reason = f"probe failed: {exc}"
+            if probe_error is not None and exc is not probe_error:
+                reason = f"probe failed: {probe_error}; helper disposal failed: {exc}"
+            return self._unhealthy(started, reason)
 
     def _unhealthy(self, started: float, reason: str) -> CapabilityReport:
         return CapabilityReport(
@@ -207,16 +238,21 @@ class MacOSProcessGroupBackend:
             raise BackendLaunchError(
                 f"launched process is not a group leader: pgid={pgid} pid={proc.pid}"
             )
-        identity = self._census.start_identity(proc.pid) or ""
-        snapshot = self._snapshot_members(proc.pid, identity)
+        identity = ""
+        session = _Session(proc.pid, identity, pgid, self._monotonic())
+        try:
+            root = self._census.reader().read_process_checked(proc.pid)
+            identity = root.start_identity if root is not None else ""
+            if not identity:
+                raise ProcessObservationUnavailable("launch identity unavailable")
+            session.root_identity = identity
+            self._snapshot_members(session)
+        except Exception as exc:
+            # Popen already exists. Keep its owner/handle even on an incomplete
+            # initial census, so normal finish still waits the direct child.
+            session.observation_error = str(exc)
         with self._lock:
-            self._sessions[pending.token] = (
-                proc.pid,
-                identity,
-                pgid,
-                self._monotonic(),
-                snapshot,
-            )
+            self._sessions[pending.token] = session
         return RunningHandle(
             backend=_BACKEND_NAME,
             token=pending.token,
@@ -244,16 +280,20 @@ class MacOSProcessGroupBackend:
                     sampled_at=self._monotonic(),
                     provenance=MeasurementProvenance.UNAVAILABLE,
                 )
-            root_pid, identity, _pgid, _started, _snap = session
-            members = self._snapshot_members(root_pid, identity)
-            with self._lock:
-                self._sessions[running.token] = (
-                    root_pid,
-                    identity,
-                    _pgid,
-                    _started,
-                    members,
-                )
+            # Finish owns this same lock through terminal observation/retirement.
+            # A read already in flight settles before finish; a late captured
+            # reference can neither recreate a token nor change terminal facts.
+            with session.lock:
+                if session.retired:
+                    return ResourceSample(sampled_at=self._monotonic(),
+                                          provenance=MeasurementProvenance.UNAVAILABLE)
+                try:
+                    members = self._snapshot_members(session)
+                except Exception as exc:
+                    session.observation_error = str(exc)
+                    raise
+                if session.observation_error is not None:
+                    raise ProcessObservationUnavailable(session.observation_error)
             rss = sum(o.rss_bytes for o in members.values() if o.rss_bytes is not None)
             cpu = sum(o.cpu_seconds for o in members.values() if o.cpu_seconds is not None)
             return ResourceSample(
@@ -266,27 +306,62 @@ class MacOSProcessGroupBackend:
 
         return _sample
 
-    def _snapshot_members(
-        self, root_pid: int, root_identity: str, pgid: int | None = None
-    ) -> dict[int, ProcessObservation]:
-        """Identity-safe union of the descendant tree + group members.
+    def _snapshot_members(self, session: _Session) -> dict[int, ProcessObservation]:
+        """Merge one complete checked observation into authenticated history.
 
-        Returns pid -> observation. The tree walk claims only processes whose
-        ancestor chain reaches the (identity-verified) root; group members
-        are added so reparented in-group processes are still accounted.
-        ``pgid`` may be supplied from the launch/session record so group
-        membership is still enumerable after the root process exits."""
-        tree = self._census.descendants(root_pid, root_identity or None, include_root=True)
-        members: dict[int, ProcessObservation] = {o.pid: o for o in tree}
-        if pgid is None:
-            try:
-                pgid = os.getpgid(root_pid)
-            except OSError:
-                pgid = None
-        if pgid is not None:
-            for o in self._census.group_members(pgid):
-                members.setdefault(o.pid, o)
-        return members
+        Fresh numeric-group membership cannot authenticate itself. First match
+        the original root or a previously authenticated live same-group member;
+        only then admit new group members/descendants from this observation.
+        Missing identities in an incomplete scan never erase prior facts.
+        """
+        observations = self._census.reader().read_all_checked()
+        by_pid = {o.pid: o for o in observations}
+        root = by_pid.get(session.root_pid)
+        root_matches = bool(root and session.root_identity
+                            and root.start_identity == session.root_identity
+                            and not is_zombie(root.state))
+        witnesses = [
+            current for (pid, identity) in session.members
+            if (current := by_pid.get(pid)) is not None
+            and current.start_identity == identity and not is_zombie(current.state)
+        ]
+        group_owned = (root_matches and root.pgid == session.pgid) or any(
+            o.pgid == session.pgid for o in witnesses
+        )
+        live = {(o.pid, o.start_identity): o for o in witnesses}
+        # Descendants of retained escaped members are still authenticated by
+        # lineage; they do not grant ownership of their new numeric group.
+        seeds = {o.pid for o in witnesses}
+        if root_matches:
+            seeds.add(root.pid)
+            live[(root.pid, root.start_identity)] = root
+        if group_owned:
+            for o in observations:
+                if o.pgid == session.pgid and not is_zombie(o.state):
+                    if not o.start_identity:
+                        raise ProcessObservationUnavailable("group member identity unavailable")
+                    seeds.add(o.pid)
+                    live[(o.pid, o.start_identity)] = o
+        children: dict[int, list[ProcessObservation]] = {}
+        for o in observations:
+            children.setdefault(o.ppid, []).append(o)
+        pending = list(seeds)
+        seen = set(seeds)
+        while pending:
+            for o in children.get(pending.pop(), ()):
+                if o.pid in seen or is_zombie(o.state):
+                    continue
+                if not o.start_identity:
+                    raise ProcessObservationUnavailable("descendant identity unavailable")
+                seen.add(o.pid)
+                pending.append(o.pid)
+                live[(o.pid, o.start_identity)] = o
+        if len(session.members.keys() | live.keys()) > _MAX_TRUSTED_IDENTITIES:
+            raise ProcessObservationUnavailable("trusted identity history exhausted")
+        # Keep historical keys until retirement (at most1024); only current
+        # matched live values are used for measurement. No silent eviction.
+        session.members.update(live)
+        return {o.pid: o for o in live.values()}
 
     def sample(self, running: RunningHandle) -> ResourceSample:
         """Backend ``sample`` (protocol): one portable tree sample."""
@@ -300,120 +375,90 @@ class MacOSProcessGroupBackend:
         samples: tuple[ResourceSample, ...] | None = None,
         sample_prefix_gap: float = 0.0,
     ) -> Receipt:
-        """TERM -> bounded grace -> KILL the process group; census survivors.
+        """Serialize final observation, safe TERM/KILL and direct-child wait.
 
-        Runs on every terminal path, clean success included. The group is
-        signaled only when the census proves ownership (root identity match
-        or a verified member in the captured pgid); escaped descendants that
-        survive are reported as best-effort :class:`SurvivorRecord` and stay
-        censused/charged/visible (never an automatic admission block).
-
-        The survivor census is finish's OWN **fresh** identity-safe
-        descendant census (never the last periodic snapshot): an escaped
-        descendant created after the last sample is only observable while
-        its ancestor chain still reaches the root, so the shipping finish
-        seam must take the census at terminal time. A census/measurement
-        exception propagates as explicit failure evidence (the supervisor
-        turns teardown failure into fail-closed admission blocking) — it is
-        never collapsed into an empty clean group."""
-        samples = tuple(samples or ())
-        token = running.token
+        History remains owned through finish. Unknown observation is sticky and
+        raises to the supervisor's cleanup_error/gate; no successful provider
+        result can turn it into a clean receipt. Only Popen's direct child is
+        waited here, with the existing grace plus bounded KILL allowance.
+        """
         with self._lock:
-            session = self._sessions.pop(token, None)
+            session = self._sessions.get(running.token)
+        if session is None:
+            raise ProcessObservationUnavailable("process-group session unavailable")
         started = self._monotonic()
-        root_pid = running.root_pid
-        root_identity = running.start_identity or ""
-        pgid = running.root_pid  # start_new_session makes the root the leader
-        if session is not None:
-            root_pid, root_identity, pgid, _started, _snapshot = session
-        # Fresh final identity-safe descendant census — the shipping seam.
-        snapshot = self._snapshot_members(root_pid, root_identity, pgid=pgid)
-
-        # ── group-ownership proof before signaling ──
-        if not self._group_is_ours(root_pid, root_identity, pgid, snapshot):
-            # Refuse to signal an ambiguous group number (PID-reuse safety).
-            group_members = self._group_members_alive(pgid)
-            survivors = self._verified_survivors(snapshot)
-            if group_members:
-                # Verified members sit in a group we cannot prove is ours —
-                # fail-closed: residue is reported, cleanup incomplete.
-                return self._receipt(
-                    terminal_reason=terminal_reason,
-                    cleanup_status=CleanupStatus.INCOMPLETE,
-                    quiescent=False,
-                    wall_start=started,
-                    session_started=(session[3] if session is not None else started),
-                    samples=samples,
-                    survivors=survivors,
-                    sample_prefix_gap=sample_prefix_gap,
-                    invocation_kind=running.invocation_kind,
-                    executor_profile=running.executor_profile,
+        deadline = started + grace_seconds + min(grace_seconds, 2.0)
+        with session.lock:
+            if session.retired:
+                raise ProcessObservationUnavailable("process-group session already retired")
+            failure = None
+            receipt = None
+            try:
+                receipt = self._finish_owned(
+                    session, running, terminal_reason, grace_seconds,
+                    tuple(samples or ()), sample_prefix_gap, started,
                 )
-            return self._receipt(
-                terminal_reason=terminal_reason,
-                cleanup_status=(
-                    CleanupStatus.CLEAN if not survivors else CleanupStatus.TERM
-                ),
-                quiescent=not survivors,
-                wall_start=started,
-                session_started=(session[3] if session is not None else started),
-                samples=samples,
-                survivors=survivors,
-                sample_prefix_gap=sample_prefix_gap,
-                invocation_kind=running.invocation_kind,
-                executor_profile=running.executor_profile,
-            )
+            except Exception as exc:
+                failure = exc
+            finally:
+                try:
+                    if running.process is None:
+                        raise ProcessObservationUnavailable("direct process handle unavailable")
+                    # Also runs when shutdown froze before bind and skipped
+                    # communicate. Never use wildcard/adopted-child waits.
+                    running.process.wait(timeout=max(0.0, deadline - self._monotonic()))
+                except Exception as exc:
+                    if failure is None:
+                        failure = exc
+                    else:
+                        failure = RuntimeError(f"{failure}; direct child wait failed: {exc}")
+                session.retired = True
+                with self._lock:
+                    self._sessions.pop(running.token, None)
+            if failure is not None:
+                raise failure
+            return receipt
 
-        # ── graceful TERM of the group, bounded by the measured grace ──
-        group_members = self._group_members_alive(pgid)
-        if not group_members:
-            # The group is already empty (e.g. clean success, no residue) —
-            # nothing to signal; escaped survivors are still accounted.
-            survivors = self._verified_survivors(snapshot)
-            return self._receipt(
-                terminal_reason=terminal_reason,
-                cleanup_status=(
-                    CleanupStatus.CLEAN if not survivors else CleanupStatus.TERM
-                ),
-                quiescent=not survivors,
-                wall_start=started,
-                session_started=(session[3] if session is not None else started),
-                samples=samples,
-                survivors=survivors,
-                sample_prefix_gap=sample_prefix_gap,
-                invocation_kind=running.invocation_kind,
-                executor_profile=running.executor_profile,
-            )
-        self._signal_group(pgid, signal.SIGTERM)
-        deadline = started + grace_seconds
-        group_members = self._group_members_alive(pgid)
-        while group_members and self._monotonic() < deadline:
-            self._sleep(_POLL_INTERVAL)
-            group_members = self._group_members_alive(pgid)
-        escalated = bool(group_members)
-        if escalated:
-            # ── escalate to KILL, bounded ──
-            self._signal_group(pgid, signal.SIGKILL)
-            kill_deadline = self._monotonic() + min(grace_seconds, 2.0)
-            while self._group_members_alive(pgid) and self._monotonic() < kill_deadline:
+    def _finish_owned(
+        self, session: _Session, running: RunningHandle, terminal_reason: str,
+        grace_seconds: float, samples: tuple[ResourceSample, ...],
+        sample_prefix_gap: float, started: float,
+    ) -> Receipt:
+        # Fresh observation is required even if earlier sampling failed. A
+        # later readable scan cannot erase the earlier ownership uncertainty.
+        self._snapshot_members(session)
+        if session.observation_error is not None:
+            raise ProcessObservationUnavailable(session.observation_error)
+        group = self._group_members_alive(session.pgid)
+        escalated = False
+        signaled = False
+        if group:
+            self._signal_owned_group(session, signal.SIGTERM)
+            signaled = True
+            deadline = started + grace_seconds
+            while group and self._monotonic() < deadline:
                 self._sleep(_POLL_INTERVAL)
-        # ── identity-verified survivors (escaped or TERM-resistant) ──
-        survivors = self._verified_survivors(snapshot)
-        group_remaining = self._group_members_alive(pgid)
-        cleanup = (
-            CleanupStatus.INCOMPLETE
-            if group_remaining
-            else (CleanupStatus.KILL if escalated else CleanupStatus.TERM)
-        )
-        quiescent = not group_remaining and not survivors
+                self._snapshot_members(session)
+                group = self._group_members_alive(session.pgid)
+            if group:
+                self._signal_owned_group(session, signal.SIGKILL)
+                escalated = True
+                deadline = self._monotonic() + min(grace_seconds, 2.0)
+                while group and self._monotonic() < deadline:
+                    self._sleep(_POLL_INTERVAL)
+                    self._snapshot_members(session)
+                    group = self._group_members_alive(session.pgid)
+        self._snapshot_members(session)
+        survivors = self._verified_survivors(session.members)
+        group = self._group_members_alive(session.pgid)
         return self._receipt(
             terminal_reason=terminal_reason,
-            cleanup_status=cleanup,
-            quiescent=quiescent,
-            wall_start=started,
-            session_started=(session[3] if session is not None else started),
-            samples=samples,
-            survivors=survivors,
+            cleanup_status=(CleanupStatus.INCOMPLETE if group else
+                            CleanupStatus.KILL if escalated else
+                            CleanupStatus.TERM if signaled or survivors else CleanupStatus.CLEAN),
+            quiescent=not group and not survivors,
+            wall_start=started, session_started=session.started,
+            samples=samples, survivors=survivors,
             sample_prefix_gap=sample_prefix_gap,
             invocation_kind=running.invocation_kind,
             executor_profile=running.executor_profile,
@@ -469,7 +514,7 @@ class MacOSProcessGroupBackend:
             self._sessions.pop(pending.token, None)
 
     def recover(self, handle_token: str) -> RecoveryResult:
-        """No durable residue: process groups die with the session."""
+        """No durable recovery; daemon-crash cleanup is not guaranteed."""
         return RecoveryResult(
             recovered=False,
             evidence=(
@@ -480,76 +525,54 @@ class MacOSProcessGroupBackend:
 
     # ── internals ─────────────────────────────────────────────────
 
-    def _group_is_ours(
-        self,
-        root_pid: int,
-        root_identity: str,
-        pgid: int,
-        snapshot: dict[int, ProcessObservation],
-    ) -> bool:
-        """Proof of group ownership before any signal is sent.
+    def _group_is_ours(self, session: _Session) -> bool:
+        """A current identity must match previously authenticated ownership.
 
-        True when the root's identity still matches (it leads the group) or
-        when at least one snapshot member currently holds the captured pgid.
-        A reused group number with no verified member is never signaled."""
-        ident_now = self._census.start_identity(root_pid)
-        if ident_now is not None and root_identity and ident_now == root_identity:
-            return True
-        for pid in snapshot:
-            try:
-                if os.getpgid(pid) == pgid:
-                    return True
-            except (ProcessLookupError, PermissionError):
+        Fresh numeric-group membership alone is never a witness. Recheck for
+        EACH signal, including escalation. POSIX check-to-signal races remain
+        best effort; this is not a kernel containment guarantee.
+        """
+        current_by_pid = {o.pid: o for o in self._census.reader().read_all_checked()}
+        keys = {(session.root_pid, session.root_identity)} | session.members.keys()
+        for pid, identity in keys:
+            if not identity:
                 continue
+            current = current_by_pid.get(pid)
+            if (current is not None and current.start_identity == identity
+                    and not is_zombie(current.state) and current.pgid == session.pgid):
+                return True
         return False
 
     def _group_members_alive(self, pgid: int) -> dict[int, str]:
-        """Live (non-zombie) members of *pgid* (identity-verified).
+        observations = self._census.reader().read_all_checked()
+        return {o.pid: o.start_identity for o in observations
+                if o.pgid == pgid and not is_zombie(o.state)}
 
-        A census/measurement exception is EXPLICIT failure evidence — it
-        propagates (the supervisor turns teardown failure into fail-closed
-        admission blocking). It must never collapse into an empty group that
-        could be misread as CLEAN/quiescent."""
-        members = self._census.group_members(pgid)
-        alive = {}
-        for o in members:
-            if is_zombie(o.state):
-                continue  # a zombie is already dead — never a survivor
-            if o.start_identity is not None:
-                alive[o.pid] = o.start_identity
-        return alive
-
-    def _signal_group(self, pgid: int, sig: signal.Signals) -> None:
+    def _signal_owned_group(self, session: _Session, sig: signal.Signals) -> None:
+        if not self._group_is_ours(session):
+            raise ProcessObservationUnavailable("live group has no authenticated ownership witness")
         try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass  # group already gone or not ours — ownership was verified
+            os.killpg(session.pgid, sig)
+        except ProcessLookupError:
+            pass  # Proven disappearance, unlike permission or other errors.
 
-    def _verified_survivors(self, snapshot: dict[int, ProcessObservation]) -> tuple[SurvivorRecord, ...]:
-        """Identity-verified survivors from the observed member snapshot.
-
-        A snapshot member is a survivor only when it is STILL alive right
-        now (the CURRENT observation — a zombie that appeared since the
-        snapshot is already dead and answers no signal) AND its start
-        identity still matches the snapshot — PID reuse is never counted as
-        the same process."""
+    def _verified_survivors(
+        self, history: dict[tuple[int, str], ProcessObservation]
+    ) -> tuple[SurvivorRecord, ...]:
+        """Proven death/disappearance/reuse clears liveness; unreadable raises."""
         now = self._monotonic()
+        current_by_pid = {o.pid: o for o in self._census.reader().read_all_checked()}
         survivors: list[SurvivorRecord] = []
-        for pid in sorted(snapshot):
-            current = self._census.reader().read_process(pid)
+        for pid, identity in sorted(history):
+            current = current_by_pid.get(pid)
             if current is None or is_zombie(current.state):
-                continue  # gone or an unreaped zombie — not a survivor
-            if current.start_identity != snapshot[pid].start_identity:
-                continue  # PID reused by an unrelated process
-            survivors.append(
-                SurvivorRecord(
-                    pid=pid,
-                    start_identity=current.start_identity,
-                    backend=_BACKEND_NAME,
-                    discovered_at=now,
-                    last_seen_at=now,
-                )
-            )
+                continue
+            if current.start_identity != identity:
+                continue
+            survivors.append(SurvivorRecord(
+                pid=pid, start_identity=identity, backend=_BACKEND_NAME,
+                discovered_at=now, last_seen_at=now,
+            ))
         return tuple(survivors)
 
 

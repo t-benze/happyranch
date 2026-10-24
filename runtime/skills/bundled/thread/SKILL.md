@@ -65,6 +65,33 @@ history end-to-end, then decide one outcome.
 > not in this skill. This skill covers the operational mechanics — how to
 > format and submit each outcome.
 
+The C1a/C1b private thread-delivery release service has no supported human
+release command or route. Its dormant initial serving attachment is admitted only
+after actual successful ASGI/listener startup, without selection/release. Agents,
+automatic diagnostics, reapers and schedulers cannot select the human risk
+override. Caller proof flags and temporary/dynamic contexts supply no authority.
+A companion never clears raw lifecycle/host/move/Pause/effect uncertainty, supplies
+process proof, replenishes retries, restores task12044/10693, or grants a callback
+for a consumed token. Terminal sources get no second catch-up. Future human
+admission must bind exact preview/key/owner/range and explicit late-write,
+overlap, repeated-effect and missing-closure risks. Old-reader/mixed-version
+operation and downgrade after use are unsupported. Current invocation-token
+callbacks below keep their native single-use authority; no agent release follows.
+C1-13 now has dormant UNMOUNTED router and UNCALLED CLI registration/handlers,
+private custody and client source only. Existing CLI registration/app mounts and
+service are unchanged; external_adapters_available=false, proof=false. It is a
+future HUMAN tool, no supported installed command or agent/live-use authority.
+Original strict16KiB JSON, distinct preview/command digests, explicit four-risk
+confirmation, positive private durability before POST, strict bounded32KiB
+no-store responses and same-key single-GET/no-reapply rules are source contracts.
+Committed history never certifies cleanup/recovery; false/null/true stay distinct.
+Fixtures/native denials/public activation are HELD with BOTH Web/Swift attributable
+RED/restoration/GREEN MISSING and no waiver/allocation. C1-13 activation and
+C2 task-tail remain deferred; behavioral/test-authoring proof UNEXECUTED.
+Current guarded owner observations never prove historical process/effect retirement.
+Disconnect/revoke timeout cannot discharge native lifetime or permit DB close;
+notification after commit can publish only the same genuine replacement token.
+
 ## Your invocation_token
 
 Look for this line in your prompt:

@@ -251,7 +251,16 @@ class WorkflowCutoverStore:
         return blockers
 
     def _drain_blockers(self, conn: sqlite3.Connection) -> list[dict]:
+        # The central J reader validates complete immutable setup histories and
+        # pointers, including metadata paths. Setup/import/mapping history has no
+        # run/host tail to drain; source/run/attempt/event/receipt families refuse.
         blockers = self._draft_readiness_blockers(conn) + self._integrity_blockers(conn)
+        if 'workflow_coding_runs' in self._workflow_tables(conn):
+            from runtime.workflows.coding_start import queued_storage
+            saved = queued_storage(conn, self._org_slug)
+            for instance in saved.runs:
+                blockers.append(self._blocker('cutover_coding_queued', record_id=instance,
+                    owner='workflow_coding', required_action='retain_compatible_coding_runtime'))
         outboxes = [dict(row) for row in conn.execute("SELECT * FROM workflow_dispatch_outbox ORDER BY id")]
         by_operation = {o["operation_id"]: o for o in outboxes}
         for table in ("workflow_dispatch_operations", "workflow_request_task_bridges"):

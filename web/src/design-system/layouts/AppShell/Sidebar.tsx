@@ -41,6 +41,7 @@ import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useGlobalJump } from '@/hooks/global-jump';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
+import { features } from '@/config/features';
 
 /**
  * IA-1: Grouped left sidebar + desktop window chrome, retiring the legacy tab bar.
@@ -231,9 +232,11 @@ export function Sidebar(): JSX.Element {
         <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
           {t('shell.nav.agents')}
         </SidebarNavItem>
-        <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
-          {t('shell.nav.workHours')}
-        </SidebarNavItem>
+        {features.work_hours_ui && (
+          <SidebarNavItem {...sidebarLink('work-hours', true)} icon={Clock}>
+            {t('shell.nav.workHours')}
+          </SidebarNavItem>
+        )}
         <SidebarNavItem {...sidebarLink('skills', true)} icon={Puzzle}>
           {t('shell.nav.skills')}
         </SidebarNavItem>

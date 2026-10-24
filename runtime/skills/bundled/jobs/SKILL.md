@@ -159,6 +159,25 @@ Python units RETIRED. Native permission/execution enforcement is unchanged.
 
 # jobs
 
+### Current Stop/status boundary — THR321seq6
+
+Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
+requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Running without attributable ownership yields pending/finalizing/unknown/held or
+owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
+blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
+Actual DB attachment/original preparation/attempt/runner/Process fences prevent
+cross-org ID collisions and stale-owner signals/removal/writes. The original job
+row/CAS, one trigger audit, actual producer and strict Pause disposition commit
+before local release/hint/wake; failed tails and descendant uncertainty remain.
+Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
+on read failure and offer explicit fresh detail-only Refresh status when streaming
+is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
+Stop success/error settlement refreshes actual detail/list; locale changes issue
+no requests. A terminal hint alone never verifies [done]. Source publication is separate
+from deployment or historical recovery.
+
 Native C3 preparation failure or ordinary process return never proves file,
 package or process cleanup. Unknown ownership remains in retained audit census.
 New retry budgets explicitly freeze even an empty schedule; missing legacy facts
@@ -388,7 +407,7 @@ successful operation. The blocked-report and lasting-grant rules live in the
 
 ## PR CI / guarded merge helper
 
-For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit a poll job and use the guarded-merge entrypoint on task resume.
+For PR-producing engineering tasks, use the existing authorized CI poll mechanism. The poll job reports readiness only. The final assigned manager performs the guarded action and remote observation in its genuine live session before its own completion callback.
 
 **Poll job:** submit a `review_required=false` job through the existing jobs path whose script invokes the poller entrypoint:
 
@@ -403,7 +422,11 @@ python -m runtime.daemon.pr_ci_waiter \
 For HappyRanch under THR-291 seq69, exactly these two unconditional lint/static
 checks apply on PR and exact-merge main; there are no path-specific behavioral
 merge checks. Daily Product E2E Health is outside expected-check lists and
-schedule-only at19:00UTC. First scheduled run is PENDING. Docs/lab are manual;
+daily at19:00UTC. Founder THR291seq247 additionally allocates ONE main-only
+workflow_dispatch under sole TASK-11897 after independent review/scoped QA,
+two final-head lints, guarded merge and exact-main receipt. The manual entry
+grants no standing run authority or retry. Actual health is separately observed.
+Docs/lab are manual;
 mac packaging is manual/tag; legacy integration schedule remains separate.
 Local default/all/pre-push selection is lint/static only; units RETIRED exit2.
 The waiter takes caller-supplied names; product gate semantics are unchanged.
@@ -414,7 +437,7 @@ Other repositories use their own current check policy.
 
 This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
 
-After the poll job completes, the resumed task inspects the verdict. If `ci_pass`, the task owner triggers the guarded-merge entrypoint as a short daemon-run step:
+After an authorized poll job completes, inspect its actual terminal receipt. The final assigned manager personally checks settled independent review/QA results and successful exact-head checks, then invokes the guarded-merge entrypoint in its genuine live session before its own completion callback:
 
 ```bash
 python -m runtime.daemon.pr_ci_merge \
@@ -427,11 +450,12 @@ The merge guard is conjunctive — all must pass before the engine attempts merg
 
 - review verdict is `APPROVE`;
 - QA verdict is `PASS`;
+- fresh PR head SHA equals the pinned SHA;
 - CI verdict is `ci_pass` for the pinned SHA;
-- PR head SHA is unchanged at merge time;
-- GitHub mergeability is `CLEAN`;
 - the PR is still open and not draft;
-- the helper uses the configured merge method.
+- GitHub mergeability is `CLEAN`;
+- the configured ordinary merge method sends the same full pinned head to
+  `gh pr merge --match-head-commit H`, without `--admin`.
 
 The guarded-merge implementation validates review/QA evidence (canonical vocabulary
 `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; NON-NULL structured
@@ -440,9 +464,11 @@ representation of legacy/no-structured rows — uses the strict annotated
 prose `Verdict: PASS — rationale` fallback; missing/contradictory/malformed/
 ambiguous evidence fails closed).
 
-It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
+Success requires actual read-only remote confirmation: exact addressed repository/PR number and GitHub URL, pinned head, MERGED state, full lowercase SHA1 merge commit and parseable timezone-aware `mergedAt`. Output retains the remote commit and time. Missing/invalid metadata or query failure after command success yields `merge_failed` (exit14) with post-effect uncertainty. No empty commit or local-time fallback exists.
 
-The poll job can auto-run without founder interaction. The merge runs inside the guarded-merge entrypoint on the daemon-run / EM-authority path; do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
+A nonzero/lost command response remains failed/uncertain, preserving its actual cause/exit where available. Later read-only confirmation can separately establish the exact effect; it never rewrites that receipt or permits a second merge. There is no admin fallback or automatic replay. Guard order, verdict/JSON/audit shapes and legacy evidence extraction are unchanged.
+
+An authorized poll job may auto-run through existing admission. The live final manager owns the merge and remote observation before callback; callback completion never triggers daemon PR finalization or recovery. Existing tool/repository entitlement remains required. Do not ask for raw `gh pr merge` permission or run arbitrary merge shell from a worker prompt.
 
 ## Cleanup
 
@@ -506,3 +532,72 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
+
+
+The disabled coding final-manager path uses the LOCAL workflows coding finalize
+command inside its actual running original manager invocation, never a job or
+daemon PR service. It observes the shared waiter once (settle=0/timeout=0) with
+stricter exact-head actual successful literal lints; pending/missing/ambiguous/
+skipped/neutral checks hold. Coding source/carrier/stage jobs remain forbidden by
+unchanged document/legacy predicates, even when the selected role is agent_manager.
+Separately entitled ordinary legacy preparation may use existing job mechanisms;
+no such task/job or entitlement is inferred here. Save original intent/command/
+remote receipts before own FINAL callback; transport loss never reissues merge.
+No automatic held-manager reallocation or PR recovery service exists. Readiness
+remains disabled; SOURCE/static is not native or remote acceptance.
+
+The repaired final-manager@2 path binds the selected authenticated repository
+reference to its repo_key checkout/raw-origin digest/opaque ID before checks or
+action, then again immediately before action. One original native OrgPaths/
+assigned-principal workspace capture selects the task/attempt reservation across
+cwd/key/path variants. Partial or failed recording never permits another action.
+Selected/native/final-output@2/history reconstruct the SAME full root/reference;
+no daemon file reservation, job runner or new command entitlement is supplied.
+
+
+Coding revision2/3 final-manager@3 retains the same live-session-only LOCAL
+finalize boundary and captured native workspace/reference. Final-selection@3,
+finalize-command@2 and final-output@3 bind only the current exact-subject fresh
+results. Never move its action or receipt production into a job, daemon, recovery
+runner or old source/upstream SID. Existing reservations/unknown facts survive.
+
+
+Coding cancellation is a business stop. Stop fresh repository/stage/result/
+successor/finalize work when the authorized original task cancellation wins.
+Preserve original intent/action/receipt uncertainty and native preparation/
+terminal/outer ownership. Only a callback already committed under the exact
+original INTEGER/task/SID may drain or replay unchanged, without advancing.
+A stopped task, missing handle/control or transport loss supplies no cleanup,
+remote-effect clearance, reservation release or retry permission. A later ordinary
+ancestor batch preserves earlier cancelled graphs even without another live
+coding graph or ordinary sibling. After G1 then ordinary P are cancelled, a
+higher live Q retains G1 through terminal ordinary dependency paths. This is
+separate from live mutation: newly captured rows below the stopped path must
+be terminal, graphs already cancelled, and unrelated ordinary subtrees stay
+untouched. Hidden live work refuses. Only normally reachable live ordinary rows
+receive their sole overlay; a normally reachable fresh G2 is fenced once.
+With no fresh graph, a separate closed
+ordinary-operation audit anchors the original cancellation without another graph
+fence/control/result;
+complete readers authenticate every batch and the sole ordinary-row overlay
+against unchanged original admission bytes. Retained task originals compare at
+an independently reconstructed later capture boundary; authenticated event and
+heartbeat order must agree with its capture interval. Full native suffix replay
+and exact current SQL equality still include every field, including executor_pid,
+on the original shared copy/traversal allowance; no history rewrite or settlement
+inference follows. A point stop of a coding-dependent
+ordinary ancestor refuses before writes, independently of mutation cascade;
+ordinary-only point stops remain supported. Prepared/unknown ownership,
+missing/failed controls and unsettled outer proof retain the existing root-tail incomplete disposition, even
+without a PID and after a successful control return. Only positive original owner
+settlement permits the existing safe disposition; never clear tracker/journal
+ownership to force it. The existing Founder task-cancel route owns cancellation;
+this skill grants no control tool.
+Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
+availability as source-merge prerequisites under sole recovery ROOT12727.
+Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
+acceptance remains NOT RUN/open and required before ordinary work/activation.
+Readiness remains unconditionally disabled; this grants no live allocation.
+Deferred native recovery/reassignment remain unavailable separately. Genuine
+current task/SID report-completion remains the final action; never fabricate
+an earlier result or another task's callback to work around a refusal.

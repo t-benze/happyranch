@@ -37,5 +37,5 @@
       }
     }
   },
-  "$comment": "The stdlib validator additionally rederives membership from resolved-inventory.json, compares live inputs at licenses, enforces included/excluded text associations, safe paths, nonempty UTF8 originals, digests and actual candidate/archive bytes. JSON Schema alone cannot establish those relations. No runtime DB schema is changed."
+  "$comment": "The stdlib validator additionally rederives membership from resolved-inventory.json, compares live inputs at licenses, enforces included/excluded text associations, safe paths, nonempty UTF8 originals, digests and actual candidate/archive bytes. JSON Schema alone cannot establish those relations. Direct resolved inputs require no asset/freezer/web evidence or packaging supervisor. No emitted/linker closure is asserted. No runtime DB schema is changed."
 }

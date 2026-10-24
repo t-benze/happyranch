@@ -10,6 +10,12 @@ import type { MessageKey } from '@/lib/i18n';
 
 const JOBS_ERROR_KEYS: Record<string, MessageKey> = {
   unknown_job: 'jobs.error.unknownJob',
+  job_runner_pending: 'jobs.error.runnerPending',
+  job_runner_finalizing: 'jobs.error.runnerFinalizing',
+  job_liveness_unknown: 'jobs.error.livenessUnknown',
+  job_owner_unavailable: 'jobs.error.ownerUnavailable',
+  team_move_native_held: 'jobs.error.moveHeld',
+  job_stop_unavailable: 'jobs.error.stopUnavailable',
   not_pending: 'jobs.error.notPending',
   not_running: 'jobs.error.notRunning',
   invalid_timeout: 'jobs.error.invalidTimeout',
@@ -17,7 +23,7 @@ const JOBS_ERROR_KEYS: Record<string, MessageKey> = {
   reason_too_long: 'jobs.reject.tooLong',
 };
 
-export type JobErrorView = { kind: 'message'; key: MessageKey } | { kind: 'raw'; text: string };
+export type JobErrorView = { kind: 'message'; key: MessageKey; detail?: string } | { kind: 'raw'; text: string };
 
 /**
  * Classify a thrown value as a descriptor instead of an English string:
@@ -32,7 +38,13 @@ export function classifyJobError(err: unknown, fallback: MessageKey): JobErrorVi
   const code = (err as { code?: string } | null | undefined)?.code;
   if (code) {
     if (Object.prototype.hasOwnProperty.call(JOBS_ERROR_KEYS, code)) {
-      return { kind: 'message', key: JOBS_ERROR_KEYS[code] };
+      const detail = (err as { detail?: Record<string, unknown> }).detail;
+      const facts = detail && ['job_owner_unavailable', 'job_stop_unavailable', 'team_move_native_held'].includes(code)
+        ? ['unavailable_code', 'operation_id', 'request_issued']
+          .filter((key) => Object.prototype.hasOwnProperty.call(detail, key))
+          .map((key) => `${key}=${String(detail[key])}`).join(', ')
+        : '';
+      return { kind: 'message', key: JOBS_ERROR_KEYS[code], detail: facts || undefined };
     }
     return { kind: 'raw', text: code };
   }
@@ -49,5 +61,5 @@ function rawDiagnostic(err: unknown): string | null {
 }
 
 export function renderJobError(view: JobErrorView, t: (key: MessageKey) => string): string {
-  return view.kind === 'raw' ? view.text : t(view.key);
+  return view.kind === 'raw' ? view.text : `${t(view.key)}${view.detail ? ` (${view.detail})` : ''}`;
 }

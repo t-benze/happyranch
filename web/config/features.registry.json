@@ -1,0 +1,12 @@
+{
+  "work_hours_ui": {
+    "purpose": "Show the Work Hours UI: navigation, overview/wakes/detail and legacy schedule routes, and the Organization Settings operating controls.",
+    "owner": "engineering_manager",
+    "removal_condition": "Remove once the Work Hours UI is accepted for release and the production profile enables it permanently."
+  },
+  "kb_compose_ui": {
+    "purpose": "Show the Knowledge Compose entry action and its write-path dialog.",
+    "owner": "engineering_manager",
+    "removal_condition": "Remove once KB compose is accepted for release or retired."
+  }
+}

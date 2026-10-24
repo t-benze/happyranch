@@ -1,9 +1,10 @@
-"""Unmounted SELECT-only retained coding mapping and setup history.
+"""SELECT-only version-aware mapping/original native admission closure.
 
 Caller admits the complete native/J schema and owns one coherent SQLite read
 transaction/connection/lock with raw native values for the entire call. This
 reader establishes saved grammar, original operation/generation prefix and
-historical admission/publication/setup containment only. No current default,
+historical admission/publication/native containment and, for custody records
+only, original setup closure. Agent-read role records never inherit custody. No current default,
 grant, task/SID/policy/source-rule/capability/J graph authenticity is asserted.
 No current pointer, roster, cache, filesystem, objects or network is read.
 """
@@ -19,7 +20,7 @@ from datetime import datetime
 from runtime.workflows.coding_authority_history import (
     CodingAuthorityHistoryError, SetupIssuanceHistory, _Budget,
     _SetupHistoryReader, _canonical, _capture_admission, _digest,
-    _integer, _rows, _token,
+    _integer, _bounded_rows, _decoded, _token,
 )
 from runtime.workflows.coding_saved_records import (
     CodingSavedRecordError, read_saved_mapping_record,
@@ -58,6 +59,7 @@ class HistoricalCodingMapping:
     storage_classes: tuple[str, ...]
     command_bytes: bytes
     setup_histories: tuple[SetupIssuanceHistory, ...]
+    source_capture: object
 
 
 @dataclass(frozen=True)
@@ -77,9 +79,13 @@ def _check(condition: bool) -> None:
 
 
 def _history(conn: sqlite3.Connection, org_slug: str,
-             mapping_id: str) -> CodingMappingHistory:
-    budget = _Budget()
-    setups = _SetupHistoryReader(conn, org_slug, budget)
+             mapping_id: str, *, budget: _Budget | None = None,
+             setups: _SetupHistoryReader | None = None,
+             expected_rows: dict | None = None, captures=None) -> CodingMappingHistory:
+    budget = budget if budget is not None else _Budget()
+    setups = setups if setups is not None else _SetupHistoryReader(conn, org_slug, budget)
+    from runtime.workflows._coding_mapping_admission import _MappingCaptures, audit_values, mapping_capture
+    captures = captures if captures is not None else _MappingCaptures(conn, org_slug, budget)
     inventory: list[tuple[tuple, tuple[str, ...], bytes, dict]] = []
     identities: set[str] = set()
     generations: set[int] = set()
@@ -90,25 +96,13 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     # Every one of the ten projections gates the ORIGINAL storage class before
     # fetch; TEXT byte length includes multibyte and embedded-NUL suffixes.
     # Invalid/oversize values become bounded NULL with original typeof intact.
-    for row in _rows(conn,
-        "SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=1048576 THEN id ELSE NULL END,"
-        "CASE WHEN typeof(org_slug)='text' AND length(CAST(org_slug AS BLOB))<=1048576 THEN org_slug ELSE NULL END,"
-        "CASE WHEN typeof(release_identity)='text' AND length(CAST(release_identity AS BLOB))<=1048576 THEN release_identity ELSE NULL END,"
-        "CASE WHEN typeof(generation)='integer' THEN generation ELSE NULL END,"
-        "CASE WHEN typeof(principal)='text' AND length(CAST(principal AS BLOB))<=1048576 THEN principal ELSE NULL END,"
-        "CASE WHEN typeof(operation_key)='text' AND length(CAST(operation_key AS BLOB))<=1048576 THEN operation_key ELSE NULL END,"
-        "CASE WHEN typeof(request_digest)='text' AND length(CAST(request_digest AS BLOB))<=1048576 THEN request_digest ELSE NULL END,"
-        "CASE WHEN typeof(mapping_bytes)='blob' AND length(mapping_bytes)<=1048576 THEN mapping_bytes ELSE NULL END,"
-        "CASE WHEN typeof(mapping_digest)='text' AND length(CAST(mapping_digest AS BLOB))<=1048576 THEN mapping_digest ELSE NULL END,"
-        "CASE WHEN typeof(created_at)='text' AND length(CAST(created_at AS BLOB))<=1048576 THEN created_at ELSE NULL END,"
-        'typeof(id),typeof(org_slug),typeof(release_identity),typeof(generation),'
-        'typeof(principal),typeof(operation_key),typeof(request_digest),'
-        'typeof(mapping_bytes),typeof(mapping_digest),typeof(created_at) '
-        'FROM workflow_coding_mappings WHERE org_slug=? OR id=? '
-        'ORDER BY generation,id LIMIT ?',
-        (org_slug, mapping_id, _ROW_LIMIT + 1), _ROW_LIMIT):
+    columns = ('id', 'org_slug', 'release_identity', 'generation', 'principal',
+               'operation_key', 'request_digest', 'mapping_bytes', 'mapping_digest', 'created_at')
+    for row in _bounded_rows(conn, 'workflow_coding_mappings', columns,
+        tuple((kind,) for kind in _TYPES), budget,
+        where='org_slug=? OR id=?', args=(org_slug, mapping_id), maximum=_ROW_LIMIT):
         budget.step()
-        values = budget.row(row, _TYPES)
+        values = budget.row(row, _TYPES, counted=True, charged=True)
         (identity, actual_org, release, generation, principal, key,
          request_digest, raw, digest, created_at) = values
         _token(identity)
@@ -117,17 +111,18 @@ def _history(conn: sqlite3.Connection, org_slug: str,
                and identity not in identities and generation not in generations
                and (principal, key) not in operations and digest not in digests
                and digest == _digest(raw))
-        saved = read_saved_mapping_record(raw, expected_org_slug=org_slug)
+        saved = read_saved_mapping_record(raw, expected_org_slug=org_slug, budget=budget)
         _check(saved.command_bytes is not None)
-        record = json.loads(raw)
-        command = json.loads(saved.command_bytes)
+        record = _decoded(json.loads(raw), budget)
+        command = _decoded(json.loads(saved.command_bytes), budget)
         # WorkflowTemplatePrincipal.operation_principal convention. This is
         # historical attribution, not construction of an authenticated actor.
-        operation_principal = 'agent:' + record['issuer']['principal']
+        human = record['format'] == 'workflow-coding-agent-read-role-record@2'
+        operation_principal = ('human:' if human else 'agent:') + record['issuer']['principal']
         _check(principal == operation_principal
                and release == record['mapping']['release']['identity']
                and key == command['operation_key']
-               and generation == command['expected_generation'] + 1
+               and generation == command['expected_mapping_generation' if human else 'expected_generation'] + 1
                and request_digest == record['command_digest'] == _digest(saved.command_bytes)
                and created_at == record['created_at'])
         identities.add(identity)
@@ -135,6 +130,9 @@ def _history(conn: sqlite3.Connection, org_slug: str,
         operations.add((principal, key))
         digests.add(digest)
         inventory.append((values, row[10:], saved.command_bytes, record))
+    captures.load()
+    _check(set(captures.by_mapping) == identities)
+    inventory.sort(key=lambda entry: (entry[0][3], entry[0][0]))
     selected = [entry for entry in inventory if entry[0][0] == mapping_id]
     _check(len(selected) == 1)
     target_generation = selected[0][0][3]
@@ -143,7 +141,11 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     previous_time: datetime | None = None
     admissions: set[str] = set()
     result: list[HistoricalCodingMapping] = []
-    for expected_generation, (values, storage_classes, command_raw, record) in enumerate(required, 1):
+    previous_mapping, previous_snapshot = None, None
+    previous_audit = 0
+    # Validate the whole inventory even for an old selected pin: later human
+    # publications must not hide an orphan, a native suffix or broken current state.
+    for expected_generation, (values, storage_classes, command_raw, record) in enumerate(inventory, 1):
         budget.step()
         _check(values[3] == expected_generation)
         timestamp = datetime.fromisoformat(values[9].replace('Z', '+00:00'))
@@ -159,18 +161,50 @@ def _history(conn: sqlite3.Connection, org_slug: str,
                         generation=capture['pin']['generation'],
                         request_digest=values[6], admitted_by=values[4])
         _capture_admission(conn, expected, capture, budget)
-        grant = json.loads(base64.b64decode(capture['grant_bytes_base64'], validate=True))
+        grant = _decoded(json.loads(base64.b64decode(capture['grant_bytes_base64'], validate=True)), budget)
         histories = []
-        for setup in grant['setups']:
+        for setup in (grant['setups'] if record['format'] == 'workflow-coding-mapping-record@1' else []):
             budget.step()
             # Pure reader already checks U -> mapping/adoption prior times,
             # manager/actions/repository radius and all adoption pin equalities.
             # Exact canonical U must belong to a genuine native issuance with
             # its own earlier complete prefix/admission/publication closure.
             histories.append(setups.setup(setup['id'], _canonical(setup)))
+        from runtime.workflows._coding_settings_history import HUMAN_RECORD, HumanPublication, human_mapping
+        command = _decoded(json.loads(command_raw), budget)
+        if record['format'] == HUMAN_RECORD:
+            original = captures.by_mapping.get(values[0])
+            _check(type(original) is HumanPublication)
+            previous_snapshot = human_mapping(values, record, command, previous_mapping,
+                                               previous_snapshot, original, budget)
+            _check(original.audit_rows[0]['id'] > previous_audit)
+            previous_audit = original.audit_rows[1]['id']
+        else:
+            _check(previous_snapshot is None)  # Native history is a prefix only.
+            original = mapping_capture(conn, org_slug, values[0], command_raw, record, budget,
+                                       inventory=captures)
+            _check(original.audit_record._value('id') > previous_audit)
+            previous_audit = original.audit_record._value('id')
+        previous_mapping = record['mapping']
+        if expected_rows is not None:
+            # Derive these complete typed rows from the validated record ONCE,
+            # while it is decoded. IDs only locate candidates for full equality.
+            rows = (('workflow_coding_mappings', dict(zip(columns, values, strict=True))),
+                    ('workflow_admission_records', expected))
+            rows += tuple(('audit_log', row) for row in (original.audit_rows
+                if type(original) is HumanPublication else (audit_values(original),)))
+            for table, row in rows:
+                budget.step()
+                index = expected_rows.setdefault(table, {})
+                identity = (type(row['id']), row['id'])
+                _check(identity not in index)
+                index[identity] = row
         result.append(HistoricalCodingMapping(
-            *values, storage_classes, command_raw, tuple(histories)))
-    return CodingMappingHistory(tuple(result))
+            *values, storage_classes, command_raw, tuple(histories), original))
+    from runtime.workflows._coding_settings_history import current_snapshot
+    full = CodingMappingHistory(tuple(result))
+    current_snapshot(conn, org_slug, budget, full, captures)
+    return CodingMappingHistory(tuple(result[:target_generation]))
 
 
 def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
@@ -182,8 +216,9 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     or ended. Fixed parameterized SELECTs only, at most1024 mapping inventory
     rows and1024 setup inventory rows, each text/BLOB value capped at1MiB BEFORE
     fetch with original typeof evidence. Across the entire composed call:
-    at most8192 accepted native rows,16384 traversal steps and16MiB accepted
-    raw text/BLOB bytes, without per-root resets. One bounded overflow fetch
+    at most8192 fetched native candidates,16384 traversal steps and16MiB accepted
+    raw text/BLOB bytes, without per-root resets. Singleton keyset pages gate
+    each complete row against remaining row/byte budgets before fetch. One bounded overflow fetch
     refuses; SQL engine/rejected-row/decoded-copy memory is not bounded here.
     Call-local verified history is reused only within this snapshot.
 
@@ -191,9 +226,10 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     native admission/publication/setup closure is established for the selected
     mapping prefix and its required issuance prefixes only. Later withdrawal
     does not invalidate an earlier genuine issue or restore any current grant.
-    Native issuer task/SID/policy/source rule, current authority/capabilities and
-    full native/J run/event/result/session/receipt/heartbeat graph remain owed
-    downstream before every producer. Reading never attests or adopts a store.
+    Original mapping task/SID/session-start/capture/publication policy is checked;
+    current authority/capabilities/store identity are separate producer/read gates.
+    Run/event/result/session/receipt/heartbeat graph remains owed with its producer. Human setup needs its
+    own complete readers only. Reading never attests or adopts a store.
     """
     try:
         _check(type(conn) is sqlite3.Connection and conn.in_transaction)
@@ -204,3 +240,48 @@ def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
             ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
         raise CodingMappingHistoryError(_REFUSAL) from None
+
+
+def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
+                          budget: _Budget, setups: _SetupHistoryReader | None = None, captures=None
+                          ) -> tuple[CodingMappingHistory | None, dict]:
+    """Private complete-history/expected-row composition; no nested budget reset."""
+    try:
+        _check(type(conn) is sqlite3.Connection and conn.in_transaction)
+        _check(type(expected_org_slug) is str
+               and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
+        # Inventory is complete below. This bounded seed is selection only,
+        # never an exemption or latest-row validity fallback.
+        budget.step()
+        cursor = conn.cursor()
+        cursor.row_factory = None
+        try:
+            cursor.execute("SELECT CASE WHEN ? > 0 AND typeof(id)='text' "
+                "AND length(CAST(id AS BLOB))<=min(128,?) THEN id ELSE NULL END,typeof(id) "
+                "FROM workflow_coding_mappings ORDER BY generation DESC,id LIMIT 1",
+                (8192 - budget.accepted_rows, budget.remaining_bytes))
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+        if row is None:
+            from runtime.workflows._coding_mapping_admission import _MappingCaptures
+            from runtime.workflows._coding_settings_history import current_snapshot
+            captures = captures if captures is not None else _MappingCaptures(conn, expected_org_slug, budget)
+            current_snapshot(conn, expected_org_slug, budget, None, captures)
+            return None, {}
+        budget.candidate()
+        _check(row[0] is not None and row[1] == 'text')
+        budget.row(row, ('text',), counted=True)
+        _token(row[0])
+        expected = {}
+        history = _history(conn, expected_org_slug, row[0], budget=budget,
+                           setups=setups, expected_rows=expected, captures=captures)
+        return history, expected
+    except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
+            ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+        raise CodingMappingHistoryError(_REFUSAL) from None
+
+
+def read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str) -> CodingMappingHistory | None:
+    """Complete bounded mapping prefix; an empty store is not current authority."""
+    return _read_mapping_storage(conn, expected_org_slug=expected_org_slug, budget=_Budget())[0]

@@ -202,3 +202,23 @@ error, never successful-empty. Retry refreshes search and list metadata. Clearin
 search restores the list immediately, and old query settlements cannot replace
 the current query. Narrow 390px clipping remains an existing desktop-only
 limitation; shared App/Drawer layout is unchanged.
+
+---
+
+**Amendment 2026-10-18 (THR-305, current).** The Compose gate described above
+is now the build-time flag `kb_compose_ui` (default `false` in every profile),
+read from `web/src/config/features.ts`. `VITE_ENABLE_KB_COMPOSE` remains a
+local/test compatibility input, read through Vite `loadEnv`. It accepts only
+the literal `true`/`false` (empty/unset = no opinion; other values now fail
+startup) and is ignored by production builds. `npm run test:write-path` still
+enables it. See `web/ARCHITECTURE.md` § Build-time UI flags.
+
+## Current-state amendment 2026-10-22 — THR-305 seq16
+
+The production shell-command description in the historical risk table now
+requires `scripts/build_web.sh --production`. With no arguments the wrapper
+calls `npm run build:local`, retaining development → optional local JSON →
+explicit `VITE_ENABLE_KB_COMPOSE` precedence. Production npm and Mac release
+packaging still ignore local/ambient feature overrides. The 2026-10-18
+`kb_compose_ui` amendment and UI-only scope remain unchanged. See
+`web/ARCHITECTURE.md` § Build-time UI flags.

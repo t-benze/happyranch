@@ -25,6 +25,84 @@ All product behavior remains UNEXECUTED. Historical C1–C3 absence/disabled
 statements below are attributed source checkpoints; this summary and the
 integrated F contract supersede their later-unit status claims.
 
+C1a/C1b private thread-delivery release source (THR317 seq25/34, ROOT12084)
+has a dormant service bound to the actual initial app/state/runtime/org-map,
+org/DB/path, supervisor/tracker and attachment generation. Only actual successful
+ASGI/listener startup admits it; construction/readiness performs no operation or
+selection. Native preview/show and the sole `release_exact_thread_delivery`
+transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
+ambient credentials nor caller proof flags enable mutation. Proof-backed release
+is unavailable. The approved human risk override requires exact preview, stable
+org-wide key, canonical command and explicit confirmation of late producer/session
+writes, overlapping work, repeated external effects and missing owner/process/
+effect closure. This source supplies no live-use, deployment or restart authority.
+
+The append-only version1 `thread_delivery_release` companion retains real thread
+scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.
+Complete bounded five-column and native readers bind source prefix, original and
+optional genuine INTEGER replacement; invalid/foreign/orphan/duplicate/future or
+incomplete evidence refuses. Only that obstruction's delivery interpretation can
+change. Saved-prefix drift or late ORIGINAL lifecycle revokes current permission;
+legitimate replacement history and the operation's own suffix preserve committed
+history. Native recovery/runnable/reserve/claim, arrival/settlement, exchange
+catch-up and separate probe republication share this interpretation. Raw host,
+move/Pause/drain and diagnostic census remain blocking. A pending started REPLY
+uses one interruption/slot-CAS/covering replacement commit without advancing ack,
+resetting breaker/lease/held state or adopting old retries. Terminal history gets
+no replacement;15402 gets no second catch-up. Unknown COMMIT requires strict
+same-key readback, never remint/rekey. Old-reader/mixed-version operation and
+downgrade after use are unsupported. Cooperative 3s/1024-row/4MiB/256-statement/
+5M-step budgets include closing reads; exhaustion is unavailable, not absence or
+a hard wall/RSS guarantee. C1-13 activation and C2 task-tail remain deferred;
+12044/10693 remain unrecovered. All behavior/SQL/locks/races/cancellation/crash/
+security proof is UNEXECUTED; integration INCLUDING callback is SKIPPED24342,
+Python units RETIRED. Only lint/static evidence and independent full review plus
+same-final-head scoped SOURCE QA can be attributed to this slice.
+
+C1-13 dormant adapter source adds an UNMOUNTED four-handler router and an
+UNCALLED `threads.register_release` with capability/preview/apply/show handlers,
+private request custody and four client methods. Existing `threads.register`,
+app mounts and serving owner stay unchanged: no supported installed release
+tool, external_adapters_available=false and proof_backed_available=false.
+Future request metadata derives from native strict DTOs. Original streamed UTF8
+JSON is limited to16KiB before normalization; query/execution bindings refuse.
+Bounded32KiB closed results/errors preserve committed=false/null/true and
+no-store even on dependency errors; no synthesized202 or absence on failed read.
+Preview/full-command digests are distinct. Explicit four-risk confirmation and
+positive no-follow same-UID0600 file/0700 private-directory fsync/readback/close
+custody precede exact-byte POST. Failures preserve bytes/key. Transport loss
+allows at most one same-key GET and never another POST/rekey/poll; show never
+publishes. Shared bearer/same UID cannot establish exclusive human presence.
+Disconnect leaves native lifetime/outer retirement with the existing owner.
+Fixture/native-denial/mount/registration activation remains HELD: the six shared
+Web/Swift reader cases lack attributable RED/restoration/GREEN, with no waiver
+or execution allocated. C1-13 public delivery and C2 remain pending; all adapter
+runtime/security/custody/HTTP/CLI proof is UNEXECUTED, never test-authoring PASS.
+
+C1b registers each operation and org native lifetime before submission, captures
+every returned future before a cancellable await and owns outer retirement after
+disconnect. Positive native return, rollback/settings restoration and outer
+settlement alone discharge that guard. Revoke closes loop intake first and takes
+only its C leaf for at most25ms; timeout is incomplete and bars host shutdown,
+detach and DB-close fallthrough. Remove/all-close/runtime switch/direct org close
+independently require positive C idle and renewed attachment/busy/hold checks.
+Final order is move -> DB -> controller -> residue -> tracker -> C leaf -> the
+existing COMMIT. All SQL inventory/decoding finishes before owner guards; only
+COMMIT occurs inside, with reverse release before rollback/readback/notification.
+The original3s budget starts before submission, includes both observation passes
+and native+SQL work within5M steps. Under actual owner locks, built-in maps over64
+refuse before iteration; each pass reserves n+1 rows,2048*(n+1) raw bytes and4096
+native units per record/completion. Any residue/unhealthy measurement, relevant
+retained ownership/binding/preparation or outstanding native writer blocks.
+Org-level unresolved move/Pause controls conservatively refuse; no task root is
+inferred from thread text or tracker absence. Fresh guarded CURRENT facts and
+existing admission/release counters detect observed changes, without certifying
+invisible historical tracker/residue ABA or old process/effect retirement. After
+commit, independent current eligibility permits only SAME-token put_once through
+the existing queue; notification loss never rolls back, remints or reapplies.
+
+
 ## Historical C1 task/host checkpoint (current F lifecycle above)
 
 One coordinator belongs to the org DB owner, bound by Orchestrator to the server TeamsRegistry. Allocation and claims validate optional installed state in their actual transaction; absence preserves ordinary operation and malformed/unknown presence refuses. No production installer or move writer is added. Closure includes assigned/default manager, preserved task team, parents/descendants/revisits, declared chain/fanout agents and immutable workflow bindings. Allocation cannot cross a held closure, including a cross-team child that could wake the old manager. Existing pending/paused/job-blocked/recovery/workflow work is retained as a blocker; no task, result or attribution is cancelled/relabelled.
@@ -157,6 +235,24 @@ rewritten settled evidence and erased uncertainty. Bounds refuse; they never
 truncate a census or certify idle. No full invocation credential is added to this
 new evidence. The existing genuine reasoning-selection audit stays with its
 actual lifecycle commitment.
+
+Startup and archived-thread resume cutover share a lazy, fully materialized
+release view and common lifecycle-family decoding only within one transaction's
+mutation-free segment. Unbuilt differs from proven-empty; every write invalidates
+both views and selected conclusions. Initialized pairs still pass evidence and
+permission checks before the no-op shortcut. Common sibling shape/size/duplicate/
+org/thread/audit-owner checks remain complete; selected initial/append/native
+agent/session histories replay on demand in caller order. Ordinary absent history
+remains None, distinct from bounded release missing/orphan/1024-row refusals.
+Permissions, live owners, holds, recovery, Pause, effects and raw census stay fresh.
+Terminal status alone is unsafe: callback consumption can precede cleanup, and
+settled=true/quiescent=false or sticky failed_cleanup retains unknown. Pending
+preservation still uses the stricter retry/deferral/live-owner predicate; nonpending
+history must be producer-settled and known before it stops preserving. Other
+callers reread normally. This is full common decoding with lazy selected replay,
+not unsettled-only pruning or lifecycle clearance. A legacy triggering_seq0 write
+followed by another participant's native_delivery_range refusal rolls back the
+whole cutover, without reusing the prewrite view or changing resume's prior commit.
 
 Held work stays outside host FIFO and final launch. The actual builtin and custom
 self-launch bodies revalidate after throttle, including supervised passthrough.
@@ -360,6 +456,8 @@ actual native readiness; independent whole-feature acceptance remains required.
 A provenance model, agent bearer or caller success flag grants no authority.
 Earlier B/C/D checkpoint absence statements describe those historical units.
 
+The planner projects native launch allow rules with explicit `cli=True`, matching
+both native executor launch consumers; native settings rendering retains `cli=False`.
 The planner uses native AgentDef/TeamsRegistry validation and instruction/skill
 selectors, without materializing, creating an ArtifactStore root, building a
 package or emitting an event. It pins the three exact before/after images,
@@ -557,6 +655,24 @@ retain their no-effect disposition. Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
+Repository-refresh config identity selects the checked branch's four pull/upstream
+keys plus the finite command-dependency families documented in AGENTS.md's
+repository-refresh contract, including attr/splitindex/reftable and every
+`remotes.*` record: `fetch -- origin` can resolve `origin` as a remote group
+before remote fallback; Git interprets group values. ONE scoped/origin
+`config --includes --null --show-scope --show-origin --get-regexp SELECTOR`
+observation per identity is Git-filtered before the unchanged complete4096B cap;
+branch subsection is escaped POSIX ERE data. Ordered raw triples retain duplicate
+and include/scope/provenance semantics; first-LF values distinguish absent,
+valueless and empty. Unrelated branch/custom bloat or drift cannot block standard
+refresh. Relevant overflow/malformed/incomplete controls refuse; post-fetch drift
+retains fetch effects/uncertainty without merge. Exact single raw support values,
+Git typed/last-value admitted prechecks, original shared deadline, pinned U and
+final B/L/U/F oracle remain. The finite inventory is cooperative: ABA/final-window,
+nested repositories/files, external/environment/backend state and Git's own
+parsing memory remain outside its guarantee. Native lifecycle proof is not
+established by these helper-local disposable observations.
+
 Async thread/dream/wake/Todo repository refresh runs off-loop with its SAME
 native owner and a joined worker. A private org lifetime begins before native
 reservation and ends after native finish, including failure. Ordinary unload
@@ -579,6 +695,16 @@ only D's pure native planner and returns exact founder-only diff/digests,
 context/permission/skill deltas, complete blockers/owners, drain candidates and
 org-wide publication impact. It reserves nothing. Internal canonical images
 stay private; never copy these admitted diffs to shared artifacts/logs.
+Native metadata is keyed by `(kind, canonical_id)`: affected agents and Founder
+are distinct subjects. Required current labels must exist, without ID fallback.
+Initial expected inputs and later stable verification use the same naming digest:
+SHA256 of strict canonical JSON for all native Subject records as a list sorted
+by native tuple key. Each record retains kind, canonical_id, lifecycle,
+current_label, revision and classification; unrelated metadata remains included.
+Public current-name projection makes a separate native read with explicit missing
+agent-label refusal. It supplies no whole-service snapshot guarantee. The bounded
+consumer correction changes no public/durable fields, versions or saved requests;
+isolated serialization evidence is not full planner/service/HTTP or move proof.
 Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
 `can_drain_threads` identifies candidate turns, not clearance of hard blockers.

@@ -83,7 +83,9 @@ async function expectListWithoutPause(locale: 'en' | 'zh-CN') {
   const main = document.body;
   // Ordinary lifecycle badges and row navigation stay intact.
   for (const status of ['in_progress', 'pending', 'escalated', 'failed']) expect(within(main).getAllByText(status).length).toBeGreaterThan(0);
-  for (const task of ROOTS) expect(within(main).getAllByRole('link', { name: new RegExp(`Brief ${task.task_id}`) })[0]).toHaveAttribute('href', `/orgs/alpha/tasks/${task.task_id}`);
+  for (const task of ROOTS.filter(t => !t.parent_task_id)) expect(within(main).getAllByRole('link', { name: new RegExp(`Brief ${task.task_id}`) })[0]).toHaveAttribute('href', `/orgs/alpha/tasks/${task.task_id}`);
+  // A child returned by a roots response never becomes a list row (root-only membership).
+  for (const task of ROOTS.filter(t => t.parent_task_id)) expect(within(main).queryByRole('link', { name: new RegExp(`Brief ${task.task_id}`) })).toBeNull();
   // No pause controls, state labels, evidence, blockers, unavailable or inherited explanation anywhere on the page.
   expect(document.querySelector('[data-task-pause]')).toBeNull();
   expect(screen.queryByRole('button', { name: /^(Pause|Resume|暂停|恢复)$/ })).toBeNull();

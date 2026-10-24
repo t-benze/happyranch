@@ -1,5 +1,22 @@
 # Task blocked-by-job — Design Spec
 
+## Current job terminal/startup boundary
+
+Stop200 acknowledges an actual attributed signal request, never terminal state.
+Missing local ownership returns explicit pending/finalizing/unknown/held/unavailable
+409 diagnostics; signal/audit failure503 states request_issued true/false/null.
+No already_terminal claim is made while the durable row runs. Startup preserves
+unproven running jobs with job_liveness_unknown; missing PID/maps, daemon death,
+timeout and absent native layout provide no orphan or descendant-retirement proof.
+The original job owner commits running-only CAS, one original-trigger terminal
+audit, actual producer observation and strict Pause disposition together before
+attributable local release and durable terminal hint/wake. Direct exit leaves
+quiescent=false; failed tails/older uncertainty remain. Lost CAS and ambiguous
+COMMIT never append duplicate terminal effects or invent cleanup. Existing
+all-terminal/claim/cancellation/Pause/move rules remain; unsupported decoded waiter
+shapes are not repaired. See the current [Jobs contract](2026-05-26-jobs-design.md).
+
+
 Current job admission amendment (THR309seq1): authorize contents in a thread
 BEFORE submission; omitted/false mode enters automatic admission, true refuses
 422 before allocation. Manual run is retired410 (both CLI run aliases exit2).
@@ -308,7 +325,7 @@ for task_id in db.list_tasks_blocked_on_jobs():
 SELECT id FROM tasks WHERE status='blocked' AND block_kind='blocked_on_job'
 ```
 
-This handles the crash-mid-block case: jobs are recovered (force-failed with `kill_reason=daemon_crash`) but never go through `run_job` again, so caller A never fires for them. Without this scan, the task would stay blocked forever.
+This rediscovers genuinely terminal jobs whose postcommit wake was lost. Startup does not force-fail unproven running jobs: missing local owners after restart establish no orphanhood, so those jobs retain unknown liveness and their waiters remain parked.
 
 ### 5.8 Concurrency
 
@@ -498,8 +515,8 @@ The `triggering_job_id` field on `task_resumed_from_jobs` is the founder's debug
 **`tests/integration/test_task_blocked_by_job_startup_recovery.py` (new)** — covers caller C:
 
 - Agent submits + blocks, daemon killed mid-block (jobs left in `running` state on disk)
-- Daemon restarted → `recover_orphaned_running_jobs` force-fails the jobs with `daemon_crash` → caller C's recovery scan re-evaluates the predicate → task resumes
-- Resumed agent session sees the `BLOCKED-JOBS-RESULTS` header listing `failed (reason=daemon_crash)` for each job
+- Daemon restarted → unproven running jobs remain running/unknown → caller C re-evaluates only actual durable status; no resume while a genuine native-listed job is nonterminal
+- A genuinely eligible resumed session sees actual durable outcomes in `BLOCKED-JOBS-RESULTS`; no synthetic daemon_crash result is appended.
 
 Graceful shutdown is distinct from crash recovery: lifespan teardown stops the
 task queue before signalling jobs, so a dying job cannot claim its waiter. A

@@ -410,3 +410,13 @@ All seven design questions raised in the proposal have been ruled on and are now
 | Q5 | Per-routine team tag. | **Drop the tag entirely for v1.** Spawned tasks are always on the waking agent's own team, so the optional `(team: …)` selector is dead weight. Removed from the parse contract, payload shape, daemon validation, Security, and Test Plan. The self-team-only invariant now holds structurally (no cross-team path from a wake). *(Baked into: Routine Tasks parse contract; Invocation Contract payload + validation; Security; Test Plan.)* | Engineering Manager (unvetoed) |
 | Q6 | Interval format and divisibility. | **Confirm `Nh`/`Nm` format with the divide-24h constraint** for continuous mode (keeps slot boundaries aligned across local dates so `00:00` always exists). *(Baked into: Interval And Slot Grid; Validation.)* | Engineering Manager (unvetoed) |
 | Q7 | Always-a-session vs daemon-direct spawn. | **Keep the always-a-session model.** One wake executor invocation per slot reads the checklist and self-dispatches; no daemon-direct spawn path in v1 (it would produce unattributable, zero-token task births). Cost note retained; recommend sane continuous intervals (30–60m for a CS agent) to bound the 96-wakes/day worst case. *(Baked into: Wake Input And Prompt — "Always a session (settled)".)* | Founder |
+
+---
+
+**Amendment 2026-10-18 (THR-305, current).** The Work Hours web UI described
+above is gated by the build-time flag `work_hours_ui`: on in development, off in
+production builds. With it off, the navigation, routes, legacy `/schedule`
+redirect and Organization Settings operating controls are not rendered, and
+their URLs reach the existing not-found page. Daemon/scheduler/API/CLI behavior
+and stored settings are unchanged; this is UI visibility only. See
+`web/ARCHITECTURE.md` § Build-time UI flags.

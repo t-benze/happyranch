@@ -15,10 +15,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from runtime.config import settings as global_settings
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.identities.registry import naming_writer
 from runtime.orchestrator import prompt_loader
@@ -1133,3 +1133,109 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
                 )
 
     return {"teams": [teams.team_row(name) for name in teams.teams()]}
+
+
+# Canonical coding configuration has its own complete-replacement owner. The
+# generic settings patch/YAML writer does not acquire a coding writable field.
+from runtime.workflows._coding_settings_records import SettingsCommand, SettingsOptions, SettingsSave, SettingsView
+
+_CODING_RESPONSES = {
+    401: {'description': 'Existing bearer required'},
+    403: {'description': 'Existing Founder predicate required'},
+    404: {'description': 'Unknown org or original operation'},
+    409: {'description': 'Original-key conflict or two-generation CAS conflict; current included'},
+    422: {'description': 'Closed canonical command or query required'},
+    503: {'description': 'Invalid retained closure or uncertain publication; reconcile original key'},
+}
+
+
+def _coding_principal(request: Request, org):
+    from runtime.workflows.templates import WorkflowTemplatePrincipal
+    from runtime.workflows.coding_settings import CodingSettingsError
+
+    def revalidate():
+        daemon = request.app.state.daemon
+        if daemon.is_idle or daemon.orgs.get(org.slug) is not org:
+            raise CodingSettingsError('coding_settings_org_stale')
+    revalidate()
+    return WorkflowTemplatePrincipal.founder(org_slug=org.slug,
+        team_slug=org.teams.default_team, revalidate=revalidate)
+
+
+def _coding_query(request: Request, *, read: bool):
+    import re
+    from runtime.workflows.coding_settings import CodingSettingsError
+    pairs = list(request.query_params.multi_items())
+    if (not read and pairs) or len(pairs) > 1 or any(
+            key != 'operation_key' or re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', value) is None
+            or value.startswith('coding-internal:') for key, value in pairs):
+        raise CodingSettingsError('coding_settings_invalid_request')
+    return pairs[0][1] if pairs else None
+
+
+def _coding_error(exc):
+    import sqlite3
+    from runtime.workflows.coding_settings import CodingSettingsError
+    if isinstance(exc, CodingSettingsError):
+        status = (422 if exc.code == 'coding_settings_invalid_request' else
+            404 if exc.code == 'coding_settings_operation_not_found' else
+            409 if exc.code in ('coding_settings_operation_conflict', 'coding_settings_generation_stale',
+                'coding_settings_authority_unavailable', 'coding_settings_eligibility_revoked',
+                'coding_settings_release_required') else 503)
+        raise HTTPException(status, detail=exc.detail) from None
+    code = 'coding_settings_publication_uncertain' if isinstance(exc, sqlite3.Error) else 'coding_settings_invalid'
+    raise HTTPException(503, detail={'code': code}) from None
+
+
+from runtime.workflows.artifacts import Token
+
+
+@router.get('/settings/coding', response_model=SettingsView, responses=_CODING_RESPONSES,
+            dependencies=[Depends(_require_human)])
+async def get_coding_settings(slug: str, org: OrgDep, request: Request,
+                              operation_key: Token | None = Query(default=None)) -> dict:
+    from runtime.workflows.coding_settings import CodingSettingsStore
+    try:
+        principal = _coding_principal(request, org)
+        key = _coding_query(request, read=True)
+        return await CodingSettingsStore(org).get(principal=principal, operation_key=key)
+    except (ValueError, TypeError, KeyError) as exc:
+        _coding_error(exc)
+
+
+@router.get('/settings/coding/options', response_model=SettingsOptions, responses=_CODING_RESPONSES,
+            dependencies=[Depends(_require_human)])
+async def get_coding_settings_options(slug: str, org: OrgDep, request: Request) -> dict:
+    from runtime.workflows.coding_settings import CodingSettingsStore, CodingSettingsError
+    try:
+        principal = _coding_principal(request, org)
+        _coding_query(request, read=False)  # No mutation/actor/selection query.
+        async for chunk in request.stream():
+            if chunk:
+                raise CodingSettingsError('coding_settings_invalid_request')
+        return await CodingSettingsStore(org).options(principal=principal)
+    except (ValueError, TypeError, KeyError) as exc:
+        _coding_error(exc)
+
+
+@router.put('/settings/coding', response_model=SettingsSave, responses=_CODING_RESPONSES,
+    dependencies=[Depends(_require_human)],
+    openapi_extra={'requestBody': {'required': True, 'content': {
+        'application/json': {'schema': SettingsCommand.model_json_schema(ref_template='#/components/schemas/{model}')}}}})
+async def put_coding_settings(slug: str, org: OrgDep, request: Request) -> dict:
+    from runtime.workflows.coding_settings import CodingSettingsStore, CodingSettingsError
+    from runtime.workflows._coding_settings_records import COMMAND_LIMIT
+    try:
+        principal = _coding_principal(request, org)
+        _coding_query(request, read=False)
+        if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'application/json':
+            raise CodingSettingsError('coding_settings_invalid_request')
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > COMMAND_LIMIT:
+                raise CodingSettingsError('coding_settings_invalid_request')
+            raw.extend(chunk)
+        principal.revalidate()
+        return await CodingSettingsStore(org).publish(principal=principal, raw=bytes(raw))
+    except (ValueError, TypeError, KeyError) as exc:
+        _coding_error(exc)

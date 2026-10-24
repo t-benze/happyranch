@@ -300,9 +300,17 @@ def _start_decision(row: NativeSourceRecord, capability: dict, budget: _Budget) 
     _check(row._text('status') == 'completed' and row._value('waiting_on_job_ids') is None)
     decision = _closed(_json(row._value('decision_json'), budget), 'action workflow')
     _check(decision['action'] == 'workflow_start')
-    command = _closed(decision['workflow'],
-        'format operation_key release mapping work implementer_override')
-    _check(command['format'] == 'workflow-coding-start@1')
+    command = decision['workflow']
+    _check(type(command) is dict)
+    tag = command.get('format')
+    _check(tag in ('workflow-coding-start@1', 'workflow-coding-start@2'))
+    _closed(command, 'format operation_key release mapping work implementer_override'
+            + (' settings' if tag == 'workflow-coding-start@2' else ''))
+    if tag == 'workflow-coding-start@2':
+        settings = _closed(command['settings'], 'generation snapshot_digest')
+        _integer(settings['generation'], 1)
+        _check(settings['generation'] <= 9223372036854775807)
+        _digest(settings['snapshot_digest'])
     _operation(command['operation_key'])
     _release(command['release'])
     mapping = _closed(command['mapping'], 'id generation digest')
@@ -351,7 +359,7 @@ def _results(conn: sqlite3.Connection, capability: dict,
 
 
 def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
-                    authorization_id: str, *, budget: _Budget | None = None) -> CodingSourceNativeRecords:
+                    authorization_id: str, *, budget: _Budget | None = None, setups=None) -> CodingSourceNativeRecords:
     # Private call-local composition only; preserve the public five-field API.
     _check(type(conn) is sqlite3.Connection and conn.in_transaction and conn.text_factory is str)
     _check(type(expected_org_slug) is str
@@ -359,7 +367,7 @@ def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
     _token(authorization_id)
     if budget is None:
         budget = _Budget()
-    setups = _SetupHistoryReader(conn, expected_org_slug, budget)
+    setups = setups if setups is not None else _SetupHistoryReader(conn, expected_org_slug, budget)
     history = _history(conn, expected_org_slug, authorization_id, budget=budget, setups=setups)
     capability = json.loads(history.selected.authority_bytes)
     _check(capability['level'] == 'source')

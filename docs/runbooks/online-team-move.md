@@ -87,6 +87,17 @@ the admitted operator to show and explicit SAME-operation recovery, never normal
 attachment of partial files. `team_move_authority_not_ready` preserves a bounded
 native `authority_unavailable_code`; resolve that publisher through its own owner.
 `team_move_names_unavailable` requires native naming readiness, not a name rewrite.
+The operation's `team_move_current_names_unavailable` also requires actual native
+metadata for both agent IDs and the distinct Founder identity. Consumers use
+`(kind, canonical_id)` keys. Initial and stable naming digests cover every native
+Subject record in sorted native-key order as a strict canonical JSON list,
+including unrelated identities and all six metadata fields. Public current names
+come from a separate native read and refuse missing agent labels; that read does
+not prove coherence with the earlier operation snapshot. This source correction
+does not rewrite saved requests or establish full planner/service/HTTP behavior.
+Reviewed source, installed checkout and loaded daemon identity remain separate;
+preserve the SAME saved key/body and existing custody on any failure. Runtime
+adoption and actual preview/apply remain with their authorized release/Founder owners.
 Stopping/busy owners must finish their real lifecycle. Admission refuses503 with
 `team_move_capability_unavailable` and actual `incomplete_reasons`; no unknown is
 treated as availability. Move-specific task/thread/job/cleanup blockers still
@@ -113,6 +124,10 @@ as request fields or returned by show. Preview calls only D's pure native
 selection/rendering path, without adapters/materialization, stores/packages,
 reset, publication or reservation.
 
+The launch-input manifest selects native `cli=True` allow-rule syntax, matching
+both native executor launch consumers. Settings retain the native `cli=False`
+projection. These selectors preserve the existing two permission surfaces.
+
 `inventory_complete:true` describes that observation, not future quiescence.
 `can_apply_now` also requires enabled capability and no blockers.
 `can_drain_threads` identifies already-running native thread candidates; it does
@@ -120,6 +135,24 @@ not certify hard blockers gone or guarantee completion. Apply recaptures the
 actual running turns after reservation and repeats the full mutable census.
 Only these turns may finish their genuine callback/cleanup under old context,
 with at most30 seconds of drain. Pending tokens/ranges stay pending.
+
+Startup and archived-thread resume cutover share a lazy, fully materialized
+release view and common lifecycle-family decoding only within one transaction's
+mutation-free segment. Unbuilt differs from proven-empty; every write invalidates
+both views and selected conclusions. Initialized pairs still pass evidence and
+permission checks before the no-op shortcut. Common sibling shape/size/duplicate/
+org/thread/audit-owner checks remain complete; selected initial/append/native
+agent/session histories replay on demand in caller order. Ordinary absent history
+remains None, distinct from bounded release missing/orphan/1024-row refusals.
+Permissions, live owners, holds, recovery, Pause, effects and raw census stay fresh.
+Terminal status alone is unsafe: callback consumption can precede cleanup, and
+settled=true/quiescent=false or sticky failed_cleanup retains unknown. Pending
+preservation still uses the stricter retry/deferral/live-owner predicate; nonpending
+history must be producer-settled and known before it stops preserving. Other
+callers reread normally. This is full common decoding with lazy selected replay,
+not unsettled-only pruning or lifecycle clearance. A legacy triggering_seq0 write
+followed by another participant's native_delivery_range refusal rolls back the
+whole cutover, without reusing the prewrite view or changing resume's prior commit.
 
 Resolve hard blockers through their actual owners: pending/paused/blocked tasks,
 parents/children/chains, jobs/waits, workflow/review/revision/staged callbacks,

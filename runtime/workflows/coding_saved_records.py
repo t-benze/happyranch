@@ -1,4 +1,4 @@
-"""Unmounted K2a2a saved coding grammars, never current-use authorization.
+"""Saved coding grammars, consumed by K2b setup; never current authorization.
 
 These readers do no store, roster, object, provider or network I/O. A parsed
 record is no authentic issuer, active grant, admission or valid native/J graph.
@@ -639,10 +639,17 @@ def read_saved_repository_binding(raw: bytes, *, expected_org_slug: str) -> Codi
     return _binding(_json(raw, VALUE_LIMIT), expected_org_slug)
 
 
-def read_saved_mapping_record(raw: bytes, *, expected_org_slug: str) -> SavedCodingRecord:
+def read_saved_mapping_record(raw: bytes, *, expected_org_slug: str, budget=None) -> SavedCodingRecord:
     """Complete command/adoption pairing and position-selected setup adapter."""
     _org(expected_org_slug)
-    record = _closed(_json(raw, VALUE_LIMIT),
+    value = _json(raw, VALUE_LIMIT)
+    if value.get('format') == 'workflow-coding-agent-read-role-record@2':
+        from runtime.workflows._coding_settings_records import read_human_record
+        return read_human_record(raw, expected_org_slug=expected_org_slug, budget=budget)
+    if value.get('format') == 'workflow-coding-agent-read-role-record@1':
+        from runtime.workflows._coding_role_records import read_role_record
+        return read_role_record(raw, expected_org_slug=expected_org_slug)
+    record = _closed(value,
                      'format command_bytes_base64 command_digest issuer authority adoptions mapping created_at')
     _check(record['format'] == 'workflow-coding-mapping-record@1')
     command_raw, command_value = _command_bytes(record)
@@ -981,4 +988,27 @@ def read_saved_capability(raw: bytes, *, expected_org_slug: str) -> SavedCodingR
     """Full bounded saved ancestry; queued/null SID is never an actor grant."""
     _org(expected_org_slug)
     _capability(_json(raw, VALUE_LIMIT), expected_org_slug, _Ancestry())
+    return SavedCodingRecord(raw)
+
+
+def read_saved_source_command(raw: bytes, *, expected_org_slug: str) -> SavedCodingRecord:
+    """D1 nonallocating selectors only; no supplied capability/proof/actor."""
+    _org(expected_org_slug)
+    _check(type(raw) is bytes and len(raw) <= 65536)
+    command = _closed(_json(raw, COMMAND_LIMIT), 'format operation_key parent_id mapping action work')
+    _check(command['format'] == 'workflow-coding-source-command@1')
+    _operation(command['operation_key'])
+    _token(command['parent_id'])
+    _check(command['action'] in ('import-release-coding', 'publish-coding-mapping', 'adopt-local-store'))
+    mapping = _closed(command['mapping'], 'id generation digest')
+    _token(mapping['id'])
+    _integer(mapping['generation'], 1)
+    _digest(mapping['digest'])
+    work = _closed(command['work'], 'repository_id store_owner object_format base paths commands')
+    _repository(work['repository_id'])
+    _component(work['store_owner'])
+    _check(work['store_owner'] != 'founder' and work['object_format'] in ('sha1', 'sha256'))
+    _oid(work['base'], work['object_format'])
+    _paths(work['paths'])
+    _commands(work['commands'])
     return SavedCodingRecord(raw)

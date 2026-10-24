@@ -1,12 +1,16 @@
 """Manifest-notice packaging standard, independent of linker/byte closure claims.
 
 The evidence captures resolved manifests and installed inventories. Membership is
-recomputed from those inputs, never from the supplied component rows. Native
-custody, resource, architecture and release identity readers remain separate.
+recomputed from those inputs, never from the supplied component rows. Basic resource, architecture and release identity readers remain separate.
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
+import io
+import subprocess
+import tarfile
 import hashlib
 import importlib.metadata
 import json
@@ -26,6 +30,61 @@ MANIFEST = BASE + '/manifest-notices.json'
 EVIDENCE = BASE + '/resolved-inventory.json'
 MAX_JSON = 32 * 1024 * 1024
 NOTICE = re.compile(r'(?i)^(licen[cs]e|notice|copying|copyright|authors|patents)(?:[.\-_].*)?$')
+
+
+# Exact original archives already acquired by the accepted workflow. This is
+# notice material only; no compilation instrumentation or lifecycle protocol.
+WEB_TOOLS = {'vite': '5.4.21', 'rollup': '4.60.3', '@vitejs/plugin-react': '4.7.0',
+             '@tailwindcss/vite': '4.3.0', '@tailwindcss/node': '4.3.0',
+             '@tailwindcss/oxide': '4.3.0', 'tailwindcss': '4.3.0',
+             'lightningcss': '1.32.0', 'esbuild': '0.21.5', '@esbuild/darwin-arm64': '0.21.5',
+             '@rollup/rollup-darwin-arm64': '4.60.3', '@tailwindcss/oxide-darwin-arm64': '4.3.0',
+             'lightningcss-darwin-arm64': '1.32.0', 'postcss': '8.5.14'}
+
+
+def absolute(value):
+    value = str(value)
+    require(value.startswith('/') and value != '/' and len(value.encode()) <= 4096
+            and all(part not in ('', '.', '..') for part in value[1:].split('/'))
+            and not any(ord(c) < 32 for c in value), value, 'unsafe absolute path')
+    return Path(value)
+
+
+@contextlib.contextmanager
+def open_root(path, boundary, owned=True):
+    """Ordinary no-follow directory admission, independent of notice evidence."""
+    from types import SimpleNamespace
+    path, boundary = absolute(path), Path(boundary)
+    require(path.is_relative_to(boundary), str(path), 'directory boundary')
+    chain = []
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_mode, info.st_uid
+    def verify():
+        for fd, parent, name, saved in chain:
+            require(identity(os.fstat(fd)) == saved and
+                    (parent is None or identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == saved),
+                    str(path), 'directory identity changed')
+    try:
+        parent, device = None, None
+        cursor = Path('/')
+        for name in ('/', *path.parts[1:]):
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            info = os.fstat(fd)
+            chain.append((fd, parent, name, identity(info)))
+            cursor = cursor / name
+            require(info.st_uid in (0, os.getuid()) and not info.st_mode & 0o022,
+                    str(cursor), 'directory owner/mode unsafe')
+            require(device is None or info.st_dev == device, str(cursor), 'cross-device descent')
+            if cursor == boundary:
+                device = info.st_dev
+            parent = fd
+        require(not owned or info.st_uid == os.getuid(), str(path), 'directory not owned')
+        verify()
+        yield SimpleNamespace(fd=fd, chain=chain, verify=verify)
+        verify()
+    finally:
+        for fd, *_ in reversed(chain):
+            os.close(fd)
 
 
 def require(ok, owner, problem):
@@ -138,7 +197,7 @@ def expected(e):
         emitted = location in e['npm_emitted']
         if actual is not None:
             require((actual.get('name'), actual.get('version')) == (name, version), location, 'installed npm identity differs from lock')
-            selection = 'included: emitted or production npm dependency' if emitted or not package.get('dev', False) else 'excluded: installed build-only npm dependency'
+            selection = 'included: production, sourcemap or resolved generated-web tool owner' if emitted or not package.get('dev', False) else 'excluded: installed build-only npm dependency'
         else:
             require(package.get('optional') and not emitted, location, 'required resolved npm package is absent')
             selection = 'excluded: optional package not installed for target ' + e['target']
@@ -217,8 +276,8 @@ def python_snapshot(distributions, analysis, python_component, evidence, prefix,
                     interpreter_library=dict(source=str(interpreter), sha256=interpreter_digest,
                                              selection='EXE.python_lib matched to daemon and cli Analysis'))]
     # The existing exact CPython fallback already retained a validated original.
-    for notice in python_component['notices']:
-        runtime[0]['originals'].append(str(evidence / 'notices/Python-LICENSE.txt'))
+    require(bool(python_component['notices']), 'Python', 'no authenticated interpreter original')
+    runtime[0]['originals'] = [n.get('retained', str(evidence / 'notices/Python-LICENSE.txt')) for n in python_component['notices']]
     natives = {}
     for lane in ('daemon', 'cli'):
         for row in analysis[lane]['binaries']:
@@ -251,17 +310,9 @@ def snapshot(source, output, mapping):
         path = source / 'web' / relative(location) / 'package.json'
         if path.exists() or path.is_symlink():
             installed[location] = json.loads(read(path, source))
-    emitted = set()
-    for r in mapping['components']:
-        if r.get('scope') not in ('web', 'web-generated'):
-            continue
-        for item in r.get('inclusion', []):
-            if not isinstance(item, dict) or not item.get('package_root'):
-                continue
-            path = Path(item['package_root'])
-            path = path.relative_to(source) if path.is_absolute() else path
-            require(path.parts[0] == 'web', str(path), 'web package boundary')
-            emitted.add(path.relative_to('web').as_posix())
+    required_tools = {'node_modules/' + name for name in WEB_TOOLS if 'node_modules/' + name in lock['packages']}
+    require(required_tools <= set(installed), 'generated-web tools', 'missing resolved owner: ' + ', '.join(sorted(required_tools - set(installed))))
+    emitted = required_tools.copy()
     # Independently enumerate sourcemap package membership; omitted notice rows
     # cannot omit production dependencies or emitted build dependencies.
     for path in sorted((source / 'web/dist').rglob('*.map')):
@@ -347,7 +398,7 @@ def sources_for(row, e, source, mapping):
         paths = original_files(root)
         if not paths and row['component'].startswith('@radix-ui/'):
             helpers = runpy.run_path(str(source / 'packaging/notice-data/retained_notices.py'))
-            inputs = [i for r in mapping['components'] if r.get('scope') == 'web' and r.get('component') == row['component'] and r.get('version') == row['version'] for i in r.get('inclusion', [])]
+            inputs = []
             if not inputs:
                 pins = helpers['identities'](source / 'packaging/notice-data')['radix']['packages']
                 pin = next((p for p in pins if (p['name'], p['version']) == (row['component'], row['version'])), None)
@@ -356,7 +407,9 @@ def sources_for(row, e, source, mapping):
             fallback = helpers['radix_original'](source / 'packaging/notice-data', row['component'], row['version'], root, inputs)
             if fallback:
                 return [(fallback[0], source)]
-        return [(p, root) for p in paths]
+        if row['component'] in WEB_TOOLS:
+            paths += [Path(p) for p in mapping.get('web_originals', {}).get(row['component'], [])]
+        return [(p, source if p.is_relative_to(source) else Path(mapping['notice_root'])) for p in paths]
     if family == 'go':
         mod = next(m for m in e['go_modules'] if m['Path'] == row['component'])
         root = Path(mod['Dir'])
@@ -374,6 +427,7 @@ def sources_for(row, e, source, mapping):
 
 
 def collect(source, app, output, mapping):
+    require(app.is_relative_to(output) and not app.is_relative_to(source) and not source.is_relative_to(app), str(app), 'candidate/source/output overlap')
     e = snapshot(source, output, mapping)
     components = []
     e['originals'] = {}
@@ -394,6 +448,12 @@ def collect(source, app, output, mapping):
     # All owner/text checks precede committing the package metadata pair.
     put(app / EVIDENCE, app, encode(e))
     put(app / MANIFEST, app, encode(manifest))
+    index = '# Dependency notices\n\n' + STANDARD + '. No emitted/linker closure claim.\n\n'
+    for row in components:
+        index += row['id'] + ' — ' + row['selection'] + '\n'
+        index += ''.join('  ' + n['destination'] + '\n' for n in row['notices'])
+    put(app / BASE / 'DEPENDENCIES.txt', app, index.encode())
+    put(app / BASE / 'README.md', app, read(source / 'packaging/THIRD_PARTY_NOTICES.md', source))
     validate(app)
     return manifest
 
@@ -453,15 +513,89 @@ def validate_archive(archive):
         return validate_data(get(MANIFEST, MAX_JSON), get(EVIDENCE, MAX_JSON), get)
 
 
+def prepare_inputs(source, output, source_tree, originals):
+    require(bool(re.fullmatch('[0-9a-f]{40}', source_tree)), 'source_tree', 'invalid identity')
+    safe_path(source, source)
+    safe_path(output, output)
+    safe_path(originals, originals)
+    notice_root = output / 'scratch/web-original-notices'
+    require(not notice_root.is_relative_to(source) and not source.is_relative_to(notice_root)
+            and not originals.is_relative_to(output) and not output.is_relative_to(originals), str(output), 'notice output overlaps source or originals')
+    require(not notice_root.exists(), str(notice_root), 'output already exists')
+    lock = json.loads(read(source / 'web/package-lock.json', source, MAX_JSON))['packages']
+    upstream = json.loads(read(source / 'web/vendor/vite/UPSTREAM.json', source))
+    associations, metadata = {}, {}
+    # Read bounded tar members without extracting paths, links or arbitrary data.
+    for name, version in WEB_TOOLS.items():
+        entry = lock['node_modules/' + name]
+        require(entry['version'] == version or (name == 'vite' and entry['version'] == upstream['version']), name, 'tool version differs from retained original')
+        archive = originals / (name.replace('/', '_') + '.tgz')
+        raw = read(archive, originals, MAX_JSON)
+        valid = sha(raw) == upstream['original_sha256'] if name == 'vite' else 'sha512-' + base64.b64encode(hashlib.sha512(raw).digest()).decode() == entry['integrity']
+        require(valid, str(archive), 'original archive digest mismatch')
+        paths = []
+        with tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz') as tar:
+            total = expanded = 0
+            members = []
+            for index, member in enumerate(tar):
+                require(index < 8192, name, 'too many original archive members')
+                expanded += member.size
+                require(0 <= member.size <= MAX_JSON and expanded <= 128 * 1024 * 1024, name, 'original archive expanded-size limit')
+                parts = relative(member.name.rstrip('/') if member.isdir() else member.name).parts
+                if member.name == 'package/package.json':
+                    require(member.isfile() and 0 < member.size <= 262144, name, 'unsafe original package metadata')
+                    metadata[name] = json.loads(tar.extractfile(member).read(262145))
+                if len(parts) < 2 or parts[0] != 'package' or not NOTICE.match(parts[1]):
+                    continue
+                if member.isdir():
+                    continue
+                total += member.size
+                require(member.isfile() and 0 < member.size <= 262144 and total <= 2 * 1024 * 1024,
+                        name + ':' + member.name, 'unsafe original notice member')
+                data = tar.extractfile(member).read(262145)
+                require(len(data) == member.size and bool(data.decode('utf-8').strip()), name, 'invalid original text')
+                members.append((member.name, data))
+            require(name in metadata and metadata[name].get('name') == name and metadata[name].get('version') == version, name, 'original archive package identity mismatch')
+            for member, data in members:
+                dest = notice_root / name / relative(member).relative_to('package')
+                put(dest, output, data)
+                paths.append(str(dest))
+        associations[name] = paths
+    # These two platform packages publish no license member. Their authenticated
+    # manifests identify the same version/repository/MIT terms as the package
+    # publishing their actual source license. Do not generalize parent climbing.
+    for child, parent in {'@esbuild/darwin-arm64': 'esbuild', '@rollup/rollup-darwin-arm64': 'rollup'}.items():
+        if not associations[child]:
+            child_meta, parent_meta = metadata[child], metadata[parent]
+            require(child_meta['version'] == parent_meta['version']
+                    and child_meta.get('repository') == parent_meta.get('repository')
+                    and child_meta.get('license') == parent_meta.get('license') == 'MIT'
+                    and bool(associations[parent]), child, 'missing authenticated co-version native original')
+            associations[child] = list(associations[parent])
+    for name, paths in associations.items():
+        require(bool(paths), name, 'original archive has no license notices')
+    def go_value(key):
+        return subprocess.check_output(['go', 'env', key], text=True, timeout=30).strip()
+    goroot = absolute(go_value('GOROOT'))
+    mapping = dict(source_tree=source_tree, go_root=str(goroot), go_version=go_value('GOVERSION'),
+                   go_originals=[str(p) for p in original_files(goroot)],
+                   web_originals=associations, notice_root=str(notice_root))
+    put(output / 'diagnostics/license-mapping.json', output, encode(mapping))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('collect', 'verify', 'archive'))
+    parser.add_argument('mode', choices=('inputs', 'collect', 'verify', 'archive'))
     parser.add_argument('--source', type=Path)
+    parser.add_argument('--source-tree')
+    parser.add_argument('--web-tool-originals', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--mapping', type=Path)
     parser.add_argument('--app', type=Path)
     parser.add_argument('--archive', type=Path)
     args = parser.parse_args()
+    if args.mode == 'inputs' and not all((args.source, args.output, args.source_tree, args.web_tool_originals)):
+        parser.error('inputs requires --source, --output, --source-tree and --web-tool-originals')
     if args.mode == 'collect' and not all((args.source, args.output, args.mapping, args.app)):
         parser.error('collect requires --source, --output, --mapping and --app')
     if args.mode == 'verify' and not args.app:
@@ -471,6 +605,9 @@ def main():
     if args.mode == 'archive' and not args.archive:
         parser.error('archive requires --archive')
     try:
+        if args.mode == 'inputs':
+            prepare_inputs(args.source, args.output, args.source_tree, args.web_tool_originals)
+            return 0
         if args.mode == 'archive':
             result = validate_archive(args.archive)
         else:

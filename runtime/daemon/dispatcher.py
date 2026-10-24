@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from runtime.daemon.org_state import OrgState
 from runtime.daemon.state import DaemonState
 
 logger = logging.getLogger("happyranch.daemon.dispatcher")
@@ -21,9 +24,16 @@ class Dispatcher:
     def __init__(self, state: DaemonState) -> None:
         self._state = state
 
-    def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None:
+    def task_attachment(self, slug: str) -> OrgState | None:
+        """Capture the immutable OrgState before native queue submission."""
         try:
-            org = self._state.get_org(slug)
+            return self._state.get_org(slug)
+        except KeyError:
+            return None
+
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> None:
+        try:
+            org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
             logger.warning(
                 "dropping run_step for unknown org %r (task %s) — "
@@ -39,12 +49,18 @@ class Dispatcher:
         except (DeferredTeamMove, TeamMoveError):
             org.orchestrator._team_moves.defer_task(task_id, metadata)
 
-    def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None) -> bool:
+    def task_admission_allowed(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> bool:
         from runtime.orchestrator.team_move import DeferredTeamMove
         from runtime.infrastructure.team_move_store import TeamMoveError
         try:
-            org = self._state.get_org(slug)
+            org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
+            return False
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(org.db, task_id, org_slug=slug)
+        if ownership.kind == 'coding_attempt':
+            return org.workflow_coding_dispatch.queue_admission_allowed(task_id)
+        if ownership.kind.startswith('coding_') or ownership.kind == 'reconciliation_required':
             return False
         move = org.orchestrator._team_moves
         try:
@@ -55,16 +71,36 @@ class Dispatcher:
             return False
         return True
 
-    def heartbeat(self, slug: str, task_id: str) -> None:
+    def worker_started(self, slug: str, task_id: str, *, attachment: OrgState | None = None) -> object:
+        try:
+            org = attachment if attachment is not None else self._state.get_org(slug)
+            coding = org.workflow_coding_dispatch
+        except KeyError:
+            return None
+        return coding, coding.queue_started(task_id)
+
+    def worker_finished(self, slug: str, task_id: str, owner: object) -> None:
+        coding, identity = owner
+        coding.queue_finished(task_id, identity)
+
+    def heartbeat(self, slug: str, task_id: str, queue_owner: object = None, *, attachment: OrgState | None = None) -> None:
         """Stamp ``tasks.last_heartbeat`` on the per-org DB.
 
-        Called periodically by the queue's heartbeat coroutine while
-        ``run_step`` is in flight. Silently no-ops if the org has been
-        unloaded since the task was enqueued.
+        Called against the queue's captured org while ``run_step`` is in
+        flight. Unbound legacy callers still no-op for an unloaded slug.
         """
         try:
-            org = self._state.get_org(slug)
+            org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
+            return
+        from runtime.workflows.recovery import classify_task
+        owner = classify_task(org.db, task_id, org_slug=slug)
+        if owner.kind in ('coding_source_waiting', 'coding_attempt'):
+            if queue_owner is None or queue_owner[0] is not org.workflow_coding_dispatch:
+                return
+            org.workflow_coding_dispatch.heartbeat(task_id, queue_owner[1])
+            return
+        if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
             return
         now = datetime.now(timezone.utc).isoformat()
         org.db.update_task(task_id, last_heartbeat=now)

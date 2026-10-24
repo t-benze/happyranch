@@ -29,6 +29,115 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+class TaskThreadOriginUnavailable(ValueError):
+    """The complete association read exceeded its finite acquisition limits."""
+
+
+# Read-model-only limits, below the existing collection SQL/row/byte ceilings.
+# No state survives the owning coherent read transaction.
+_THREAD_ORIGIN_NODES = 4096
+_THREAD_ORIGIN_ROWS = 8192
+_THREAD_ORIGIN_BYTES = 16 * 1024 * 1024
+_THREAD_ORIGIN_BATCH = 128
+_THREAD_ORIGIN_COLUMNS = "id, parent_task_id, revisit_of_task_id, dispatched_from_thread_id"
+
+
+class _TaskThreadOrigins:
+    """One snapshot's indexed acquisition and shared suffix validation.
+
+    Nodes include all referenced/missing IDs; rows/bytes include duplicate discovery
+    and final summaries. SQL work, lock admission, per-row size and elapsed SQL
+    are additionally bounded by the enclosing existing collection read scope.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.nodes: set[str] = set()
+        self.rows: dict[str, dict | None] = {}
+        self.fetched = 0
+        self.byte_count = 0
+        # A valid suffix stores its full distance, NOT a start's depth verdict.
+        self.resolved: dict[str, tuple[str, str, int] | None] = {}
+
+    def track(self, task_ids: list[str]) -> None:
+        for task_id in task_ids:
+            self.nodes.add(task_id)
+            if len(self.nodes) > _THREAD_ORIGIN_NODES:
+                raise TaskThreadOriginUnavailable("task_thread_origin_unavailable")
+
+    def read(self, sql: str, params: tuple) -> list[dict]:
+        # One extra sentinel detects exhaustion; a prefix is never returned.
+        cursor = self.conn.execute(sql + " LIMIT ?", (*params, _THREAD_ORIGIN_ROWS - self.fetched + 1))
+        result = []
+        for row in cursor:
+            self.fetched += 1
+            self.byte_count += sum(len(v.encode("utf-8")) if isinstance(v, str)
+                                   else len(v) if isinstance(v, bytes) else 8 for v in row)
+            if self.fetched > _THREAD_ORIGIN_ROWS or self.byte_count > _THREAD_ORIGIN_BYTES:
+                raise TaskThreadOriginUnavailable("task_thread_origin_unavailable")
+            result.append(dict(row))
+        return result
+
+    def remember(self, rows: list[dict]) -> None:
+        for row in rows:
+            self.track([row["id"]])
+            self.rows[row["id"]] = row
+
+    def ancestors(self, task_ids: list[str]) -> None:
+        self.track(task_ids)
+        frontier = set(task_ids)
+        visited: set[str] = set()
+        for _ in range(200):
+            if not frontier:
+                break
+            pending = list(frontier - self.rows.keys())
+            for offset in range(0, len(pending), _THREAD_ORIGIN_BATCH):
+                batch = pending[offset:offset + _THREAD_ORIGIN_BATCH]
+                marks = ",".join("?" for _ in batch)
+                self.remember(self.read(f"SELECT {_THREAD_ORIGIN_COLUMNS} FROM tasks WHERE id IN ({marks})", tuple(batch)))
+                for task_id in batch:
+                    self.rows.setdefault(task_id, None)
+            visited.update(frontier)
+            predecessors = {row["revisit_of_task_id"] for task_id in frontier
+                            if (row := self.rows[task_id]) is not None
+                            and row["parent_task_id"] is None and row["revisit_of_task_id"] is not None}
+            frontier = predecessors - visited
+            self.track(list(frontier))
+
+    def origin(self, task_id: str) -> dict:
+        path: list[dict] = []
+        seen: set[str] = set()
+        current = task_id
+        while current not in self.resolved:
+            row = self.rows.get(current)
+            if current in seen or row is None or row["parent_task_id"] is not None:
+                # An unacquired tail after 200 acquisition rounds cannot be a
+                # complete <=200-node suffix of ANY selected start in this batch.
+                self.resolved[current] = None
+                break
+            seen.add(current)
+            path.append(row)
+            predecessor = row["revisit_of_task_id"]
+            if predecessor is None:
+                thread_id = row["dispatched_from_thread_id"]
+                self.resolved[current] = (thread_id, current, 1) if thread_id else None
+                path.pop()
+                break
+            current = predecessor
+        suffix = self.resolved[current]
+        for row in reversed(path):
+            literal = row["dispatched_from_thread_id"]
+            if suffix is not None and (literal is None or literal == suffix[0]):
+                suffix = (suffix[0], suffix[1], suffix[2] + 1)
+            else:
+                suffix = None
+            self.resolved[row["id"]] = suffix
+        origin = self.resolved[task_id]
+        if origin is None or origin[2] > 200:
+            return {"originating_thread_id": None, "originating_task_id": None}
+        return {"originating_thread_id": origin[0], "originating_task_id": origin[1]}
+
+
 @dataclass(frozen=True)
 class VerifiedRetry:
     """Read-only provenance result; final spawn must revalidate under its writer lock."""
@@ -367,6 +476,17 @@ class TasksMixin:
         admission owns the lock, writer reservation and entire graph commit.
         """
         self._check_team_move_task_uncommitted(task)
+        self._insert_task_row_uncommitted(task)
+
+    def _insert_task_row_uncommitted(self, task: TaskRecord) -> None:
+        """Private row primitive for a prechecked, caller-owned graph writer.
+
+        Ordinary callers retain _insert_task_uncommitted's native move guard.
+        Coding prechecks its complete prospective graph before inserting pins,
+        so it never tries to classify a half-built cyclic workflow graph.
+        """
+        if not self._conn.in_transaction:
+            raise RuntimeError('task row insertion requires an owned transaction')
         params = (
             task.id,
             task.status.value,
@@ -881,33 +1001,65 @@ class TasksMixin:
             for row in cursor.fetchall()
         ]
 
-    @_synchronized
-    def list_tasks_by_thread(
-        self, thread_id: str,
-    ) -> list[dict]:
-        """Return tasks dispatched from a thread, newest-first.
+    def get_task_thread_origin(self, task_id: str) -> dict:
+        """Single-task compatibility reader; no cache crosses its snapshot."""
+        return self.get_task_thread_origins([task_id])[task_id]
 
-        Uses the existing idx_tasks_dispatched_from_thread_id partial index.
-        Returns lightweight summary dicts with the fields the frontend needs:
-        id, status, brief, assigned_agent, created_at, parent_task_id.
+    def get_task_thread_origins(self, task_ids: list[str]) -> dict[str, dict]:
+        """Batch complete root lineage in the caller's coherent request view.
+
+        Malformed/missing/cyclic/conflicting or >200-node chains yield null
+        origin. Aggregate exhaustion raises, never masquerading as no origin.
         """
-        cursor = self._conn.execute(
-            "SELECT id, status, brief, assigned_agent, created_at, parent_task_id "
-            "FROM tasks WHERE dispatched_from_thread_id = ? "
-            "ORDER BY created_at DESC",
-            (thread_id,),
-        )
-        return [
-            {
-                "id": row["id"],
-                "status": row["status"],
-                "brief": row["brief"],
-                "assigned_agent": row["assigned_agent"],
-                "created_at": row["created_at"],
-                "parent_task_id": row["parent_task_id"],
-            }
-            for row in cursor.fetchall()
-        ]
+        if len(task_ids) > _THREAD_ORIGIN_NODES:
+            raise TaskThreadOriginUnavailable("task_thread_origin_unavailable")
+        with self._memory_collection_read_budget(), self.coherent_read_view():
+            reader = _TaskThreadOrigins(self._conn)
+            reader.ancestors(task_ids)
+            return {task_id: reader.origin(task_id) for task_id in task_ids}
+
+    def list_tasks_by_thread(self, thread_id: str) -> list[dict]:
+        """Complete direct rows plus valid root revisits, or bounded refusal.
+
+        Indexed breadth-first discovery deduplicates nodes at their shortest
+        distance from any direct root. Only successful complete reads return
+        summaries; literal direct rows survive every lineage validation failure.
+        """
+        with self._memory_collection_read_budget(), self.coherent_read_view():
+            reader = _TaskThreadOrigins(self._conn)
+            direct = reader.read(f"SELECT {_THREAD_ORIGIN_COLUMNS} FROM tasks WHERE dispatched_from_thread_id = ?", (thread_id,))
+            reader.remember(direct)
+            direct_ids = {row["id"] for row in direct}
+            discovered = set(direct_ids)
+            frontier = [row["id"] for row in direct if row["parent_task_id"] is None]
+            for _ in range(199):
+                if not frontier:
+                    break
+                following = []
+                for offset in range(0, len(frontier), _THREAD_ORIGIN_BATCH):
+                    batch = frontier[offset:offset + _THREAD_ORIGIN_BATCH]
+                    marks = ",".join("?" for _ in batch)
+                    rows = reader.read(f"SELECT {_THREAD_ORIGIN_COLUMNS} FROM tasks WHERE revisit_of_task_id IN ({marks}) AND parent_task_id IS NULL", tuple(batch))
+                    reader.remember(rows)
+                    for row in rows:
+                        if row["id"] not in discovered:
+                            discovered.add(row["id"])
+                            following.append(row["id"])
+                frontier = following
+            # Reuse discovery rows and acquire only missing ancestor rows.
+            reader.ancestors(list(discovered))
+            origins = {task_id: reader.origin(task_id) for task_id in discovered}
+            selected = [task_id for task_id in discovered if task_id in direct_ids
+                        or origins[task_id]["originating_thread_id"] == thread_id]
+            result = []
+            for offset in range(0, len(selected), _THREAD_ORIGIN_BATCH):
+                batch = selected[offset:offset + _THREAD_ORIGIN_BATCH]
+                marks = ",".join("?" for _ in batch)
+                rows = reader.read("SELECT id, status, brief, assigned_agent, created_at, parent_task_id,"
+                                   f" dispatched_from_thread_id FROM tasks WHERE id IN ({marks})", tuple(batch))
+                result.extend({**row, **origins[row["id"]]} for row in rows)
+            result.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
+            return result
 
     @_synchronized
     def get_direct_revisits(self, task_id: str) -> list[str]:
@@ -1089,8 +1241,40 @@ class TasksMixin:
             for row in cursor.fetchall()
         ]
 
+    def _guard_coding_task_mutation_uncommitted(self, task_id: str) -> None:
+        owner = getattr(self, '_workflow_coding_start', None)
+        if owner is not None:
+            owner.guard_native_mutation(task_id)
+
+    def claim_coding_step_uncommitted(self, *, task_id: str, before: dict) -> None:
+        """Coding final native owner joins one caller-owned admission transaction."""
+        from runtime.workflows.coding_saved_records import _check
+        from runtime.workflows.coding_source_history import _TASK_COLUMNS
+        _check(self._conn.in_transaction and before['id'] == task_id and before['status'] == 'pending'
+               and before['block_kind'] is None and before['cancelled_at'] is None
+               and before['current_session_id'] is None and before['orchestration_step_count'] == 0)
+        self._check_team_move_task_uncommitted(task_id)
+        _check(self._conn.execute("SELECT 1 FROM authority_policy_v2_root_dispatch WHERE root_task_id=? AND state='pending'", (task_id,)).fetchone() is None)
+        where = ' AND '.join('"' + name + '" IS ?' for name in _TASK_COLUMNS)
+        changed = self._conn.execute('UPDATE tasks SET status=?,orchestration_step_count=? WHERE ' + where,
+            ('in_progress', before['orchestration_step_count'] + 1, *(before[k] for k in _TASK_COLUMNS)))
+        _check(changed.rowcount == 1)
+
+    def record_coding_heartbeat_uncommitted(self, *, task_id: str, before: dict, after: dict, payload: dict) -> None:
+        """Actual native two-clock writer and its fixed audit commit together."""
+        from runtime.workflows.coding_saved_records import _check
+        from runtime.workflows.coding_start_history import same
+        _check(self._conn.in_transaction and before['id'] == task_id and after['id'] == task_id
+               and same(after, {**before, 'updated_at': payload['observed_at'], 'last_heartbeat': payload['observed_at']}))
+        self._conn.execute('UPDATE tasks SET updated_at=?,last_heartbeat=? WHERE id=?',
+                           (after['updated_at'], after['last_heartbeat'], task_id))
+        audit_id = self.insert_audit_log_uncommitted(task_id, 'orchestrator', 'coding_task_heartbeat', payload)
+        from runtime.workflows.coding_saved_records import _canonical
+        self._conn.execute('UPDATE audit_log SET payload=? WHERE id=?', (_canonical(payload).decode('utf8'), audit_id))
+
     @_synchronized
     def update_task(self, task_id: str, **fields: object) -> None:
+        self._guard_coding_task_mutation_uncommitted(task_id)
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
@@ -1119,6 +1303,7 @@ class TasksMixin:
     def update_task_active_chain(self, task_id: str, active_chain: str | None) -> None:
         """Set or clear tasks.active_chain. Pass None to clear (chain finished,
         aborted, or never declared)."""
+        self._guard_coding_task_mutation_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             "UPDATE tasks SET active_chain = ?, updated_at = ? WHERE id = ?",
@@ -1130,6 +1315,7 @@ class TasksMixin:
     def update_task_active_fanout(self, task_id: str, active_fanout: str | None) -> None:
         """Set or clear tasks.active_fanout. Pass None to clear (fan-out join
         claimed or parent terminal)."""
+        self._guard_coding_task_mutation_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             "UPDATE tasks SET active_fanout = ?, updated_at = ? WHERE id = ?",
@@ -2038,6 +2224,7 @@ class TasksMixin:
         """Compose the original CAS in the caller's admission transaction."""
         if not self._conn.in_transaction:
             raise RuntimeError("task admission requires a writer transaction")
+        self._guard_coding_task_mutation_uncommitted(task_id)
         self._check_team_move_task_uncommitted(task_id)
         now = datetime.now(timezone.utc).isoformat()
         pending_generation = self._conn.execute(
@@ -2657,6 +2844,13 @@ class TasksMixin:
         self, *, task_id: str, agent: str, session_id: str, pid: int,
     ) -> bool:
         """Publish a PID only for the still-current invocation generation."""
+        coding = getattr(self, '_workflow_coding_dispatch', None)
+        if coding is not None:
+            from runtime.workflows.recovery import classify_task
+            owner = classify_task(self, task_id, org_slug=coding.org.slug)
+            if owner.kind == 'coding_attempt':
+                return coding.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
+        self._guard_coding_task_mutation_uncommitted(task_id)
         cursor = self._conn.execute(
             """UPDATE tasks SET executor_pid = ?
                WHERE id = ? AND assigned_agent = ? AND current_session_id = ?
@@ -2782,6 +2976,9 @@ class TasksMixin:
         informational = {"session_end", "progress", "zombie_flagged", "zombie_cleared",
                          "task_attachment_materialized", "executor_throttle", "task_scratch_report",
                          "task_scratch_reclaimed", "portability_reconciled",
+                         # Native launch/refusal accounting observes attempts;
+                         # it does not select or consume a recovery result.
+                         "task_native_launch_boundary",
                          # AuditLogger's native task-scoped memory observations.
                          # Other memory CRUD/read rows use AGENT- scope, outside
                          # get_audit_logs(task_id); collection controls are not

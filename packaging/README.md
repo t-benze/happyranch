@@ -1,3 +1,99 @@
+# Frozen Mac packaging
+
+Current shipping contract: [Mac build](../app/mac/README.md),
+[manifest notices](manifest-notices.md), and
+[workflow limits/diagnostics](../docs/runbooks/mac-workflow-operations.md).
+Founder THR104 seq369 retires asset/freezer/web evidence and the packaging
+supervisor from every shipping producer and consumer. No closure-complete flag,
+mandatory evidence token, per-byte emitted proof or IPC replaces them.
+Historical source/originals/failures are preserved below and in Git history.
+
+For a standalone freeze, use a fresh disposable source checkout:
+
+```sh
+bash packaging/build_daemon.sh --dist-dir /owned/private/new-dist --work-dir /owned/private/new-work
+```
+
+Dist/work must be new, disjoint and outside source, with existing safe owned
+parents. The builder keeps no-follow ancestry descriptors, root/current-user
+owners, no group/other writes, device/identity rechecks and exclusive reservations.
+Private work children contain the managed Python install, UV/PyInstaller caches
+and temp data. Existing .venv, discovered uv.toml, enclosing pyproject or unexpected
+source UV configuration refuse before installer effects. All inherited UV and
+Python environment admission and download restrictions remain; selected
+CPython3.12.10 is managed-only, checked before sync and checked again in .venv.
+No shared framework/configuration is modified. Frozen sync/no-dotenv run uses
+the same explicit project and patch-bearing Python request with downloads disabled
+after the private install. The spec uses standard Analysis/PYZ/EXE/COLLECT, separate
+daemon+CLI archives and collision-checked shared data/native inputs.
+
+Both Analysis lanes select standard `module_collection_mode` `pyz+py` only for
+`runtime.infrastructure.learnings_store`. This retains its ordinary PYZ bytecode
+and actual source at `_internal/runtime/infrastructure/learnings_store.py`, where
+the frozen loader can supply `inspect.getsource(MemoryStore.render_memory_digest)`
+for the existing import-time renderer digest. Other modules keep their existing
+collection modes. Frozen `--help` remains a required native check; source retention
+alone does not qualify later memory-collection identity or refusal diagnostics.
+
+The existing Darwin PyInstaller6.21.0 wheel remains pinned with its original
+notices. Its opt-in custody API is inactive: the spec supplies no custom argument,
+caller or observer. There is no dependency/version/lock/wheel mutation. Vite
+uses the standard Tailwind plugin; its historical observer sink has no consumer.
+
+Only direct inputs needed for manifest notices leave the spec: installed Python
+metadata/RECORD, selected interpreter/native owner paths and authenticated
+interpreter originals. This does not collect producer lifecycles or emitted
+archive closure. Missing/unrecognized required owners or original texts refuse.
+CPython LICENSE.txt is required independently of supplemental installed/vendor
+originals. After the base-prefix root, the spec checks the selected interpreter's
+current sysconfig stdlib beneath that same prefix. uv's resolved standalone
+3.12.10 installs its original there; it must match the hash-pinned CPython
+original byte for byte. Unsafe or corrupt installed texts refuse. Only absence
+from both locations invokes the unchanged exact-identity/stdlib-checked offline
+fallback. The build's managed-only exact 3.12.10 selection remains required; no
+additional offline identity is admitted. Each original retains its source boundary.
+The full build collects notices after assembly, validates resources/basic app,
+checks frozen CLI/catalog, records unsigned trust observations, archives and
+reconciles actual ZIP/notice bytes and release identity. The retained resource
+catalog/runtime is unchanged. Failure diagnostics use the current `basic` stage
+(its output remains `native.json`); REACHED records an attempted stage, including
+a failed attempt, and never asserts success.
+
+Run the existing focused portable commands outside CI with fresh task scratch:
+
+```sh
+python packaging/verify_manifest_notices.py --scratch /owned/new-notice-fixture
+python packaging/verify_mac_run_layout.py --scratch /owned/new-layout-fixture
+```
+
+The first also accepts `--cpython-stdlib /owned/pinned-stdlib` for the three
+source originals pinned in `notice-data/identity-map.json` plus `LICENSE.txt`
+from the resolved standalone archive. These exercise installed-original
+selection and the authenticated fallback with synthetic identity/Analysis,
+without executing a native interpreter. Without them these cases are NOT RUN.
+The first uses authentic notices with synthetic resolved inputs, preassembled
+resources/plist/icon/Mach-O headers and a substituted ditto ZIP writer. The second
+uses actual workflow reservation/upload selectors and shipping source/path
+preflight with fixture Git/marker bytes. Neither compiles an app or proves native
+execution, cleanup/quiescence, Mac14 installation, signing or public availability.
+The first also inspects both shipping Analysis calls for the narrow source/PYZ
+setting without running PyInstaller; this is configuration coverage, not frozen
+execution evidence.
+Former directory-diagnostic/asset binding cases observe retired protocols; active
+path keepers now observe the shipping preflight/reservation instead.
+
+Required automated PR/merge checks remain Source Boundary Lint and Web Lint
+(Node24), static only, plus supported committed-source local all. Python units
+are RETIRED; integration INCLUDING callback is SKIPPED THR243seq42. Independent
+review/QA and ROOT's guarded merge/native/archive inspection remain separate.
+No CI policy or workflow definition changes are made.
+
+<details>
+<summary>Historical pre-seq369 contracts and failed evidence — retired, nonshipping</summary>
+
+Original investigations, failure records and superseded requirements follow.
+They do not activate helpers or impose acceptance gates on the current build.
+
 ## Manifest-notice shipping gate (THR104 seq260/266)
 
 Current shipping standard and finite verification: [manifest-notice contract](manifest-notices.md).
@@ -37,20 +133,92 @@ bash packaging/build_daemon.sh \
 ```
 
 Both paths must be new, disjoint, outside source, with existing owned parents
-and no symlink ancestors. `uv sync --group build --frozen` installs existing
-build dependencies in that checkout; PyInstaller receives explicit dist/work
-paths and the checked-in equivalent hook. Before any build tool runs, the
-freezer allocates and validates a fresh `pyinstaller-cache.*` directory under
-the admitted work path and exports it as `PYINSTALLER_CONFIG_DIR`, overriding
-any inherited selection. Thus `--clean` operates only on that invocation's
-cache in both standalone and full-app builds. Work and cache are retained with
-diagnostics; the venue owner disposes of only these invocation allocations,
-preserving external caches. Both daemon and CLI must be
+and no symlink ancestors. Before uv writes, the freezer uses the existing
+no-follow ancestry/FD checks (root/current-user ancestors, no group/other write,
+uid-owned allocation roots) and exclusive directory reservation. It requires
+an absent exported-source `.venv`, including no dangling symlink, and reserves
+private mode0700 `python-install`, `uv-cache`, `tmp` and `pyinstaller-cache`
+children under the new work root. Paths with spaces remain supported.
+
+`uv python install --no-bin` requests **CPython 3.12.10** into the admitted
+`UV_PYTHON_INSTALL_DIR`; no user/global executable link is installed. Discovery
+is managed-only with automatic downloads disabled and must return a safe,
+owned executable within that root. Before sync, its actual executable must
+match that concrete selection and report CPython 3.12.10. Raw prefix and base
+prefix must agree in the private installation, with raw stdlib beneath that
+base; every raw root is admitted through the existing no-follow ancestry/FD,
+owner/mode/device and identity rechecks before physical executable comparisons.
+The admitted raw base prefix remains the expectation for the project venv.
+Frozen sync and both run commands share explicit absolute project/directory,
+patch-bearing `--python cpython@3.12.10` and managed-only/no-download arguments, with
+`UV_PROJECT_ENVIRONMENT` fixed to exported-source/.venv. Both runs disable
+dotenv loading. The patch-bearing request retains fixed venv upgrade semantics;
+the separately validated concrete executable remains the physical identity
+expectation. Before writing the four-field `python-toolchain.json`, the actual
+venv must pass executable/version/platform/machine checks, raw prefix must equal
+absolute exported-source/.venv, and raw base prefix must equal the admitted
+base. Raw venv/base/stdlib roots are admitted within source/install/base,
+respectively, before resolved executable equality is considered. Directory
+aliases are refused; permitted executable leaf links retain the separate later
+`executable_alias` checks. Earlier admission grants no later root/toolchain
+exemption or same-UID race guarantee. The receipt still records only the actual
+venv executable/version/platform/machine. The freeze run uses the same venv
+`python -I` command via `-m PyInstaller`, avoiding console-script shebang aliases. The vendored Darwin wheel and frozen
+lock are unchanged; sync/run keep project source configuration enabled.
+
+Both build entries refuse inherited `UV_*` controls before their first uv
+invocation, except `UV_CACHE_DIR` (replaced by an admitted allocation),
+`UV_OFFLINE`, `UV_PYTHON_DOWNLOADS`, `UV_NO_PROGRESS`, and `UV_PYTHON` only
+when absent or exactly the literal `3.12` emitted by the pinned workflow caller.
+Present-empty, path, patch, alternate or whitespace selectors refuse without
+printing values. After the entire inherited-environment check succeeds, each
+parent shell explicitly unsets `UV_PYTHON` before any uv invocation or wrapper
+handoff. This compatibility input grants no interpreter-selection authority;
+the fixed private CPython request and absolute managed executable remain binding.
+This closed rule covers project/install/bin/interpreter/config/directory
+redirects, no-sources/package
+modes, custom mirrors/catalogs and unknown future controls. Inherited `PYTHON*`
+controls and a mismatched `VIRTUAL_ENV` also refuse, without printing values.
+Offline or non-automatic Python-download settings refuse a fresh install;
+no prohibition is converted into network permission. Discovered `uv.toml`
+overrides (source/ancestors, home, XDG and system locations), unreadable
+configuration and changes to the reviewed `[tool.uv.sources]` configuration
+refuse before installation. Every ancestor above the source through `/` must
+also have no `pyproject.toml`: any presence (unrelated, malformed, oversized,
+unreadable, directory or symlink, including dangling) or inspection error
+refuses using the pinned ancestry descriptors, before freezer dist/work
+reservation, install or sync. Only the source's own project is admitted through
+the exact frozen uv-settings check. This preserves local wheel selection
+without
+silently loading ambient user/system settings. Use a disposable build venue
+without those overrides; the script never edits external configuration.
+
+The full-app wrapper validates its own private temp/uv-cache roots before its
+early `uv --no-config --version` read. Ancestor-project admission occurs later
+in the freezer: the wrapper has already reserved scratch, exported source and
+read the uv version. Its existing finish diagnostics apply to that refusal;
+early inherited-environment refusal precedes the wrapper's finish trap.
+The freezer always selects its own
+admitted work/tmp for standalone and full-app use, overriding inherited TMPDIR.
+`PYINSTALLER_CONFIG_DIR` confines `--clean` to the fresh work/pyinstaller-cache.
+Allocation, install, discovery, identity or sync failure stops nonzero without
+ambient retry or later freeze/success. Work and caches remain with diagnostics;
+the venue owner disposes only of exact invocation allocations after evidence
+retention. No shared framework is chmodded, chowned, copied or repaired.
+Both daemon and CLI must be
 executable. Separate daemon/CLI PYZ archives share the byte-checked union of
 both native/data closures. Destination collisions refuse instead of dropping
 CLI-only payloads. `analysis.json` records actual pure/binary/data rows and CLI
 set differences, including empty differences. No missing-module bug is claimed
 from source inference; no removed runtime modules or retired units are restored.
+
+This repair has source/static evidence only. Actual managed installation,
+external-byte preservation, three-stage interpreter selection, new-distribution
+originals/fallback eligibility/library owners, freeze/app/ZIP, launch and native
+failure transitions remain **UNVERIFIED**, owned by engineering_manager. Risks
+include repeat fail-closed selection, freeze or finalization refusal; an
+uncontrolled external write remains a source defect requiring correction.
+No new native run, helper/test harness or release acceptance follows.
 
 `license-mapping.json` and `notices/` retain original installed license texts,
 versions, input inclusion and hashes. Go compilation dependencies and web source
@@ -96,10 +264,19 @@ unchanged. Any source refusal persists for its owner across later inputs/maps.
 
 The [notice index](THIRD_PARTY_NOTICES.md) documents the two byte-preserved
 offline originals and exact pinned identities in `packaging/notice-data/`.
-Installed originals take precedence. The CPython fallback requires matching
+Installed originals take precedence, including the current stdlib LICENSE.txt
+under the selected base prefix when its bytes match the pinned original. The
+CPython fallback, used only when both installed locations are absent, requires matching
 effective toolchain and three stdlib hashes in both Analysis lanes; the twelve
 Radix fallbacks require pinned metadata and every actual emitted source hash.
-Unsafe paths, corrupt inputs and conflicts refuse retention. The web dependency
+Unsafe paths, corrupt inputs and conflicts refuse retention. A fixed 3.12.10
+request does not establish the old fallback's full build/platform/machine or
+stdlib/Analysis hashes. Unsafe/dangling installed originals never become
+absence fallback. Notice errors are caught by the spec as LICENSE_MISSING;
+Python-library disagreement can fail at python_snapshot, while a matching
+snapshot with a missing original (including a separate bundled library owner)
+is refused by final collect. The wrapper preserves the original failure and
+available=false rather than completing verification/archive/success. The web dependency
 now installs a local derivative of upstream scroll-bar source
 `8ca9ba5ea52de03308fe8ced94f7b159a44d28ff` (upstream version 2.3.7), including
 its byte-preserved original MIT LICENSE. This replaces the registry 2.3.8 input;
@@ -203,6 +380,13 @@ No app binary, private archive, recursive cache tree or environment dump is
 uploaded. Diagnostic completeness does not establish release or legal closure.
 
 ## Read-only verifier
+
+The verifier captures its adjacent asset helper path before parsing the
+subcommand. Every shared Git/native tool call reopens that captured helper via
+`runpy.run_path(ASSET_HELPER)` and retains `SUPERVISOR.inspection_run(argv)`;
+the shifted subcommand argument is never the helper path. Preflight checks the
+exact clean source identity and absent output path without constructing an app.
+Portable preflight success does not establish native or package acceptance.
 
 All commands use Python standard library and, for native inspection, actual
 Mac `file/lipo/otool/nm/ar` tools. Trust inspection captures the installed spctl manual, codesign metadata and
@@ -313,8 +497,70 @@ The full app wrapper opts into the private `freezer_evidence.py` contract. Befor
 the ordinary frozen sync it verifies the exact committed Darwin input described
 in [vendor provenance](vendor/pyinstaller-6.21.0/README.md), captures source and
 asset/toolchain bindings and reserves an exclusive response directory. Other
-platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command
-is unchanged. Standalone freezer work has no app-custody token.
+platforms keep registry PyInstaller 6.21.0. The shared `build_daemon.sh` command retains that custody handoff while
+binding the private managed interpreter described above. Standalone freezer
+work has no app-custody token.
+
+Before `spec_begin` or either Analysis, the custody-only spec setup freezes the
+fixed `/Library/Developer/CommandLineTools` developer selection. Only the resolver
+child environment overrides `DEVELOPER_DIR`, preserving the original PATH and
+other settings. Caller-selected `DEVELOPER_DIR` is not consulted and
+`xcode-select` is not queried. Exactly two sequential
+literal `/usr/bin/xcrun --sdk macosx --find` queries select `lipo` and
+`install_name_tool`. No host selection/cache change, candidate execution, retry,
+alternate installation, copied tool or PATH fallback is permitted.
+
+Each configuration query has a 10-second deadline, streaming combined
+stdout/stderr limit of 8192 bytes and stdout limit of 4096 path bytes plus one
+optional LF. Both pipes are drained without unbounded capture; failures kill
+and reap only the owned child, with bounded discard/descriptor cleanup. Exit,
+timeout, output, UTF8 and path failures report bounded role/category errors,
+without dumping stderr or environment. Paths must be single, nonempty, strict
+UTF8 absolute spellings, without controls, colon, empty/dot/traversal components
+or existing component/length violations. The developer string must have the exact
+raw spelling `/Library/Developer/CommandLineTools`; each candidate must have the
+exact raw spelling `/Library/Developer/CommandLineTools/usr/bin/<role>`.
+Dispatchers, aliases, other SDK/toolchain/installation paths and alternative raw
+spellings refuse; path shape alone establishes no safe filesystem attributes.
+
+`spec_begin` validates the transient closed selection again at its native stage,
+after the unchanged caller/context/platform, prefix/base-prefix/stdlib/usr-bin
+root, installed-wheel, receipt and Python checks. It admits only each candidate's
+immediate bin parent, checking each occurrence before deduplication through the
+unchanged `RootHandle` ancestry/owner/mode/device/identity predicates. At most two
+distinct roots are added, retaining cap16 before native snapshots and Analysis.
+Neither `/Library`, the Developer/CLT tree, SDK nor `/` becomes a general
+read root. Native snapshot order stays codesign, lipo, install_name_tool;
+codesign remains literal `/usr/bin/codesign`. The two discovered leaves must be
+physical executable files with no alias chain, and still pass all original
+single-link/type/uid/mode/no-follow/nonblocking/device/size/budget/identity guards.
+Unsafe ancestry and same-descriptor leaf refusals retain their original notes.
+
+After all native snapshots succeed, ordered deduplicated candidate parents
+(lipo then install_name_tool) precede the complete original PATH. Both
+`shutil.which` results must equal the discovered paths before activation;
+cross-shadowing, disappearance or fallback refuses before Analysis. Any
+tentative PATH is restored on refusal. Only this PyInstaller process receives
+the PATH, for both lanes through PYZ/EXE/shared COLLECT. Original vendor lipo and
+install_name_tool PATH argv inherit that selection; the wheel remains unchanged.
+The parent wrapper, later web/Go/Swift and frozen CLI inspection keep their own
+environments, including the active Xcode and outer SDK selection. Standalone
+custody-absent setup performs no discovery or PATH change and retains its ordinary
+unobserved tool selection.
+
+Existing native rows keep their keys, role order and `selection_observation`
+relation, toolchain `origin_unobserved`, expanded root propagation and four
+caller-held digests. Fresh accept/before-copy/copy/licenses readers re-admit the
+recorded roots and reopen selected paths, alias identities and live/snapshot
+subjects; they never rediscover via xcrun or their own PATH. Final
+`verify-release.sh` PATH lipo inspection is separate and unchanged. Discovery
+and intended invocation alignment attest neither an executed kernel image nor
+publisher identity, and provide no same-UID replacement/restore guarantee.
+Actual CLT ancestry/leaf suitability and command compatibility, query
+bounds/cleanup/races/negative behavior, both-lane completion and fresh native
+readers remain UNVERIFIED until the
+root-owned shipping run. Successful source/static checks or discovery establish
+no app/archive/receipt or native acceptance.
 
 The spec retains each Analysis/PYZ/EXE generation before later lanes can replace
 it. PYZ bootstrap selections and redirects, EXE raw inputs, both dependency
@@ -331,7 +577,8 @@ availability is a literal Boolean, with the bounded force environment string
 recorded separately. Constructors, pre-guts/assemble and processing entry/return
 recheck admission. Cache hits need the genuine same-run compatible predecessor;
 non-Mach-O and optional-architecture passthrough remain distinct outcomes.
-Unopted upstream callers retain their existing return types and semantics.
+Unopted upstream callers retain their existing return types; the canonical
+base-library producer ordering applies with or without custody.
 
 Caller-held digests bind context → inputs → output → app-copy. Early fragments
 have null ledger references. Records and snapshots are exclusive, failures
@@ -344,11 +591,36 @@ opaque; the finite marshal decoder accepts only TOC data forms, never code.
 
 Freezer limits are additional to unchanged asset-helper limits: container512MiB,
 native256MiB, ordinary source16MiB, notice/manifest256KiB; decoded member16MiB
-(native256MiB), container expansion512MiB and ratio1000. Aggregate reads8GiB,
-snapshots2GiB, records32MiB, logical members/operations16,384, tree8,192/depth24,
-names8MiB, alias hops16. Each success record is at most8MiB, context64KiB,
-response4KiB; the reused JSON parser's stricter depth16/100,000-node fence also
-applies. Overflow refuses; these caps have not been calibrated by a native run.
+(native256MiB), container expansion512MiB and ratio1000. Aggregate ordinary
+reads8GiB, snapshots2GiB, logical members/operations16,384, tree8,192/depth24,
+names8MiB and alias hops16 remain independent. Fixed internally selected inputs
+and output profiles admit32MiB each with BOTH lexical/object1,000,000 nodes;
+context stays64KiB and copy/default8MiB, with smaller site caps retained. All
+retain depth16/string4096B/strict UTF8/duplicate/nonfinite/type and Boolean-field
+checks. Object preflight precedes bounded incremental canonical JSON encoding;
+sorted keys, separators, ASCII escaping and final newline stay unchanged, along
+with all complete occurrences/order/IDs/lineage and digest-bound references.
+One enclosing attempted helper JSON-I/O meter256MiB per command/spec Session
+replaces records32MiB write/load-only accounting. Every write and mandatory
+readback, load, full reference reread and standalone/nested fragment read is
+charged before attempted work, without path discounts or nested accept/verify
+reset; exhaustion is sticky and failure persistence remains best effort. Write
+readbacks reserve the exact written length plus an EOF probe under an exact-length
+ReadDomain within the fixed kind cap; a partial write does not refund reservations.
+Fragment JSON reads also charge ordinary reads. Copy references stored output
+bytes rather than reserializing under a default cap. Responses retain4KiB.
+The current complete call graph bounds are224MiB/spec and232.125MiB/fresh verify
+with copy, plus small records/EOF probes. These formulas are not measured native
+totals or hard RSS/time bounds. Overflow still refuses; build13's rejected input
+size/content remain UNKNOWN, and these finite capacities do not guarantee success.
+The independent vendor COLLECT ledger profile is32MiB with lexical/object1m,
+depth16/string4096 and original types/duplicates. Integer declared size, original
+guarded observation, bounded cap+1 full-read size/actual consumed digest, ordered
+collect arguments and stable-ledger reobservation all agree. Both reads and the
+final stability reread charge its existing8GiB meter. Vendor default parse and
+fragments stay8MiB each/32MiB per-run writes, with snapshots2GiB and members16384;
+asset and vendor budgets remain separate. Unrelated freezer RECORD_CAP uses,
+including marshal/PYZ TOC and ZIP metadata, stay8MiB.
 Container snapshots are hashed in chunks on held stable descriptors; archive
 parsing uses bounded ranges and expansion, without executing or extracting code.
 Both application and upstream snapshot writers open the ordinal leaf relative to
@@ -361,8 +633,38 @@ refuse. Central extras/comments and local extras share an 8MiB per-archive cap;
 extra fields must be structurally complete. Existing payload CRC, expansion,
 duplicate, local-range and complete-coverage checks remain independent. Logical
 member/name budgets are charged once in admission, cumulatively across archives.
-The Darwin input is custody revision 2; historical revision 1 receipts describe
-only their original input and head.
+The ZIP reader borrows the held snapshot mmap through a read-only seekable file
+interface compatible with CPython3.12 ZipFile, supplying read/seek/tell/seekable
+without a whole-container copy or path reopen. Reads cover ZipFile's admitted
+metadata and bounded member chunks; seek returns the actual mapping position.
+The interface closes before the enclosing snapshot context releases the mapping
+and stable descriptor; it does not close either owner. Bytes inputs retain the
+BytesIO reader, and metadata admission still precedes either reader's allocation.
+The Darwin input is custody revision 5, build tag `1happyranchcustody5`, pinned
+through the local wheel, provenance, lock, wrapper and reader contract. Historical
+revision 1/2/3/4 wheels and receipts retain only their original input and head.
+Revision 5 adds only the missing `api.py` module-global `hashlib` binding for
+the existing COLLECT ledger digest; its reader and limits are unchanged. Build14
+failed at this binding after both EXEs built, before app inspection. Custody5
+build15 (`39518819733`, attempt1, input
+`a9970abb52e3a444c7172674a1eca360a08f8c00`) completed both EXEs and COLLECT,
+then failed in `finish_freeze` / `archive_observations` / `zip_members` when
+CPython3.12.10's ZipFile member reader requested the mmap's missing `seekable`.
+The secondary `FREEZER_FAILURE_PERSISTENCE:FileExistsError` remains diagnostic.
+Native acceptance of the seekable-interface repair remains UNEXECUTED;
+source/repack evidence and build15's earlier success do not establish a Mac/package pass.
+Revision 3 sorts base-library modules by name at the original ZIP producer before
+each original lane observation. It preserves module membership, cached-code
+lookup, optimization, headers and deterministic ZipInfo. Equal content no longer
+depends on traversal order; equal module tuples alone do not prove equal cached
+code objects. Both original Analysis captures, PYZ/EXE lanes, shared contributor
+occurrences and fresh readers remain. Exact-byte and kind collisions, missing
+inputs and live generation drift still refuse; no captured ZIP is rewritten or
+later generation substituted. Build12's exact changed subject and bytes remain
+unknown. Guarded deterministic wheel reproduction validates source repack only;
+changed-helper Darwin compatibility, actual equal lane ZIPs and mismatch/fresh-reader behavior
+remain UNEXECUTED/UNVERIFIED. App/archive/receipt and final manifest-based notices
+remain NOT_REACHED.
 
 Compilation associations remain `declared_compile_origin`/`origin_unobserved`.
 Technical matches do not certify legal applicability. Manifest-selected
@@ -525,3 +827,191 @@ The embedded notice collector enters the existing 192 MiB JSON web budget before
 parsing the caller and constructing its Session. Nested native asset work retains
 the persistent 32 MiB asset submeter; neither budget is reset or enlarged. Notice
 tokens leave the wrapper only after the complete mapping is successfully written.
+
+### Bounded web packaging progress
+
+The existing packaging custody observer emits content-free progress directly to
+stderr with synchronous writes before each actual parent helper spawn and after
+its return or failure. Selected `renderStart`, `renderChunk`, `generateBundle`,
+`writeBundle` and `closeBundle` wrappers mark observation, original-hook completion
+and settlement; `renderChunk` selects the first and every 32nd call per plugin.
+The observer's own final write/close, measurement and serialization are marked,
+with helper markers covering publish/completion. Fixed event/boundary/stage names,
+numeric ordinal/call/plugin numbers and monotonic elapsed milliseconds identify
+these boundaries. Caller JSON, tokens, payloads, source/module/chunk names, paths,
+environment values and error text/stacks are never included in these diagnostics.
+Load/transform/moduleParsed calls have no progress logging.
+
+One custody instance shares the original 65536-byte total diagnostic budget,
+including the existing single suppression notice. At construction it charges a
+1024-byte terminal complete-build grant, even if never spent. Ordinary progress
+and each 3072-byte snapshot grant use the remainder while retaining the notice.
+Unused or partially written grants are never refunded, reset or replenished.
+If a snapshot grant cannot fit, the existing notice suppresses ordinary progress
+and snapshot diagnostics; the upfront terminal grant survives. Unavailable stderr
+retains the original three-pipe helper fallback. Short or failed writes affect
+only diagnostics. The previous 47546-byte reservation through call 22 (14 snapshot
+grants plus parent records and notice) becomes 48570 bytes including the terminal
+grant, still within the same 65536 bytes. Later suppression may occur earlier.
+
+A reserved snapshot maps fixed child fd3 directly to the parent's existing stderr,
+so its lines remain visible while the original synchronous spawn is blocked.
+Numeric private CLI metadata grants the helper its call number and byte allowance;
+there is no caller-selected descriptor or destination. The child writes at most
+24 lines of at most 128 bytes each, including newlines, within its granted bytes.
+Missing/invalid metadata or unavailable fd3 disables child diagnostics; short or
+failed writes disable further child lines without retry. Borrowed descriptors
+are never closed. fd0/1/2, captured protocol stdout/stderr, CSS transport and
+original helper result/error handling are unchanged.
+
+Fixed `[packaging-snapshot]` records pair `start`/`end` for `bindings`, `assets`,
+`toolchain`, `source` (Git tree and helper pins), `stdin`, `mutable`, `context`,
+`create` (snapshot creation/readback), and `reply`. They carry only the numeric
+parent helper call number and fixed phase/event names. Operations and guarded
+reads remain in their original order. The `assets` phase follows the selected
+venue: a portable end does not exercise native asset context/source validation.
+A missing end leaves that phase's outcome UNKNOWN; even a reply end does not
+prove child exit or native/package acceptance.
+There is no retained stream queue, timer, monitor or deadline guarantee for OS
+stderr I/O. A start without its matching end identifies only a selected boundary;
+it does not identify an exact inner cause, and suppression, I/O failure or
+cancellation can also omit an end. Hook promise identity/lifetime/order, helper
+capture/transport limits, native source validation and build acceptance stay as
+before. Ordinary builds retain the existing null packaging-custody path.
+
+Native build17 (`39571904074`, attempt 1, source `22eea903`, tree `5fa018a`;
+workflow definition `be36c7a`) completed both EXEs and COLLECT. Its 43 immediate
+parent helper records show calls 1–21 returning, then snapshot call 22 starting
+at `2026-10-21T08:52:24.4387860Z` without an end/failure before cancellation at
+14:48:45Z after six hours. Node's synchronous helper spawn had not returned;
+Python admission, asset/source validation, Git, stdin, snapshot work and child
+closure were not distinguished. Precise cause remains UNKNOWN. Reserving for
+all 14 snapshots through that call costs 43008 bytes, leaving room for the
+observed parent records and the suppression allowance within 65536 bytes.
+The fd3 phases are optional diagnostics for the next root-owned changed-source
+native confirmation, not a causal or performance fix. Portable TASK-12265/12271
+success is a baseline only; its 788662-byte blob 14 is not known to equal native
+input, and an earlier portable blob was larger. JOB5031 exit 0 is collection
+only. Native artifacts were absent; archive/receipt/final metadata, manifest
+notices/hash/ZIP and install/launch acceptance remain unverified.
+
+Native build18 (`39630410187`, attempt 1, checkout `49a30dfe`, workflow definition
+`be36c7a`) completed both EXEs, COLLECT and the Vite body, then complete-build
+refused `AGGREGATE_READ_CAP_EXCEEDED: web-evidence-v1`. Call 22 returned all nine
+snapshot phase pairs; progress was suppressed at call 28. The failed native
+read/phase, enclosing counters and record closure remain UNKNOWN. Native used
+Node 24.20.0/npm 11.19.0/CPython 3.12.10. Collection JOB5055 exit 0 supplies no
+package acceptance and is not a successful build.
+
+Portable original-helper JOB5058 exit 0 measured accept-build in 49.6917 seconds:
+regular 527830544/536870912 (9040368 bytes headroom), JSON 79744940, sticky failure
+null. Each of its two full context passes charged 174139703 regular bytes;
+the build load charged 136247034 regular and 68123517 JSON bytes. Linux used
+Node 24.19.0/npm 11.17.0/Python 3.14.4. This is portable accept evidence, not
+native complete-build reproduction or grounds to remove either context pass.
+
+The upfront terminal grant uses the same optional borrowed fd3 transport with
+checked integer call/grant metadata. It permits one `[packaging-complete]` line
+of at most 1024 bytes, including newline, on actual failure or success while the
+SAME original command budget is active. Fixed phase/operation vocabulary separates
+admission, prefix context, checked-build record load, validation context and
+subsequent validation, completion write and reply. A failed subject import also
+reports its ordinal and declared size. Regular/JSON counters come from the
+existing enclosing and asset-lane read-only views after attempted charging;
+`-1` means an unavailable lane. These counters may exceed a refused cap. No paths,
+subject/caller bodies, environment, secrets or exception text are emitted.
+Local annotations do not change read/charge/validation order, both full context
+loads or context/plan prefix import timing. The terminal failure line precedes
+outer failure handling and preserves the original exception/status and sticky
+refusal; it cannot become a receipt. Missing/invalid metadata, unavailable fd3,
+short/failed output or a line exceeding its grant disable only diagnostics,
+without retry or alternate output. Failure/refusal paths remain source-audited
+and UNEXECUTED here. Native attribution and cap resolution remain UNVERIFIED;
+portable success cannot establish native/package/archive/install/launch acceptance.
+
+Native build16 (`39521557858`, attempt 1, source `a17cf29`) completed both EXEs and
+COLLECT, then logged Vite's 4695 modules before silence and six-hour cancellation;
+artifacts were absent and cause remains UNKNOWN. The unchanged-source portable
+JOB5026 at `d723ad06` completed the actual npm producer with exit 0 in 111.3826 s
+and accept-build with exit 0 in 16.7244 s on Linux Node 24.19.0/npm 11.17.0.
+Its retained helper timing included 153 snapshots (19.4324 s total), publish-build
+(29.1517 s) and complete-build (23.6445 s); these externally traced intervals
+include startup/validation/tracing overhead. Native-only asset context/source
+validation was unexercised. This evidence does not establish native root cause,
+a performance fix, Darwin timing or package/launch acceptance.
+
+Packaging helper invocations use the finite deadlines and held-direct-child
+lifecycle in `app/mac/scripts/packaging_supervisor.py`; see the named-helper
+table and ownership limits in [the Mac guide](../app/mac/README.md#named-helper-deadlines-and-owned-cleanup).
+Token/fail operations are30s, small web operations120s, web prepare/begin300s,
+and the enumerated larger helpers/notices600s. Existing per-tool60s bounds stay;
+verifier modes are300s except licenses600s, and frozen diagnostics have one600s
+outer. Internal failure persistence is30s clipped to the original clock only
+when an actual supervising owner is present. PyInstaller imports/freezer body,
+npm producers, compilers and archive compression remain workflow-only.
+
+The relay retains pending input/output across retryable nonblocking readiness
+loss, including stdout/stderr/fd3 sinks that alias one pipe; partial writes
+advance only the bytes delivered. These retries consume the original clock.
+Secondary and terminal diagnostics make only a best-effort nonblocking attempt
+within the existing cleanup window; unavailable diagnostics cannot replace the
+computed status or delay return by waiting for a sink. Borrowed stdio flags are
+restored after their last use. CLI error diagnostics likewise never wait.
+
+Failure attribution adds at most512 advisory stderr bytes per relay or verifier
+inspection invocation, separately from the unchanged65536-byte custody budget,
+its upfront1024-byte reserve and3072-byte snapshot grants. Each invocation has
+one first-error slot and one settlement slot, each limited to256 bytes including
+the newline. Slots are consumed before classification/output, even when either
+fails; there is no queue, retry, additional clock or production option.
+`PACKAGING_HELPER_FIRST_ERROR` is attempted immediately at the first existing
+caught-error boundary, before error cleanup can be interrupted by an outer owner.
+It contains only owner (`relay` or `inspection`), phase (`setup`, `launch`,
+`relay`, `inspect`, `kill`, `reap`, `settle`, `close`, `flags`, or `unknown`),
+category (`lifecycle`, `timeout`, `os`, `value`, `subprocess`, `interrupt`, `exit`,
+or `unknown`) and numeric errno (a positive signed32-bit integer, otherwise0).
+It never formats exception text/repr/tracebacks, paths, arguments, environment,
+tokens or user content. Classification and emission are both best effort;
+secondary failures cannot replace the original error or result.
+
+`PACKAGING_HELPER_SETTLEMENT` is attempted at the relay's existing unresolved
+boundary, or the inspection's final error/timeout/interruption boundary. Its
+fixed0/1 fields report `control_unknown`, outstanding `nested`, output `complete`,
+observed group `absent`, and `code_known` (the local code was returned), plus
+`child_known`, `child_zero`, `child_nonzero` and `child_signal` from the actual
+parent-stored returncode, without polling. A known signal is also nonzero.
+Inspection additionally reports `error`, `timeout` and `interrupted`; relay-only
+control/nested fields default to0 there, while inspection-only fields default
+to0 for relay. Relay settlement precedes borrowed-flag restoration, as does the
+original unresolved message. These bits describe that observation, not a native
+root cause or global quiescence. No added message is emitted on an ordinary
+successful or settled nonzero child outcome. Unavailable/truncated diagnostics
+prove neither successful cleanup nor native/package acceptance. Build21's
+native preflight125 remains unexplained by its original collected log.
+
+The first caught signal is latched through error and final settlement, including
+handler restoration, and the result is selected after restoration. With no
+earlier observed failure/deadline, it returns the conventional signal result
+even after a successful child poll; an earlier primary cause remains unchanged.
+The parent uses the genuine nonzero status already stored by its child poll or
+reap, including a child signal, before considering a later caught signal,
+exception or cleanup result. This applies before the caller receives that
+status and when reap subsequently raises; unobserved kernel exits do not imply
+an earlier owner observation.
+
+The outer cleanup allowance is one5s window; Node's D+10 KILL fallback and
+Bash's same-module guardian/D+12 observation slots are independent fallbacks.
+Only the actual parent with a positively unreaped handle can signal its group;
+registration never transfers kill authority, and no signaling follows reap.
+Bash preserves stdin/heredocs and admits only successful complete replies.
+Finish preserves the original failure/signal while attempting secondary
+persistence; tee finalization is10s after writers close, with the original log
+and stdout sinks. Deadline124, cleanup-only125 and actual failures/signals stay
+distinct. Parent/control loss and escapes retain UNKNOWN cleanup. Neither these
+allowances nor the750s ordinary/780s fallback single-helper-plus-finish totals
+are total-build/hard OS guarantees or native acceptance. Preflight may defer
+parent traps for300s+5s; a late one-shot marker never overrides failed status.
+No validation cap, diagnostic grant, notice/source selection or complete-build
+context/reopen accounting changes, and no native stall/cap-fix claim follows.
+
+</details>

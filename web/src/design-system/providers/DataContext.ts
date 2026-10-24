@@ -181,6 +181,53 @@ export type ResolveEscalationResult = Awaited<ReturnType<typeof tasksApi.resolve
 
 export type TasksListPage = { tasks: TaskRecord[]; next_cursor?: string | null };
 
+/** Ordinary Tasks-list partitions, in their fixed deduplication priority order. */
+export const TASK_LIST_STATUSES = [
+  'pending',
+  'in_progress',
+  'escalated',
+  'completed',
+  'failed',
+  'cancelled',
+  'superseded',
+] as const;
+
+/** One independently paged roots traversal of the Tasks list. Each owner has
+ *  its own cache entry, cursor, errors and operations; a sibling's state never
+ *  changes it. `tasks` holds only loaded roots that match this owner's exact
+ *  status/agent filter, once each, in page order. */
+export interface TaskListStream {
+  /** Lifecycle status, or `attention` for the independent Waiting-on-you owner. */
+  owner: string;
+  status: string;
+  tasks: TaskRecord[];
+  /** No successful response yet and no failure. */
+  isInitialPending: boolean;
+  /** The first response failed; nothing is loaded. */
+  isInitialError: boolean;
+  /** A refetch of loaded pages failed; the loaded rows are stale until reconciled. */
+  isStale: boolean;
+  /** The last continuation failed; automatic demand pauses until explicit retry. */
+  isContinuationError: boolean;
+  isRefreshing: boolean;
+  isFetchingNextPage: boolean;
+  hasNextPage: boolean;
+  /** Advance by at most one page with this owner's own cursor. Refused while
+   *  this owner is fetching, after a failure, or when exhausted, unless
+   *  `explicit` retries a failed continuation. */
+  fetchNextPage: (options?: { explicit?: boolean }) => Promise<void>;
+  /** Refetch this owner's loaded traversal; coalesced while it is fetching. */
+  refresh: () => Promise<void>;
+  /** Failed continuation → its failed cursor; otherwise refresh. */
+  retry: () => Promise<void>;
+}
+
+export interface TaskListStreams {
+  /** Selected ordinary owners in TASK_LIST_STATUSES order. */
+  ordinary: TaskListStream[];
+  attention: TaskListStream;
+}
+
 export interface TaskTailSSECallbacks {
   onOpen?: () => void;
   onError?: (error: unknown) => void;
@@ -211,6 +258,13 @@ export interface TasksApi {
     status?: string;
     assigned_agent?: string;
   }) => InfiniteQueryLike<TasksListPage>;
+  /** Tasks list: one 50-root traversal per selected ordinary status (all
+   *  seven unfiltered, only the filtered one otherwise) plus the independent
+   *  `status=escalated` attention traversal, each with its own owner. */
+  useTasksListStreams: (filters?: {
+    status?: string;
+    assigned_agent?: string;
+  }) => TaskListStreams;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
 
@@ -577,6 +631,57 @@ export interface SettingsApi {
     agent: string | undefined,
     count?: number,
   ) => QueryLike<import('@/lib/api/types').NextWakesResponse>;
+  /** Founder coding configuration view for the routed org (org-keyed). */
+  useCodingSettings: () => CodingSettingsQueryLike;
+  /** Independent current selectors; never a saved Mapping or operation receipt. */
+  useCodingSettingsOptions: () => QueryLike<import('@/lib/api/types').CodingSettingsOptions> & {
+    isFetching: boolean;
+    refetch: () => Promise<unknown>;
+  };
+  /** Explicit single-send save and read-only original-key reconciliation,
+   *  both bound to the org that was routed when the hook rendered. */
+  useCodingSettingsActions: () => CodingSettingsActions;
+  /** The routed org's frozen send ownership, or null. It lives for the
+   *  provider (QueryClient) lifetime, so it survives pane unmount and org
+   *  A->B->A switches; it is never persisted. */
+  useCodingSendFence: () => CodingSendFence | null;
+}
+
+/** One frozen org-local send: `sending` while its single PUT is outstanding,
+ *  `uncertain` once that PUT settled without a definite answer. While a fence
+ *  exists no edit or new send is admitted for that org. */
+export interface CodingSendFence {
+  command: import('@/lib/api/types').CodingSettingsCommand;
+  phase: 'sending' | 'uncertain';
+  detail: string | null;
+}
+
+export interface CodingSettingsQueryLike
+  extends QueryLike<import('@/lib/api/types').CodingSettingsView> {
+  isFetching: boolean;
+  refetch: () => Promise<unknown>;
+}
+
+export interface CodingSettingsActions {
+  /** Sends the frozen command exactly once; never retries or rekeys. The
+   *  org's fence is taken synchronously before the request; success releases
+   *  it, any failure leaves it until `settle` classifies the failure. Refuses
+   *  without a request while the org already has a fence. */
+  save: (
+    command: import('@/lib/api/types').CodingSettingsCommand,
+  ) => Promise<import('@/lib/api/types').CodingSettingsSave>;
+  /** Synchronous read of the org's current fence (send latch). */
+  fence: () => CodingSendFence | null;
+  /** Classifies a failed send of `operationKey`: a definite refusal releases
+   *  the fence; an uncertain outcome keeps it read-only. */
+  settle: (operationKey: string, uncertainDetail: string | null) => void;
+  /** Releases an uncertain fence only after `readOperation` returned the
+   *  committed receipt for that exact key. */
+  resolveCommitted: (operationKey: string) => void;
+  /** Read-only GET(operation_key); never writes. */
+  readOperation: (
+    operationKey: string,
+  ) => Promise<import('@/lib/api/types').CodingSettingsView>;
 }
 
 // ---------------------------------------------------------------------------

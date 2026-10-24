@@ -130,6 +130,16 @@ retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
 
+Future phase persistence failures emit one best-effort bounded ordinary log with
+phase, frozen queued org/boot/ordinal/task/runtime SID, exception class, and only
+explicitly allowlisted SQLite integer code/name pairs (otherwise `unknown`).
+The direct invalid-positive-INTEGER audit-reference check has its own category.
+Malformed or oversized identifiers/class names use fixed fallbacks. No exception
+text, traceback, SQL, payload, credentials or root paths are logged. Logger failure
+cannot alter sticky failure, counters/digests, sealing or subsequent draining.
+These diagnostics cannot recover or establish the cause of an old lost exception;
+source delivery does not establish installed health or collection acceptance.
+
 Founder THR-091 seq428 permits one closed failed-before-exposure class. Exactly
 one ordered authenticated intent -> identity -> raised terminal must agree on
 org/org-root/boot/ordinal/task/agent/runtime SID, actual parent/type/population
@@ -154,6 +164,51 @@ boot/cohort authority, threshold change, reset or history rewrite. The health
 definition digest binds this closed seq428 clause; existing receipts and epoch
 bytes remain immutable and cannot qualify a changed installed source.
 
+Founder THR-091 seq532 (approving531/529, preserving514/519's other
+safeguards) adds a separate closed POST-expectation no-AGENT-launch class.
+Exactly one authenticated ordered intent -> identity -> expectation -> raised
+terminal must retain the same org/org-root/boot/ordinal/task/agent/runtime SID,
+original parent/type/population/purpose and complete failed lifecycle/ancestry.
+The full expectation retains truthful renderer/version/digest/budget/ID facts;
+the terminal requires Boolean true expectation_known, Boolean false
+binding_known, exact INTEGER0 launched_callbacks and explicit null success and
+returncode. Positive supported CURRENT-attempt native refusal evidence is
+mandatory in addition to exhaustive absence of binding/start/impression/launch/
+result/credited activity. The supported path is the source-resolved initial
+host ordinal-zero retry bookkeeping cleanup_failed raise BEFORE FIFO admission,
+backend preparation, commitment and provider launch. Exact native invocation,
+attempt, logical-owner and reserved SID attribution/order must agree; duplicate,
+malformed, contradictory or unknown paths refuse. All four traceback
+frames must match one complete supported source path: current identity-bound
+statement sites, or the separately pinned shipped5a19e562 historical path
+(orchestrator1506/1817, host1402, Pause510). Historical Pause510 was the cleanup
+guard; current Pause510 is a different coding guard. Mixed/unknown paths
+refuse. Later host retries, partial launch and callback failure cannot use this initial-entry path.
+An inherited first_cause, repository_pull, kind=refused, launch_observed=false,
+zero steps or absent callbacks/rows alone never establish no AGENT launch.
+Preparation Git processes are distinct from the AGENT provider.
+
+Preparation/outer compensation, cleanup, close/release and native custody are
+NOT eligibility predicates for this new class. Preserve their uncertainty
+separately without calling it clean, settled, quiescent or closed. Unknown AGENT
+launch still refuses. No new producer, custody witness/API, writer relocation,
+false flag, duplicate terminal, historical backfill or owner clearing is supplied.
+TASK11977 is evaluated by its actual tuple and supported path, with no task-ID
+exception or automatic exclusion. Its cleanup/Git root cause remain UNKNOWN;
+JOB4909 remains a failed acquisition before validators, never a census verdict.
+
+Both classes retain all ordinals/attempted-persisted counts/digests/full seals,
+sticky errors and complete bounded selected acquisition at stable bookends.
+Closing and atomic rereads rediscover membership; failed, moving, pending,
+truncated or exhausted reads refuse. A class never repairs invalid global
+census evidence; all-failure populations remain insufficient. Only classified
+invocations receive zero shown/natural denominator/credit, preserving other
+sessions on the same task. Native AuditLogger and canonical HTTP CLI share the
+same reduction. The changed health digest and loaded identity bind all trusted
+reader helpers and native launch-order/refusal functions. Original receipts and
+epoch bytes remain immutable; changed source requires genuine fresh qualified
+acceptance. Source/static checks supply no B/C, installed health or epoch PASS.
+
 This census and its seals are not collection health, installed acceptance or
 epoch authority. The seal-action serving source view is described here. G1
 durable acceptance/B1, both health consumers,
@@ -162,15 +217,20 @@ unimplemented here. Existing backend and canonical CLI guards remain
 `insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
 transition, deployment, tuning or 48-hour clock starts from this source unit.
 
-Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
-semantic task projection. It excludes only valid rendering timestamps at
+Capture task comparisons use one ordered pair relation (THR-091 seq557/559/560).
+The unary projection excludes only valid rendering timestamps at
 `pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
-Malformed timestamps/structures, unknown fields and every other `observed_at`
-remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
-lineage/content, pause/wait states, result/job bytes, roles and all serving
-counts/digests/seals/errors/generations remain compared. Real serving movement
-(including generation53->54, seal312201->312222 and terminal6->7) refuses;
-timestamp equality cannot retroactively qualify an earlier moving capture.
+An otherwise equal pair may additionally advance BOTH `last_heartbeat` and its
+accompanying `updated_at`: all four stamps must be present aware strings and
+both later instants must be strictly forward. Updated-at-only, heartbeat-only,
+equal/reverse or missing/malformed/naive changed stamps refuse. Exact unchanged
+projected pairs remain equal; malformed/unknown values never disappear or
+justify a changed pair. All other fields, membership and JSON scalar types stay
+significant. Raw tasks remain intact. Native/HTTP reports, repeated dependency
+captures, acceptance preparation and current-epoch captures share this relation;
+locked publication rereads and control invariants retain exact record equality.
+Serving movement still requires one fresh complete stable pair under the shared
+budgets below; an earlier failed pair never supplies an accepted half.
 
 The existing task invocation-exception catch logs only task/agent/reserved runtime
 SID (or explicit unavailable), exception class and at most eight bounded frame
@@ -248,13 +308,43 @@ are `source_root`, `runtime_root`, `org_root`, `package_version`, `python`,
   and does not claim backend health or enforcement beyond its existing report.
 
 Acquisition is zero durable writes and no reseal/full-history reconciliation.
-Nonblocking short observer/Database lock admissions preserve observer -> Database
-ordering; no Database-held callback acquires observer lock, and file acquisition
-holds neither lock. Two identity reads plus observer semantic and database
-revision bookends must match. Pending preparation/writer, sticky errors, failed
-reads or movement withhold data_through; stable cutoff is evidence to a future
-validator, not collection health. Work is limited to 64 agents/teams (64 workers
-per team), 96 regular files and 1 GiB total per identity read; declared
+Short observer admission remains nonblocking. Founder THR091seq557/559/560
+permits at most0.5s CUMULATIVE DB-lock admission waiting across both revision
+bookends and all attempts, clipped by the ORIGINAL enclosing acquisition
+deadline. Nested/reentrant reads share admission and SQL accounting. DB ownership
+is released before any observer metadata, loaded identity/file or network work;
+a caller already owning the DB lock cannot request a serving observation.
+Each attempt obtains a NEW complete opening snapshot/revision -> identity ->
+identity -> revision/closing snapshot pair. Only concurrent-write revision or
+observer movement retries; all original checks run again. Raw unsuccessful pairs
+are charged and retained through existing bounded module logging; retention or
+resource failure refuses. Accept one wholly stable pair, never splice halves.
+
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+The ORIGINAL identity/source/boot/context fence survives attempts. Changed or
+unavailable identity, cohort/profile/provider/path drift, observer replacement,
+malformed state, sticky producer errors and other hard errors refuse immediately.
+One original30s cooperative acquisition deadline, shared0.5s admission allowance,
+original aggregate row/byte/closure/request/transport and SQL work allowances
+span all attempts. The original two identity-read file/byte allowances are each
+shared across retries, never renewed. SQL scopes share50M VM instructions,
+100000 fetched rows/64MiB and3s cumulative cooperative SQL/admission time,
+clipped by that enclosing deadline; time outside DB ownership is not SQL time.
+Pending preparation/writer and any exhausted/unresolved acquisition withhold
+data_through. A stable cutoff is evidence to a future validator, not health.
+Work is limited to64 agents/teams (64 workers per team),96 regular files and
+1GiB total per identity-read allowance across all attempts; declared
 executables are streamed in at most 256 KiB chunks with a 512 MiB/file bound
 (the actual registered Claude/Codex binaries exceed 200 MiB). Metadata/source/
 registry/agent files are capped at 1 MiB, custom dependencies at 16,
@@ -273,23 +363,84 @@ epoch NOT STARTED, 48h handoff NOT DUE; frozen eligibility thresholds unchanged.
 ## Observation-only reporting core (TASK-9673 recovery / TASK-9559)
 
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-Both report entry points now acquire complete bounded task and relevant audit
-snapshots, including session start/end, actual job-resume audits and runtime
-identity/launch/terminal. Backend uses the existing coherent SELECT-only evidence
-snapshot with an optional no-epoch audit-action filter; CLI exhausts all relevant
-`/audit` action pages and `/tasks` pages in two stable sweeps. The100000-row
-bound applies to required evidence, without unrelated audit history causing a
-new no-epoch refusal. Accepted-epoch acquisition keeps the default unfiltered
-tasks/results/jobs/audit snapshots, original task results, referenced probe jobs
-and stable serving bookends. No diagnostic filter supplies collection authority. Task/result
-ownership, duplicate rows, cursor/page ordering, size bounds and changed snapshots
-refuse acquisition. Roles are bracketed separately and remain descriptive when
-unavailable. No-epoch diagnostics need no valid serving health but cannot claim
-collection; accepted epochs retain independent current loaded identity/census
-and authenticated original probe gates. HTTP/decoder/timeout or SELECT failure
-refuses with `acquisition_unavailable`, CLI exit1 and no partial stdout.
-Task pagination follows `(created_at, id)` descending using parsed wire
-timestamps and the last ID as the server-resolved transport cursor, not ID order.
+Founder THR-091 seq480 narrows the census to current boot/epoch activity plus
+its referenced lifecycle, retry, delegation, QA/job and epoch/invalidation
+records. All activity in that window is selected before attribution filtering;
+a read/search now using an old retired SID retains the old task and interval.
+Ancestry-only dependencies retain their parent/revisit graph facts; owners used
+for lifecycle/proof retain original results, lifecycle and control history plus
+direct revisits. Historical seals and SID-less intent/expectation/binding rows
+from other boots have no current-census consumer. No prose/command ID scraping
+or unrelated global same-SID audit/result search supplies an admission gate;
+PR1084's supplied-liveSID trust limit remains. Same-owner contradictions still
+refuse the strict failed-before-exposure class. Historical `memory_read` rows
+retain their AGENT-scoped outer task_id; the owner is payload.task_id. Each
+capture exhausts the existing action=memory_read read once and indexes literal
+payload owners, including dependencies discovered later in the closure. Only
+required full-history owners enter evidence; unrelated owners sharing a SID do
+not. The complete scan consumes the existing row/byte/SQL/deadline/transport
+budgets, including unrelated returned reads, and exhaustion refuses rather than
+asserting absence. Closing and locked atomic rereads repeat this discovery, so
+late preboot payload-owned membership cannot hide behind prepared IDs.
+Every required missing task,
+result, job, lifecycle, control or genuine callback remains a refusal.
+
+Observer, native database, existing HTTP readers, backend and canonical CLI,
+acceptance preparation, current epoch references and the BEGIN IMMEDIATE reread
+use the same scope selector. Closing capture and commit recompute membership,
+including new direct revisits, root results and malformed/later controls, rather
+than rereading prepared IDs. Original job streams/digests, native retry authority,
+INTEGER callbacks, original admission age and observer→DB lock order remain.
+File/network reads stay outside publication locks; any failed revalidation rolls
+back. No-epoch diagnostics are current-boot observations and remain CLOSED;
+preboot dependency records do not inflate their natural denominators.
+
+Acquisition refuses beyond 100000 work records/64 MiB encoded work per capture
+(including overlapping discovery/owner reads), 4 MiB per record, 4096 closure
+steps, 8192 HTTP requests, 16 MiB raw response or 128 MiB transport bytes.
+Paired HTTP captures share a 30-second cooperative deadline and twice the
+per-capture record/byte work allocation. HTTP streams refuse nonidentity content
+encoding, malformed UTF8/JSON/duplicate keys, cursors, ordering and incomplete
+original output. A request has at most a five-second socket timeout and the
+remaining acquisition budget; client refusal does not cancel an already-running
+server query. Native SELECT/publication use the shared cumulative0.5-second DB-lock admission,
+50000000 SQLite VM instructions and three-second cumulative cooperative SQL
+allowance described above, all clipped by the original enclosing deadline;
+publication checks the deadline again before commit. SQLite progress interrupts
+SQL, not Python/OS scheduling. The same private budget encloses existing public
+/audit (including optional enrichment), task list/detail/default recall and
+keyed job/output acquisition BEFORE coherent/synchronized lock admission. Each
+guarded server read shares nested scan/deadline work, caps SQLite busy waits at
+100ms, rejects SQLite values/records over 4 MiB before Python allocation, and
+charges at most 100000 fetched rows/64 MiB raw UTF8/scalar bytes before caller
+JSON/model decoding. Native selection additionally charges encoded work above.
+Resource exhaustion returns ordinary HTTP503, never a successful empty page.
+Connection row factory, length limit, busy timeout and the private progress
+handler are restored on exit; read views preserve caller transaction ownership.
+The atomic writer still rolls back failed locked rereads and checks the deadline
+before commit. Job output/receipt readers open each stream after releasing DB
+locks, read at most max_bytes (up to10 MiB), and preserve original byte totals,
+UTF8 replacement, truncation and missing-file semantics. Collection validation
+independently refuses missing/incomplete/replaced/truncated output; commit uses
+the already prepared validated bytes without file I/O under its DB lock.
+Selected LIMIT/byte counts and sampled VM instructions are not SQL rows-examined
+or hard RSS/wall-time guarantees. No schema/index/writer/new endpoint or response
+envelope is added.
+
+HTTP uses only existing /audit since/action/task filters and keyed task details,
+ancestry recall, direct revisits and job/output reads. Positively referenced
+probe jobs also select complete same-agent task candidates in the original job
+window through existing assigned_agent task pages; probe roots retain all direct
+children. Claimed receipt IDs alone cannot establish slot uniqueness. Roles
+bracket the report.
+Native snapshots are coherent; paired HTTP captures compare full membership,
+raw records/outputs and ordered task/serving bookends using the relation above.
+Only the three valid rendering timestamp paths have unary exclusions; heartbeat
+and accompanying updated_at movement is a checked ordered-pair exception.
+Malformed/unknown fields remain evidence. An unresolved moving/refused capture
+yields acquisition_unavailable, CLI exit1 and no partial
+stdout. Sizing/source checks do not qualify installed readers, repair a sticky
+observation failure, accept B/C or start/reset an epoch.
 
 D (THR-091 seq389–390) adds disjoint `by_session_kind` diagnostics: first_launch,
 job_resume, retry, retry_job_resume, other_continuation, unknown. Actual runtime

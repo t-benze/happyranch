@@ -31,7 +31,7 @@ class PauseBrowser:
         expect(page.locator("html")).to_have_attribute("lang", locale, timeout=self.c.remaining(5)*1000)
         self.c.remaining()
 
-    def held(self, root: str, child: str, state: str, locale: str, *, expected: dict) -> dict:
+    def held(self, root: str, child: str, state: str, locale: str, *, expected: dict, rendered: dict) -> dict:
         """Real list/detail/child + reload; no projected-state mocks.
 
         The Tasks page no longer mounts the standalone pause overview panel
@@ -62,19 +62,18 @@ class PauseBrowser:
                 overview_reads.append(request.url)
                 group.fail("forbidden-overview-read")
 
-        with (self.b.observation_group(expected["root"], mode="new-document", document="/orgs/alpha/tasks") as group,
-              self.b.response(roots_path, ordinary_roots=True)):
+        with (self.b.observation_group(expected["roots"], mode="new-document", document="/orgs/alpha/tasks") as group,
+              self.b.response(roots_path, ordinary_roots=True) as roots):
             emitter = page._impl_obj
             emitter.on("request", record_overview)
             group.final_checks.append(lambda: require(overview_reads == [], "forbidden-overview-read"))
             group.disposals.append(lambda: self.b._detach(emitter, "request", record_overview))
             page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
-            main = page.get_by_role("main")
-            expect(main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first).to_be_visible(timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
-            expect(main.get_by_text("PAUSE_RESTART_ROOT", exact=False).first).to_be_visible(timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
+            roots.ready()
+            main = self.b._task_surface('list')
+            self.b.rendered(dict(surface='list', org='alpha', task=root, locale=locale,
+                                 raw='PAUSE_RESTART_ROOT', headline='PAUSE_RESTART_ROOT'))
             expect(page.locator("[data-task-pause]")).to_have_count(0, timeout=self.c.remaining(5)*1000)
             self.c.remaining()
             for name in (pause, resume):
@@ -92,12 +91,13 @@ class PauseBrowser:
         # IDs20/21: visible identity/hold/tree only; this click has no fresh-HTTP claim.
         end = min(self.c.effective_end(), time.monotonic()+self.b.page_timeout)
         with self.c.bounded(end), self.c.phase(end, native=True):
-            main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first.click(timeout=self.c.remaining(self.b.page_timeout)*1000)
+            main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
             expect(page).to_have_url(f"{self.b.base}/orgs/alpha/tasks/{root}", timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-            expect(main.get_by_text("PAUSE_RESTART_ROOT", exact=False).first).to_be_visible(timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
+            self.b.rendered(dict(surface='detail', org='alpha', task=root, locale=locale,
+                                 raw='PAUSE_RESTART_ROOT'))
+            main = self.b._task_shell()
             root_control = main.locator(f'[data-task-pause="{root}"]')
             expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
@@ -109,7 +109,7 @@ class PauseBrowser:
                     self.c.remaining()
             expect(main.locator("h1").get_by_text("in_progress", exact=False).first).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-            self.recall_dom(expected["root"]["recall"], locale)
+            self.recall_dom(rendered, locale)
             expect(main.get_by_text("PAUSE_RESTART_DONE", exact=False)).to_have_count(0, timeout=self.c.remaining(5)*1000)
             self.c.remaining()
         with (
@@ -154,7 +154,9 @@ class PauseBrowser:
             self.c.remaining()
             data = child_response.provisional_json()
             require(data["task"]["parent_task_id"] == root and data["pause"]["effective_hold"], "live inherited child transport", data)
-            child_control = page.get_by_role("main").locator(f'[data-task-pause="{child}"]')
+            expect(self.b._task_shell()).to_have_count(1, timeout=self.c.remaining(5)*1000)
+            self.c.remaining()
+            child_control = self.b._task_shell().locator(f'[data-task-pause="{child}"]')
             expect(child_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
             expect(child_control.get_by_text("Hold inherited from root" if locale == "en" else "继承根任务", exact=False)).to_be_visible(timeout=self.c.remaining(5)*1000)
@@ -176,41 +178,16 @@ class PauseBrowser:
                         reload=p, child_projection=data["pause"], screenshots=[shot + "-root.png", shot + "-child.png"])
 
     def recall_dom(self, expected: dict, locale: str) -> None:
-        page = self.b.page
-        main = page.get_by_role("main")
-        heading = main.get_by_role("heading", name="Recall tree" if locale == "en" else "回溯树", exact=True)
-        expect(heading).to_be_visible(timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        section = heading.locator("..")
-        nodes = [expected, *expected["children"]]
-        hrefs = []
-        for node in nodes:
-            href = f'/orgs/alpha/tasks/{node["task_id"]}'
-            hrefs.append(href)
-            expect(section.locator(f'a[href="{href}"]')).to_be_visible(timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
-            expect(section.get_by_text(node["brief"], exact=False).first).to_be_visible(timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
-            if node.get("output_summary"):
-                expect(section.get_by_text(node["output_summary"], exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
-                self.c.remaining()
-        for status in {node["status"] for node in nodes}:
-            expect(section.get_by_text(status, exact=True)).to_have_count(
-                sum(node["status"] == status for node in nodes), timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
-        links = section.locator('a[href^="/orgs/alpha/tasks/"]')
-        expect(links).to_have_count(len(hrefs), timeout=self.c.remaining(5)*1000)
-        self.c.remaining()
-        for index, href in enumerate(hrefs):
-            expect(links.nth(index)).to_have_attribute("href", href, timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
+        main = self.b._task_shell()
+        self.b.rendered(dict(surface='recall', org='alpha', task=expected['task_id'],
+                             locale=locale, node=expected))
         expect(main.locator('a[href^="/orgs/beta/tasks/"]')).to_have_count(0, timeout=self.c.remaining(5)*1000)
         self.c.remaining()
         for absent in ("ALPHA_ROOT_SENTINEL", "BETA_COLLISION_OUTCOME"):
             expect(main.get_by_text(absent, exact=False)).to_have_count(0, timeout=self.c.remaining(5)*1000)
             self.c.remaining()
 
-    def terminal(self, root: str, *, closure: dict) -> None:
+    def terminal(self, root: str, *, rendered: dict) -> None:
         page = self.b.page
         self.locale("en")
         end = min(self.c.effective_end(), time.monotonic()+self.b.page_timeout)
@@ -220,13 +197,9 @@ class PauseBrowser:
             self.c.remaining()
             expect(page).to_have_url(f"{self.b.base}/orgs/alpha/tasks/{root}", timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-            main = page.get_by_role("main")
-            for text in ("PAUSE_RESTART_ROOT", "PAUSE_RESTART_DONE", "completed"):
-                expect(main.get_by_text(text, exact=True).first).to_be_visible(timeout=self.c.remaining(5)*1000)
-                self.c.remaining()
-            self.recall_dom(closure["recall"], "en")
-            expect(main.get_by_role("heading", name="Recall tree", exact=True).locator("..").get_by_text("completed", exact=True)).to_have_count(3, timeout=self.c.remaining(5)*1000)
-            self.c.remaining()
+            main = self.b._task_shell()
+            self.b.rendered(dict(surface='detail', org='alpha', task=root, raw='PAUSE_RESTART_ROOT'))
+            self.recall_dom(rendered, "en")
             controls = main.locator(f'[data-task-pause="{root}"]')
             for button in ("Pause", "Resume"):
                 expect(controls.get_by_role("button", name=button, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)

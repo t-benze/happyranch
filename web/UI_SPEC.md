@@ -485,7 +485,11 @@ Browse and read knowledge-base entries. Read-only by default. A flag-gated compo
 
 ### Compose (flag-gated)
 
-`VITE_ENABLE_KB_COMPOSE=true` shows a `[Compose…]` button next to the page title. The dialog hardcodes `agent: "founder"` and calls `POST /kb`. Edits, deletes, and reindex stay CLI-only.
+The build-time flag `kb_compose_ui` (THR-305; default `false` in every profile) shows a `[Compose…]` button next to the page title. In dev and tests an explicit literal `VITE_ENABLE_KB_COMPOSE=true|false` overrides it; production builds ignore that input. See `web/ARCHITECTURE.md` § Build-time UI flags. The dialog hardcodes `agent: "founder"` and calls `POST /kb`. Edits, deletes, and reindex stay CLI-only.
+
+### Work Hours visibility (THR-305)
+
+With `work_hours_ui` off (the production profile) the Work Hours Sidebar item, the AppBar title, the overview, `?view=wakes` and agent detail routes, the legacy `/schedule` redirect, and the Organization Settings operating block are all absent. That block covers the heading, explanatory link, feedback, switch, eligibility editor and disable-confirm dialog. Direct and legacy URLs render the existing not-found page. Other Organization settings and their Save behave as before. This is UI visibility only, not access control.
 
 ### Jump-key
 

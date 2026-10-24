@@ -1,5 +1,645 @@
 # Features And Invariants
 
+<!-- K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
+## Result-owned coding start and queued ownership (K3a)
+
+The new closed manager decision is exactly `{action:workflow_start,workflow:COMMAND}`.
+`COMMAND` is canonical `workflow-coding-start@1` with exactly
+`format,operation_key,release,mapping,work,implementer_override`; release and mapping
+are the existing exact pins. Work is exactly `brief,repository_id,object_format,base,paths`:
+nonempty brief at most16384 UTF8 bytes, full lowercase SHA1/SHA256 base, and1..64
+validated relative selectors. There is no developer head before genuine output.
+`happyranch workflows coding run-start --from-file ABS --emit-decision` validates
+and prints only this decision for the initiating manager's own final callback.
+It contacts no daemon and allocates nothing. No fresh HTTP allocation route exists.
+
+The actual callback and result-action entries select this family before v2
+spend/claim or ordinary decision effects. Fresh callback admission refuses before
+persisting an unsupported start result, including on legacy I. Its production owner refuses
+`coding_downstream_unavailable` before claim consumption or allocation. Readiness
+is always false in K3a; there is no caller/config readiness Boolean. Behind that
+boundary, the real single admission transaction validates the manager's own full
+INTEGER callback, actual ordinary-purpose TaskInvocation/SID and complete RetryClaim,
+current policy/Pause/move/ancestry, imported release, pinned role generation,
+implementer-only override, four current independent eligible principals, existing
+repository scopes, capacity and lower source limits. Existing v2 uncommitted
+spend/claim/ack methods keep their native evidence and CAS semantics inside that
+same graph transaction. A still-active historical v1 continuation envelope
+refuses as unavailable; its self-committing spender is never bypassed or composed
+inside bootstrap. No self-committing delegate or task helper is composed.
+
+Bootstrap inserts pinned authorization/binding/context/activation/instance, a
+structural nonexecutable carrier parented to the authentic source, one pending
+development leaf parented to the carrier, a queued attempt and `run_started`.
+Instance root is the carrier; Pause root remains the actual top source ancestor.
+CAS starts at1/current_revision0/target_revision1. Source waits delegated;
+its original parent/counters/SID remain. Immediate cyclic FKs use uncommitted null
+run pointers only until the real attempt/event are inserted and both pointers set.
+Full typed native/J/history/FK/schema closure precedes COMMIT. Failure rolls back
+all rows, pointers and claim writes; the prior genuine callback remains intact.
+Exact same-result/key/body replay returns original IDs without allocation/debit/
+append; changed source/result/command conflicts. No carrier result/session,
+assignment, submission, approval or receipt is manufactured.
+
+Agent-read authorization/binding/context and initial scope have explicit new @2
+encodings; old custody @1 bytes retain their own readers. Context pins original
+source/result/claim, authority/profile capture and all complete native checkpoint
+observations across waits. Pre-bootstrap native updated_at/last_heartbeat values
+are retained independently; every other25 task fields must agree. Saved queued
+rows compare all27 current native task fields exactly. K3a supplies no post-start
+heartbeat/PID/result/terminal bridge, so unsupported mutation/drift refuses.
+The existing native task row primitive is used only after complete prospective
+move checks; ordinary task insertion retains its original guard.
+
+The saved reader independently checks these original native start predicates:
+The captured invocation has no uncertainty, including producer-settled uncertainty,
+and its brief fingerprint equals SHA256 of the exact frozen source brief UTF8.
+The frozen source has neither a completed_at nor a zombie_flagged_at marker.
+Native journal shape and internally consistent pin digests alone do not prove
+original validity. Running/count/identity checks use original frozen evidence;
+later native journal phase or current authority is not substituted for that
+admission. This correction adds no native lifecycle writer or execution proof.
+
+The queued inventory and complete J schema reader (including data=False) now
+forward one cumulative row/byte/step budget through the fixed release import.
+Omitted/None import or queued budgets create one standalone allowance; a supplied
+actual budget retains prior consumption and wrong types refuse categorically.
+Release discovery, full typed publication/admission/journal reconstruction and
+absence/unsupported-activation probes participate. Native rows gate their whole
+payload before fetch; conservative UTF8/JSON/canonical/base64/hex intermediates
+and traversal are reserved before nested pure parsing/reconstruction. Existing
+stricter per-value/parser/ancestry limits and provenance checks remain. These
+are cooperative finite-work limits, not hard process/SQL memory or time bounds.
+Caller-owned transactions remain open; only standalone queued reads close their
+own read snapshot. Inventories are reconstructed internally on that exact
+connection/org/snapshot, without caller-trusted DTOs or global caches.
+
+This is the partial SOURCE prerequisite under sole ROOT TASK-12299.
+Current step17 manual observations distinguish assigned cumulative candidate
+accounting/traversal dominance (component C413/T9601, combined C771/T16385)
+and14 loader/resource safeguards from broader candidate8193 UNPROVED.
+The native-only18-column overflow lower bound155649 visits is grammar-specific;
+no global infeasibility, candidate-guard/full F5/F8/program/runtime PASS follows.
+Historical native0/verifier2/42-INCOMPLETE and earlier ROOT10693 source waivers
+remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
+forward restoration, GREEN/five fresh-process repetitions or independent
+same-head executable QA. See docs/local-ci.md for exact command and exits.
+
+The start_in_writer/support._storage pre-write composition now consumes the
+internally reconstructed complete-schema mapping/import/queued inventory under
+one cumulative allowance. Native source/result/ancestry and child reads share
+that allowance; separate pre-admission checkpoints retain their own validation.
+The retained source-data checker compares original release rows with that local
+import history instead of reconstructing the history per row. Complete J native
+discrimination is charged even without mappings/runs. No external inventory or
+validation flag is accepted. Local reuse ends at the first write; post-write
+complete validation reconstructs fresh state, and caller-owned transactions stay
+open. Public schema readers retain their layout/None returns. Standalone
+role/import/template readers retain their existing defaults and provenance.
+
+Only the owned write-free existing-layout install_or_recover branch privately
+collects the validated audit device/inode/last-rowid. An outer Database RLock spans
+transaction exit and publication after successful COMMIT, publishing that exact
+prefix rather than a newer MAX. Validation failure, rollback, uncertain/failed
+COMMIT, interruption or detected identity/MAX regression cannot publish it.
+Caller transactions remain refused; fresh installation and public schema snapshots
+retain their behavior. Complete J/inventory/mapping/queued/source/data=False/FK/
+integrity checks remain; bounded mapping/queued paths do not trust watermarks.
+This assumes cooperative insert-only history, not arbitrary same-UID rewrites.
+
+PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
+with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
+reviewed aa9e64ad3a568b080571f86c6453d191aa6c706b (identical merge tree).
+Those receipts retain their original-head attribution. TASK12440 supplied the
+source composition; TASK12448 added65 reader/14 safeguard observations, but its
+first qualified0b021bf5 invocation returned native0/verifier2 before every reader
+case. That audit projection/type-arity failure remains setup INCOMPLETE, never
+sensitivity RED. ROOT12299 step26 / TASK12457 aligns bounded complete-J audit
+prefetch with all SIX original native columns and their unchanged strict storage
+types on the SAME allowance. Earlier-layout/unscoped/unbounded scanning is unchanged.
+
+The same maintained driver adds one pristine complete-J constructor assertion,
+for66 reader observations plus the unchanged14 safeguards. Constructor exception,
+layout/schema/native state and caller transaction are explicit observations before
+dependent use; failed constructor assertions leave dependent rows unexecuted and
+remain distinct from import/setup errors. Synthetic audit input uses its native
+nonnull task scope, and aggregate typed-row expectations follow independently fixed
+variant provenance. TASK12457 records attributable constructor RED/GREEN, allocated
+local-only sensitivity/restoration and actual full/sibling repetition evidence;
+its raw commands/heads/exits retain their own attribution. No inventory/resource,
+allowance/type/schema/reference or native-owner radius is expanded.
+
+Private-reader synthetic evidence does not establish actual
+support._storage/start/native positives; those still require a separately
+allocated genuine owner venue. Fresh FULL independent review and actual
+same-final-head executable QA remain gates before live-manager guarded merge;
+no native start or readiness override is supplied.
+New settings/progression and literal @3/team_move
+readers, repeated-binding inventory reuse and native controls remain root-owned
+prerequisites. No complete admission/readiness closure is claimed. The earlier
+SOURCE checkpoint's F5-R1c/F8-R1c UNEXECUTED venue statement is historical.
+TASK12407's42+14 GREEN/five repetitions remain historical, as do its adverse
+M6 partial27/native0/incomplete2 and S1/S3 cause-only results. Accepted step18
+and TASK12419 repair the affected proof: independent queued fixture inputs,
+actual emitted loader admission and the standalone reader's shared bounded scope.
+M6/S1/S3/S4/S7/S8 require full-table intended RED and byte-exact restored GREEN;
+S1/S3 observe invalid admission presence with zero bwrap attempts, retaining the
+later native refusal. Unaffected variants retain original-head attribution.
+PR1165 required exact-final-head42+14 GREEN/five repetitions and independent
+review/executable QA; its actual outcomes remain in that PR/task case record.
+Candidate8193 and broader native/runtime controls remain UNPROVED. Source review
+and static checks are not behavioral or test-authoring acceptance; no old-root
+waiver applies.
+No schema DDL/reference changes, startup upgrade, old-byte rewrite, custody Q/U/P
+issuance, R2 or daemon Git/object probe follows.
+Future event families and partial/orphan/foreign/dual-owner graphs refuse. Valid
+`coding_source_waiting`, `coding_carrier`, `coding_attempt` ownership cannot launch
+through queue, draft/F5, ordinary chain/fanout/recovery or parent wake. Pause/move
+rediscovery preserves this wait. Native cancellation of a selected queued graph
+is refused before mutation, including ancestor cascade and after the DB-lock wait;
+control/terminal writers remain later root-owned work. Initial selected move
+projection contains effective actual roles, not unselected replacement candidates.
+
+GET `/api/v1/orgs/{slug}/workflows/coding/runs/{instance_id}?session_id=CURRENT`
+and `workflows coding run-show INSTANCE --org ORG --session-id CURRENT --json`
+reuse current executable-manager loopback/session admission. Only the original
+source-manager principal may select metadata, before private run decoding;
+current mapping/effective-role authority is checked again. Closed
+`workflow-coding-run@1` exposes exactly
+`format,instance_id,release,mapping,effective_roles,cas_version,current_revision,target_revision,state,current_attempt,history,closeout,readiness`.
+Queued history has its sole `run_started` metadata; no private native proof,
+source callback, peer findings, repository content or execution grant is exposed.
+Bearer fallback and browser/remote reachability remain absent. Raw and normalized
+native GET candidates are denied independently using the existing one-decode
+algorithm before credential lookup/forwarding. Served schema and classification
+carry the same selected family; unrelated decisions keep legacy wire behavior.
+
+This is disabled SOURCE delivery only. Independent full review, same-final-head
+scoped SOURCE QA, normal commits/nonforce publication, local static all, literal
+hosted Source Boundary Lint + Web Lint(Node24), and manager guarded merge remain.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. SQL/parser/
+behavior/security/race/mutation/red-green/repetition/native-build/E2E/protected/
+executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS.
+Remaining K3 dispatch/native/control/supplements and K4–K6, genuine-agent revision/
+fresh review/QA/CI/merge, two actual org defaults/override and backup-copy acceptance
+remain on sole ROOT10693. No live migration/assignment/deploy/restart/enable/cutover.
+<!-- /K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
+
+
+<!-- Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
+## Active coding contract — agent-read subjects (seq640)
+
+Founder THR139 seq640 supersedes the earlier seq559/562 coding content-serving
+prerequisites and the historical K2b setup/mapping/source checkpoints below.
+Those checkpoints and accepted artifacts/hashes remain historical evidence;
+they do not require rebuilding their producers. Document contracts, native
+permissions, F–J definitions/references and retained history remain in force.
+
+Coding records repository identity, object format, immutable comparison base/head
+and optional PR navigation. An eligible assigned agent reads code through its
+existing authorized repository tools. Progression requires that agent's genuine
+task/session/result, outcome and findings bound to the exact subject, with current
+authority and independence. A descriptor/digest grants no access, inspection,
+execution or merge authority. Unavailable access, a different subject or an
+unassigned/inauthentic result refuses progression. Changed head requires fresh
+independent review and QA; prior results and contributor/assignment/retry history
+remain historical. Branch/PR navigation never identifies approval.
+
+Reduced K2b on SAME draft PR1083 retains the fixed634-byte release import,
+Founder predicate, original publication/admission/replay/current-authority and
+complete template/history/cold/recovery/drain consumers. Import support now lives in
+`_coding_import_support.CodingImportSupport`, extracted without a setup/adoption/
+source prerequisite or expanded agent import authority. Draft setup issue/withdraw,
+store adoption/mapping, source mint/refinement and their exclusive route/CLI/model/
+contract/native entries are removed. Merged K1 stays dormant with its exact main bytes;
+no daemon object read or content-resolution preflight is a coding prerequisite.
+Rejected R2 private records, org fence and privacy projections are not implemented.
+Keep bounded historical positive readers and malformed/orphan/foreign-data refusal;
+reader retention neither restores a producer nor grants current access.
+
+K2c separately supplies org role defaults, eligible repository scopes, per-work
+implementer override, independence and pinned generation, not local-store custody.
+K3 is the first atomic coding instance/carrier/development-task writer and ships
+its own complete readers/recovery. K4 adds review/QA/revision with fresh exact-head
+acceptance; K5 adds successful exact-head lint/static CI and guarded expected-head
+merge/closeout; K6 adds operator entry/cutover. ROOT10693 retains genuine-agent
+revision/re-review/QA/CI/merge, two-org defaults/override and backup-copy operational
+acceptance. Coding remains disabled and runtime/security acceptance is missing.
+
+No live migration, grant, provider allocation, deployment, restart, assignment,
+cutover, cleanup or human trial follows. Python units are RETIRED; integration
+INCLUDING callback is SKIPPED24342. SQL/parser/product/security/mutation/red-green/
+repetition/native-build/E2E/executable proof is UNEXECUTED/FOUNDER-WAIVED139429/430,
+never PASS. Independent FULL code review, same-final-head scoped SOURCE QA,
+normal hooks/nonforce publication, lint/static checks and manager guarded merge
+remain required. No new reader-only publication or replacement authority framework.
+<!-- /Active coding contract: Founder THR139 seq640 / ROOT10693 step79 -->
+
+<!-- K2c agent-read role defaults: TASK11987 / ROOT10693 step83 -->
+## Agent-read role defaults and pinned selection (seq640)
+
+K2c adds current executable-manager CLI POST/GET
+`/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT` and
+nonallocating POST `/api/v1/orgs/{slug}/workflows/coding/role-selections?session_id=CURRENT`.
+These reuse existing native task-session/Pause/move/publication admission, with
+no bearer fallback, browser or remote connector reachability. CLI forms are
+`workflows coding mapping-publish --org ORG --session-id CURRENT --from-file ABS --json`,
+`mapping-show --org ORG --session-id CURRENT --json`, and
+`role-select --org ORG --session-id CURRENT --from-file ABS --json`.
+Keep the original file/key on transport loss; no automatic retry.
+The route streams the bounded body outside authority/team locks. The service
+alone acquires authority, then teams, then DB/binding ownership for GET, publish
+and selection. Native checkpoints use DB-before-binding order; DB is released
+before waiting for teams. This agrees with authority-first configuration writers
+and agent-update bootstrap/compensation. After each awaited acquisition the
+serving org/session/team is rechecked; native invocation, executable manager and
+current policy are rechecked at the coherent DB boundary before private decoding,
+current use and writes. No non-reentrant authority reacquisition is needed.
+
+Canonical bounded64KiB `workflow-coding-mapping-command@2` has exactly
+`format,operation_key,expected_generation,mapping`. Mapping has exactly
+`release,roles,eligible_replacements,repository_references,authority`.
+Release remains the imported fixed coding v1/digest; four roles are implementer,
+code_reviewer, qa_engineer and agent_manager, each `{principal,team}` with
+permanent active agent IDs, four distinct principals, at most16 eligible
+replacements per role and no replacement collision with another default role.
+Agent manager is an actual executable registered agent manager, never Founder.
+Every default and eligible replacement must belong to that initiating manager's
+own authorized team, including the actual selected implementer override. A worker
+in another team of the same org refuses even with an identical repository origin;
+shared membership/repository access grants no cross-team action. Original saved
+role records validate this radius against their authentic issuer, native manager
+team and captured snapshot; current use validates it again under current policy.
+Previously admitted out-of-radius role records now fail closed as invalid history,
+without rewriting bytes or using today's roster to invent historical authority.
+Valid same-team history and separate historical custody formats remain readable.
+Each of1..8 repository references is exactly
+`{repository_id,repo_key,origin_digest,object_format:sha1|sha256}`. Existing org/key/
+configured-origin identity and repository permission must agree for every role
+and eligible replacement. No local-store adoption, Git/object/content/provenance
+probe, dedicated setup/source capability, R2 record or inspection Boolean exists.
+
+Append-only `workflow-coding-agent-read-role-record@1` uses the unchanged TEN J
+mapping columns, with explicit org, full original command/digest, genuine issuer,
+native complete admission snapshot, mapping and original timestamp. It has no
+custody/adoption fields and never reinterprets historical mapping-record@1.
+One existing admission transaction writes mapping, five-column admission and
+original native `coding_source_admission` capture; complete cold closure precedes
+COMMIT. Full command replay in the same org/principal/key namespace precedes
+fresh generation CAS and returns original IDs with current disposition, without
+recapture or grant restoration. Changed bytes conflict. New POST201/replay200,
+GET200; malformed422, missing404, revoked403, stale/conflict/unavailable409,
+corrupt-history500. Closed `workflow-coding-mapping-receipt@2` has exactly
+`format,id,generation,mapping_digest,mapping,replayed,current`; current is
+`{state:active|revoked,reason:null|Token}`. GET refuses currently revoked use.
+After every await and in the writer, native current session/owner/ancestry,
+Pause/move, full published policy and role/repository eligibility are rechecked.
+
+Canonical `workflow-coding-role-selection-command@1` is exactly
+`{format,mapping:{id,generation,digest},implementer_override:null|{principal,team},subject}`.
+Only implementer may override, from that immutable generation's eligible set;
+all four actual selected principals stay independent and current. Defaults and
+all pinned history remain unchanged by selection. Later default updates affect
+future default GETs; an older exact pin is selectable while current authority
+remains eligible. Unknown pin404, mismatched generation/digest409. Subject is
+existing `workflow-code-change@1`: exact repository reference/object format/full
+base+head are required; branch/PR navigation carries no approval identity.
+The closed response `workflow-coding-role-selection@1` contains exactly
+`format,mapping,roles,subject,overridden,coding_enabled:false`. It allocates no
+task/result/instance/carrier/run/stage/effect or entitlement, and proves neither
+object existence nor actual inspection. Current complete storage still refuses
+ALL coding runs/attempts/events; K3 must compose genuine per-work contributor
+history before its first allocation, never trust caller-provided history.
+
+Saved/native/current/public/CLI/template/schema(data=False)/cold/reopen/recovery/
+drain consumers validate complete mixed old/new mapping prefixes and all TEN
+original typed columns, own full admission/publication/native capture and original
+command/generation identity. Unknown/malformed/orphan/foreign/gapped/conflicting
+families refuse without repair. Shared bounded prefetch/native row/raw-byte/step
+budgets remain; no per-family reset, schema-object filter, startup upgrade, old-byte
+rewrite or empty reset. Old binaries may refuse this new saved record family even
+though J DDL is identical: use compatible code, with no downgrade-readability claim.
+Historical setup/mapping/source/import readers remain; new role records cannot
+serve as historical custody/source grants. F–J definitions/references, document/
+human receipts, native security/lifecycle mechanisms and dormant K1 are preserved.
+
+This is SOURCE delivery only. Independent FULL review, same-final-head scoped
+SOURCE QA, normal hooks/nonforce publication, local static all, literal hosted
+Source Boundary Lint + Web Lint(Node24) and manager guarded merge remain required.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. All behavioral/
+SQL/parser/security/mutation/red-green/repetition/native-build/E2E/protected/
+executable/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429/430. Coding remains
+disabled. ROOT10693 owns K3–K6, genuine-agent rejection/revision/fresh review/QA/
+CI/merge, two actual org defaults/override and backup-copy operational acceptance.
+No live migration/grant/assignment/deployment/restart/cutover/trial renewal follows.
+<!-- /K2c agent-read role defaults: TASK11987 / ROOT10693 step83 -->
+
+
+
+
+<!-- K2b source producer checkpoint: TASK11918 -->
+**Historical nonallocating coding source producer — ROOT10693, Founder139562/559/329/595/606.**
+Agent-only loopback POST `/workflows/coding/sources?session_id=CURRENT` and
+GET `/workflows/coding/sources/{authorization_id}?session_id=CURRENT` use the
+existing current manager transport, without bearer fallback or browser/remote
+reachability. CLI `workflows coding source-mint --org ORG --session-id CURRENT
+--from-file ABS --json` and `source-show AUTHORIZATION --org ORG --session-id
+CURRENT --json` preserve one original file/key, with no automatic retry.
+Canonical bounded64KiB `workflow-coding-source-command@1` is exactly
+`{format,operation_key,parent_id,mapping:{id,generation,digest},action,work}`;
+work exactly `{repository_id,store_owner,object_format,base,paths,commands}`.
+Only import-release-coding, publish-coding-mapping and adopt-local-store source
+actions mint here, within the current reusable U and all narrower parent edges.
+Server derives genuine current task/principal/team/SID/manager_decision,
+ordinary invocation/Pause/move/complete ancestry, callback absence and original
+limits. Native owners and executor enforcement are composed unchanged.
+The exact selected mapping/adopted store, source_rule/base_rule, executable
+manager repository policy and action/path/argv intersections precede private
+object work. Existing supervised adopted-store object machinery verifies the
+fixed full base outside writers under one deadline; it returns no repository
+content. Fresh native ALL27/ancestry/current policy checks repeat after awaits
+and in the atomic writer. No timestamp exemption or counter refill applies.
+A genuine immutable source P and its complete OWN five-column admission mint
+atomically. Exactly one ORIGINAL source-phase capture retains all original27
+source/ancestor/native session-start/invocation/counter/limit bytes; NULL result
+and claim mean zero callback/carrier/task/run/stage allocation. Same-owner source
+refinements obtain distinct own admissions while retaining the original
+source_admission_id and capture. P/U/capture encodings and F–J DDL stay unchanged.
+Private audit action coding_source_operation stores closed
+`workflow-coding-source-operation@1 {format,org_slug,principal,authorization_id,
+admission_id,session_id,command_bytes_base64,command_digest,created_at}` per mint.
+This D1 operation metadata preserves each complete command/key/principal for
+byte replay; it grants nothing and cannot replace an original capture.
+Replay finds original bytes before fresh CAS/object work, returns original
+identities/current disposition and never recaptures, reissues or restores grants.
+Closed unsigned `workflow-coding-source-receipt@1` is exactly
+`{format,authorization_id,admission_id,source_admission_id,operation_key,
+request_digest,replayed,current:{state,reason}}`; current is active/inactive/revoked,
+with a reason only for revoked. Changed same-key bytes conflict.
+Mixed setup/import/mapping/P cold consumers share bounded native source/mapping
+capture/operation inventory and the enclosing row/byte/step budget. Full positive
+native-row equalities and unknown/orphan/duplicate refusal cover schema(data=False),
+OrgState reopen, recovery and drain; ordinary nonmapping watermark behavior stays.
+Source expected_head remains NULL/own-development-output@1: it grants no arbitrary
+head disclosure, review, QA, CI or merge. K1.resolve remains unavailable because
+no genuine exact-subject read entitlement is produced here. Allocating source
+callback/C0, run C1/C2, native heartbeat and attempt/control/effect producers remain
+K3 and later units, not fabricated subjects/results/grants. Agent release import
+and source-to-action use remain separate from these mint metadata operations.
+This is an incomplete SAME DRAFT PR1083 source checkpoint, never a delivered
+coding engine, operational grant, deployment or merge. Independent FULL review,
+same-final-head scoped SOURCE QA and literal lint/static gates remain required.
+Runtime/security/rollback guarantees remain UNVERIFIED, engineering_manager-owned
+before operational acceptance. Python units RETIRED; integration INCLUDING callback
+SKIPPED24342; SQL/parser/product/timing/security/negative/mutation/red-green/repetition/
+native/build/E2E/protected/executable-QA/test-authoring proof
+UNEXECUTED/FOUNDER-WAIVED139429/430. No live setup/adoption/grant/assignment follows.
+<!-- /K2b source producer checkpoint: TASK11918 -->
+
+
+## Historical K2b mapping publication/adoption checkpoint — ROOT10693 step70
+
+SAME incomplete OPEN DRAFT PR1083 now includes the explicit nonallocating
+mapping writer and every own saved/native/current/cold/public/CLI consumer.
+POST `/api/v1/orgs/{slug}/workflows/coding/mappings?session_id=CURRENT`
+accepts canonical `workflow-coding-mapping-command@1` with only
+`format,operation_key,expected_generation,mapping`; mapping has exactly
+`release,roles,eligible_replacements,repository_selectors,authority`. Each of
+at most eight selectors is exactly `repository_id,store_owner,repo_key,policy`,
+with policy `adopted-local-store@1`. No paths, URLs, proof flags or server
+capsules are accepted. GET on the same path requires the same genuine current
+acting manager binding, selects the latest complete generation and rechecks
+current setup/role/store eligibility. Both return the closed six-field
+`workflow-coding-mapping-receipt@1 {format,id,generation,mapping_digest,mapping,replayed}`.
+POST is201/new or200/exact replay, GET200; missing selection404, malformed422,
+revoked manager/scope403 and unavailable/stale/conflicting admission409.
+CLI `workflows coding mapping-publish --org ORG --session-id CURRENT
+--from-file ABS --json` and `mapping-show --org ORG --session-id CURRENT --json`
+use actual loopback session transport, without bearer fallback or automatic
+retry. Preserve the original key/file after transport loss. Both routes remain
+browser-excluded and native remote-denied on raw and normalized candidates
+independently before credential lookup/forwarding.
+
+Server selection derives the actual assigned executable team manager, task/SID,
+unique native manager_decision session_start, real ordinary/v2 TaskInvocation,
+Pause journal/generation, current tree/move admission and no own-SID callback.
+Reusable M.setup roots authorize publication and each adoption separately for
+its repository/action/store/format; neither roster membership nor a parsed
+capsule grants permission. Fixed coding import and complete published role and
+replacement eligibility are required; four contributors stay distinct. Empty
+repository selectors require one unambiguous eligible setup; no arbitrary root
+selection or empty grant becomes authority.
+
+Configured primary stores are resolved server-side. A shared bounded no-follow
+preflight checks custody, ordinary .git/config/object format/origin and object
+inventory, refuses linked/indirect/symlink/alternate/promisor/shallow/replace/
+graft/helper/unsupported stores, and executes no Git, hook, filter, credential,
+fetch or clone. It derives server adoption-proof@1 and config/store identity.
+After the await, repeat observation and compare before the SQLite writer, then
+revalidate actual native authority/setup/current owner and generation in the
+writer without filesystem/object work or awaits. Local adoption attests local
+storage, not remote provenance or hostile same-UID/OS isolation.
+
+One native admission transaction appends the exact ten J mapping columns,
+complete canonical command/issuer/capture/M roots/adoptions/mapping bytes, and
+its fixed original source-phase native capture. Full original task/ancestry,
+unique session-start ID, actual invocation ID and admitted counters are retained;
+result/claim/callback fields remain genuinely null. Final complete cold closure
+precedes COMMIT; rollback preserves prior rows/ownership. Exact replay compares
+org/real principal/key plus ALL original command bytes before fresh generation
+CAS/adoption I/O, keeps original IDs and issues no work or renewed authority.
+Historical validity does not establish today's permission. Complete positive
+whole-row family matching covers mappings, original capture audit and all five
+admission columns; orphan/foreign/malformed/unsupported families still refuse.
+Central schema validation, also data=False, reopen/recovery and drain/downgrade
+compose that same reader without recursive schema validation or ID exemptions.
+Mapping-positive central scans, including the complete ordinary audit inventory,
+use singleton rowid keyset pages with explicit overflow refusal. Before Python
+fetch, every selected scalar/variable cell gates its original SQLite storage
+class and each TEXT/BLOB UTF8 byte length (including multibyte/NUL suffixes),
+and the whole row must fit the remaining shared raw-byte and candidate budget.
+Original typeof and a separate refusal sentinel preserve genuine nullable NULL;
+invalid/oversized rows never become coerced, truncated or partial success.
+One call shares8192 fetched candidates,16384 traversal steps and16MiB accepted
+raw bytes across setup, mapping, original-capture and central selected scans;
+per-value1MiB and mapping/setup inventories1024 remain upper bounds. Bounds may
+refuse earlier; they do not bound total SQLite/process/decoded-object memory.
+Complete expected mapping/own-admission/source-audit rows are derived once from
+validated records, indexed only for lookup, then compared in full with exact
+native types. Original capture inventory and required setup histories are cached
+only within this coherent call. No mapping row or supported audit is exempted
+by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
+The SAME enclosing traversal allowance also covers metadata discrimination:
+every structured node/member, duplicate pair and classified member string,
+and malformed lexical prefix/member/whitespace/string/escape visits consume it.
+Nested lists/objects and fallback after partial pairs-hook work never reset or
+replace that allowance. Exhaustion refuses before a normal return, positive
+admission or watermark advance; even small wide ordinary metadata may exhaust
+it. JSON-decoder/encoding internals, total SQL/decoded-object/process memory
+and wall-clock work are not bounded by this traversal or raw-byte accounting.
+Ordinary nonmapping scans retain their historical discriminator/watermark
+contract. This R1 source correction is not behavioral/security verification.
+Mapping/setup/import have no run/host tail; compatible J reader is always needed.
+F–J SQL/reference bytes and all historical document meanings are unchanged.
+
+Current K1 exact-subject disclosure still requires a genuine immutable subject
+and selected entitled admission; the placeholder remains unavailable. SAME-K2b
+remainder is source capability attenuation/current K1 subject selection and its
+original source captures/current readers. K2c–K6 remain per delivery-map; K3 is
+the FIRST run writer. No task/run/stage allocation, live setup/mapping/adoption,
+migration/deploy/restart/cutover or retired trial execution is authorized.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; SQL/parser/
+product/timing/security/negative/mutation/repetition/executable QA proof remains
+UNEXECUTED/FOUNDER-WAIVED139429/430. Source assertions/lint are no behavioral,
+security or test-authoring PASS. Fresh independent FULL review then same-head
+scoped SOURCE QA and manager disposition remain required. Keep PR1083 draft,
+unmerged and incomplete until the genuine SAME-K2b remainder is delivered.
+
+
+## Historical K2b fixed coding release import checkpoint — ROOT10693 / Founder139562/559/329/606
+
+Manager step68 extends SAME incomplete draft PR1083. This source checkpoint adds
+explicit fixed release import and its own historical/current/public/cold readers;
+setup-only descriptions below retain their original checkpoint meaning. K2b
+remains DRAFT/unmerged until mapping/adoption/current K1 and source attenuation
+with actual nonallocating task/SID/invocation/Pause/ancestor capture producers and
+all their own readers are complete. First coding-run writer is K3, not this unit.
+
+POST `/api/v1/orgs/{slug}/workflows/release-templates/coding/1/import` uses the
+existing Founder human predicate and current native authority admission. It takes
+only canonical UTF8 `workflow-coding-release-import-command@1` with exactly
+`format,operation_key,expected_current_version`; the selector is INTEGER 0..1 (only0 can create the fixed version1) and
+the stable key is 1..128 token characters. The full command is at most1024 bytes.
+No query/body actor, task, SID, namespace, definition, gate or pin selector is
+accepted. The server selects the exact634-byte packaged coding.v1 resource,
+SHA256 `6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8`,
+namespace `release/happyranch`, template `coding`, version1 and pins
+`workflow-coding-compiler@1`, `workflow-coding-validator@1`, `release-input@1`.
+Human import creates no task/SID/result and does not require an invented machine
+grant. Manager import remains unavailable until genuine source attenuation and
+nonallocating admission producers ship on SAME K2b; identity/setup alone is not
+machine authority. Existing org/team publication grammar remains unchanged.
+
+CLI `happyranch workflows coding release-import --org ORG --from-file ABS --json`
+sends the complete original file once with existing human transport; keep its
+original key/file after transport loss. `release-import-show --org ORG --json`
+uses GET on the SAME path. Both return a closed
+`workflow-coding-release-import-receipt@1` with exact identity/version/admission
+IDs, operation_key/request_digest/replayed, current `{state,reason}`, and the
+unchanged disabled release projection. POST is201 for initial import,200 for
+exact replay; GET is200 and never writes. Current state is admitted/unavailable,
+not coding readiness. Entitlement precedes private decode; absent import is404,
+invalid command/query422, stale admission/duplicate import/conflict409, corrupt
+history/resource500, missing resource503. Both import methods are CLI-only,
+browser-excluded and native remote-denied for raw and normalized paths
+independently, including prefixes, one decode, literal query split and one final
+slash. The original catalog GET remains write-free and enabled:false.
+
+Resource I/O/reference construction/discovery occur outside writer locks; after
+waits the real Founder and current native capture are revalidated. One native
+admission transaction inserts existing draft/version/identity/version-link/
+publish-operation/admission rows and validates complete cold closure before
+COMMIT. `author_principal`/`published_by` retain equal typed canonical import
+provenance `{format:workflow-coding-release-import-provenance@1,org_slug,publisher,
+command_bytes_base64,command_digest,admission:{record,capture},created_at}`;
+publisher is the actual Founder provenance, never a synthetic task principal.
+The original command and native capture bind every row, exact resource hash/pins,
+all five native admission columns and complete original publication/profile
+journal. Ordinary document provenance is unchanged. Exact replay precedes fresh
+CAS, returns original IDs, changes no authority pointer, and separately reports
+current policy loss. A different key cannot create version2 or another import;
+changed bytes under the same key conflict. Missing package I/O can hold a fresh
+import while exact saved replay remains readable. Any partial/foreign/malformed/
+extra/orphan/incorrectly typed relation refuses; failures roll back all new rows.
+
+Central J validation, including validate_data=False, source-data validation,
+startup/reopen, recovery pre-legacy discrimination and drain/downgrade all consume
+complete immutable import closure; no ID exemption or compiler-pin-only admission
+exists. Saved history is independent of today's permission. Ordinary template
+listing includes the shared org-local imported release and exposes only actual
+publisher provenance, never private capture bytes. Exact release store get and
+low-level version readers validate the complete import and J before returning;
+the public selected receipt is the dedicated GET/CLI above. Import cannot bind
+an activation or document binding: unsupported code execution continues to refuse.
+F–J SQL/independent references, create-org I, generic Database/runtime-audit,
+K0 disabled readiness and unavailable K1 current resolution remain unchanged.
+No startup/catalog import, mapping/P/run/attempt/event/receipt writer or live
+operation is added. No schema, authentication, credential, shared transport,
+permission, callback, hook or dependency mechanism changes follow.
+
+Python units RETIRED; integration INCLUDING callback SKIPPED24342. SQL/parser/
+behavior/security/negative/mutation/repetition/executable-QA proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430. Native assertions are retained source, not executed
+coverage. Lint/static checks and inert OpenAPI inspection do not prove behavior.
+Fresh FULL independent final-head review then same-head scoped SOURCE QA return
+to SAME sole ROOT10693. No maker approval/QA/merge or complete K2b acceptance.
+
+## Historical K2b first setup producer checkpoint — ROOT10693 / Founder139562
+
+Manager step65 and THR139seq595/596 select **one K2b draft PR**, continuing
+merged1082. Each writer ships its own complete saved/current/native/cold readers;
+future run/stage readers are required with their corresponding writers. Earlier
+K2a1/K2a2 sections below are historical checkpoint evidence, including their
+then-current empty-only/no-producer and all-future-readers-first descriptions.
+They do not impose another reader-only publication or change accepted encoding.
+
+This checkpoint supplies Founder setup ISSUE/WITHDRAW, selected GET and exact
+replay. POST `/api/v1/orgs/{slug}/workflows/coding/capabilities` accepts only
+canonical UTF8 `workflow-coding-capability-setup-command@1` with exactly
+`format,operation_key,setup_key,expected_authorization_revision,mode,scope`.
+Issue scope fixes repository, actual published manager/team and configured store
+owners, finite actions/path/argv maxima, source_rule and base_rule. Empty path
+or command scope grants none. Withdrawal requires null scope and genuine prior
+issue; its new immutable issuance is an inactive tombstone. No body identity,
+agent session, bearer forwarding, query parameters or automatic retry is allowed.
+Existing `_require_human` derives the Founder principal on the server.
+
+CLI `happyranch workflows coding capability-set --org ORG --from-file ABS --json`
+uses existing human transport and preserves the full original canonical command.
+GET `/api/v1/orgs/{slug}/workflows/coding/capabilities/{setup_key}` returns only
+the selected closed `workflow-coding-capability-setup-receipt@1`: original
+IDs/revision/key/digest/replayed plus current active/inactive/revoked disposition.
+Both endpoints are CLI-only/browser-excluded and native remote-denied; denial
+checks raw and normalized candidates independently before forwarding. No shared
+normalizer, credential or permission semantics change.
+
+Setup records require compatible complete J. Every native admission's five
+columns, original Q/issuance bytes, full snapshot/profile mirror/publication
+journal, contiguous revision prefix, unique setup/operation/admission identities
+and exact latest pointer are checked. One native admission transaction inserts
+admission/revision and CAS-updates the pointer; failed validation rolls all back.
+Discovery and independent whole-native schema reference construction precede
+transactions; final admission uses captured data with current authority checks.
+No file/object I/O or await occurs in the writer. Replay compares full original
+bytes before fresh CAS, changes no pointer/revision, and reports original IDs
+with current inactive/revoked state after withdrawal/replacement/policy loss.
+Cold-valid history never establishes current authority or action permission.
+
+Central J validation (also validate_data=False), reopen, recovery's pre-legacy
+boundary, drain and downgrade recognize exactly complete setup closure. All
+mapping/source/P/run/attempt/event/receipt coding families remain categorically
+unsupported; malformed/duplicate/orphan/foreign values refuse. F–I/J DDL and
+independent references stay unchanged; create-org remains I, startup never
+upgrades, even empty J requires compatible code. Generic Database/runtime-audit
+remain workflow-free. K0 stays disabled and K1 current resolution unavailable.
+
+**K2b remains incomplete and DRAFT/unmerged.** SAME-PR mandatory remainder:
+explicit fixed release import; mapping publication/local-store adoption/current
+K1 resolution; source attenuation and genuine nonallocating task/SID/invocation/
+Pause/ancestor capture producers, each with complete own current/native/cold
+consumers. K2c owns role defaults/overrides/fresh J; first run writer is K3;
+K4/K5 own revision/QA/CI/merge closure, K6 operator entry/cutover. No live setup,
+grant/adoption, SQL fixture, deployment/restart/migration/assignment, provider/
+browser/native build/ad hoc E2E or retired trial execution follows source work.
+Python units RETIRED; integration INCLUDING callback SKIPPED24342; SQL/parser/
+security/negative/mutation/repetition/behavior/executable QA UNEXECUTED/
+FOUNDER-WAIVED139429/430. Lint/static evidence supplies no behavioral PASS.
+Fresh FULL independent review and same-final-head scoped SOURCE QA return to
+SAME sole ROOT10693. No setup-only merge or complete K2b acceptance is claimed.
+
+
+## Approved online team move — C1 task/host and C2 thread source (THR296seq135)
+
 ## Integrated online team-move F candidate — THR296seq135 / TASK11345
 
 The integrated F candidate supplies founder-controlled service/CLI source with
@@ -78,13 +718,75 @@ Restart treats unclosed task `prepared` entries as unknown, including terminal
 rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
 Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Repository refresh also refuses before pull
-on detached HEAD or missing/unusable/unreadable upstream; skipped repos stay false
-and warn of stale source. Every executed pull failure/timeout/exception retains
-uncertainty, including dirty/non-fast-forward and recursive partial effects;
-equal HEAD/branch/porcelain summaries never prove no effects. Read-only upstream
-lookup is admission only, not a remote-state lock. All observations/pulls share
-one 30-second batch deadline; exhausted/unattempted siblings stay false. Thread/dream/
+retain their no-effect disposition. Automatic repository refresh admits only ONE
+raw byte-exact `+refs/heads/*:refs/remotes/origin/*` origin fetch rule,
+ONE checked-branch remote=origin and merge=refs/heads/<same branch>, with exact
+usable refs/remotes/origin/<same branch> upstream (slash names included).
+Applicable scopes/includes count; duplicate/extra/negative/custom mappings skip.
+Configuration identity uses ONE `git --no-lazy-fetch config --includes --null
+--show-scope --show-origin --get-regexp SELECTOR` per identity, filtered by Git
+before the unchanged complete4096B capture. SELECTOR retains only the exact
+checked branch's remote/merge/rebase/mergeoptions (subsection escaped as POSIX
+ERE data, case preserved), and whole canonical families: remote, remotes, url, http,
+ssh, credential, protocol, promisor, core, extensions, safe, feature, index,
+checkout, filter, diff, fsck, attr, splitindex, reftable, fetch, transfer, pack,
+repack, gc, maintenance, commitgraph, bundle, clone, pull, merge, rebase,
+submodule, rerere, apply, stash, hook, user, author, committer, commit, gpg, i18n.
+Every `remotes.*` record participates because `fetch -- origin` can resolve
+`origin` as a remote group before remote fallback; Git interprets group values.
+The entire ordered selected scope/origin/key/raw-value NUL-triple stream joins
+B/L/object-format/exact-upstream-name/transport equality; shadowed duplicates
+and provenance are retained. Known scopes, nonempty opaque origins, canonical
+selected keys, complete triples and final NUL are required; first LF separates
+key/value, distinguishing absent, valueless and explicit-empty. Exact raw
+single support values remain mandatory across scopes/includes; scalar last-value
+and Git-typed prechecks retain admitted semantic-failure timing. Unrelated
+branch/custom size or drift does not consume the selected bound or equality;
+relevant-family overflow/incomplete/malformed controls refuse, including after
+fetch with retained effects/uncertainty and no merge. This finite inventory is
+not universal config safety or a hard bound on Git's own parsing memory. Root
+config equality does not snapshot nested repos, hook/filter/include file content,
+external state, environment or backend files; cooperative ABA/final-window limits
+remain. No new log, warning, credential mechanism or lock is introduced.
+Unsupported config, missing/detached/unborn/unreadable/no-upstream or absent exact
+source stays false/stale before mutation, with a fixed safe reason and no newly
+latched failed_cleanup solely for that refusal. Existing uncertainty stays sticky.
+Admitted pull-state prechecks retain unmerged/MERGE_HEAD and branch-before-pull
+rebase clean-tracked checks, ignoring submodule-only dirtiness and allowing
+untracked files subject to Git's later collision checks. Semantic precheck failure
+is false/unknown before attribution, without an invented mutating-child exit.
+Configured `fetch -- origin` must succeed and settle before one exact post-fetch
+origin/refs/heads/<branch> advertisement selects locally available commit U.
+Admission U0 is existence only; newly fetched U1 may replace it. Unavailable U2,
+deleted/malformed/ambiguous source, probe failure or observed B/L/config/upstream/
+transport drift refuses without merge, retry or fallback. FETCH_HEAD and late
+tracking contents supply no U provenance. Merge uses literal full U with explicit
+`--ff-only`, retaining inherited merge settings and pull.autostash true/false
+precedence; absent pull override uses rebase.autostash when resolved rebase is
+on, otherwise inherits merge behavior. Git owns stash/apply/conflicts.
+After successful merge, effective submodule.recurse requires one supervised
+`submodule update --recursive --checkout`, also for equal/local-ahead no-ops.
+No init/force/remote/rebase workaround or completion after failed merge.
+True requires all required children and final exact original-branch/HEAD oracle
+AFTER completion: behind ends U; equal stays L=U; local-ahead preserves EXACT L;
+divergence refuses FF. Exit0/any descendant of U alone cannot establish freshness.
+Any incomplete possible mutating attempt retains uncertainty, including failed
+completion after HEAD advances and later no-start/cancel/probe failure. Equal
+HEAD/branch/porcelain or a settled child never proves no effects. Checkout/config/
+transport stability is cooperative, not a lock; last-window/ABA and transactional
+correspondence of remote observations remain limitations, with no rollback.
+All probes/prechecks/children/final checks and siblings share ONE original30-second
+batch deadline including scan and executor-queue delay; exhausted/unattempted
+siblings stay false. Read-only control output is privately bounded4096B and must
+be complete/validated, with lazy object fetching disabled. Child stdout is
+discarded; each mutating child's private stderr retains
+at most4096 bytes plus bounded read scratch, draining/discarding excess while the
+direct child runs. Nonblocking capture permits at most two4096-byte exit-tail
+reads, never waiting for descendant EOF or a reader thread. Overflow/incomplete/
+failed capture cannot select a specific label. Actual child rc0 remains eligible despite
+truncation/unavailable advisory capture; a post-start read exception remains failure even
+if the child later exits0. Direct-child settlement is required, without a hard
+real-time guarantee over OS creation/reap or native persistence. Thread/dream/
 wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
 joining its worker before cancellation propagates and settlement runs. Timeout
 never certifies process-tree quiescence; existing unknown owners remain sticky.
@@ -95,13 +797,175 @@ runners and fences detached instances against late starts. Runtime registration
 runners and team-move holds before any close or registration/activation effect.
 Shutdown refuses runtime replacement before construction; idle replacement closes
 and fences every retired instance before publishing new OrgStates. A busy later
-org leaves earlier orgs open, with busy refusals mapped to409. Shutdown stops runner
-and attachment admission, then joins cancelled workers and native finish before
-DB close; repeated cancellation during that join cannot skip it. No timeout
-establishes quiescence, and failed persistence retains native uncertainty.
+org leaves earlier orgs open, with busy refusals mapped to409. Native task queue
+work also holds the original OrgState/DB through preparation, run_step outer
+settlement, heartbeat teardown and the SAME returned worker owner's retirement.
+Every submitted future is tracked before a cancellable await; consumer cancellation
+cannot retire an active run or redirect late work to a replacement with the same
+slug. The retained drain_sync entrypoint uses this same ownership path.
+Shutdown fences queue, runner and attachment admission before draining, preserves
+host SHUTDOWN before producer cancellation and retains the existing async-runner
+join. Queue stop owns its join across repeated waiter cancellation; its bounded
+native drain timeout reports incomplete and leaves obligations and DB-close
+barriers intact. Future failures/cancellation or failed retirement retain those
+barriers, never certify idle or clean shutdown. Org close/unload and all-org
+close/runtime reconstruction refuse native users before closing; unpublished
+construction failure has no admitted native queue work. The signal handler never
+closes DBs and reports nonzero unless the shared close path positively completed,
+including when Uvicorn re-emits a signal. No timeout establishes quiescence;
+failed persistence retains native uncertainty. External KILL/OOM or termination
+past launcher grace remains crash uncertainty; this prevents new post-close
+writes when retirement succeeds, not historical recovery or kill survival.
 Existing retry/recovery IDs, frozen budgets,
 INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+
+The serving lifespan owns one dormant private cleanup-diagnostic coordinator.
+Only the real Uvicorn Server adapter signals it after successful ASGI/listener
+startup returns with started true and no requested exit. Early port/PID files,
+health probes, pre-yield scheduling, maintenance and ad hoc lifespans never start
+acquisition. Signalling schedules work only; diagnostics never gate readiness.
+Initial org count is checked before enumeration: empty/over-eight/missing context
+is unavailable/incomplete. Tokens bind the actual serving state/runtime, canonical
+org/DB paths, OrgState/Database/supervisor/tracker references and distinct local
+attachment generations. Dynamic attachments and reconstructed runtimes remain
+unsupported; no substitute registry or historical process proof is inferred.
+
+One off-loop serial pass uses `Database` and strict `ThreadAdmissionStore` replay,
+sharing a budget fixed at readiness: 3s,8 initial contexts,64 owners,1024 fetched
+rows,4MiB,256 statements,5M VM steps, including closing comparisons. Native
+lock/busy waits are at most25ms, batches target50ms, progress samples1000 VM
+steps and record length is capped before allocation. Refusal/missing/malformed/
+conflicting/moving evidence stays incomplete. These cooperative limits prove no
+hard wall/RSS bound, global snapshot, process/effect closure or absence certificate.
+
+A separate org diagnostic guard registers before executor submission and captures
+THAT returned future before any cancellable await, including queued work. Only
+positive native return with safe cursor/settings restoration and coordinator
+settlement releases it. Cancellation, uncertain submission/return, failed
+restoration and drain timeout retain the guard/DB. Detach/same-root reconstruction/
+switch capture and revoke under orgs_lock, drain outside locks, then renew exact
+map/runtime/org identity and all existing busy/hold preflights before any close or
+registry/activation effect; races refuse409. Org removal joins only its own
+diagnostic obligation; unrelated org diagnostics do not block it. Refused
+operations never restart a revoked pass. OrgState.close revokes/refuses diagnostics independently of runners;
+close_all independently revokes/joins/checks before DB closure. Lifespan revokes
+before its first shutdown await and retains A's admission fence, host SHUTDOWN,
+runner/queue joins and no-clean-success on incomplete drain. Direct/re-emitted
+signals still close no DB; KILL/OOM remains crash uncertainty.
+
+Publication rechecks the same serving objects and attachment generation; stale
+results are discarded. Only selected-history agreement is reported. Labels are
+process_attempt_unknown, effects_unknown, completion_unrecorded_or_unknown,
+evidence_incomplete, context_unsupported, and (only for matching prior/final facts
+with every recorded attempt settled/quiescent) late_producer_failure_after_recorded_attempt_quiescence.
+producer_settled alone is insufficient. No affirmative whole-cleanup fact exists,
+so final_bookkeeping_write_failure remains unreachable. Jobs remain uninterpreted
+blockers; no release/recovery/mutation follows. Existing daemon logging emits one
+summary and at most16 whole owner records, each at most2KiB UTF8 and32KiB total
+message bytes including summary. Oversized whole records are suppressed and output
+marked incomplete; identities are never shortened. Only bounded exact native IDs,
+audit prefixes/journal generations/digests, status/reason/coverage and counters
+are projected, without credentials/raw payloads/errors/model text/cleanup suffixes/
+argv/environment/private paths/object IDs. Logging failure neither fails serving
+nor retries diagnostics. Runtime/SQL/timing/cancellation/crash proof UNEXECUTED;
+integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIRED.
+
+C1a/C1b private thread-delivery release source (THR317 seq25/34, ROOT12084)
+has a dormant service bound to the actual initial app/state/runtime/org-map,
+org/DB/path, supervisor/tracker and attachment generation. Only actual successful
+ASGI/listener startup admits it; construction/readiness performs no operation or
+selection. Native preview/show and the sole `release_exact_thread_delivery`
+transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
+ambient credentials nor caller proof flags enable mutation. Proof-backed release
+is unavailable. The approved human risk override requires exact preview, stable
+org-wide key, canonical command and explicit confirmation of late producer/session
+writes, overlapping work, repeated external effects and missing owner/process/
+effect closure. This source supplies no live-use, deployment or restart authority.
+
+Startup and archived-thread resume cutover share a lazy, fully materialized
+release view and common lifecycle-family decoding only within one transaction's
+mutation-free segment. Unbuilt differs from proven-empty; every write invalidates
+both views and selected conclusions. Initialized pairs still pass evidence and
+permission checks before the no-op shortcut. Common sibling shape/size/duplicate/
+org/thread/audit-owner checks remain complete; selected initial/append/native
+agent/session histories replay on demand in caller order. Ordinary absent history
+remains None, distinct from bounded release missing/orphan/1024-row refusals.
+Permissions, live owners, holds, recovery, Pause, effects and raw census stay fresh.
+Terminal status alone is unsafe: callback consumption can precede cleanup, and
+settled=true/quiescent=false or sticky failed_cleanup retains unknown. Pending
+preservation still uses the stricter retry/deferral/live-owner predicate; nonpending
+history must be producer-settled and known before it stops preserving. Other
+callers reread normally. This is full common decoding with lazy selected replay,
+not unsettled-only pruning or lifecycle clearance. A legacy triggering_seq0 write
+followed by another participant's native_delivery_range refusal rolls back the
+whole cutover, without reusing the prewrite view or changing resume's prior commit.
+
+The append-only version1 `thread_delivery_release` companion retains real thread
+scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.
+Complete bounded five-column and native readers bind source prefix, original and
+optional genuine INTEGER replacement; invalid/foreign/orphan/duplicate/future or
+incomplete evidence refuses. Only that obstruction's delivery interpretation can
+change. Saved-prefix drift or late ORIGINAL lifecycle revokes current permission;
+legitimate replacement history and the operation's own suffix preserve committed
+history. Native recovery/runnable/reserve/claim, arrival/settlement, exchange
+catch-up and separate probe republication share this interpretation. Raw host,
+move/Pause/drain and diagnostic census remain blocking. A pending started REPLY
+uses one interruption/slot-CAS/covering replacement commit without advancing ack,
+resetting breaker/lease/held state or adopting old retries. Terminal history gets
+no replacement;15402 gets no second catch-up. Unknown COMMIT requires strict
+same-key readback, never remint/rekey. Old-reader/mixed-version operation and
+downgrade after use are unsupported. Cooperative 3s/1024-row/4MiB/256-statement/
+5M-step budgets include closing reads; exhaustion is unavailable, not absence or
+a hard wall/RSS guarantee. C1-13 activation and C2 task-tail remain deferred;
+12044/10693 remain unrecovered. All behavior/SQL/locks/races/cancellation/crash/
+security proof is UNEXECUTED; integration INCLUDING callback is SKIPPED24342,
+Python units RETIRED. Only lint/static evidence and independent full review plus
+same-final-head scoped SOURCE QA can be attributed to this slice.
+
+C1-13 dormant adapter source adds an UNMOUNTED four-handler router and an
+UNCALLED `threads.register_release` with capability/preview/apply/show handlers,
+private request custody and four client methods. Existing `threads.register`,
+app mounts and serving owner stay unchanged: no supported installed release
+tool, external_adapters_available=false and proof_backed_available=false.
+Future request metadata derives from native strict DTOs. Original streamed UTF8
+JSON is limited to16KiB before normalization; query/execution bindings refuse.
+Bounded32KiB closed results/errors preserve committed=false/null/true and
+no-store even on dependency errors; no synthesized202 or absence on failed read.
+Preview/full-command digests are distinct. Explicit four-risk confirmation and
+positive no-follow same-UID0600 file/0700 private-directory fsync/readback/close
+custody precede exact-byte POST. Failures preserve bytes/key. Transport loss
+allows at most one same-key GET and never another POST/rekey/poll; show never
+publishes. Shared bearer/same UID cannot establish exclusive human presence.
+Disconnect leaves native lifetime/outer retirement with the existing owner.
+Fixture/native-denial/mount/registration activation remains HELD: the six shared
+Web/Swift reader cases lack attributable RED/restoration/GREEN, with no waiver
+or execution allocated. C1-13 public delivery and C2 remain pending; all adapter
+runtime/security/custody/HTTP/CLI proof is UNEXECUTED, never test-authoring PASS.
+
+C1b registers each operation and org native lifetime before submission, captures
+every returned future before a cancellable await and owns outer retirement after
+disconnect. Positive native return, rollback/settings restoration and outer
+settlement alone discharge that guard. Revoke closes loop intake first and takes
+only its C leaf for at most25ms; timeout is incomplete and bars host shutdown,
+detach and DB-close fallthrough. Remove/all-close/runtime switch/direct org close
+independently require positive C idle and renewed attachment/busy/hold checks.
+Final order is move -> DB -> controller -> residue -> tracker -> C leaf -> the
+existing COMMIT. All SQL inventory/decoding finishes before owner guards; only
+COMMIT occurs inside, with reverse release before rollback/readback/notification.
+The original3s budget starts before submission, includes both observation passes
+and native+SQL work within5M steps. Under actual owner locks, built-in maps over64
+refuse before iteration; each pass reserves n+1 rows,2048*(n+1) raw bytes and4096
+native units per record/completion. Any residue/unhealthy measurement, relevant
+retained ownership/binding/preparation or outstanding native writer blocks.
+Org-level unresolved move/Pause controls conservatively refuse; no task root is
+inferred from thread text or tracker absence. Fresh guarded CURRENT facts and
+existing admission/release counters detect observed changes, without certifying
+invisible historical tracker/residue ABA or old process/effect retirement. After
+commit, independent current eligibility permits only SAME-token put_once through
+the existing queue; notification loss never rolls back, remints or reapplies.
+
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,
@@ -1320,7 +2184,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 - **Retired System Assistant.** Feature routes/CLI/settings/dock are removed. Legacy files, links and historical records remain inert.
 - **Jobs.** Background subprocesses run by the daemon, with automatic admission and independent persistence; content authorization precedes submission in a thread. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
-- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
+- **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. The final assigned manager personally checks settled independent review/QA and exact-head CI, invokes `guarded_merge` in its genuine live session, and observes the actual remote result before its own callback. The guard order is review APPROVE → QA PASS → fresh pinned head → CI PASS → open/non-draft → CLEAN → action; the ordinary action passes full H as `--match-head-commit H`, without `--admin`. Success requires exact remote repository/PR number/URL/head, MERGED state, full lowercase SHA1 commit and timezone-aware remote time. Command failure or unavailable/invalid post-command metadata yields `merge_failed` with actual cause and retained uncertainty; a later read-only confirmation is separate evidence, never a rewritten receipt or permission to remerge. There is no daemon PR finalizer/recovery after callback. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
 
 ### Collaboration surfaces
 
@@ -1330,7 +2194,7 @@ limits. Other authoring, revise, slice and total-step rules stay unchanged.
 - **Threads.** Founder-visible coordination and cross-team handoff conversations with per-thread recipient-set routing (THR-198): mention routing and the strict mention-led exchange are **UNCONDITIONAL** (founder ruling TASK-6027) — valid current-participant @-mentions narrow conversational REPLY wakes to exactly that set (speaker excluded), zero valid mentions broadcast to participants (there is no disabled-thread state and no routing/exchange switch, route, CLI verb, UI control, or config key: the per-thread mention-routing setting, the proposed `reply_exchange_enabled`, and the org kill switch were all removed; the shipped `mention_routing_enabled` column is inert legacy compatibility storage only — never read to alter behavior, never exposed on the wire), priority/fallback is present (frozen priority cohorts, 5-minute grace, 4-hour fail-open), and TASK_FOLLOWUP/BOOTSTRAP wakes are isolated and never mention-routed; dispatch from a thread is self-only. Threads carry composer attribution (`composed_by`, `composed_from_task_id`, `composed_from_dream_id`) — the dream marker identifies dream-originated founder threads. Specs `docs/superpowers/specs/2026-05-13-threads-design.md` and successors (broadcast-only, agent-initiated, markdown composer, task-followup, escalation surfacing, working indicator, close-out removal/resume, file attachments); impl `runtime/infrastructure/thread_store.py`, `runtime/daemon/thread_runner.py`. See [Thread Broadcast Routing](#thread-broadcast-routing), [Thread Agent-Session Resume](#thread-agent-session-resume), and [Thread Task Followup](#thread-task-followup) below for traps.
 - **Thread rename + pin (THR-209 Phase 1).** Founder-only thread-organization controls. Rename edits the durable `subject` (`POST /threads/{id}/rename`; trim, non-empty, ≤120 chars, duplicates allowed, last successful save wins); pin/unpin is durable founder-workspace presentation state stored in an additive nullable `threads.pinned_at` column (`POST /threads/{id}/pin`, strict bool). **Invariants:** both are presentation/organization controls — they never create a thread message, never send a notification, never touch participants/unread, and never change activity timestamps (`started_at`/`archived_at`); identity (`id`, URL, participants, routing, lifecycle) is immutable under rename/pin. Pinned threads rank above unpinned (Pinned section) in **open-thread views only**, ordered by immutable numeric thread ID descending (THR-10 above THR-2, never activity/lexicographic); ordinary (unpinned) order is unchanged; archived/closed views have **zero pin presentation** (one ordinary list, no pinned/unpinned split, no pin rank) while the durable pin state is retained for reopen/restore, and the status-less query/"all" merge are ordinary views too; pin state lives on the thread row, so deleting a thread removes its pin state automatically. List rows are navigation-only; Pin/Unpin remains in the thread detail header. The web optimistic cache reorders open lists under the same numeric rule immediately (before response/refetch) and archived/status-less caches never reorder — no client/server semantic divergence (TASK-5987). Audit rows `thread_renamed` / `thread_pinned` / `thread_unpinned` use the existing `audit_log.task_id` = THR-* scope convention and never appear as thread messages. Each mutation is ONE rollback-safe transaction under the org `db_lock` (`rename_thread_with_audit` / `set_thread_pinned_with_audit` in `runtime/infrastructure/database.py`): authoritative old-value read + idempotence decision + `subject`/`pinned_at` write + audit row commit atomically; on audit failure everything rolls back (no durable unaudited transition, error response). Concurrent renames are last-successful-save-wins with a truthful sequential old→new audit chain; concurrent same/opposite-state pins emit exactly the audit rows for the durable transitions (true no-ops unaudited). Spec `docs/superpowers/specs/2026-08-25-thread-rename-and-pinning-design.md`; routes `runtime/daemon/routes/threads.py`; wire adds `pinned`/`pinned_at`/`last_activity_at` to thread rows; web UI `web/src/features/threads/ThreadsPage.tsx` (Pinned section, inline rename, detail-header pin controls).
 - **Thread escalation surfacing.** When a thread-dispatched task escalates to `escalated`, the runtime injects a `task_escalated` system message into the originating thread and re-invokes the dispatching manager for a founder-facing followup — mirroring the terminal task-followup. Rendered in both web (ThreadsPage.tsx `task_escalated` case) and CLI (`thread forward`). Spec `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md`; impl `runtime/orchestrator/run_step.py`, `runtime/daemon/thread_runner.py`.
-- **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst **current** status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). A historical FAILED descendant whose forward same-parent `revisit_of_task_id` lineage leaves no unresolved FAILED leaf (a COMPLETED/SUPERSEDED/active/cancelled successor, or a malformed cycle handled conservatively) does not dominate; only a FAILED descendant contribution is curated, while every other status, the root's own severity and all escalations are preserved, and root-level revisit links are never followed. See [Bounded failure-recovery](#bounded-failure-recovery). `Waiting on you` is a separate exact-`status=escalated` roots traversal, not an inferred ordinary-page/severity-rollup count or ordinary filter projection; it task-id-deduplicates and becomes exact only after cursor exhaustion. When non-empty it renders as the FIRST ordinary-styled group inside the shared list shell (same `tasks-group` wrapper, group heading and raised rows-card as every status group) directly after the task column header and above the status groups — never a separate outer card — and it is absent (no group, heading or empty card) when empty and attention is not loading/errored. A failed attention refresh or continuation retains known rows/count with a visible error state, and continuation retry uses that stream's cursor. Its page-local Waiting controls wrap within the group at narrow widths without changing the shared Button primitive, and a non-empty escalated group may coexist with ordinary loading/error/empty states without hiding the shell or contradicting visible rows. Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Spec `docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md` (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
+- **Tasks surface.** Org-wide work list (not a kanban) with roots-only default view, group-by segmented control (Status / Agent / Thread), severity rollup per root reflecting the worst **current** status of its subtree (DERIVE over `parent_task_id` children — no schema change; `GET /orgs/{slug}/tasks/roots`). Ordinary loading is one 50-root traversal per lifecycle status (all seven unfiltered, only the selected status otherwise), each with its own cursor, errors and Retry, so older active roots are not hidden behind newer completed history (THR-319 seq9; see the Web guide Tasks list). A historical FAILED descendant whose forward same-parent `revisit_of_task_id` lineage leaves no unresolved FAILED leaf (a COMPLETED/SUPERSEDED/active/cancelled successor, or a malformed cycle handled conservatively) does not dominate; only a FAILED descendant contribution is curated, while every other status, the root's own severity and all escalations are preserved, and root-level revisit links are never followed. See [Bounded failure-recovery](#bounded-failure-recovery). `Waiting on you` is a separate exact-`status=escalated` roots traversal, not an inferred ordinary-page/severity-rollup count or ordinary filter projection; it task-id-deduplicates and becomes exact only after cursor exhaustion. When non-empty it renders as the FIRST ordinary-styled group inside the shared list shell (same `tasks-group` wrapper, group heading and raised rows-card as every status group) directly after the task column header and above the status groups — never a separate outer card — and it is absent (no group, heading or empty card) when empty and attention is not loading/errored. A failed attention refresh or continuation retains known rows/count with a visible error state, and continuation retry uses that stream's cursor. Its page-local Waiting controls wrap within the group at narrow widths without changing the shared Button primitive, and a non-empty escalated group may coexist with ordinary loading/error/empty states without hiding the shell or contradicting visible rows. Bidirectional lineage inline (\u2190 supersedes / \u2192 revisits) backed by `revisit_of_task_id` + `get_direct_revisits()`. Task detail pane with connected vertical chain timeline (`walk_revisit_chain()`), blocked node naming its blocker, property rail, append activity log, and raw monospace brief with "Show full" toggle. State vocabulary: Loading (skeleton rows by group), Empty per group, Error-with-retry. Keyboard: \u2191/\u2193 move selection, Enter opens, Esc clears. Spec `docs/design-overhaul/product_lead-2026-06-17-design-overhaul-PRD-final.md` (\u00a74.3); web `web/src/features/tasks/TasksPage.tsx`, `TaskDetailPane.tsx`; route `runtime/daemon/routes/tasks.py` (`/tasks/roots`).
 - **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `docs/agent-guides/features-and-invariants.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
 - **KB view tracking.** Agent-CLI KB entry read counting scoped to agent consults only (founder ruling THR-009). Distinguished from web reads via `X-HappyRanch-Surface: cli` request header (a source label, not auth). Read surface is CLI-only: `happyranch kb stats` renders a table ordered by view count; no web surface. Spec `docs/superpowers/specs/2026-06-10-kb-view-tracking-design.md`; impl `cli/commands/kb.py`, `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py` (`kb_views` table).
 - **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get}`. See [Shared Artifacts](#shared-artifacts) below for traps.
@@ -1463,6 +2327,16 @@ retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
 
+Future phase persistence failures emit one best-effort bounded ordinary log with
+phase, frozen queued org/boot/ordinal/task/runtime SID, exception class, and only
+explicitly allowlisted SQLite integer code/name pairs (otherwise `unknown`).
+The direct invalid-positive-INTEGER audit-reference check has its own category.
+Malformed or oversized identifiers/class names use fixed fallbacks. No exception
+text, traceback, SQL, payload, credentials or root paths are logged. Logger failure
+cannot alter sticky failure, counters/digests, sealing or subsequent draining.
+These diagnostics cannot recover or establish the cause of an old lost exception;
+source delivery does not establish installed health or collection acceptance.
+
 Founder THR-091 seq428 permits one closed failed-before-exposure class. Exactly
 one ordered authenticated intent -> identity -> raised terminal must agree on
 org/org-root/boot/ordinal/task/agent/runtime SID, actual parent/type/population
@@ -1484,6 +2358,51 @@ populations remain insufficient; ordinary exposed and lawful in-flight checks
 remain. Other retry/resume/SID evidence stays separate. This classification
 supplies no B/C/health/epoch acceptance, temporal POST-retirement zero, source/
 boot/cohort authority, threshold change, reset or history rewrite.
+
+Founder THR-091 seq532 (approving531/529, preserving514/519's other
+safeguards) adds a separate closed POST-expectation no-AGENT-launch class.
+Exactly one authenticated ordered intent -> identity -> expectation -> raised
+terminal must retain the same org/org-root/boot/ordinal/task/agent/runtime SID,
+original parent/type/population/purpose and complete failed lifecycle/ancestry.
+The full expectation retains truthful renderer/version/digest/budget/ID facts;
+the terminal requires Boolean true expectation_known, Boolean false
+binding_known, exact INTEGER0 launched_callbacks and explicit null success and
+returncode. Positive supported CURRENT-attempt native refusal evidence is
+mandatory in addition to exhaustive absence of binding/start/impression/launch/
+result/credited activity. The supported path is the source-resolved initial
+host ordinal-zero retry bookkeeping cleanup_failed raise BEFORE FIFO admission,
+backend preparation, commitment and provider launch. Exact native invocation,
+attempt, logical-owner and reserved SID attribution/order must agree; duplicate,
+malformed, contradictory or unknown paths refuse. All four traceback
+frames must match one complete supported source path: current identity-bound
+statement sites, or the separately pinned shipped5a19e562 historical path
+(orchestrator1506/1817, host1402, Pause510). Historical Pause510 was the cleanup
+guard; current Pause510 is a different coding guard. Mixed/unknown paths
+refuse. Later host retries, partial launch and callback failure cannot use this initial-entry path.
+An inherited first_cause, repository_pull, kind=refused, launch_observed=false,
+zero steps or absent callbacks/rows alone never establish no AGENT launch.
+Preparation Git processes are distinct from the AGENT provider.
+
+Preparation/outer compensation, cleanup, close/release and native custody are
+NOT eligibility predicates for this new class. Preserve their uncertainty
+separately without calling it clean, settled, quiescent or closed. Unknown AGENT
+launch still refuses. No new producer, custody witness/API, writer relocation,
+false flag, duplicate terminal, historical backfill or owner clearing is supplied.
+TASK11977 is evaluated by its actual tuple and supported path, with no task-ID
+exception or automatic exclusion. Its cleanup/Git root cause remain UNKNOWN;
+JOB4909 remains a failed acquisition before validators, never a census verdict.
+
+Both classes retain all ordinals/attempted-persisted counts/digests/full seals,
+sticky errors and complete bounded selected acquisition at stable bookends.
+Closing and atomic rereads rediscover membership; failed, moving, pending,
+truncated or exhausted reads refuse. A class never repairs invalid global
+census evidence; all-failure populations remain insufficient. Only classified
+invocations receive zero shown/natural denominator/credit, preserving other
+sessions on the same task. Native AuditLogger and canonical HTTP CLI share the
+same reduction. The changed health digest and loaded identity bind all trusted
+reader helpers and native launch-order/refusal functions. Original receipts and
+epoch bytes remain immutable; changed source requires genuine fresh qualified
+acceptance. Source/static checks supply no B/C, installed health or epoch PASS.
 
 The seal-action audit GET now supplies an optional closed current-serving
 observation from the actual OrgState, with explicit unavailable/unknown fields,
@@ -1517,25 +2436,59 @@ Withdrawal remains possible after stale or unhealthy proof. Damaged, lost,
 ambiguous, partial or moving evidence closes collection with no latest fallback.
 Readers never write, reseal, repair, invalidate or start epochs.
 
-Canonical CLI task sweeps and HTTP list/detail/two-capture comparisons share one
-semantic task projection. It excludes only valid rendering timestamps at
+Capture task comparisons use one ordered pair relation (THR-091 seq557/559/560).
+The unary projection excludes only valid rendering timestamps at
 `pause.observed_at`, `pause.blockers[*].observed_at` and `child_wait.observed_at`.
-Malformed timestamps/structures, unknown fields and every other `observed_at`
-remain evidence. Raw acquired records remain intact. Task lifecycle/owner/SID/
-lineage/content, pause/wait states, result/job bytes, roles and all serving
-counts/digests/seals/errors/generations remain compared. Real serving movement
-(including generation53->54, seal312201->312222 and terminal6->7) refuses;
-timestamp equality cannot retroactively qualify an earlier moving capture.
+An otherwise equal pair may additionally advance BOTH `last_heartbeat` and its
+accompanying `updated_at`: all four stamps must be present aware strings and
+both later instants must be strictly forward. Updated-at-only, heartbeat-only,
+equal/reverse or missing/malformed/naive changed stamps refuse. Exact unchanged
+projected pairs remain equal; malformed/unknown values never disappear or
+justify a changed pair. All other fields, membership and JSON scalar types stay
+significant. Raw tasks remain intact. Native/HTTP reports, repeated dependency
+captures, acceptance preparation and current-epoch captures share this relation;
+locked publication rereads and control invariants retain exact record equality.
+Serving movement still requires one fresh complete stable pair under the shared
+budgets below; an earlier failed pair never supplies an accepted half.
 
-Backend and canonical CLI JSON/text share the report core. G1 acquisition
-exhausts original tasks/results/jobs/audit evidence with stable bookends and
-complete owned outputs. No-epoch diagnostics exhaust all relevant memory and
-lifecycle action pages plus a coherent complete task snapshot and roles before
-empty/short returns. Unrelated audit history does not consume their existing
-100000-row bound; authority readers retain the default unfiltered snapshot. HTTP/decoder/timeout, cursor or
-SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
-Task pages use `(created_at, id)` descending, with parsed wire timestamps and
-the last ID as the server-resolved transport cursor, rather than ID ordering.
+Completed file, cohort, comparison and validation work is checked against the
+same original deadline before successful serving/report/preparation/current-epoch
+returns, including no-control and HTTP cutoff paths. Both full internal snapshots
+must validate every required counter/digest/reference/seal field before movement
+can retry; the abbreviated public boot projection has a separate validation mode.
+Retry requires a full write and flush of the raw pair through an existing standard
+synchronous stream/file log sink, with filters and formatting applied. Disabled,
+filtered, unavailable, short or failed delivery without another acknowledged sink
+refuses; a normal warning return is insufficient. Serialization and formatted
+bytes consume the original aggregate budget. This establishes synchronous delivery,
+not crash/fsync durability or hard OS-I/O timing. Deadline checks precede successful
+read results and never reclassify an already successful publication COMMIT.
+
+Existing public audit/task list/detail/default recall and keyed job reads use
+finite scan/row/byte/decode and lock budgets before their coherent read views;
+exhaustion refuses with HTTP503. Job output/receipt reads retain totals and
+truncation while reading only the requested bytes outside DB locks. These are
+cooperative finite-work limits, not hard RSS/wall-time guarantees; see the
+corrective memory spec for exact values and prepared-output custody limits.
+
+Backend and canonical CLI JSON/text share the report core and seq480 selector:
+current boot/epoch activity, including unknown attribution and current calls on
+preboot retired SIDs, plus genuine referenced lifecycle/ancestry/retry, QA/job and
+epoch/invalidation evidence. Ancestry-only reads retain graph facts; proof and
+interval owners retain original results/history and direct revisits. Unrelated
+global same-SID records are outside admission under PR1084's supplied-liveSID
+trust limit. Related contradictions and missing required evidence still refuse.
+Historical memory_read closure uses payload.task_id while preserving outer AGENT
+scope: one complete bounded action read per capture, selecting only required
+full-history owners. Closing/atomic discovery includes late preboot reads;
+exhausted scan/transport budgets refuse rather than certify absence.
+Both report front doors remove their former all-history/task preflight. Empty or
+short no-epoch diagnostics remain CLOSED. Closing and locked publication rereads
+recompute membership and compare controls as well as records; no prepared-ID
+shortcut, writer repair or new endpoint is supplied. Work/transport/SQL limits
+and their cooperative timing/server-work/RSS limitations are recorded in the
+corrective memory spec. HTTP/decoder/cursor/SELECT failures yield
+`acquisition_unavailable`, without partial CLI stdout.
 Natural population excludes designated probes/retries, recovery and all
 pre-start invocations from qualifying metrics. Credited late events on old
 tuples remain visible to the retirement diagnostic and can close eligibility. D1 remains the later of
@@ -1897,7 +2850,7 @@ Traps:
 
 - Helper runs after task failure is finalized (no auto-revisit spawns; the task is already terminal FAILED).
 - Only root tasks fire followups.
-- Dispatcher identity comes from the `task_dispatched` audit row.
+- Dispatcher identity comes from the `thread_dispatch` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
 - Terminal gate is completion/failed **plus** `superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
 - **GH-688 Phase 1 isolation.** `TASK_FOLLOWUP` is a causal one-shot direct mint (`mint_followup_invocation_with_cap_extend`), never coalesced into reply delivery state and never routed through the claim/settle surface — even with a reply backlog on the same pair, the followup fires as its own `TASK_FOLLOWUP` row.
@@ -1969,6 +2922,30 @@ Traps:
 
 ## Jobs
 
+### Current Stop/status boundary — THR321seq6
+
+Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
+requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Running without attributable ownership yields pending/finalizing/unknown/held or
+owner-unavailable409; signal/audit503 states request_issued true/false/null. Do not
+blindly retry. Startup retains unproven running jobs with explicit unknown liveness;
+missing PID/maps, daemon death, timeout and absent native layout prove no orphanhood.
+Actual DB attachment/original preparation/attempt/runner/Process fences prevent
+cross-org ID collisions and stale-owner signals/removal/writes. The original job
+row/CAS, one trigger audit, actual producer and strict Pause disposition commit
+before local release/hint/wake; failed tails and descendant uncertainty remain.
+Output is directly awaited by the two owned stream pumps, with fresh identity
+fences and no per-line Task, intermediate queue or durable-history replay.
+Actual buffered tails finish before terminal composition; error/cancel tails
+are joined or retain uncertainty. Failed live publication is logged, preserves
+file capture and the real result/first cause, and cannot certify retirement.
+Wait/SSE use durable terminal reads. Both Web details preserve cached details/logs
+on read failure and offer explicit fresh detail-only Refresh status when streaming
+is unavailable. No automatic reconnect/polling addition; reopen/reload separately.
+Stop success/error settlement refreshes actual detail/list; locale changes issue
+no requests. A terminal hint alone never verifies [done]. Source publication is separate
+from deployment or historical recovery.
+
 Authorize contents in a thread BEFORE ordinary task/session submission.
 Omitted/false review_required enters automatic admission, rationale optional;
 true refuses422 before allocation (new CLI exit2), never flip/retry. /run is a
@@ -1995,9 +2972,9 @@ Traps:
 - Parsed true review_required refuses422; only omitted/false enters automatic admission. Persistence remains independent.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
 - Graceful daemon teardown stops task-queue admission before signalling jobs.
-  A job actually signalled there persists `failed/daemon_shutdown` with its
-  real exit code; a natural pre-signal exit keeps its natural result and
-  `task_ended` has precedence. Non-JSON `jobs show` prints a non-null reason.
+  The first actual timeout/cap/task/shutdown/Stop cause wins. Genuine terminal
+  composition commits before hint/wake; failed persistence retains unknown
+  ownership, and a natural pre-signal exit keeps its actual result. Non-JSON `jobs show` prints a non-null reason.
 
 ## Task Blocked By Job
 
@@ -2023,7 +3000,7 @@ Traps:
 - "No checks" is not pass. Use required contexts when branch protection provides them, otherwise require explicit expected checks and a bounded settle window.
 - GitHub `mergeable` / `mergeStateStatus` is not CI green. It is one guard in addition to CI pass.
 - Do not use `gh pr merge --auto` as proof of safety while required checks are absent on `main`.
-- Merge completion is allowed only through the guarded helper or an explicitly thread-authorized manager job, not broad worker `gh pr merge` allow-rules.
+- The final assigned manager uses the guarded helper and observes actual remote MERGED/commit/time in its genuine live session before callback. CI poll jobs report readiness only; no completed callback triggers daemon merging. Existing repository/tool entitlement is required.
 - The poll job entrypoint is `python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`; the merge entrypoint is `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method ... --ci-verdict ... --review-task-id ... --qa-task-id ...`. Both print structured JSON to stdout and exit with mapped codes.
 
 ## Reply-delivery compact retry captions
@@ -2800,3 +3777,661 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. That C3 checkpoint had no COMPLETE writer; current D/E/F
 source and independent gates are described above. No live capability follows.
+
+### Bounded ordinary native launch refusals (THR-315)
+
+Actual non-hold refusals before durable preparation allow at most THREE consecutive
+attempts for the same logical task continuation. Existing audit rows
+`task_native_launch_boundary` retain the original fingerprint/owner/agent/generation
+key, actual reserved SID, invocation and attempt identities, cumulative count and
+first safe cause; the latest three bounded payloads suffice without new schema or
+journal fields. Reconstruction/redelivery does not reset this count. A genuine
+positive-PID native launch callback records a zero-count boundary before fallible
+phase persistence. A reserved SID and memory telemetry never prove launch.
+
+Human-team failed-recovery history treats this exact launch/refusal audit action
+as informational. It neither selects a result nor grants recovery authority;
+selected result/session/worker/team and replay fences still apply, and unrelated
+or unknown causal actions still refuse before terminal or parent effects.
+
+An actual refusal after durable preparation fails earlier: the existing outer
+settlement makes an unclosed preparation unknown, and unknown owners cannot safely
+be adopted for another launch. FAILED with `launch_refused` uses normal failure,
+parent enqueue and thread followup; it never clears `failed_cleanup`, unknown
+journal/process evidence, retry lineage or worktree guards. Existing smaller host,
+provider and recovery ceilings remain. Intentional Pause/team-move deferral,
+child/job/capacity/backoff waits, shutdown and stale/current-owner loss consume no
+allowance. Current-owner and authentic callback fences precede evidence and are
+rechecked inside failure transition; later continuations have separate keys.
+Terminal deferred owners are not republished, even when unknown evidence remains.
+
+Each new retry or recovery launch boundary resets only local launch attribution
+before fallible initialization; a previous positive PID cannot mask a new refusal.
+Original launch/unknown evidence remains intact. Deferred owners are authenticated
+read-only before adoption writes, then revalidated under the native writer. Refusals
+retain the durable original SID/agent/generation/continuation; no fallback SID counts
+for that owner. An unclaimed recovery uses its exact original-SID journal proof and
+existing claim exclusions, never ordinary pending/carrier eligibility. Callback,
+current-owner, cancellation and intentional hold winners still exclude accounting.
+
+The first preparation cause is kept separately from the final Pause/cleanup error:
+bounded stage, exception class/stable Pause code and source locations. A
+failed task refresh can additionally retain a safe repo identifier, optional
+explicit operation=refresh_ff_only and closed refresh_phase=precheck|fetch|
+between_stages|merge|submodule_update. Absent selector retains legacy pull_ff_only
+shape/meaning; old dictionaries are unchanged. repository_pull is aggregate.
+Only the actual failing child's returned exit is recorded; nonchild precheck/
+between-stage failures invent no exit or successful-child diagnostic reuse.
+Phase identifies operation, not root/network cause. The cause may also retain a
+safe exception class and the existing optional closed advisory
+`diagnostic_category`/`diagnostic_rule` with exact Boolean `capture_complete`,
+`capture_truncated` and `timed_out` facts. Categories are lock/network/auth/other/
+unknown; non-fast-forward remains other. Only complete, untruncated, strictly
+decoded whole-stream grammar can select a specific wording label; ambiguity,
+unsafe structure, timeout or unavailable/failed capture is unknown. Labels never
+prove provenance or historical cause; missing/old exit128 stays unknown. Existing
+first causes and historical dictionaries are reused unchanged, and no non-task
+cause fields are added. Skipped unsupported/unavailable admission stays a stale-source
+warning and creates no refresh-failure cause. No exception messages, output, argv, URLs,
+environment or locals enter this evidence. Refresh failures latch sticky cleanup
+before attribution, attempt the first cause even after an evidence-save failure,
+and propagate only fixed safe errors without captured exception chains. An
+audit/storage save failure remains an explicit
+persistence limitation, not a durable count or terminal-success claim. No new timer,
+service, automatic successor or permission follows. Source/scoped verification is
+separate from deployment, running-code identity and operational acceptance.
+
+<!-- TASK11932 current-ancestor correction and owner support boundary -->
+**Historical TASK11932 checkpoint.** Seq640 removes this producer/worker path;
+its unresolved finding and rejected R2 proposal stay history, not a prerequisite
+or a runtime cleanup/security PASS. The active contract above controls.
+
+Every selected source ancestor now revalidates its OWN saved operation and
+original mapping against current admission before object work and again in the
+writer. One bounded iterative traversal shares the native owner and mapping
+selection; historical containment never substitutes for current admission.
+P1 minted under M1 cannot authorize P2 under newer M2 while P1 is revoked; deeper
+stale ancestors also refuse. Original GET/replay keeps original identities and
+returns revoked metadata without recapture; an eligible initial source under U
+is independent of that revoked lineage.
+TASK11927's preflight ownership finding remains OPEN: the current request does
+not durably retain worker/process/private-storage obligations through refusal,
+cancellation or org close. A concrete private ownership support delta is returned
+to ROOT10693 before dependent persistence/lifecycle edits. No cleanup, restart,
+security or cancellation guarantee follows from this source correction or lint.
+SAME PR1083 remains incomplete OPEN DRAFT and unmerged; independent FULL review
+and same-final-head scoped SOURCE QA are still required. Python units RETIRED;
+integration INCLUDING callback SKIPPED24342; behavioral/security/cleanup proof
+UNEXECUTED/FOUNDER-WAIVED139429/430, never PASS. No live operation follows.
+<!-- /TASK11932 current-ancestor correction and owner support boundary -->
+
+
+## Root retry source-thread association
+
+Task details, lists and roots expose additive nullable `originating_thread_id`
+and `originating_task_id`, derived from the complete root-only `revisit_of_task_id`
+chain (at most200 nodes). The original root must carry a literal thread dispatch;
+missing predecessors, cycles, children, overlong chains or conflicting literal
+thread IDs yield null derived fields. Brief text supplies no association.
+`dispatched_from_thread_id` retains genuine creation provenance, including null
+on existing revisits; nothing is written or backfilled. These fields confer no
+execution, dispatch, retry or notification authority.
+
+`GET /threads/{thread_id}/tasks` preserves its list/summary contract and direct
+rows, adds valid root revisits, deduplicates and sorts newest-first (ID breaks
+created-at ties). Summary rows also include literal dispatch and derived origin
+fields. Ordinary delegated children are not discovered through revisit traversal.
+Task UI thread grouping/column/detail use the derived origin with literal fallback
+for older servers; the task detail rail cites the original task with a revisit
+arrow, and thread linked-task retry chips keep full status plus the current task ID
+on the primary line with a labelled, linked secondary `Origin task` line for a
+distinct chain origin (never the immediate predecessor). CLI details distinguishes
+`Thread`/`Origin task` from literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
+uses the original root's real `thread_dispatch` audit/dispatcher, not these fields.
+
+
+Association acquisition shares one coherent read snapshot with task selection
+and serialization; batched ancestry rows and validated suffixes are local to that
+call. A suffix's distance is retained, so a complete 200-node start succeeds and
+a 201-node start has null origin even when another selected start shares its
+ancestors. Thread discovery deduplicates root IDs at their shortest reverse
+distance from a direct root (at most 199 edges); children are never traversed.
+
+Each association call permits 4096 distinct lineage IDs (all discovered/referenced IDs, including
+missing IDs and the unacquired tail at the depth limit), 8192 fetched rows (including duplicate discovery and final summaries),
+and 16 MiB of fetched SQLite value bytes (UTF8 for text, raw bytes for BLOB,
+eight bytes for other values). Indexed dispatch/revisit/primary-key reads use
+batches of at most 128 IDs and a remaining-row-limit plus one refusal sentinel.
+Ancestry acquisition expands each node once; suffix validation resolves each
+acquired node once. Summary materialization occurs only after validation and
+uses the same row/byte allowance. The existing enclosing collection read scope
+also bounds all request SQL, lock admission, per-row size and decoding, including
+roots selection and every task serializer. These cooperative bounds do not
+promise hard wall time or process RSS. One fetched row can cross the local byte
+ceiling before refusal; the existing 4 MiB SQLite record limit still applies.
+
+Aggregate exhaustion is unavailable, never null origin, an empty association
+claim or a truncated successful list: task list/roots/detail and linked-task
+routes return HTTP503 with string `detail: task_thread_origin_unavailable` for
+these local ceilings, or the existing `census_database_*` refusal for enclosing
+SQL/size/deadline/admission limits. Successful response shapes and literal direct
+rows are preserved; malformed lineage alone still yields null derived fields.
+
+
+<!-- TASK12488 / ROOT12299 first ordered edge -->
+## Disabled development to independent code review source
+
+ROOT12299 step28 / Founder THR320seq4/18/27 releases only the first
+revision1 development -> code_review edge and the selected reviewer's native
+lifetime. Readiness and require_ready remain unconditionally disabled. No
+settings/cross-team binding@3, QA/final-manager allocation, merge effect,
+activation or runtime acceptance is supplied. Earlier one-development checkpoint
+statements describe their original source; this additive contract controls the
+new explicitly versioned records without rewriting old records or receipts.
+
+The closed workflow-coding-stage-output@1 has exactly format, instance_id,
+attempt_id, revision, stage, subject, findings and outcome. subject is the real
+workflow-code-change@1 descriptor with kind=code-change, repository:{id},
+object_format, full lowercase head, comparison:{base}, navigation:{branch,pr_url}.
+Repository/object format/base are fixed by admission; initial start has no head.
+Findings are nonblank and at most16384 UTF8 bytes. The callback summary remains
+a canonical UTF8 JSON STRING (sorted keys, compact separators, no duplicate or
+unknown keys), never a new parameter/object. Development uses outcome=produced,
+completed status and null verdict; code_review uses genuine APPROVE,
+REQUEST_CHANGES or BLOCK with an exactly equal verdict. Failed/blocked/unusable
+outputs retain original native evidence and cause, without an invented receipt.
+
+Callback persistence does not advance. The complete reader reselects the actual
+INTEGER result/task/SID/principal/attempt and positive successful real host and
+tracker/task-tail/worktree/settle_live/close/move-release settlement. Unknown or
+retained original owners hold. A separate current-authority/Pause/move/capacity
+transaction accepts the exact subject, records its actual contributor and queues
+one distinct pinned reviewer, using native uncommitted task insertion. The
+business writer performs no await, file/remote I/O, enqueue or commit. Full target
+closure precedes commit; committed notification and cold rediscovery follow.
+Same original-result/CAS replay reuses the allocation. No active_chain alias or
+self-committing generic delegation helper is used.
+
+New edge event@3/edge-command@1/edge-admission@1 and review-scope@1 are explicit
+same-team families, separate from reserved cross-team binding@3/native-admission@2.
+Original bootstrap event@1, development native event@2/internal-command@2/
+native-admission@1 and scope@2 stay literal. Selected reviewer native records use
+native-review-event@1/native-review-command@1/review-admission@1. Readers derive
+both complete attempts, callbacks, subject/contributor/order, all typed native
+rows, heartbeats, current CAS and terminal/outer owners on the unchanged full-call
+budget. Partial/foreign/orphan/mixed graphs and hidden descendants refuse.
+Schema(data=False), cold/reopen, ownership/recovery and drain compose these same
+readers. No DDL/reference/type change or trusted after-image/cache is introduced.
+
+The role-selected workflow-coding-review@1 supplement pins actual reviewer
+identity, release/mapping/revision, fixed repository/base/head/PR and original
+developer INTEGER result. Existing repository tools supply independent inspection;
+metadata grants no rights. Authentic review output is retained with native
+terminal/cleanup evidence; the run remains held for the unimplemented later edge.
+Historical workflow-coding-run@1 remains literal. Progressed metadata uses closed
+workflow-coding-run@2 with the same field inventory, current_revision1,
+code_review/held state and ordered event metadata, without private findings.
+
+This is source implementation only. F1/F2/F3/F4/F5/F8 behavior, native settlement,
+negative/red-green/mutation/restoration/repetition/executable QA are UNEXECUTED;
+no test/native experiment/lane was allocated and no old-root waiver applies.
+Python units RETIRED; general integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342. Required exact-head all/hooks/hosted checks are lint/static only.
+ROOT12299 retains genuine disposable OrgState/native/start/readiness/proof and
+same-final-head independent execution before merge. FAILED12298 uncertainty,
+separate runtimeROOT12293, adverse receipts and draftPR1134 remain unchanged.
+<!-- /TASK12488 / ROOT12299 first ordered edge -->
+
+
+<!-- TASK12502 / ROOT12299 approved review to QA -->
+## Disabled approved review to independent QA source
+
+ROOT12299 step29 / Founder THR320seq4/18/27 extends the disabled revision1
+engine through ONE independent qa attempt. This section extends the preceding
+first-edge checkpoint. Readiness/require_ready remain unconditionally disabled;
+final-manager allocation, finalization, settings/cross-team binding@3 and all
+merge/enablement effects remain unimplemented.
+
+workflow-coding-stage-output@1 additionally admits stage=qa with exactly
+PASS|REVISE|BLOCK and verdict equal to outcome. The existing exact key inventory,
+canonical duplicate-free JSON STRING summary, strict native types/revision1,
+nonblank findings<=16384 UTF8 bytes, real own task/SID/INTEGER result and exact
+repository/object-format/B/H/branch/PR remain required. Development and reviewer
+syntax retain their literal meanings. Findings are independently authored.
+
+Only the authentic completed reviewer APPROVE plus successful/quiescent real
+host and positive original tracker/task-tail/worktree/settle_live/native close/
+move-release settlement can advance. Callback persistence alone, unusable or
+nonapproval output, unknown/failed/blocked ownership and historical held reviews
+cannot allocate QA. A separate current-authority transaction reselects the whole
+graph, original developer contribution and independent reviewer result, mapping/
+release/effective four distinct roles, qa_engineer principal/team and existing
+repository scopes, Pause/move/capacity and pinned attempt/revision/event limits.
+
+New workflow-coding-event@4 / edge-command@2 / edge@2 / edge-admission@2 encode
+review_staged (code_review+APPROVE), stage_queued and advance in order, with ONE
+native uncommitted QA task/attempt/scope in the same business transaction. These
+use the existing exact DDL/event kinds. Full independent target validation
+precedes caller COMMIT; notification follows it. Exact original-result/CAS replay
+returns the original allocation. No generic self-committing delegate, I/O, await
+or notification occurs in the synchronous business writer.
+
+workflow-coding-qa-scope@1 pins actual QA task/principal/team/revision/work and
+both original developer and reviewer attempt/task/SID/INTEGER result/outcome/
+exact subject, release and mapping. The role-selected workflow-coding-qa@1
+supplement carries that scope and explicit PASS|REVISE|BLOCK instruction, never
+a development/reviewer instruction or legacy task alias. Native QA uses separate
+native-qa-event@1/native-qa-command@1/qa-admission@1 families, retaining actual
+claim/host/heartbeat/callback/terminal/outer proof and honest causes. A usable
+settled QA assessment emits event@4 review_staged for stage=qa and unconditionally
+holds, including PASS, pending the separate final-manager increment.
+
+Literal bootstrap/development/reviewer/event@3 and historical review_staged-held
+families stay unchanged. New readers independently derive all THREE attempts,
+scopes, callbacks/subject/contributor/order/CAS and complete typed native rows.
+Only a provisionally discovered event@4 QA child is excluded from earlier
+admission snapshots; full ordered reconstruction must prove that exact allocation
+and refuse partial prefixes, extra/foreign/orphan/dual owners and mixed formats.
+All traversal uses the enclosing cumulative inventory allowance; no trusted DTO,
+global cache or pre-write after-image replaces fresh post-write validation.
+Current/cold/schema(data=False)/ownership/recovery/drain compose these readers.
+Closed workflow-coding-run@3 projects qa/held, revision1 and the existing public
+field inventory/event metadata; run@1 and run@2 stay literal, with no findings
+exposure. Recovery may notify committed queued QA or reconcile a settled eligible
+reviewer; it never relaunches a settled SID or repairs uncertain ownership.
+
+This is SOURCE only. F1/F2/F3/F4/F5/F8 behavior/native/SQL/negative/red-green/
+mutation/restoration/repetition/executable-QA remain UNEXECUTED; no tests,
+assertions, fixture/support or runtime experiment were allocated. Python units
+RETIRED; integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
+No old-root waiver applies. Lint/static/hooks and the existing OpenAPI summary
+generator are the only automated verification here; summary parity does not
+prove full response components or native behavior. ROOT12299 retains genuine
+native constructor/readiness/remaining-engine/operator/isolation/proof inputs and
+failed-child-linked independent same-final-head execution before any merge.
+No descriptor grants access/permission. Unknown12298/runtime12293/draft1134 and
+all adverse lineage remain preserved.
+<!-- /TASK12502 / ROOT12299 approved review to QA -->
+
+
+<!-- TASK12509 / ROOT12299 live final-manager source -->
+## Disabled live final-manager source
+
+ROOT12299 step32 F03/F04/F05 correction / Founder THR320seq4/18/27 extends the same-PR disabled
+engine through a fourth actual coding-owned attempt. Readiness/require_ready
+remain unconditionally disabled. This source adds no execution, repository
+access, credential, settings/@3, control/reassignment, merge or activation grant.
+The preceding first-edge/QA sections describe their source checkpoints; literal
+historical event@3 held reviews and event@4 held QA (including PASS) remain held.
+The repaired event@6/edge-command@4 family with unchanged edge-admission@3 accepts an original
+successful/quiescent/positively outer-settled QA PASS while the run is still qa.
+It reselects all THREE original INTEGER callbacks, exact task/SID/principal/
+attempt/outcome/subject and genuine host/claim/positive tracker/task-tail/worktree/
+close/final move-release closure. Current mapping/release/four distinct executable
+principals, repository scopes, Pause/move/capacity and original budgets precede
+ONE uncommitted manager leaf, ordered review_staged -> stage_queued -> advance,
+run CAS and independent complete target validation; notification follows COMMIT.
+Original-result replay returns that leaf. The SQL stage remains manager_closeout;
+its explicit role/supplement/output/public translation is agent_manager.
+
+workflow-coding-final-scope@2 additionally pins the ONE selected authenticated
+repository_reference (repo_key, raw configured-origin SHA256, opaque repository_id,
+object_format), selected from the command's pinned mapping/work. Native-manager-event@2/
+native-manager-command@2 and unchanged manager-admission@1 bind its real
+coding queue/claim/launch/heartbeat/callback/host/terminal/outer lifetime, ordinary
+worker_execution purpose and consumed workflow-coding-final-manager@2 supplement.
+At session_bound, coding-domain metadata captures workflow-coding-final-workspace@1:
+org_slug, literal absolute org_root and workspace_root, principal, task_id,
+attempt_id, original invocation_id and session_id. workspace_root is exactly the
+actual native OrgPaths.workspaces_dir / assigned principal; cwd/environment and
+caller paths supply no root. Every later native observation retains that SAME
+original capture. Selected live reads compare it with the actual current owner
+and OrgPaths again; independent historical readers reconstruct the full path
+and original native task/SID/claim/invocation relationship.
+The closed native-manager-command/event@3 family records only held uncertainty
+for repaired scope@2. coding_native_preparation_unsettled retains the original
+prepared queue identity, producer/task/SID/fingerprint/root and any actual native
+observation while workspace/committed claim/host remain absent. The coding queue
+capture survives removal of its live slot on the SAME invocation; missing capture
+cannot manufacture provenance. coding_native_close_unavailable after binding
+retains the SAME original workspace/claim/invocation and explicitly absent current
+native close. Independent complete readers join those original identities and
+preserve the held cause; neither absence supplies session_bound, launch, cleanup,
+selected output or successful settlement. Source-tail observations retain their
+separate original identity. Native-manager@1/@2 keep their literal readers and
+successful @2 still requires complete original capture and all positive gates.
+The source wait/carrier never impersonates this task or reuses an upstream SID.
+The narrowly selected GET /workflows/coding/runs/{instance_id}/final-manager
+requires exactly session_id=CURRENT, the current original nonrecovery manager's
+OWN running leaf/run/attempt/principal/native owner, current Pause/move/authority/
+roles/scopes before private decoding and again on return. It returns workflow-coding-final-selection@2 with the selected repository reference,
+original workspace capture, pins and three original selected summaries/verdicts.
+The opaque repository ID is independently reconstructed by the EXISTING canonical
+org/key/origin-digest rule. Current mapping scopes remain a separate gate.
+It accepts no bearer; browser/remote access receives no new grant.
+The route is exactly excluded from the browser classification. SurfaceAllowList's
+default metadata and exact raw/normalized stageDenialCandidate GET matcher deny
+its nonempty instance segment and literal final-manager suffix before the
+unchanged HomeConnector credential gate. Existing run-metadata GET, adjacent
+routes, other methods and custom-policy semantics remain unchanged. This is the
+existing decoder's finite semantics, not a broader normalization guarantee.
+Source-manager run-show and role publication predicates, SessionTracker and jobs document/legacy
+predicates remain unchanged. All file/network work is outside ownership locks.
+
+The LOCAL `happyranch workflows coding finalize --org ORG --session-id CURRENT
+--from-file ABS --json` consumes closed canonical workflow-coding-finalize-command@1:
+format, operation_key, repository_path (an existing absolute authorized worktree),
+instance_id, attempt_id, task_id, session_id, principal, revision=1, subject and
+upstream_results. Replace the supplement's repository_path instruction with that
+actual path; it grants no access. The command checks literal no-follow workspace/
+checkout parents, the selected repo_key checkout and its authorized task worktrees,
+Git top-level/common-dir, SHA1 and fixed B/H/branch. It requires exactly ONE raw
+configured origin with its exact UTF8 digest matching the selected reference;
+missing/multiple/mismatched or rewritten effective origins refuse. No new origin
+normalization/adoption policy exists. The actionable GitHub target comes from
+that bound origin; descriptor navigation must agree and conveys no entitlement.
+It
+selects original INTEGER results through the own-manager read, reparses them on
+the identical subject and uses no task-prose/legacy recall or caller CI verdict.
+The shared waiter is observed ONCE with settle_seconds=0 and timeout_seconds=0;
+there is no polling/sleep/job wait. Local stricter selection requires one unique
+actual completed SUCCESS for each literal Source Boundary Lint and Web Lint
+(Node 24) at H, with actual check/run IDs, run identity and aware observation
+and completion times. Missing, stale, ambiguous, pending, inaccessible, failed,
+skipped or neutral data holds. Shared waiter/guard/extractor/adapter bytes stay.
+
+Before checks/action, ONE exclusive reservation is made at the original captured
+workspace_root/output/<task_id>/coding-finalize-<attempt-digest>/. Workspace,
+repository and task-worktree cwd, different keys and authorized repository_path
+variants all converge on this SAME directory. Cwd/key/path never selects a root.
+Literal parent/alias/containment checks refuse alternate paths. Existing/partial
+reservation, including failed recording or a concurrent second entrant, refuses
+without another action; preserve first evidence for owner inspection.
+intent.json binds the full workspace capture, selected reference, exact raw origin,
+command/subject/upstream/selection/check evidence and digests. Full output-path
+validation is required; a matching suffix is insufficient. These observations
+are not a racing-rename fence, OS security or remote exactly-once guarantee.
+The selected live identity/root boundary, local origin/checkout and reservation
+inode are revalidated immediately before the action, after guard PR/mergeability
+reads. Changed authority, root or reference refuses; current reads are not leases. The reviewed guard calls _gh_perform_merge exactly
+once with expected_head_sha=H, ordinary --merge and no admin fallback. Its actual
+return/failure diagnostic, native exit where exposed, command argv, timing and
+uncertainty are retained. The read-only adapter exposes successful exit0 through
+its checked return and original failure diagnostic, not raw successful stdout/
+stderr. No stronger transport or exactly-once proof is claimed. Same-session
+adapter confirmation requires exact repo/PR/H/MERGED/full lowercase SHA1 commit
+and actual aware mergedAt; no local synthetic merge time or empty success.
+A failed/lost action remains uncertain even if a separate later read confirms
+possible effect; both receipts survive and no second merge occurs. Recording
+failure refuses success. No daemon/run-settlement/recovery GitHub I/O exists.
+
+The final callback summary is canonical workflow-coding-final-output@2 JSON
+STRING with exactly format, instance_id, attempt_id, revision, stage=agent_manager,
+subject, upstream_results, outcome=merged|held|uncertain, findings and evidence.
+Its closed bounded evidence binds intent command/digests/path, exact check/run
+records and original check/status/run snapshot paths/digests (including holds),
+immediate revalidation time, guard verdict, command argv/times/exit/
+success/original diagnostic and separate remote observation attribution.
+Findings are own/nonblank/at most16384UTF8 bytes. Verdict is null; decisions/job
+waits remain forbidden. Merged requires successful command, both exact successful
+checks and same-session valid remote confirmation before that own actual callback.
+Evidence is an attributable agent receipt, not proof of independent inspection or
+an atomic remote authority lease. Missing/malformed/foreign/copied evidence holds.
+Only successful host terminal/quiescence and positive native outer closure AFTER
+callback permit manager_completed/event@6 to record performed work and run.complete.
+Held/uncertain cannot complete. Callback alone, remote effect alone, old ready or
+failed/unknown cleanup never completes or triggers a remote action/retry.
+
+Independent readers derive all FOUR original attempts/scopes/callbacks/claims/
+hosts/heartbeats/ordered events/CAS/contributions/upstream/final pins and rows.
+Provisional later QA/manager discovery is charged to the enclosing cumulative
+budget and must close through complete replay; partial/foreign/orphan/dual/mixed/
+unknown graphs refuse. New scope@2, selected@2, supplement@2, native-manager
+command/event@2, uncertainty-only native-manager command/event@3, edge@4/event@6
+and final-output@2 carry the repaired meanings.
+Literal old scope/selected/supplement/native-manager/final-output@1 and edge@3/
+event@5 preserve original readers/bytes. An old output cannot be promoted into
+repaired identity proof; copied foreign reference/root receipts and mixed
+families refuse. No backfill or compatibility promise follows. Current/cold/reopen/
+schema(data=False)/ownership/recovery/drain compose the same closed reader;
+recovery only rediscovers/records owned work or notifies committed queues.
+workflow-coding-run@4 projects agent_manager/held/complete and a bounded final
+result/task/subject/outcome closeout without findings. Old run@1/@2/@3 stay literal.
+
+SOURCE/STATIC ONLY: F1/F2/F3/F4/F5/F7/F8 native/behavior/SQL/negative/red-green/
+mutation/restoration/repetition/executable QA and actual command/native/remote
+acceptance remain UNEXECUTED. The one route-classification fixture has four-answer
+case evidence; attributable RED/GREEN and native gate proof remain missing.
+No new assertion implementation/support/experiment/lane is allocated. Python
+units RETIRED, integration INCLUDING callback/lifespan/
+SessionTracker SKIPPED24342, no old-root waiver. Normal hooks/nonforce same-PR
+publication, clean exact-head lint/static all and full independent review remain.
+ROOT12299 owns genuine executable same-final-head QA before merge, actual tool
+entitlement and native constructor/isolation/scopes/scratch/installed-serving/
+operator/rollback acceptance. No automatic held-manager reallocation exists.
+<!-- /TASK12509 / ROOT12299 live final-manager source -->
+
+### Canonical coding configuration backend
+
+Coding defaults and admission are one canonical DB section owned by the dedicated
+Founder settings endpoint, with independent settings/mapping generations. Human
+publication appends genuine mapping/admission/two-audit history atomically; missing
+or corrupt current state refuses rather than falling back to YAML. Disabled may
+retain the exact prior Mapping under current publication authority. Configuration
+selectors come from the dedicated same-Founder-auth `/settings/coding/options`
+read, separate from historical views/receipts: genuine imported Release/current
+authority and bounded configured repository identities, with no raw origin or
+repository-access/object observation. E0 and changed-pin mappings require explicit
+metadata/format choices; refresh never modifies drafts or original send ownership.
+An unchanged disabled-retain Mapping remains usable without options. Source
+readiness remains disabled; configuration grants no access or launch authority.
+See [R2 settings](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source)
+for complete reader closure, replay and remaining operational acceptance.
+
+
+## Pinned coding selection across teams
+
+For the new settings-pinned family, the actual selected executable final manager
+initiates execution from its own result. Four distinct eligible permanent actors
+may belong to different teams. Every stage retains its actual role/team and
+current repository authority; configuration confers no access. The original
+implementer-only override determines the effective four roles. Move projection
+includes selected future roles and actual causal history, while unused defaults/
+replacements alone create no binding dependency. Historical native same-team
+families keep their predicates and immutable bytes.
+
+Current valid disable/default changes do not replace an admitted run's settings
+pin. Revocation/Pause/move and genuine callback/host/outer settlement still govern.
+Readiness remains false. Native/progression/move behavior is unexecuted; real
+scratch/revision/controls/Founder page/two-org/rollback acceptance remains
+ROOT12568-owned. See the ordered-coding-workflow settings-pinned execution contract.
+
+
+## Disabled coding rejection and fresh revision gates — ROOT12568 C05/C07/C08
+
+Founder320seq4/18/27 and ROOT12568 step23 extend the earlier r1 checkpoints:
+authentic positively settled REQUEST_CHANGES/REVISE returns to ONE fresh r2/r3
+developer on the SAME admitted work/base. New head requires fresh independent
+review and only its APPROVE starts fresh QA. All original findings/contributors,
+result-absent authors, overrides/across-team bindings and lower limits remain;
+BLOCK/failed/unusable/unknown holds. No allocation beyond original revision3 cap.
+current_revision tracks fulfilled content; target_revision selects actual new work.
+Sequence/generation/CAS/host retry remain separate. Callback alone never advances.
+
+Explicit new event@7/edge@5/edge-command@5/admission@4, revision-scope@1,
+revision-native event/command@1 (uncertainty-only@2) and admission@1,
+stage-output@2/development-review-QA supplements@2, final-scope/selection/manager/
+output@3, LOCAL finalize-command@2 and public run@5 preserve literal old families
+and held history. Whole saved/native/current/cold/schema(data=False)/recovery/
+drain closure independently derives original callbacks/scopes/tasks/contributors/
+current exact subject on ONE aggregate budget, with no trusted after-image or
+per-revision reset. Complete validation precedes caller COMMIT, notification after.
+Final manager still performs only its own authorized LOCAL expected-head/non-admin
+action and independent remote observation before its genuine FINAL callback;
+no daemon-owned effect/recovery is added. CLI/served unions carry the new closed
+families; browser/native exclusions and document H/I remain unchanged.
+
+Readiness stays false. Source is distinct from installed/loaded/enabled acceptance.
+No DDL/auth/permission/grant/live operation/cleanup. Behavioral/SQL/native/proof
+NOT RUN; units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342; Swift missing proof UNEXECUTED/FOUNDER-EXEMPTED/NONBLOCKING320seq93.
+Fresh FULL independent review and separately root-routed scoped QA remain.
+Control/reassignment/operational and real scratch/Founder/across-team/override/
+two-org/backup/rollback/live-manager acceptance stay root-owned. Exact encodings
+and active/historical boundaries: ordered-coding-workflow spec, same section.
+
+
+## Disabled settled no-action manager successor — ROOT12568
+
+A NEW genuine manager attempt may follow only a newly recorded complete bound
+held callback whose validated effect evidence affirmatively records a pre-action
+guard refusal, no command/remote effect and no action revalidation, AND original
+successful host, positive source/outer settlement and no unknown native owner.
+Partial intent, callback-only, unknown/preparation/close/no-handle evidence,
+uncertain action, merged/complete/cancelled work and literal historical held
+families cannot enter. Unsupported held subtypes retain their original owner.
+
+The same bound currently eligible manager receives one new task/queued attempt,
+same content revision/subject/reference/three original current upstream results,
+predecessor identity and all retained contributors. Stage sequence becomes2;
+role generation/CAS/events increase independently. Same-principal retry remains1
+and original lower cumulative limits remain; no principal reselection, revision,
+host retry, source revival, settings remap or budget reset occurs. Current
+settings/authority/ancestry/Pause/move/independence/capacity are revalidated in
+one caller-owned writer. Exact accepted original-result replay returns the SAME
+successor before fresh capacity checks. Full independent target reconstruction
+precedes COMMIT; notification follows, and cold recovery rediscovers that queue.
+Superseded callbacks cannot settle the current attempt.
+
+Additive event@8/edge@6/edge-command@6/admission@5 and final-scope@4 encode the
+new hold/transition and predecessor. Successor-native event/command@1,
+uncertainty-only@2 and admission@1 preserve native ownership; final-manager@4
+is the actual consumed supplement. Public run@6 retains field inventory and
+allows content revision1..3 for a successor; CLI/served schema share its reader.
+Selection/output remain literal @2/r1 and @3/r2..3; LOCAL finalize-command
+remains @1/r1 and @2/r2..3.
+Complete saved/native/current/schema(data=False)/cold/reopen/recovery/drain
+readers reject mixed/orphan/fork/incomplete history on ONE cumulative allowance,
+including target rereads. Old held/native/r1..r3 bytes and meanings remain.
+
+The new actor independently rechecks its repository/base/head/results/checks and
+current entitlements in its OWN live SID. Only that actor may perform its fresh
+expected-head non-admin action and independently observe remote MERGED/full
+actual commit/aware time BEFORE its own callback. Never reuse a predecessor
+intent, reservation, action or receipt. The daemon performs no PR I/O or effect
+recovery. Readiness/require_ready stay false; no allocation is executed here.
+Source/static delivery is separate from installed/loaded/enabled acceptance.
+Native/SQL/workflow/CAS/replay/rollback proof is NOT RUN / PROOF NOT RUN without
+an entitled genuine venue. Python units RETIRED; integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342; missing Swift proof UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. Fresh FULL independent reviewer is next;
+root separately routes QA. Deferred-native reconciliation,
+reassignment and operational/scratch/Founder/two-org/rollback/live acceptance
+remain separately bounded root work. No DDL/release/auth/permission/live effect.
+
+
+## Coding-owned cancellation — ROOT12568 C11/F5/F8
+
+The existing authorized task-cancel route now composes a coding cancellation
+writer even while coding admission is disabled. Under the real DB lock it
+rediscovers the target/cascade and complete affected coding graphs, retains
+terminal tasks, and atomically writes native cancellation rows, original
+`task_cancelled` audits, run/attempt fences and closed cancellation events.
+A direct coding leaf stops its complete graph; an ordinary ancestor may stop
+multiple graphs. A later ordinary ancestor stop also commits when every coding
+graph was already cancelled, with or without ordinary siblings. Previously
+cancelled graphs stay in the complete closure: their terminal tasks, results,
+events, causes and native owners remain intact, with no second fence or control.
+For G1 cancelled, then ordinary P cancelled, then higher live Q, retained
+coding discovery crosses terminal ordinary dependency intermediates independently
+of the live mutation walk. Only authenticated coding dependency paths are
+followed below a terminal ordinary row; newly captured rows there must be
+terminal and newly discovered graphs must have an earlier genuine cancellation.
+Hidden live work refuses rather than expanding legacy mutation semantics;
+unrelated ordinary subtrees remain untouched. P and G1 retain their exact rows,
+while Q and its normally reachable live ordinary siblings receive their sole
+overlay. Multiple retained graphs and a normally reachable fresh G2 compose in
+the same operation; only G2 receives a fresh fence.
+When no fresh coding graph exists, the distinct task-scoped audit action
+`coding_ordinary_cancellation` carries `workflow-coding-ordinary-cancellation@1`:
+the original command, exact ordinary task audits, operation digest and earlier
+genuine cancellation-event anchors. It changes no existing event family or
+`task_cancelled` audit shape/scope. Independent readers close original rows,
+causal membership, retained graphs and strict audit ordering, then derive only
+the ordinary-row overlay and freshly compare every target before COMMIT.
+Retained coding task originals compare at that later operation's independently
+reconstructed boundary, including admissible native observations already present
+there. The authenticated event chain and heartbeat audit ordering must agree
+with the cancellation capture interval; ambiguous or inconsistent order refuses.
+Every later native suffix still replays in full to exact current task/SQL equality,
+including executor_pid. Reader-derived boundary copies and traversal consume the
+same original allowance; no captured-row trust, field exemption, duplicate stop,
+native/effect clearance or history rewrite follows.
+Reverse coding/causal dependencies are discovered separately from requested
+mutation cascade through the complete authenticated start and edge captures.
+A point stop of a coding-dependent ordinary ancestor refuses before any task,
+audit, ownership, control or tail mutation, including cancelled graphs and deep
+ancestry. Ordinary-only point cancellation retains its existing behavior.
+Partial/foreign/orphan/mixed or oversized closure refuses;
+complete independent target validation shares the original cumulative allowance
+and precedes COMMIT. Existing opaque native/prepared controls and worktree/tail
+ordering follow outside the writer. Coding controls never fall back to a PID.
+Duplicate cancellation allocates no result, task or new control invocation.
+
+`workflow-coding-cancellation-command@1` records the original target/cascade,
+actor/rationale/time, complete affected task originals, coding owner IDs and
+actual native owner snapshots. `workflow-coding-cancellation-event@1` stores
+that closure once with the original audits and previous-event/CAS anchor;
+readers derive every resulting task/run/attempt row independently. Closed
+`workflow-coding-cancelled-native-event@1` / command@1 admit only original
+handle/PID/terminal/outer observations. A cancellation is a business stop,
+never native quiescence, remote-effect absence, preparation cleanup or success.
+Affirmative owned queued prelaunch history is distinct from an absent handle.
+Missing/failed controls, unclosed preparation, reserved-no-handle, stale journals,
+unknown effect or missing terminal/outer proof retain the original owner.
+They also set the existing conservative root-tail teardown-incomplete disposition,
+including genuine prepared/unknown entries with no control/PID. Successful
+control return or absent PID is not settlement; coding batches retain ordinary
+outer tracker ownership too. Positively settled original owners keep their
+existing disposition. Ordinary-only and document draft/F5 cancellation retain
+their existing behavior.
+Fresh callback/launch/stage/successor/merge admission is fenced. A precommitted
+original INTEGER/task/SID callback may drain or replay exactly, read-only,
+without advancing. Tasks/runs remain cancelled when later native facts settle;
+no finalizer reservation, historical result/subject/contributor/effect evidence,
+generation, lower limit, age or uncertainty is reset. No daemon PR I/O occurs.
+
+Saved/current/native/schema(data=False)/cold/reopen/recovery/drain consumers
+share the independent closed reader, including complete cross-graph audit/task
+closure. Start ancestry and every development/review/QA/final/revision/successor
+edge retain original admission predicates and captured bytes. A changed external
+row creates an unresolved equality obligation, resolved only after ALL independent
+batches close: freshly read current SQL must equal the sole authenticated
+cancellation overlay of that exact original row. No partial census, trusted
+after-image, mutable-field exemption or reusable validation cache is accepted;
+all copying/traversal/reads and post-write reconstruction share the ONE original
+aggregate allowance before COMMIT. Public `workflow-coding-run@7` keeps the existing field inventory,
+explicit cancelled state and cancelled-or-uncertain current attempt; the CLI
+and served route consume the same union. Literal old held/r1-r3/native/document/
+then histories retain their own meanings. Deferred native recovery still refuses
+`coding_native_recovery_unavailable`; reassignment remains separately bounded.
+The current supplements require stopping fresh work on cancellation and retaining
+the original callback/effect/native owner, without granting a new control tool.
+
+SOURCE delivery only: readiness remains false, installed source is untouched,
+loaded identity UNVERIFIED and enabled acceptance absent. Native/SQL/workflow/
+race/causal proof NOT RUN / PROOF NOT RUN without a genuine authorized venue
+(THR320seq99). Python units RETIRED; general integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342; all missing Swift proof UNEXECUTED /
+FOUNDER-EXEMPTED / NONBLOCKING320seq93. Static checks prove no workflow behavior.
+Founder THR320seq136 authorizes source recovery under sole ROOT12727 without
+reviving failed ROOT12568 or predecessors. Genuine four-stage execution,
+schema-import/operator/scratch availability are no longer source-merge
+prerequisites. Real workflow/Founder persistence/across-team/two-org/backup/
+reopen/rollback acceptance remains NOT RUN/open and required before ordinary
+work or activation. Historical checkpoint evidence and failures stay attributed
+to their original owners/heads. Fresh FULL independent final-head review and
+separately root-routed scoped QA remain required; the actual entitled final
+manager alone owns expected-head/non-admin guarded merge and independent remote
+confirmation in its own live session before callback. No schema/auth/permission/
+grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.

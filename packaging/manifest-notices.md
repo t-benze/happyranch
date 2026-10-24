@@ -1,113 +1,92 @@
 # Mac manifest-notice contract
 
-Founder THR104 seq260/266 replaces the former six-closure prerequisite with
-resolved dependency-manifest license notices. No linker implementation study,
-per-byte attribution, legal certification or former closure result is asserted.
+Founder THR104 seq260/266 establishes resolved dependency-manifest notices;
+seq369 removes asset/freezer/web evidence and the packaging supervisor from Mac
+build and verification. No linker/emitted per-byte closure is claimed. Ordinary
+PyInstaller/Swift/Go/Vite compilation and the bundled runtime/catalog remain.
 
-The collector `app/mac/scripts/manifest_notices.py` runs after the real freezer,
-Go and web assembly. Its two package files live in `Contents/Resources/licenses`:
+The existing collector `app/mac/scripts/manifest_notices.py` owns direct inputs:
 
-- `resolved-inventory.json`: full npm lock plus installed metadata/emitted owner
-  selection; full resolved Go modules and target dependency packages; full uv
-  lock plus installed distribution metadata/RECORD census; concrete Python/Go
-  runtime and Go vendor owners; independent public/font/icon source census;
-  original associations and source-manifest digests.
-- `manifest-notices.json`: schema `happyranch-manifest-notices@1`, the inventory
-  SHA256 and ordered component rows. Every row carries identity, version or
-  source revision, manifest/source relationship, explicit inclusion/exclusion,
-  and original/destination SHA256 associations. The maintained structural schema
-  is `notice-data/manifest-notices.schema.json`; the stdlib reader additionally
-  checks semantic membership, source relationships and actual bytes.
+- `inputs` reads the same fourteen pinned original npm archives supplied by the
+  workflow. Bounded member reads verify SHA512 (upstream Vite SHA256), package
+  versions and all original license/NOTICE texts without extracting arbitrary
+  archive paths. The license-less esbuild/Rollup arm64 packages use only their
+  authenticated same-version/repository/MIT parent originals; other missing
+  originals refuse. It records direct Go toolchain originals and paths.
+- `python_snapshot`, called by the ordinary spec, reads installed metadata/RECORD,
+  the actual selected EXE.python_lib from both lanes and native binary inputs.
+  The selected library must agree and be present in both analyses. Authentic
+  installed CPython/toolchain originals take precedence. The CPython original
+  may be at the base-prefix root or the selected sysconfig stdlib beneath it;
+  the latter must match the pinned original bytes. Vendor texts cannot satisfy
+  it. The prior exact pinned offline CPython fallback remains strict and is used
+  only when both installed locations are absent. Unknown native vendors receive no
+  inherited license and refuse collection. No observer lifecycle/IPC is used.
+- `collect` reads full resolved npm/uv/Go manifests, installed npm/Python metadata,
+  source-map package membership where available, known resolved generated-web
+  tooling, Go target dependencies/vendor manifest, and public/font/icon inputs.
+  Production/mapped/generated-tool npm owners and every installed non-project
+  Python distribution are conservatively included. Unselected marker/platform,
+  build-only npm and Go modules without target dependencies have explicit reasons.
+  No supplied component subset controls inventory membership.
 
-Membership is recomputed without using the supplied component rows. Python's
-spec snapshot is cross-checked against a fresh installed metadata/RECORD census.
-All installed non-project Python distributions are conservatively included,
-including build tools; unselected uv marker/group/version alternatives remain
-explicit. npm production and emitted packages are included; installed build-only
-and absent optional platform packages remain explicit. The existing generated-web
-reader separately requires participating tool originals. Every resolved Go
-module is listed; only target go-list dependencies need notices. GOROOT original
-LICENSE/PATENTS and selected `src/vendor/modules.txt` owners are separate.
-All 293 installed production npm owners have original texts in the maker census;
-twelve missing-package-text Radix owners use exact authenticated recoveries.
-The two additional rect/use-rect identities match registry integrity/gitHead,
-installed metadata/module bytes and published-source-map/upstream source bytes
-at the same original LICENSE revision; no nearby-version substitute is used.
-Multiple versions/locations retain separate rows, even when original text bytes
-are shared. All discovered applicable original texts remain associated; a
-nonempty one-text subset cannot replace the measured original set.
+Every included owner needs its complete discovered original set. Multiple
+versions/locations remain separate identities. Installed texts are preferred;
+known generated tools also retain all authenticated original archive notices.
+The prior exact Radix metadata/module/original fallback is retained, without
+an emitted-byte closure claim. Go LICENSE/PATENTS, target toolchain vendor owners,
+CPython library/stdlib, distribution-native components, font OFL and first-party
+icon/assets are associated separately. Unknown native owners refuse with path;
+no generic notice substitutes for a vendor license.
 
-Fonts retain the pinned authentic revision and co-version OFL. Public bytes are
-checked in the candidate and ZIP. The icon source census uses the first-party
-original LICENSE and the existing asset reader still checks actual iconutil
-transformation and app publication. Original source/asset/freezer/web custody
-readers stay independent; no new observer profile or toolchain is introduced.
-The Python snapshot binds the canonical library selected by the existing
-PyInstaller `EXE.python_lib` in both daemon and CLI to the same hashed BINARY
-input in each Analysis. That exact input (including standalone
-`PREFIX/lib/libpython3.12.dylib` or a selected framework library) shares the
-validated CPython original; no filename/prefix-only interpreter exemption exists.
-Distribution RECORD ownership remains independent and stdlib `lib-dynload`
-extensions retain their existing handling. Selected-library disagreement or
-missing Analysis membership refuses. The resolved runtime inventory records the
-selected library path/digest; original-text and native custody checks remain.
-Concrete native files outside distribution RECORD/Python core are named in the
-runtime inventory. Without an original-text association they fail with their
-actual source path; they do not inherit another owner's generic license.
+The app embeds `Contents/Resources/licenses/manifest-notices.json`,
+`resolved-inventory.json`, associated original `.txt` files, a readable
+`DEPENDENCIES.txt` index, first-party LICENSE and retained README. The unchanged
+schema family `happyranch-manifest-notices@1` describes manifest associations;
+`notice-data/manifest-notices.schema.json` documents structural shape. The stdlib
+reader rederives identity/membership/selection, original associations and digests.
+Safe bounded nonempty UTF8 regular originals and safe destinations are required.
+Missing owners/texts, unknown runtime owners, second-original omission, corrupt
+or empty bytes, source mismatch and unsafe/aliased paths refuse nonzero.
 
-Texts must be nonempty UTF8, bounded regular readable single-link files with
-safe ancestry. Empty/unreadable/missing originals, unsafe paths, source/destination
-conflicts, digest/identity mismatches and missing owners refuse with remediation.
-Candidate verification reopens live resolved inputs and original associations.
-`archive-app.sh`, called by `build-app.sh`, repeats the packaged inventory check
-immediately before the existing ditto command. The unchanged whole-ZIP member,
-resource/mode, version/build, architecture and source identity checks still run.
-The inner receipt now includes `manifest_notices` (schema, inventory/manifest
-SHA256, owner/included counts); reconcile recomputes it from actual archived bytes.
-Signing/trust, installation and public-release boundaries are unchanged.
-Failure diagnostics add only the manifest and Python distribution inventories
-to the fixed allowlist (52 input/106 output files); all byte/metadata budgets
-remain unchanged and oversized evidence is explicitly reported incomplete.
+`verify-release.sh licenses` recomputes direct live inputs and compares the
+embedded inventory. `archive-app.sh` repeats packaged notice checks and basic
+bundle checks before ditto. The actual ZIP is checked against the app's members,
+resource modes, all notice bytes, nonzero size, SHA256 and effective release
+identity. Reconcile checks the notice receipt and ZIP identity against the
+requested source/version/build/arch/run. These are ordinary archive integrity
+checks, not emitted code/asset provenance or legal certification.
 
-All 29 resource members remain required. Eleven historical skill-resource
-size/hash/blob pins are updated to their actual originals on fresh main7812caa6;
-no resource source or mode requirement is removed. The existing native workflow
-now supplies PR1101's required web-original directory: a new disjoint directory
-with the same fourteen existing pinned npm tarballs, bounded acquisition and
-lock SHA512/original Vite SHA256 verification. Workflow dispatch inputs, native
-Apple tools and allocation controls are unchanged. Source delivery is no run.
+Basic app checks cover actual plist executable/package/identifier, semver
+version/build, source IDs, minimumOS14 declaration, required resources/licenses/
+README, executable presence and actual Mach-O arm64 headers. Native launch and
+physical Mac14 compatibility are distinct and unproven by headers/declarations.
+Signing, trust and public-release boundaries are unchanged.
 
-## Finite manual verification
+The existing workflow keeps Build45/job95 limits, exact one-candidate success
+selection and separate bounded failure/cancellation diagnostics. No workflow
+interface or definition change is required. Custom helper deadline/receipt/IPC
+and per-byte closure requirements are retired; ordinary process status and the
+runner's timeout/cancellation remain. Failure diagnostics keep their 52-input,
+106-output and byte/metadata caps; absent retired records are honestly unavailable.
 
-Run outside CI with Python3.12+ and a new task-owned scratch directory:
+Run finite portable checks outside CI:
 
 ```sh
 python packaging/verify_manifest_notices.py --scratch /absolute/new/task-scratch
+python packaging/verify_mac_run_layout.py --scratch /absolute/new/layout-scratch
 ```
 
-It uses authentic retained PyInstaller/CPython/scrollbar/font/Go/UUID originals;
-Go and UUID provenance is retained under `fixtures/manifest-notices`. The source
-manifests, installed metadata/RECORD, EXE.python_lib selections, standalone
-prefix and Analysis native bytes/rows, and candidate assembly are synthetic.
-No actual selected native toolchain/sysconfig observation is claimed. The real
-python_snapshot now produces the inventory consumed by the collector. Only ditto
-is replaced at the shipping archive transition, by Python zipfile; all collector,
-notice/resource/archive/reconcile code is real. No native compilation, full
-asset/freezer/web custody run, daemon, retired unit suite or Product E2E runs.
-General integration is SKIPPED THR243seq42.
+The notice command exercises the real collector, live licenses reader, archive
+shell and independent ZIP/reconcile readers. Inputs are synthetic resolved
+manifests/metadata/native selection, authentic retained originals and preassembled
+resources/plist/icon/arm64 headers; ditto alone is replaced by Python zipfile.
+The layout command checks actual workflow selectors/reservation, build reservation
+and shipping preflight. Test-authoring four answers and attributable evidence
+belong in the existing maker handoff/PR, not a separate proof framework.
 
-| Requirement | Setup/action at production seam | Observable result | Level/environment |
-| --- | --- | --- | --- |
-| 1. Complete inventory archives | Real collector receives resolved npm/Go/Python and separate asset inputs with authentic originals; invoke shipping archive shell | Candidate contains texts, real ZIP and receipt produced; independent roundtrip succeeds | Portable preassembled candidate; ditto substituted |
-| R1. Selected interpreter ownership | Real python_snapshot receives synthetic freezer-selected standalone library plus stdlib/RECORD inputs and real retained CPython original; collector/archive consume its output; add misleading vendor libpython/Python paths | One licensed Python owner, actual ZIP contains the original; vendors remain separate empty-original owners, collector and archive refuse | Portable synthetic freezer facts; no native toolchain execution |
-| 2. Independent owner/text completeness | Remove each manifest-family/asset owner, required retained notice, or second Go PATENTS association | Nonzero, named owner/path, no ZIP creation | Disposable candidate only |
-| 3. Fail closed on unsafe/mismatched text | Empty/whitespace/unreadable/changed text, identity mismatch, traversal and symlink | Nonzero, no outside mutation or ZIP | Disposable source/candidate only |
-| 4. Preserve versions/selections | Two actual scrollbar source/derivative versions sharing original license, shared font OFL, optional/build-only exclusions | Separate identities and deterministic selections survive | Synthetic resolved inventory, authentic originals |
-| 5. Archive/identity integrity | Complete roundtrip; remove/change archived text; change expected version/build/arch/tree | Complete passes, tampering and unrelated identity mismatches fail | Actual ZIP and shipping readers |
-
-These four-answer rows describe requirement, setup/action, observable outcome,
-and verification level. Evidence is the script's per-command argv/exit/output
-JSON, not the table alone. No protected deliberate-defect or repetition proof,
-native success, install compatibility, signing or public availability follows.
-Independent full review and scoped QA must bind the final PR head; the delivery
-root retains guarded merge and the reserved native allocation/result follow-up.
+Native app compilation, runtime acceptance, native subprocess cancellation/
+cleanup and physical install are NOT RUN by the maker. No native success follows
+from fixture/static results. Python units remain RETIRED, integration INCLUDING
+callback SKIPPED THR243seq42; no ad hoc Product E2E/Jenkins/native dispatch.
+ROOT owns independent review/QA, guarded merge and actual native/archive evidence.

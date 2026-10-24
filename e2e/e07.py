@@ -163,15 +163,108 @@ def closure(c: Controller, tree: dict, cli: dict) -> dict:
                             except FileNotFoundError:
                                 continue
                     groups[group] = dict(exists=directory.exists(), pids=sorted(set(members)))
-    return dict(processes=rows, groups=groups, sampled=time.monotonic(),
-                pending=bool(select.select([c.server], [], [], 0)[0]))
+    snapshot = dict(processes=rows, groups=groups, sampled=time.monotonic(),
+                    pending=bool(select.select([c.server], [], [], 0)[0]))
+    # The original snapshot above remains the ONLY closure oracle. Everything
+    # below is a later, sequential diagnostic, including same-generation Z.
+    c.remaining()
+    require(len(rows) <= 17, "E07 diagnostic target bound; never truncate original rows")
+
+    def parse_stat(raw: bytes, pid: int) -> tuple:
+        if len(raw) > 4096:
+            return "oversized", None, None, None
+        if not raw:
+            return "empty", None, None, None
+        if not raw.endswith(b"\n"):
+            return "partial", None, None, None
+        closing = raw.rfind(b")")
+        if (not raw.startswith(str(pid).encode("ascii") + b" (") or closing < 3
+                or raw[closing+1:closing+2] != b" " or b"\n" in raw[closing+2:-1]):
+            return "malformed", None, None, None
+        tail = raw[closing+2:-1].split()
+        if (len(tail) < 20 or len(tail[0]) != 1
+                or tail[0] not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                or not 1 <= len(tail[1]) <= 20 or not tail[1].isdigit()
+                or not 1 <= len(tail[19]) <= 20 or not tail[19].isdigit()
+                or int(tail[19]) == 0):
+            return "malformed", None, None, None
+        return "observed", tail[19].decode("ascii"), tail[0].decode("ascii"), int(tail[1])
+
+    def read_stat(pid: int) -> dict:
+        c.remaining()  # Outside the I/O catch: deadline/assertion failures escape.
+        entered = time.monotonic()
+        try:
+            # ONE unbuffered bounded acquisition; no short-read retry or raw export.
+            with Path(f"/proc/{pid}/stat").open("rb", buffering=0) as stream:
+                raw = stream.read(4097)
+        except TimeoutError:
+            raise  # TimeoutError is also OSError; real raising alarms must escape.
+        except (FileNotFoundError, ProcessLookupError):
+            reason, start, state, ppid = "absent", None, None, None
+        except OSError as exc:
+            reason = "interrupted" if exc.errno == 4 else "unreadable"
+            start = state = ppid = None
+        else:
+            reason, start, state, ppid = parse_stat(raw, pid)
+        observation = dict(pid=pid, start=start, state=state, ppid=ppid, reason=reason,
+                           entered=entered, finished=time.monotonic())
+        c.remaining()
+        return observation
+
+    daemon = c.e07["transport"]["daemon"]
+    pins = {}
+    for proc in [*processes, daemon]:
+        require(type(proc["pid"]) is int and 0 < proc["pid"] < 10**20
+                and type(proc["start"]) is str and 1 <= len(proc["start"]) <= 20
+                and proc["start"].isascii() and proc["start"].isdecimal() and int(proc["start"]) > 0
+                and (proc["pid"] not in pins or pins[proc["pid"]] == proc["start"]),
+                "E07 unambiguous finite diagnostic generation pins")
+        pins[proc["pid"]] = proc["start"]
+
+    def associate(pid: int, expected_start: str | None) -> dict:
+        entered = time.monotonic()
+        a = read_stat(pid)
+        parent = b = parent_pin = None
+        if a["reason"] != "observed":
+            relation = "target-absent" if a["reason"] == "absent" else "target-unknown"
+        elif expected_start is not None and a["start"] != expected_start:
+            relation = "target-reused"
+        elif a["ppid"] == 0:
+            relation = "no-parent"
+        else:
+            parent_pin = pins.get(a["ppid"])
+            parent = read_stat(a["ppid"])
+            b = read_stat(pid)
+            if b["reason"] != "observed" or b["start"] != a["start"] or b["ppid"] != a["ppid"]:
+                relation = "target-changed"
+            elif parent["reason"] != "observed":
+                relation = "parent-missing" if parent["reason"] == "absent" else "parent-unknown"
+            elif parent_pin is not None and parent["start"] != parent_pin:
+                relation = "parent-reused"
+            else:
+                relation = "bracketed"
+        result = dict(entered=entered, finished=time.monotonic(), expected_start=expected_start,
+                      target_a=a, parent=parent, target_b=b, parent_pin=parent_pin, relation=relation)
+        c.remaining()
+        return result
+
+    # Self/ONE-parent/self measures context; it supplies NO launcher role pin.
+    context = associate(os.getpid(), None)
+    snapshot["controller_diagnostic"] = context
+    if context["relation"] == "bracketed":
+        for observation in (context["target_a"], context["parent"]):
+            pins.setdefault(observation["pid"], observation["start"])
+    for row in rows:
+        row["diagnostic"] = associate(row["pid"], row["start"])
+    c.remaining()
+    return snapshot
 
 
 def cancelled(c: Controller, value: dict, parent: dict, worker: dict, result: dict) -> None:
     tables = value["sql"]["alpha"]["tables"]
     tasks = {r["id"]:r for r in tables["tasks"]}
     p, w = tasks[parent["task"]], tasks[worker["task"]]
-    require(len(tasks) == 22 and len(tables["task_results"]) == 31
+    require(len(tasks) == 22 and len(tables["task_results"]) == 30
             and sum(t["status"] == "completed" for t in tasks.values()) == 20, "E07 exact final alpha population")
     for t, start in ((p,parent), (w,worker)):
         require(t["status"] == "cancelled" and t["block_kind"] is None
@@ -306,7 +399,7 @@ def exercise(c: Controller) -> None:
     begin = time.monotonic()
     prior = next(d["threads_cases"] for d in c.durable if "threads_cases" in d)
     raw, prefix = witnesses(c)
-    require(len(c.results) == 53 and len(c.starts) == 37 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
+    require(len(c.results) == 53 and len(c.starts) == 36 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
     c.e07 = dict(variants=VARIANTS, design_sha256=DESIGN, source_sha=c.revision, python=c.python,
                  entered=begin, scenario_deadline=c.deadline, end=min(begin+50,c.deadline),
                  prefix=dict(witness_bytes=len(raw), witness_records=len(prefix), witness_sha256=hashlib.sha256(raw).hexdigest(),
@@ -328,208 +421,268 @@ def exercise(c: Controller) -> None:
         c.e07["phases"].append(dict(name=name, entered=time.monotonic(), end=c.case_deadline))
         c.publish_end()
         c.remaining()
+    outgoing = outgoing_tb = None
     try:
-        phase("capture",16)
-        baseline = frame(c)
-        c.e07["baseline"] = baseline
-        host(baseline,25,25,0,prior["final_anchor"]["projection"]["receipts"])
-        c.e07["anchors"].append(dict(name="E05-end-B25",samples=[baseline]))
-        P = c.create("alpha","E07_CANCEL_PARENT")
-        parent = c.start("alpha",P,"case_manager")
-        c.e07["parent"] = parent
-        parent_command = command(c,parent,"e07-parent",True)
-        c.e07["parent_command"] = parent_command
-        c.release(parent)
-        worker = c.start("alpha",None,"case_worker")
-        W = worker["task"]
-        c.e07["worker"] = worker
-        tree = register_tree(c,worker)
-        c.e07["tree"] = tree
-        result = c.stores["alpha"].result(parent_command["launch"]["payload"])
-        require(type(result["id"]) is int, "E07 real INTEGER parent result")
-        c.e07["parent_result"] = result
-        def parked() -> dict | None:
-            snap = frame(c,P,W)
-            c.e07["frames"].append(snap)
-            t = {x["id"]:x for x in snap["sql"]["alpha"]["tables"]["tasks"]}
-            if t[P]["block_kind"] != "delegated":
-                return None
-            require(t[P]["status"] == t[W]["status"] == "in_progress" and t[W]["parent_task_id"] == P
-                    and t[W]["brief"] == "E07_CANCEL_CHILD" and t[W]["block_kind"] is None, "E07 genuine delegated tree")
-            a = snap["metrics"]["host_sessions"]["admission"]
-            if a["released_total"] != 26:
-                return None
-            host(snap,27,26,1,prior["final_anchor"]["projection"]["receipts"])
-            return snap
-        live = c.poll(parked,"E07 P released, W sole live")
-        second = frame(c,P,W)
-        require(host(second,27,26,1,prior["final_anchor"]["projection"]["receipts"]) == host(live,27,26,1,prior["final_anchor"]["projection"]["receipts"]), "E07 two live projections")
-        c.e07["live"] = [live,second]
-        c.e07["anchors"].append(dict(name="P-success-W-live-B26",samples=[live,second]))
-        new = second["metrics"]["host_sessions"]["receipts"]["recent"][0]
-        require(new["terminal_reason"] == "success" and new["invocation_kind"] == "task", "E07 P success receipt")
-        wire_payload = dict(session_id=worker["session"],agent="case_worker",status="completed",confidence=90,
-                            output_summary="E07 cancelled child must not complete",risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
-        c.capture_thread_secrets()
-        relay = LateTransport(c.root,c.port,W,wire_payload,c.token,c.secrets,c.e07["end"])
-        c.late_transport = relay
-        c.e07["ports"] = json.loads((c.root / "ports.json").read_text())
-        c.e07["transport"] = dict(listener=relay.listener, port=relay.port, upstream=c.port,
-                                  daemon=process_record(c.daemon.pid), bearer_sha256=hashlib.sha256(("Bearer "+c.token).encode()).hexdigest(), records=relay.records, accepted=relay.accepted)
-        home = c.root / "e07-client"
-        home.mkdir(mode=0o700)
-        for key,value in (("port",str(relay.port)),("token",c.token)):
-            path = home / ("daemon."+key)
-            path.write_text(value)
-            path.chmod(0o600)
-        held = command(c,worker,"e07-held",False)
-        c.e07["held"] = held
-        require(relay.captured.wait(c.remaining()) and not relay.errors, "E07 entire real CLI request captured")
-        c.e07["provenance"] = relay.provenance(held["launch"])
-        raw, rows = witnesses(c)
-        call = [x for x in rows if x["kind"] == "callback" and x["pid"] == held["launch"]["child"]["pid"]]
-        require(len(call) == 1 and call[0]["ppid"] == worker["pid"]
-                and call[0]["argv_sha256"] == hashlib.sha256(json.dumps(held["launch"]["argv"][1:]).encode()).hexdigest(), "E07 live real wrapper witness")
-        c.e07["held_witness"] = call[0]
-        require(relay.forward_count == 0 and "forwarded" not in relay.selected, "E07 no upstream request before public cancellation")
-        save(c)
+        try:
+            phase("capture",16)
+            baseline = frame(c)
+            c.e07["baseline"] = baseline
+            host(baseline,24,24,0,prior["final_anchor"]["projection"]["receipts"])
+            c.e07["anchors"].append(dict(name="E05-end-B24",samples=[baseline]))
+            P = c.create("alpha","E07_CANCEL_PARENT")
+            parent = c.start("alpha",P,"case_manager")
+            c.e07["parent"] = parent
+            parent_command = command(c,parent,"e07-parent",True)
+            c.e07["parent_command"] = parent_command
+            c.release(parent)
+            worker = c.start("alpha",None,"case_worker")
+            W = worker["task"]
+            c.e07["worker"] = worker
+            tree = register_tree(c,worker)
+            c.e07["tree"] = tree
+            result = c.stores["alpha"].result(parent_command["launch"]["payload"])
+            require(type(result["id"]) is int, "E07 real INTEGER parent result")
+            c.e07["parent_result"] = result
+            def parked() -> dict | None:
+                snap = frame(c,P,W)
+                c.e07["frames"].append(snap)
+                t = {x["id"]:x for x in snap["sql"]["alpha"]["tables"]["tasks"]}
+                if t[P]["block_kind"] != "delegated":
+                    return None
+                require(t[P]["status"] == t[W]["status"] == "in_progress" and t[W]["parent_task_id"] == P
+                        and t[W]["brief"] == "E07_CANCEL_CHILD" and t[W]["block_kind"] is None, "E07 genuine delegated tree")
+                a = snap["metrics"]["host_sessions"]["admission"]
+                if a["released_total"] != 25:
+                    return None
+                host(snap,26,25,1,prior["final_anchor"]["projection"]["receipts"])
+                return snap
+            live = c.poll(parked,"E07 P released, W sole live")
+            second = frame(c,P,W)
+            require(host(second,26,25,1,prior["final_anchor"]["projection"]["receipts"]) == host(live,26,25,1,prior["final_anchor"]["projection"]["receipts"]), "E07 two live projections")
+            c.e07["live"] = [live,second]
+            c.e07["anchors"].append(dict(name="P-success-W-live-B25",samples=[live,second]))
+            new = second["metrics"]["host_sessions"]["receipts"]["recent"][0]
+            require(new["terminal_reason"] == "success" and new["invocation_kind"] == "task", "E07 P success receipt")
+            wire_payload = dict(session_id=worker["session"],agent="case_worker",status="completed",confidence=90,
+                                output_summary="E07 cancelled child must not complete",risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+            c.capture_thread_secrets()
+            relay = LateTransport(c.root,c.port,W,wire_payload,c.token,c.secrets,c.e07["end"])
+            c.late_transport = relay
+            c.e07["ports"] = json.loads((c.root / "ports.json").read_text())
+            c.e07["transport"] = dict(listener=relay.listener, port=relay.port, upstream=c.port,
+                                      daemon=process_record(c.daemon.pid), bearer_sha256=hashlib.sha256(("Bearer "+c.token).encode()).hexdigest(), records=relay.records, accepted=relay.accepted)
+            home = c.root / "e07-client"
+            home.mkdir(mode=0o700)
+            for key,value in (("port",str(relay.port)),("token",c.token)):
+                path = home / ("daemon."+key)
+                path.write_text(value)
+                path.chmod(0o600)
+            held = command(c,worker,"e07-held",False)
+            c.e07["held"] = held
+            require(relay.captured.wait(c.remaining()) and not relay.errors, "E07 entire real CLI request captured")
+            c.e07["provenance"] = relay.provenance(held["launch"])
+            raw, rows = witnesses(c)
+            call = [x for x in rows if x["kind"] == "callback" and x["pid"] == held["launch"]["child"]["pid"]]
+            require(len(call) == 1 and call[0]["ppid"] == worker["pid"]
+                    and call[0]["argv_sha256"] == hashlib.sha256(json.dumps(held["launch"]["argv"][1:]).encode()).hexdigest(), "E07 live real wrapper witness")
+            c.e07["held_witness"] = call[0]
+            require(relay.forward_count == 0 and "forwarded" not in relay.selected, "E07 no upstream request before public cancellation")
+            save(c)
 
-        phase("cancel-and-close",28)
-        def browser_expected(snapshot: dict) -> dict:
-            result = {}
-            for task in (P, W):
-                detail = snapshot["public"][task][""]
-                core = {key: detail["task"][key] for key in (
-                    "task_id", "brief", "team", "status", "parent_task_id", "assigned_agent",
-                    "block_kind", "current_session_id", "note")}
-                if core["status"] == "in_progress" and task == P:
-                    core["child_wait_state"] = "waiting_children"
-                result[task] = dict(task=core, recall=snapshot["public"][task]["/recall?tree=true"],
-                                    result_ids=[row["id"] for row in detail["results"]])
-                if core["status"] == "cancelled":
-                    result[task]["detail_snapshot"] = detail
-            return result
-        c.e07["browser_cancel"] = c.browser.e07_cancel(P,W, expected=browser_expected(second))
-        def closed() -> dict | None:
-            observed = closure(c,tree,held["launch"]["child"])
-            c.e07.setdefault("closure_samples",[]).append(observed)
-            if any(p["start"] == p["observed_start"] for p in observed["processes"]) or any(g["pids"] for g in observed["groups"].values()):
-                return None
-            require(not observed["pending"], "E07 no resumption peer")
-            snap = frame(c,P,W)
-            c.e07["frames"].append(snap)
-            audits = snap["sql"]["alpha"]["tables"]["audit_log"]
-            if not any(a["task_id"] == W and a["action"] == "session_end" for a in audits):
-                return None
-            if snap["metrics"]["host_sessions"]["admission"]["released_total"] != 27:
-                return None
-            cancelled(c,snap,parent,worker,result)
-            host(snap,27,27,0,second["metrics"]["host_sessions"]["receipts"])
-            return snap
-        freeze = c.poll(closed,"E07 product closure before rescue")
-        freeze2 = frame(c,P,W)
-        require(content(freeze) == content(freeze2)
-                and host(freeze2,27,27,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,27,27,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
-        receipt = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
-        require(receipt["terminal_reason"] == "cancelled" and receipt["invocation_kind"] == "task", "E07 one active cancellation receipt")
-        c.e07["freeze"] = [freeze,freeze2]
-        unit_rows = []
-        for group in c.e07["closure_samples"][-1]["groups"]:
-            unit = group.rsplit("/",1)[-1]
-            argv = ["/usr/bin/systemctl","--user","show",unit,"--property=LoadState,ActiveState"]
-            env = {key:c.env[key] for key in ("XDG_RUNTIME_DIR","DBUS_SESSION_BUS_ADDRESS") if key in c.env}
-            env.update(PATH="/usr/bin:/bin",LANG="C.UTF-8")
-            observed = subprocess.run(argv,capture_output=True,timeout=c.remaining(),env=env)
-            record = dict(unit=unit,argv=argv,exit=observed.returncode,
-                          stdout=public_stream(observed.stdout,c.secrets,False),stderr=public_stream(observed.stderr,c.secrets,False),at=time.monotonic())
-            unit_rows.append(record)
+            phase("cancel-and-close",28)
+            def browser_expected(snapshot: dict) -> dict:
+                result = {}
+                for task in (P, W):
+                    detail = snapshot["public"][task][""]
+                    core = {key: detail["task"][key] for key in (
+                        "task_id", "brief", "team", "status", "parent_task_id", "assigned_agent",
+                        "block_kind", "current_session_id", "note")}
+                    if core["status"] == "in_progress" and task == P:
+                        core["child_wait_state"] = "waiting_children"
+                    result[task] = dict(task=core, recall=snapshot["public"][task]["/recall?tree=true"],
+                                        result_ids=[row["id"] for row in detail["results"]])
+                    if core["status"] == "cancelled":
+                        result[task]["detail_snapshot"] = detail
+                return result
+            c.e07["browser_cancel"] = c.browser.e07_cancel(P,W, expected=browser_expected(second))
+            def closed() -> dict | None:
+                observed = closure(c,tree,held["launch"]["child"])
+                c.e07.setdefault("closure_samples",[]).append(observed)
+                if any(p["start"] == p["observed_start"] for p in observed["processes"]) or any(g["pids"] for g in observed["groups"].values()):
+                    return None
+                require(not observed["pending"], "E07 no resumption peer")
+                snap = frame(c,P,W)
+                c.e07["frames"].append(snap)
+                audits = snap["sql"]["alpha"]["tables"]["audit_log"]
+                if not any(a["task_id"] == W and a["action"] == "session_end" for a in audits):
+                    return None
+                if snap["metrics"]["host_sessions"]["admission"]["released_total"] != 26:
+                    return None
+                cancelled(c,snap,parent,worker,result)
+                host(snap,26,26,0,second["metrics"]["host_sessions"]["receipts"])
+                return snap
+            freeze = c.poll(closed,"E07 product closure before rescue")
+            freeze2 = frame(c,P,W)
+            require(content(freeze) == content(freeze2)
+                    and host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
+            receipt = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
+            require(receipt["terminal_reason"] == "cancelled" and receipt["invocation_kind"] == "task", "E07 one active cancellation receipt")
+            c.e07["freeze"] = [freeze,freeze2]
+            unit_rows = []
+            for group in c.e07["closure_samples"][-1]["groups"]:
+                unit = group.rsplit("/",1)[-1]
+                argv = ["/usr/bin/systemctl","--user","show",unit,"--property=LoadState,ActiveState"]
+                env = {key:c.env[key] for key in ("XDG_RUNTIME_DIR","DBUS_SESSION_BUS_ADDRESS") if key in c.env}
+                env.update(PATH="/usr/bin:/bin",LANG="C.UTF-8")
+                observed = subprocess.run(argv,capture_output=True,timeout=c.remaining(),env=env)
+                record = dict(unit=unit,argv=argv,exit=observed.returncode,
+                              stdout=public_stream(observed.stdout,c.secrets,False),stderr=public_stream(observed.stderr,c.secrets,False),at=time.monotonic())
+                unit_rows.append(record)
+                c.e07["units"] = unit_rows
+                require(not record["stdout"]["truncated"] and "ActiveState=inactive" in record["stdout"]["text"],"E07 product unit inactive")
             c.e07["units"] = unit_rows
-            require(not record["stdout"]["truncated"] and "ActiveState=inactive" in record["stdout"]["text"],"E07 product unit inactive")
-        c.e07["units"] = unit_rows
-        # Freeze only after unit inactivity too, before any terminal CLI action.
-        freeze,freeze2 = frame(c,P,W),frame(c,P,W)
-        cancelled(c,freeze,parent,worker,result)
-        require(content(freeze) == content(freeze2)
-                and host(freeze,27,27,0,second["metrics"]["host_sessions"]["receipts"])
-                == host(freeze2,27,27,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
-        c.e07["freeze"] = [freeze,freeze2]
-        c.e07["anchors"].append(dict(name="cancelled-B27",samples=[freeze,freeze2]))
-        connection, stream = c.holds.pop(worker["session"])
-        connection.settimeout(c.remaining())
-        c.e07["provider_eof"] = dict(bytes=len(stream.read(1)),at=time.monotonic())
-        require(c.e07["provider_eof"]["bytes"] == 0,"E07 killed provider EOF, no fabricated CLI return")
-        stream.close()
-        connection.close()
+            # Freeze only after unit inactivity too, before any terminal CLI action.
+            freeze,freeze2 = frame(c,P,W),frame(c,P,W)
+            cancelled(c,freeze,parent,worker,result)
+            require(content(freeze) == content(freeze2)
+                    and host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"])
+                    == host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
+            c.e07["freeze"] = [freeze,freeze2]
+            c.e07["anchors"].append(dict(name="cancelled-B26",samples=[freeze,freeze2]))
+            connection, stream = c.holds.pop(worker["session"])
+            connection.settimeout(c.remaining())
+            c.e07["provider_eof"] = dict(bytes=len(stream.read(1)),at=time.monotonic())
+            require(c.e07["provider_eof"]["bytes"] == 0,"E07 killed provider EOF, no fabricated CLI return")
+            stream.close()
+            connection.close()
 
-        phase("terminal-ui-and-refusals",36)
-        c.e07["views"] = c.browser.e07_terminal(P,W, expected=browser_expected(freeze))
-        for view, task in zip(c.e07["views"][:2], (P,W)):
-            require(detail_content(view["detail"]) == detail_content(freeze["public"][task][""])
-                    and view["recall"] == freeze["public"][task]["/recall?tree=true"], "C complete browser terminal content")
-        complete = next(t for t in baseline["sql"]["alpha"]["tables"]["tasks"] if t["parent_task_id"] is None and t["status"] == "completed")
-        c.e07["completed_target"] = complete
-        c.e07["refusals"] = [terminal_cli(c,P,"cancelled","E07_DUPLICATE"), terminal_cli(c,complete["id"],"completed","E07_TERMINAL")]
-        after = frame(c,P,W)
-        c.e07["after_refusals"] = after
-        require(content(after) == content(freeze),"E07 both terminal refusals leave full content unchanged")
+            phase("terminal-ui-and-refusals",36)
+            roots_expected = dict(org="alpha", task=dict(task_id=P, brief="E07_CANCEL_PARENT", team="engineering",
+                status="cancelled", parent_task_id=None, assigned_agent="case_manager", block_kind=None,
+                current_session_id=parent["session"], note="cancelled by founder: E07_CANCEL_TREE"),
+                severity_rollup="cancelled", pause=dict(org_slug="alpha", root_task_id=P,
+                    lifecycle_status="cancelled", held=False, effective_hold=False, control_state="unheld",
+                    generation=0, paused_at=None, resumed_at=None),
+                forbidden=[W])
+            c.e07["views"] = c.browser.e07_terminal(P,W, expected=browser_expected(freeze), roots_expected=roots_expected)
+            for view, task in zip(c.e07["views"][:2], (P,W)):
+                require(detail_content(view["detail"]) == detail_content(freeze["public"][task][""])
+                        and view["recall"] == freeze["public"][task]["/recall?tree=true"], "C complete browser terminal content")
+            complete = next(t for t in baseline["sql"]["alpha"]["tables"]["tasks"] if t["parent_task_id"] is None and t["status"] == "completed")
+            c.e07["completed_target"] = complete
+            c.e07["refusals"] = [terminal_cli(c,P,"cancelled","E07_DUPLICATE"), terminal_cli(c,complete["id"],"completed","E07_TERMINAL")]
+            after = frame(c,P,W)
+            c.e07["after_refusals"] = after
+            require(content(after) == content(freeze),"E07 both terminal refusals leave full content unchanged")
 
-        phase("forward-and-observe",42)
-        require(c.case_deadline-time.monotonic() > 1,"E07 full negative window must fit")
-        relay.deadline = c.case_deadline
-        c.e07["released"] = time.monotonic()
-        relay.release.set()
-        require(relay.completed.wait(c.remaining()) and not relay.errors,"E07 original request upstream response")
-        c.poll(lambda: relay.selected.get("closed"),"E07 downstream outcome")
-        require(relay.selected["status"] == 409 and relay.selected["response"] == {"detail":{"code":"task_not_active","task_id":W,"status":"cancelled","cancelled":True}}
-                and relay.selected["downstream"] in {"EOF","peer-gone"},"E07 task-active denial separate from dead CLI")
-        window = dict(entered=time.monotonic(),samples=[])
-        c.e07["window"] = window
-        window["end"] = window["entered"]+1
-        require(window["end"] < c.case_deadline,"E07 reserve full second")
-        while True:
-            sample = frame(c,P,W)
-            sample["closure"] = closure(c,tree,held["launch"]["child"])
-            window["samples"].append(sample)
-            require(content(sample) == content(freeze) and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
-            host(sample,27,27,0,freeze["metrics"]["host_sessions"]["receipts"])
-            require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
-                    and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
-            previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
-            require(sample["entered"]-previous <= .05 and sample["finished"]-sample["entered"] <= .05,"E07 fresh sample interval <=50ms")
-            c.remaining()
-            if sample["entered"] >= window["end"]:
-                break
-            time.sleep(min(.01,max(0,window["end"]-time.monotonic())))
-        window["finished"] = time.monotonic()
+            phase("forward-and-observe",42)
+            require(c.case_deadline-time.monotonic() > 1,"E07 full negative window must fit")
+            relay.deadline = c.case_deadline
+            c.e07["released"] = time.monotonic()
+            relay.release.set()
+            require(relay.completed.wait(c.remaining()) and not relay.errors,"E07 original request upstream response")
+            c.poll(lambda: relay.selected.get("closed"),"E07 downstream outcome")
+            require(relay.selected["status"] == 409 and relay.selected["response"] == {"detail":{"code":"task_not_active","task_id":W,"status":"cancelled","cancelled":True}}
+                    and relay.selected["downstream"] in {"EOF","peer-gone"},"E07 task-active denial separate from dead CLI")
+            window = dict(entered=time.monotonic(),samples=[])
+            c.e07["window"] = window
+            window["end"] = window["entered"]+1
+            require(window["end"] < c.case_deadline,"E07 reserve full second")
+            while True:
+                sample = frame(c,P,W)
+                sample["closure"] = closure(c,tree,held["launch"]["child"])
+                window["samples"].append(sample)
+                require(content(sample) == content(freeze) and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
+                host(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
+                require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
+                        and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
+                previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
+                require(sample["entered"]-previous <= .05 and sample["finished"]-sample["entered"] <= .05,"E07 fresh sample interval <=50ms")
+                c.remaining()
+                if sample["entered"] >= window["end"]:
+                    break
+                time.sleep(min(.01,max(0,window["end"]-time.monotonic())))
+            window["finished"] = time.monotonic()
 
-        phase("archive",50)
-        final = frame(c,P,W)
-        c.e07["final"] = final
-        c.e07["anchors"].append(dict(name="final-B27",samples=[final]))
-        live_tasks = {t["id"]:t for t in second["sql"]["alpha"]["tables"]["tasks"]}
-        final_tasks = {t["id"]:t for t in final["sql"]["alpha"]["tables"]["tasks"]}
-        changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
-        for task in (P,W):
-            require({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
-                    == {k:v for k,v in final_tasks[task].items() if k not in changed_fields}, "E07 exact cancellation field delta")
-        cancelled(c,final,parent,worker,result)
-        require(content(final) == content(freeze) and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
-        raw, rows = witnesses(c)
-        require(len(c.starts) == 39 and len({s["session"] for s in c.starts}) == 39 and not c.holds
-                and sum(w["kind"] == "stub" for w in rows) == 39
-                and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact39 starts and every CLI accounted")
-        relay.deadline = c.case_deadline
-        c.e07["transport_closure"] = relay.close(c.case_deadline)
-        c.late_transport = None
-        require(not any(c.e07["transport_closure"][k] for k in ("listener_alive","workers_alive","sockets","errors")),"E07 transport final closure")
-        c.e07["finished"] = time.monotonic()
-        require(c.e07["finished"] < c.case_deadline,"E07 complete evidence within C50")
-        save(c)
-        for variant in VARIANTS:
-            c.mark(variant,dict(e07_file="e07.json",source_sha=c.revision))
+            phase("archive",50)
+            final = frame(c,P,W)
+            c.e07["final"] = final
+            c.e07["anchors"].append(dict(name="final-B26",samples=[final]))
+            live_tasks = {t["id"]:t for t in second["sql"]["alpha"]["tables"]["tasks"]}
+            final_tasks = {t["id"]:t for t in final["sql"]["alpha"]["tables"]["tasks"]}
+            changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
+            for task in (P,W):
+                require({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
+                        == {k:v for k,v in final_tasks[task].items() if k not in changed_fields}, "E07 exact cancellation field delta")
+            cancelled(c,final,parent,worker,result)
+            require(content(final) == content(freeze) and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
+            raw, rows = witnesses(c)
+            require(len(c.starts) == 38 and len({s["session"] for s in c.starts}) == 38 and not c.holds
+                    and sum(w["kind"] == "stub" for w in rows) == 38
+                    and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact38 starts and every CLI accounted")
+            relay.deadline = c.case_deadline
+            c.e07["transport_closure"] = relay.close(c.case_deadline)
+            c.late_transport = None
+            require(not any(c.e07["transport_closure"][k] for k in ("listener_alive","workers_alive","sockets","errors")),"E07 transport final closure")
+            c.e07["finished"] = time.monotonic()
+            require(c.e07["finished"] < c.case_deadline,"E07 complete evidence within C50")
+            save(c)
+            for variant in VARIANTS:
+                c.mark(variant,dict(e07_file="e07.json",source_sha=c.revision))
+        except BaseException as exc:
+            c.record_error("controller-action", exc)
+            raise
+        finally:
+            save(c)
+    except BaseException as exc:
+        # Reserve the combined body/final-save outgoing before recording or release.
+        outgoing, outgoing_tb = exc, exc.__traceback__
+        try:
+            c.record_error("controller-action", exc)
+        finally:
+            raise outgoing.with_traceback(outgoing_tb)
     finally:
-        save(c)
-        if hasattr(c,"case_deadline"):
-            del c.case_deadline
-        if time.monotonic() < c.deadline:
-            c.publish_end()
+        try:
+            try:
+                if hasattr(c, "case_deadline"):
+                    require(c.e07["phases"] and
+                            c.case_deadline is c.e07["phases"][-1]["end"],
+                            "E07 case owner unavailable")
+                    # ALL entries refuse, including positive/native owners. Only
+                    # Controller.phase appends on this sequential main-thread path;
+                    # no callback/appender runs between this proof and deletion.
+                    require(type(c.timer_phases) is list and not c.timer_phases,
+                            "E07 residual phase owner prevents release")
+                    try:
+                        del c.case_deadline
+                    except BaseException as exc:
+                        if outgoing is None:
+                            outgoing, outgoing_tb = exc, exc.__traceback__
+                        c.record_error("controller-action", exc)
+                    finally:
+                        # Independent of deletion/recorder success once eligible.
+                        try:
+                            if time.monotonic() < c.deadline:
+                                c.publish_end()
+                            else:
+                                c._timer_sync()
+                        except BaseException as exc:
+                            if outgoing is None:
+                                outgoing, outgoing_tb = exc, exc.__traceback__
+                            try:
+                                c.record_error("controller-action", exc)
+                            finally:
+                                c._timer_sync()
+                else:
+                    c._timer_sync()
+            except BaseException as exc:
+                # Failed/interrupted proof never enters deletion or publication.
+                if outgoing is None:
+                    outgoing, outgoing_tb = exc, exc.__traceback__
+                try:
+                    c.record_error("controller-action", exc)
+                finally:
+                    c._timer_sync()
+        finally:
+            if outgoing is not None:
+                raise outgoing.with_traceback(outgoing_tb)

@@ -68,3 +68,33 @@ Record validation rejection rate, derived eligibility distribution, wake due→d
 Risk: a frontend projection forks scheduler semantics. Mitigate by deriving only from resolved API fields. Risk: routine editing changes governance/source ownership.
 
 **Engineering gate:** feasibility/schema/API review before unavailable display fields or any excluded scheduler extension. **Founder gate:** approve a holiday/override/routine-authoring or dispatch-policy change before build planning. The current implementation needs neither gate to remain as documented.
+
+## Amendment 2026-10-18 — release visibility (Founder THR-305 seq5–8)
+
+The Work Hours **UI** is now behind the build-time flag `work_hours_ui`. It is
+on in development (`npm run dev`, `npm run build:local`) and off in production
+builds (`scripts/build_web.sh`, `npm run build`, Mac packaging). With it off,
+all of these are absent:
+
+- the Work Hours navigation and the overview/wakes/detail routes;
+- the `/schedule` bookmark redirect (direct and legacy URLs reach the existing
+  not-found page);
+- the Organization Settings operating controls, explanatory link, eligibility
+  editor and disable confirmation.
+
+This is UI visibility only. The scheduler, API, CLI, stored `working_hours`
+settings and saved schedules are unchanged, including orgs that already
+enabled Work Hours. It is not access control. The shipped constraints above
+still describe daemon behavior. See `web/ARCHITECTURE.md` § Build-time UI flags.
+
+## Amendment 2026-10-22 — local shell build default (Founder THR-305 seq16)
+
+The shell command in the 2026-10-18 visibility amendment now defaults to
+`npm run build:local`: `scripts/build_web.sh` uses development defaults, then
+optional gitignored `web/config/features.local.json`, then the existing explicit
+`VITE_ENABLE_KB_COMPOSE` compatibility input. Work Hours is visible by default
+in this local profile, subject to the local override.
+`scripts/build_web.sh --production`, `npm run build` and Mac packaging retain
+the production profile with Work Hours hidden. Flag values, UI-only scope and
+all scheduler/API/CLI/stored-setting behavior remain unchanged. See
+`web/ARCHITECTURE.md` § Build-time UI flags.
