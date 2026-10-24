@@ -3369,20 +3369,50 @@ refuses; it never returns legacy. Arbitrary document content is not a family
 discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
 readers before any coding producer, including setup/import/mappings.
 
-Independent whole reference selection retains all six layouts F–J, all four
-fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
-the five-component cache key and whole historical preimages. No candidate SQL
-baseline or object filter is permitted. Failed reference construction remains
-unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
-remain workflow-free. The proven-empty J initializer primitive serves reference
-construction, validating the two completed native remote-schema marker rows and
-requiring every operational table empty; no schema object is excluded from
-comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+Workflow whole-reference selection retains F–J and adds workflow-only fifth
+history `v2-chronological-20260530` (THR320seq150, accepted ROOT12848 composite
+TASK12862/addendum, independent DESIGN-ONLY PASS12866). Its fixed whole seed is
+56585 UTF8 bytes/SHA256
+`9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7`:
+195 objects independently constructed through complete historical Database
+constructors bda5d062→1be72fe7 and the authentic thread sweep. Original S2 marker
+and `sqlite_sequence(session_token_usage,0)` remain intact; observed/live schema
+is comparison only, never constructor input. Both old preimages remain literal.
+
+Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
+name before shared cache lookup even after workflow cache fill. Workflow and
+coding-import support use the same workflow helper; six indirect coding
+consumers retain their central reader/snapshot/admission contracts. Cache identity
+remains `(layout,history,naming,Pause,team_move)`; ANY unavailable reference refuses
+even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
+name participates, without normalization or object filtering. Authority-v2 stays
+observed-only; generic Database/runtime-audit remain workflow-free.
+
+Only fifth-history J uses whole seed → current Database → unchanged complete-I
+initializer → shipped canonical coding DDL in workflow_schema_transaction →
+require full validator J → unchanged Pause/team-move/naming order → raw digest.
+Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
+retain their F/E/G/H/I paths; old families keep their construction and digests.
+The strict fresh-J initializer still requires empty native operational storage
+and valid remote markers; it correctly refuses this retained sequence row.
+Neither that guard nor any real migration changes; calling the real coding
+migration here would recurse through reference validation. Actual create-org
+still explicitly initializes I. Startup/reopen/
 enable validate, never install J; I remains usable for document work and gives
 actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
+
+Conditional operations remain on hold: separately accepted F/E→G→H→I→J
+transitions each require target inspection; submission/coding check3 differ from
+exact handoff/revision migration-required1, and refused1 stops. The first three
+writers remove only --check; coding requires --confirm-cooperative-offline.
+Exact import absence is HTTP404 coding_release_import_not_found/CLI1, never
+empty success or clearance of uncertain original file/key/body/effects/new-key
+retry. Founder save remains Admission Disabled; operational acceptance stays
+NOT RUN/open. See the ordered-coding-workflow spec's historical compatibility
+operator guidance for the host/offline/backup/owner prerequisites.
 
 The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
 /absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements
