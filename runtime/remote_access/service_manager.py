@@ -11,6 +11,7 @@ the most recent backup.
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import time
@@ -104,6 +105,133 @@ class SystemdServiceManager:
     def daemon_reload(self) -> None:
         self._systemctl("daemon-reload")
 
+    def _nonmanaged_selection_properties(self, unit_name: str, deadline: float) -> tuple[int, dict[str, str]]:
+        """Observe one selected unit; metadata supplies exclusion, not authority."""
+        from runtime.remote_access.cli import _capture_bounded_query_output, _close_and_reap_query_process
+        from runtime.remote_access.linux_package import _MANAGED_LOCK
+        names = ("Id", "Names", "LoadState", "FragmentPath", "SourcePath", "UnitFileState", "NeedDaemonReload")
+        argv = [self._systemctl_bin]
+        if not self._system:
+            argv.append("--user")
+        argv.extend(["show", unit_name, *["--property=" + name for name in names]])
+        if time.monotonic() >= deadline:
+            raise ServiceManagerError("nonmanaged_selection_unavailable")
+        try:
+            child = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                pass_fds=(() if _MANAGED_LOCK.get() is None else (_MANAGED_LOCK.get(),)),
+            )
+            try:
+                raw, overflow = _capture_bounded_query_output(child, deadline)
+                remaining = deadline - time.monotonic()
+                if overflow or remaining <= 0:
+                    raise ServiceManagerError("nonmanaged_selection_unavailable")
+                code = child.wait(timeout=remaining)
+            finally:
+                # Reuse the original deadline, never the helper's renewed
+                # nonmanaged cleanup grace. A refused read cannot admit effects.
+                _close_and_reap_query_process(child, deadline, managed=True)
+            if time.monotonic() >= deadline:
+                raise ServiceManagerError("nonmanaged_selection_unavailable")
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+            raise ServiceManagerError("nonmanaged_selection_unavailable") from exc
+        values: dict[str, str] = {}
+        if not text.endswith("\n"):
+            raise ServiceManagerError("nonmanaged_selection_unavailable")
+        for line in text[:-1].split("\n"):
+            key, separator, value = line.partition("=")
+            if (not separator or key not in names or key in values
+                    or any(ord(c) < 32 or ord(c) == 127 for c in line)):
+                raise ServiceManagerError("nonmanaged_selection_unavailable")
+            values[key] = value
+        if set(values) != set(names) or time.monotonic() >= deadline:
+            raise ServiceManagerError("nonmanaged_selection_unavailable")
+        return code, values
+
+    def _require_nonmanaged_owner(self, unit_name: str, *, allow_absent: bool = False) -> None:
+        from runtime.remote_access.cli import _SERVICE_QUERY_TIMEOUT_SECONDS
+        from runtime.remote_access.linux_package import (
+            UNITS, _MANAGED_DEADLINE, _nonmanaged_owner_destination,
+            _nonmanaged_owner_same_path, require_nonmanaged_unit_owner,
+        )
+        inherited = _MANAGED_DEADLINE.get()
+        deadline = min(time.monotonic() + _SERVICE_QUERY_TIMEOUT_SECONDS,
+                       inherited / 1_000_000_000 if inherited is not None else float("inf"))
+        # A writer destination is not a manager selection. Only bare canonical
+        # names and named instances can reach the selected-unit metadata read.
+        grammar = (r"[A-Za-z0-9_:][A-Za-z0-9_.:-]*(?:@[A-Za-z0-9_:][A-Za-z0-9_.:-]*)?"
+                   r"\.(?:service|socket|device|mount|automount|swap|target|path|timer|slice|scope)")
+        if (not isinstance(unit_name, str) or len(unit_name) > 255
+                or re.fullmatch(grammar, unit_name) is None):
+            raise ServiceManagerError("noncanonical_unit_selection")
+        # Admit the concrete writer independently of manager metadata and of
+        # whether a fixed-named local unit has any managed markers yet.
+        self._require_file_operand(self._unit_path(unit_name))
+        if self._system:
+            require_nonmanaged_unit_owner(unit_name, _SYSTEM_UNIT_DIR)
+        code, props = self._nonmanaged_selection_properties(unit_name, deadline)
+        names = props["Names"].split(" ")
+        if (props["Id"] != unit_name or unit_name not in names or len(set(names)) != len(names)
+                or any(len(name) > 255 or re.fullmatch(grammar, name) is None for name in names)):
+            # Includes aliases from /run, vendor/generator paths and currently
+            # loaded aliases, even when the hypothetical writer file is absent.
+            raise ServiceManagerError("nonmanaged_selection_ambiguous")
+        if self._system and set(names).intersection(UNITS):
+            # Never interpret metadata about a fixed system owner as permission
+            # to enter generic lifecycle, even with missing disk/state markers.
+            raise ServiceManagerError("managed_lifecycle_owner_required")
+        if props["LoadState"] == "not-found":
+            # systemctl may return its exact no-such-unit status4. Neither that
+            # status alone nor any other show failure is proof of absence.
+            if (not allow_absent or code not in (0, 4) or names != [unit_name]
+                    or any(props[k] for k in ("FragmentPath", "SourcePath", "UnitFileState"))
+                    or props["NeedDaemonReload"] != "no"):
+                raise ServiceManagerError("nonmanaged_selection_unavailable")
+        elif (code != 0 or props["LoadState"] != "loaded" or not props["FragmentPath"]
+              or props["UnitFileState"] not in {
+                  "enabled", "enabled-runtime", "linked", "linked-runtime", "static",
+                  "disabled", "indirect", "generated", "transient",
+              } or props["NeedDaemonReload"] not in ("no", "yes")):
+            raise ServiceManagerError("nonmanaged_selection_unavailable")
+        for value in (props["FragmentPath"], props["SourcePath"]):
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute() or str(path) != value or ".." in path.parts:
+                raise ServiceManagerError("nonmanaged_selection_ambiguous")
+            destination = _nonmanaged_owner_destination(path)
+            if (self._system and (path.name in UNITS or destination.name in UNITS) or any(
+                    _nonmanaged_owner_same_path(destination, _SYSTEM_UNIT_DIR / name) for name in UNITS)):
+                raise ServiceManagerError("managed_lifecycle_owner_required")
+            require_nonmanaged_unit_owner(
+                path.name, path.parent,
+                user_unit_dir=None if self._system else _USER_UNIT_DIR,
+            )
+        # Includes destination metadata work and validation after the child reap.
+        # This source check is not an atomic fence against namespace replacement.
+        if time.monotonic() >= deadline:
+            raise ServiceManagerError("nonmanaged_selection_unavailable")
+
+    def _require_file_operand(self, path: Path, *, directory: bool = False,
+                              required: bool = False) -> None:
+        from runtime.remote_access.linux_package import (
+            PackageError, _require_nonmanaged_state_owner, require_nonmanaged_unit_owner,
+        )
+        try:
+            _require_nonmanaged_state_owner(path, staging=True, directory=directory)
+            if not directory:
+                require_nonmanaged_unit_owner(
+                    path.name, path.parent,
+                    user_unit_dir=None if self._system else _USER_UNIT_DIR,
+                )
+            if required:
+                metadata = path.lstat()
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise ServiceManagerError("nonmanaged_operand_unknown")
+        except (PackageError, OSError) as exc:
+            raise ServiceManagerError("nonmanaged_operand_unknown") from exc
+
     def _unit_path(self, unit_name: str) -> Path:
         return self.unit_dir / unit_name
 
@@ -114,12 +242,17 @@ class SystemdServiceManager:
 
     def install(self, unit_text: str, unit_name: str, *, enable: bool = True) -> Path:
         """Write *unit_text* owner-only, back up any existing unit, reload."""
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         path = self._unit_path(unit_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             self._backup_current(unit_name)
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
+        self._require_file_operand(path.parent, directory=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            self._require_file_operand(path)
             path.write_text(unit_text, encoding="utf-8")
+            self._require_file_operand(path, required=True)
             os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError as exc:
             raise ServiceManagerError(f"cannot write unit {path}: {exc}") from exc
@@ -129,6 +262,7 @@ class SystemdServiceManager:
         return path
 
     def uninstall(self, unit_name: str) -> None:
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         try:
             self.stop(unit_name)
         except ServiceManagerError:
@@ -137,7 +271,9 @@ class SystemdServiceManager:
             self.disable(unit_name)
         except ServiceManagerError:
             pass
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         path = self._unit_path(unit_name)
+        self._require_file_operand(path)
         try:
             path.unlink(missing_ok=True)
         except OSError as exc:
@@ -147,18 +283,23 @@ class SystemdServiceManager:
     # ── lifecycle verbs ───────────────────────────────────────────────────
 
     def start(self, unit_name: str) -> None:
+        self._require_nonmanaged_owner(unit_name)
         self._systemctl("start", unit_name)
 
     def stop(self, unit_name: str) -> None:
+        self._require_nonmanaged_owner(unit_name)
         self._systemctl("stop", unit_name)
 
     def restart(self, unit_name: str) -> None:
+        self._require_nonmanaged_owner(unit_name)
         self._systemctl("restart", unit_name)
 
     def enable(self, unit_name: str) -> None:
+        self._require_nonmanaged_owner(unit_name)
         self._systemctl("enable", unit_name)
 
     def disable(self, unit_name: str) -> None:
+        self._require_nonmanaged_owner(unit_name)
         self._systemctl("disable", unit_name)
 
     def status(self, unit_name: str) -> ServiceStatus:
@@ -208,11 +349,16 @@ class SystemdServiceManager:
         one exists. The new unit is never left half-installed on a failure
         with a recoverable previous unit.
         """
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         backup = self._backup_current(unit_name)
         path = self._unit_path(unit_name)
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
+        self._require_file_operand(path.parent, directory=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            self._require_file_operand(path)
             path.write_text(unit_text, encoding="utf-8")
+            self._require_file_operand(path, required=True)
             os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError as exc:
             raise ServiceManagerError(f"cannot write unit {path}: {exc}") from exc
@@ -227,6 +373,7 @@ class SystemdServiceManager:
 
     def rollback(self, unit_name: str) -> UpgradeOutcome:
         """Restore the most recent backup and restart the unit."""
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         backup = self._latest_backup(unit_name)
         if backup is None:
             raise ServiceManagerError(f"no backup available to roll back {unit_name}")
@@ -236,6 +383,7 @@ class SystemdServiceManager:
         return UpgradeOutcome(ok=True, backup_path=backup)
 
     def _rollback_or_report(self, backup: Path | None, unit_name: str) -> UpgradeOutcome:
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         if backup is None:
             return UpgradeOutcome(ok=False, rolled_back=False)
         try:
@@ -262,26 +410,43 @@ class SystemdServiceManager:
     # ── backup helpers ────────────────────────────────────────────────────
 
     def _backup_current(self, unit_name: str) -> Path | None:
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         path = self._unit_path(unit_name)
+        self._require_file_operand(path)
+        self._require_file_operand(self.backup_dir, directory=True)
         if not path.exists():
             return None
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
         backup = self._backup_path(unit_name, f"{int(time.time() * 1000)}")
+        self._require_file_operand(backup)
+        self._require_file_operand(path, required=True)
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         try:
+            self._require_file_operand(path, required=True)
+            self._require_file_operand(backup)
             backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            self._require_file_operand(backup, required=True)
             os.chmod(backup, stat.S_IRUSR | stat.S_IWUSR)
         except OSError as exc:
             raise ServiceManagerError(f"cannot back up unit {path}: {exc}") from exc
         return backup
 
     def _latest_backup(self, unit_name: str) -> Path | None:
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
+        self._require_file_operand(self.backup_dir, directory=True)
         candidates = sorted(self.backup_dir.glob(f"{unit_name}.*"))
-        return candidates[-1] if candidates else None
+        backup = candidates[-1] if candidates else None
+        if backup is not None:
+            self._require_file_operand(backup, required=True)
+        return backup
 
     def _restore_backup(self, unit_name: str, backup: Path) -> None:
+        self._require_nonmanaged_owner(unit_name, allow_absent=True)
         path = self._unit_path(unit_name)
+        self._require_file_operand(backup, required=True)
+        self._require_file_operand(path)
         try:
             path.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+            self._require_file_operand(path, required=True)
             os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError as exc:
             raise ServiceManagerError(f"cannot restore unit {path}: {exc}") from exc

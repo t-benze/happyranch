@@ -214,6 +214,11 @@ class _MissingCredentialProvider:
 def sd_notify(state: str, notify_socket: str | None = None) -> bool:
     """Send one sd_notify datagram (``READY=1``/``WATCHDOG=1``/``STOPPING=1``)
     to ``$NOTIFY_SOCKET``. Returns False when not running under systemd."""
+    health_fd = os.environ.get("HAPPYRANCH_CHILD_HEALTH_FD")
+    generation = os.environ.get("HAPPYRANCH_CHILD_HEALTH_GENERATION")
+    if health_fd is not None or generation is not None:
+        return _write_child_health(state, health_fd, generation)
+
     import socket
 
     path = notify_socket if notify_socket is not None else __import__("os").environ.get("NOTIFY_SOCKET")
@@ -228,6 +233,57 @@ def sd_notify(state: str, notify_socket: str | None = None) -> bool:
             sock.close()
         return True
     except OSError:
+        return False
+
+
+_health_lock = threading.Lock()
+_health_sequence = 0
+
+
+def _write_child_health(state: str, raw_fd: str | None, generation: str | None) -> bool:
+    """Write one strict, generation-bound record to the main supervisor.
+
+    Frozen PyInstaller executables use a bootloader parent, so only this
+    structured pipe crosses the child boundary; the child never inherits or
+    writes systemd's notification socket.
+    """
+    kinds = {
+        "READY=1\n": "ready",
+        "WATCHDOG=1\n": "healthy",
+        "STOPPING=1\n": "stopping",
+        "STATUS=waiting for readiness\n": "waiting",
+        "STATUS=no provider configured; no listener\n": "failed",
+        "STATUS=provider failed to start; no listener\n": "failed",
+    }
+    if raw_fd is None or generation is None or state not in kinds:
+        return False
+    try:
+        fd = int(raw_fd)
+        if fd < 3 or len(generation) != 32:
+            return False
+        int(generation, 16)
+        global _health_sequence
+        with _health_lock:
+            _health_sequence += 1
+            record = {
+                "version": 1,
+                "generation": generation,
+                "sequence": _health_sequence,
+                "state": kinds[state],
+            }
+            if os.environ.get("HAPPYRANCH_CHILD_HEALTH_VERSION") == "2":
+                # This is the actual frozen worker, independently of its
+                # onefile launcher. The wrapper pins and checks the ancestry.
+                fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+                ticks = int(fields[19])
+                if not 1 <= ticks <= 2**63 - 1 or not 2 <= os.getpid() <= 2**31 - 1:
+                    return False
+                record.update(version=2, worker_pid=os.getpid(), worker_start_ticks=ticks)
+            raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            if len(raw) > 1024 or os.write(fd, raw) != len(raw):
+                return False
+        return True
+    except (OSError, ValueError):
         return False
 
 
@@ -681,13 +737,23 @@ class ConnectorSupervisor:
         reinstall/upgrade-recovery), refuses same-generation conflicts, and
         stages any monotonic advance transactionally. A corrupt or partial
         source state refuses installation (fail closed)."""
+        if self.config.managed is not None:
+            raise ConnectorConfigError("managed_package_install_required")
         managed = self._managed_config()
         return self._install_managed(managed, enable=enable)
 
     def _install_managed(self, managed: ConnectorConfig, *, enable: bool) -> Path:
+        if managed.managed is not None or self.config.managed is not None:
+            raise ConnectorConfigError("managed_package_install_required")
         root = Path(managed.state_path).expanduser().parent
+        # Resolve installed ownership before the FIRST staging/mode/ownership
+        # mutation, including direct callers and a missing managed opt-in.
+        self.manager._require_nonmanaged_owner(managed.unit_name, allow_absent=True)
+        self._staging_targets(root, recursive=managed.system)
         try:
+            self._require_staging_target(root, directory=True)
             root.mkdir(parents=True, exist_ok=True)
+            self._require_staging_target(root, directory=True)
             os.chmod(root, 0o700)
         except OSError as exc:
             raise ConnectorConfigError(
@@ -761,13 +827,17 @@ class ConnectorSupervisor:
         try:
             policy_data = src_policy.read_bytes()
             target = root / "policy.json"
+            self._require_staging_target(target, directory=False)
             target.write_bytes(policy_data)
+            self._require_staging_target(target, directory=False)
             os.chmod(target, _MANAGED_FILE_MODE)
         except OSError as exc:
             raise ConnectorConfigError(f"cannot stage policy: {exc}") from exc
         # 4. Write the managed config (what the service actually loads).
         try:
+            self._require_staging_target(root / "config.json", directory=False)
             managed.to_file(root / "config.json")
+            self._require_staging_target(root / "config.json", directory=False)
             os.chmod(root / "config.json", _MANAGED_FILE_MODE)
         except OSError as exc:
             raise ConnectorConfigError(f"cannot write managed config: {exc}") from exc
@@ -779,6 +849,52 @@ class ConnectorSupervisor:
             render_connector_unit(spec), managed.unit_name, enable=enable
         )
 
+    @staticmethod
+    def _require_staging_target(path: Path, *, directory: bool | None = None) -> None:
+        from runtime.remote_access.linux_package import PackageError, _require_nonmanaged_state_owner
+
+        try:
+            _require_nonmanaged_state_owner(path, staging=True, directory=directory)
+        except PackageError as exc:
+            raise ConnectorConfigError(str(exc)) from exc
+
+    def _staging_targets(self, root: Path, *, recursive: bool = False) -> tuple[Path, ...]:
+        """Preflight the finite writer names and the existing chown targets.
+
+        Walk only this positively separate local tree, without following links
+        or reading file contents. Refuse inaccessible/oversized/deep trees rather
+        than silently omit an ownership target. No protected tree is enumerated.
+        """
+        self._require_staging_target(root, directory=True)
+        for name in ("policy.json", "config.json", "trust-state.json", "trust-state.json.anchor",
+                     ".trust-state.json.stage-tmp", ".trust-state.json.anchor.stage-tmp"):
+            self._require_staging_target(root / name, directory=False)
+        targets = [root]
+        if recursive:
+            pending = [root]
+            try:
+                root.lstat()
+            except FileNotFoundError:
+                return tuple(targets)
+            except OSError as exc:
+                raise ConnectorConfigError("managed_lifecycle_owner_unknown") from exc
+            try:
+                while pending:
+                    directory = pending.pop()
+                    self._require_staging_target(directory, directory=True)
+                    with os.scandir(directory) as entries:
+                        for entry in entries:
+                            path = Path(entry.path)
+                            if len(targets) >= 4096 or len(path.relative_to(root).parts) > 64:
+                                raise ConnectorConfigError("managed_lifecycle_owner_unknown")
+                            self._require_staging_target(path)
+                            targets.append(path)
+                            if entry.is_dir(follow_symlinks=False):
+                                pending.append(path)
+            except OSError as exc:
+                raise ConnectorConfigError("managed_lifecycle_owner_unknown") from exc
+        return (root, *sorted(targets[1:]))
+
     def _stage_state_pair(self, source_path: Path, root: Path) -> None:
         """Stage the VALIDATED source pair (snapshot + companion anchor) into
         the managed root under the managed names. Transactional staging: both
@@ -787,6 +903,10 @@ class ConnectorSupervisor:
         pair fully intact (never a rollback); a crash between the renames
         leaves a mismatched pair that ``load()`` rejects (never a usable mixed
         pair)."""
+        if self.config.managed is not None:
+            raise ConnectorConfigError("managed_package_install_required")
+        self.manager._require_nonmanaged_owner(self.config.unit_name, allow_absent=True)
+        self._staging_targets(root)
         entries = (
             ("trust-state.json", source_path),
             ("trust-state.json.anchor", Path(str(source_path) + ".anchor")),
@@ -800,25 +920,32 @@ class ConnectorSupervisor:
                     )
                 tmp = root / f".{managed_name}.stage-tmp"
                 data = src.read_bytes()
+                self._require_staging_target(tmp, directory=False)
                 with open(tmp, "wb") as fh:
                     fh.write(data)
                     fh.flush()
                     os.fsync(fh.fileno())
+                self._require_staging_target(tmp, directory=False)
                 os.chmod(tmp, _MANAGED_FILE_MODE)
                 temps.append((tmp, root / managed_name))
             # Both temps are durable: publish snapshot first, then anchor. A
             # crash between the renames leaves a mismatched pair that load()
             # rejects — fail closed, never a usable mixed pair.
             for tmp, target in temps:
+                self._require_staging_target(tmp, directory=False)
+                self._require_staging_target(target, directory=False)
                 os.replace(tmp, target)
+                self._require_staging_target(root, directory=True)
                 self._fsync_dir(root)
         except OSError as exc:
             raise ConnectorConfigError(f"cannot stage trust state: {exc}") from exc
         finally:
             for tmp, _target in temps:
                 try:
+                    self._require_staging_target(tmp, directory=False)
                     tmp.unlink()
-                except OSError:
+                except (OSError, ConnectorConfigError):
+                    # Never clean through changed/unknown custody on unwind.
                     pass
 
     @staticmethod
@@ -840,6 +967,10 @@ class ConnectorSupervisor:
     def _chown_tree(self, root: Path, user: str, group: str) -> None:
         """Own the staged managed tree to the dedicated service user/group
         (system mode only). Unknown user/group fails closed."""
+        if self.config.managed is not None:
+            raise ConnectorConfigError("managed_package_install_required")
+        self.manager._require_nonmanaged_owner(self.config.unit_name, allow_absent=True)
+        targets = self._staging_targets(root, recursive=True)
         try:
             import grp
             import pwd
@@ -850,39 +981,76 @@ class ConnectorSupervisor:
             raise ConnectorConfigError(
                 f"service user/group not found: {user}/{group}"
             ) from exc
-        for path in (root, *sorted(root.rglob("*"))):
+        for path in targets:
             try:
-                os.chown(path, uid, gid)
+                self._require_staging_target(path)
+                os.chown(path, uid, gid, follow_symlinks=False)
             except OSError as exc:
                 raise ConnectorConfigError(f"cannot chown {path}: {exc}") from exc
 
     def uninstall(self) -> None:
+        if self.config.managed is not None:
+            raise ConnectorConfigError("managed_package_uninstall_required")
         self.manager.uninstall(self.config.unit_name)
 
     def start(self) -> None:
+        entry_ns = time.monotonic_ns()
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import managed_lifecycle
+            managed_lifecycle("start", deadline_ns=entry_ns + 45_000_000_000)
+            return
         self.manager.start(self.config.unit_name)
 
     def stop(self) -> None:
+        entry_ns = time.monotonic_ns()
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import managed_lifecycle
+            managed_lifecycle("stop", deadline_ns=entry_ns + 45_000_000_000)
+            return
         self.manager.stop(self.config.unit_name)
 
     def restart(self) -> None:
+        entry_ns = time.monotonic_ns()
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import managed_lifecycle
+            managed_lifecycle("restart", deadline_ns=entry_ns + 45_000_000_000)
+            return
         self.manager.restart(self.config.unit_name)
 
     def enable(self) -> None:
+        entry_ns = time.monotonic_ns()
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import managed_lifecycle
+            managed_lifecycle("enable", deadline_ns=entry_ns + 45_000_000_000)
+            return
         self.manager.enable(self.config.unit_name)
 
     def disable(self) -> None:
+        entry_ns = time.monotonic_ns()
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import managed_lifecycle
+            managed_lifecycle("disable", deadline_ns=entry_ns + 45_000_000_000)
+            return
         self.manager.disable(self.config.unit_name)
 
     def status(self) -> ServiceStatus:
+        entry_ns = time.monotonic_ns()
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import managed_lifecycle
+            report = managed_lifecycle("status", deadline_ns=entry_ns + 45_000_000_000)
+            return ServiceStatus("happyranch-managed.target", report["state"], report["state"], "loaded")
         return self.manager.status(self.config.unit_name)
 
     def upgrade(self, *, verify_start: bool = True) -> UpgradeOutcome:
+        if self.config.managed is not None:
+            raise ConnectorConfigError("managed_compatible_package_required")
         return self.manager.upgrade(
             render_connector_unit(self.unit_spec()), self.config.unit_name, verify_start=verify_start
         )
 
     def rollback(self) -> UpgradeOutcome:
+        if self.config.managed is not None:
+            raise ConnectorConfigError("managed_compatible_package_required")
         return self.manager.rollback(self.config.unit_name)
 
     # ── the foreground readiness loop (systemd Type=notify) ───────────────
@@ -908,6 +1076,9 @@ class ConnectorSupervisor:
           stop (the CLI installs SIGTERM/SIGINT handlers that call
           ``shutdown()``).
         """
+        if self.config.managed is not None:
+            from runtime.remote_access.linux_package import require_managed_worker
+            require_managed_worker()
         poll_seconds = poll_seconds if poll_seconds is not None else self.config.poll_seconds
         # A RUNNABLE configuration REQUIRES a concrete listener provider (a lab
         # config, a diy config, or an injected adapter): without one, READY=1
