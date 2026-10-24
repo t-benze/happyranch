@@ -163,8 +163,101 @@ def closure(c: Controller, tree: dict, cli: dict) -> dict:
                             except FileNotFoundError:
                                 continue
                     groups[group] = dict(exists=directory.exists(), pids=sorted(set(members)))
-    return dict(processes=rows, groups=groups, sampled=time.monotonic(),
-                pending=bool(select.select([c.server], [], [], 0)[0]))
+    snapshot = dict(processes=rows, groups=groups, sampled=time.monotonic(),
+                    pending=bool(select.select([c.server], [], [], 0)[0]))
+    # The original snapshot above remains the ONLY closure oracle. Everything
+    # below is a later, sequential diagnostic, including same-generation Z.
+    c.remaining()
+    require(len(rows) <= 17, "E07 diagnostic target bound; never truncate original rows")
+
+    def parse_stat(raw: bytes, pid: int) -> tuple:
+        if len(raw) > 4096:
+            return "oversized", None, None, None
+        if not raw:
+            return "empty", None, None, None
+        if not raw.endswith(b"\n"):
+            return "partial", None, None, None
+        closing = raw.rfind(b")")
+        if (not raw.startswith(str(pid).encode("ascii") + b" (") or closing < 3
+                or raw[closing+1:closing+2] != b" " or b"\n" in raw[closing+2:-1]):
+            return "malformed", None, None, None
+        tail = raw[closing+2:-1].split()
+        if (len(tail) < 20 or len(tail[0]) != 1
+                or tail[0] not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                or not 1 <= len(tail[1]) <= 20 or not tail[1].isdigit()
+                or not 1 <= len(tail[19]) <= 20 or not tail[19].isdigit()
+                or int(tail[19]) == 0):
+            return "malformed", None, None, None
+        return "observed", tail[19].decode("ascii"), tail[0].decode("ascii"), int(tail[1])
+
+    def read_stat(pid: int) -> dict:
+        c.remaining()  # Outside the I/O catch: deadline/assertion failures escape.
+        entered = time.monotonic()
+        try:
+            # ONE unbuffered bounded acquisition; no short-read retry or raw export.
+            with Path(f"/proc/{pid}/stat").open("rb", buffering=0) as stream:
+                raw = stream.read(4097)
+        except TimeoutError:
+            raise  # TimeoutError is also OSError; real raising alarms must escape.
+        except (FileNotFoundError, ProcessLookupError):
+            reason, start, state, ppid = "absent", None, None, None
+        except OSError as exc:
+            reason = "interrupted" if exc.errno == 4 else "unreadable"
+            start = state = ppid = None
+        else:
+            reason, start, state, ppid = parse_stat(raw, pid)
+        observation = dict(pid=pid, start=start, state=state, ppid=ppid, reason=reason,
+                           entered=entered, finished=time.monotonic())
+        c.remaining()
+        return observation
+
+    daemon = c.e07["transport"]["daemon"]
+    pins = {}
+    for proc in [*processes, daemon]:
+        require(type(proc["pid"]) is int and 0 < proc["pid"] < 10**20
+                and type(proc["start"]) is str and 1 <= len(proc["start"]) <= 20
+                and proc["start"].isascii() and proc["start"].isdecimal() and int(proc["start"]) > 0
+                and (proc["pid"] not in pins or pins[proc["pid"]] == proc["start"]),
+                "E07 unambiguous finite diagnostic generation pins")
+        pins[proc["pid"]] = proc["start"]
+
+    def associate(pid: int, expected_start: str | None) -> dict:
+        entered = time.monotonic()
+        a = read_stat(pid)
+        parent = b = parent_pin = None
+        if a["reason"] != "observed":
+            relation = "target-absent" if a["reason"] == "absent" else "target-unknown"
+        elif expected_start is not None and a["start"] != expected_start:
+            relation = "target-reused"
+        elif a["ppid"] == 0:
+            relation = "no-parent"
+        else:
+            parent_pin = pins.get(a["ppid"])
+            parent = read_stat(a["ppid"])
+            b = read_stat(pid)
+            if b["reason"] != "observed" or b["start"] != a["start"] or b["ppid"] != a["ppid"]:
+                relation = "target-changed"
+            elif parent["reason"] != "observed":
+                relation = "parent-missing" if parent["reason"] == "absent" else "parent-unknown"
+            elif parent_pin is not None and parent["start"] != parent_pin:
+                relation = "parent-reused"
+            else:
+                relation = "bracketed"
+        result = dict(entered=entered, finished=time.monotonic(), expected_start=expected_start,
+                      target_a=a, parent=parent, target_b=b, parent_pin=parent_pin, relation=relation)
+        c.remaining()
+        return result
+
+    # Self/ONE-parent/self measures context; it supplies NO launcher role pin.
+    context = associate(os.getpid(), None)
+    snapshot["controller_diagnostic"] = context
+    if context["relation"] == "bracketed":
+        for observation in (context["target_a"], context["parent"]):
+            pins.setdefault(observation["pid"], observation["start"])
+    for row in rows:
+        row["diagnostic"] = associate(row["pid"], row["start"])
+    c.remaining()
+    return snapshot
 
 
 def cancelled(c: Controller, value: dict, parent: dict, worker: dict, result: dict) -> None:
