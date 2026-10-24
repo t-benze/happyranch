@@ -185,7 +185,8 @@ class DiagnosticContext:
             if written != len(raw):
                 # Finish the undelivered suffix once, without repeating a
                 # possibly delivered instruction or recursively reporting.
-                os.write(2, raw[written:])
+                if os.write(2, raw[written:]) != len(raw) - written:
+                    raise OSError('report_output_short_write')
         except BaseException:
             fallback = (f'Setup held incident={self.incident} stage={self.stage} category={category} '
                         f'last_completed={self.last_completed} layout={self.layout} '

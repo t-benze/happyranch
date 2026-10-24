@@ -1618,7 +1618,7 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
     store = getattr(org, "workflow_coding_release_import", None)
     if (not isinstance(store_class, type) or store_class.__module__ != import_module.__name__
             or store_class.__qualname__ != "CodingReleaseImportStore" or type(store) is not store_class
-            or store.org is not org):
+            or getattr(store, "org", None) is not org):
         raise IdentityUnavailable("identity_workflow_store_unavailable")
     selected_bindings.append((import_module, "CodingReleaseImportStore", store_class))
     for name in ("get", "import_release", "_current", "_receipt"):
@@ -1831,7 +1831,8 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
     package_version = package_versions[0]
     root = org.root.resolve(strict=True)
     runtime_root = root.parent.parent if root.parent.name == "orgs" else root
-    if (getattr(org, "workflow_coding_release_import", None) is not store or store.org is not org
+    if (getattr(org, "workflow_coding_release_import", None) is not store
+            or getattr(store, "org", None) is not org
             or any(function.__code__ is not original for function, original in selected_codes)
             or any(vars(owner).get(name) is not original for owner, name, original in selected_bindings)
             or any(sys.modules.get(module.__name__) is not module
