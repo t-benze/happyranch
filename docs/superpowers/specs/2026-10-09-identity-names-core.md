@@ -52,9 +52,23 @@ refusals use existing sanitized naming_database_unavailable; retained historical
 diagnostic categories and PR1092 failure provenance remain unchanged. Non-install
 refreshes and all readers never invoke this installer admission or install names.
 
-Release-reference construction supports fresh/v0/v2/v2-organic × F/E/G/H/I × naming absent/v1,
-including all three current generic cleanup indexes. Every non-null schema SQL
-object participates; no object filter/whitelist or candidate-derived baseline.
+Workflow release references support F–J × naming absent/v1 × Pause/team-move,
+including the current generic cleanup indexes. THR320seq150/ROOT12848 adds only
+workflow history `v2-chronological-20260530`: the independently source-constructed
+195-object whole seed (56585 UTF8 bytes/SHA256
+`9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7`,
+TASK12862 complete constructors bda5d062→1be72fe7 plus authentic thread sweep).
+Original S2 marker/sequence remain; live observations never feed construction.
+Only this history's J uses complete I plus canonical coding DDL and requires
+full J validation before unchanged Pause/team-move/naming construction. The
+strict fresh-J guard and actual offline migration stay unchanged. Legacy
+reference admission remains exactly fresh/v0/v2/v2-organic, with both preimages
+literal and fifth-name rejection before the shared five-part cache lookup.
+ANY unavailable reference refuses even alongside a match. Every non-null raw SQL
+object ordered by name participates; no normalization, object filter or
+candidate-derived baseline. Source delivery does not authorize operator writes;
+conditional transitions and original-key custody are in the coding spec's
+historical compatibility operator guidance.
 Unknown whole-database objects keep the existing strict reference refusal in
 workflow release validation and legacy authority evidence. Naming readiness is
 separate and never grants workflow/coding/legacy authority.

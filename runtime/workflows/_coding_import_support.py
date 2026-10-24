@@ -63,14 +63,14 @@ class CodingImportSupport:
         from runtime.identities.schema import validate_names
         from runtime.infrastructure.task_pause_controls import validate_pause_schema
         from runtime.infrastructure.team_move_store import validate_team_move_schema
-        from runtime.orchestrator.authority import _RELEASE_REFERENCE_HISTORIES, _release_schema_digest
+        from runtime.orchestrator.authority import _WORKFLOW_RELEASE_REFERENCE_HISTORIES, _workflow_release_schema_digest
         with self.db._lock:
             conn = self.db._conn
             names = validate_names(conn, org_slug=self.org.slug)
             pause = validate_pause_schema(conn, org_slug=self.org.slug, allow_absent=True)
             move = validate_team_move_schema(conn, org_slug=self.org.slug)
-        references = tuple(_release_schema_digest('J', history, names, pause_layout=pause,
-                           team_move_layout=move) for history in _RELEASE_REFERENCE_HISTORIES)
+        references = tuple(_workflow_release_schema_digest('J', history, names, pause_layout=pause,
+                           team_move_layout=move) for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
         if 'unavailable' in references:
             raise CodingReleaseImportError('coding_release_import_schema_reference_unavailable')
         return references

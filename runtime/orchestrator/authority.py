@@ -811,6 +811,1118 @@ _RELEASE_REFERENCE_PREIMAGES = (
 )
 
 
+# Workflow-only fifth history, accepted under ROOT TASK-12848 / THR320seq150.
+# Independently source-constructed whole 195-object checkpoint: TASK12862,
+# revised-design.md 8c806f537f847ecb0200dc29258c08147430d8fd1d3157bfbd6fa2c8e872b4eb.
+# Complete constructors bda5d062 -> 1be72fe7 plus authentic thread sweep;
+# current Database owns all later native migrations. No deployment chronology claim.
+# Whole UTF8 seed: 56585 bytes, SHA256
+# 9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7.
+# Retain the original S2 marker and sqlite_sequence(session_token_usage,0).
+# Observation/candidate SQL never supplies reference-constructor input.
+_WORKFLOW_RELEASE_REFERENCE_HISTORIES = _RELEASE_REFERENCE_HISTORIES + ('v2-chronological-20260530',)
+_WORKFLOW_RELEASE_REFERENCE_PREIMAGE = r"""BEGIN TRANSACTION;
+CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                action TEXT NOT NULL,
+                payload TEXT,
+                timestamp TEXT NOT NULL
+            );
+CREATE TABLE authority_audit (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id TEXT NOT NULL REFERENCES authority_candidates(id),
+                event_type   TEXT NOT NULL
+                    CHECK (event_type IN
+                        ('candidate_claimed','candidate_claim_lost',
+                         'evaluation_recorded','candidate_consumed')),
+                payload_json TEXT,
+                created_at   TEXT NOT NULL
+            );
+CREATE TABLE authority_candidate_policy_pins (
+                candidate_id TEXT PRIMARY KEY REFERENCES authority_candidates(id) ON DELETE RESTRICT,
+                release_id TEXT NOT NULL REFERENCES authority_policy_releases(id) ON DELETE RESTRICT,
+                activation_id TEXT NOT NULL REFERENCES authority_policy_activations(id) ON DELETE RESTRICT,
+                activation_epoch INTEGER NOT NULL CHECK(activation_epoch > 0),
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+CREATE TABLE authority_candidates (
+                id                       TEXT PRIMARY KEY,
+                claim_key                TEXT NOT NULL UNIQUE,
+                root_task_id             TEXT NOT NULL,
+                team                     TEXT NOT NULL,
+                manager_agent            TEXT NOT NULL,
+                manager_session_id       TEXT NOT NULL,
+                causal_event_id          TEXT NOT NULL,
+                causal_event_digest      TEXT NOT NULL,
+                causal_result_id         TEXT,
+                policy_id                TEXT NOT NULL,
+                policy_version           TEXT NOT NULL,
+                policy_digest            TEXT NOT NULL,
+                prompt_id                TEXT NOT NULL,
+                prompt_version           TEXT NOT NULL,
+                prompt_digest            TEXT NOT NULL,
+                model_id                 TEXT NOT NULL,
+                model_version            TEXT NOT NULL,
+                model_digest             TEXT NOT NULL,
+                snapshot_digest          TEXT NOT NULL,
+                snapshot_retention_class TEXT NOT NULL DEFAULT 'digest_only'
+                    CHECK (snapshot_retention_class IN ('digest_only','shadow','indefinite')),
+                snapshot_redaction_class TEXT NOT NULL DEFAULT 'redacted'
+                    CHECK (snapshot_redaction_class IN ('none','redacted')),
+                fence_results_json       TEXT,
+                disposition              TEXT
+                    CHECK (disposition IS NULL OR disposition IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error')),
+                lifecycle_state          TEXT NOT NULL DEFAULT 'created'
+                    CHECK (lifecycle_state IN ('created','evaluated','consumed')),
+                consumed_at              TEXT,
+                created_at               TEXT NOT NULL,
+                updated_at               TEXT NOT NULL
+            );
+CREATE TABLE authority_continue_envelopes (
+                id                   TEXT PRIMARY KEY,
+                candidate_id         TEXT NOT NULL UNIQUE REFERENCES authority_candidates(id),
+                root_task_id         TEXT NOT NULL,
+                team                 TEXT NOT NULL,
+                manager_agent        TEXT NOT NULL,
+                manager_session_id   TEXT NOT NULL,
+                causal_event_id      TEXT NOT NULL,
+                causal_event_digest  TEXT NOT NULL,
+                policy_id            TEXT NOT NULL,
+                policy_version       TEXT NOT NULL,
+                policy_digest        TEXT NOT NULL,
+                clause_id            TEXT NOT NULL,
+                action               TEXT NOT NULL
+                    CHECK (action IN ('escalate_to_founder','continue_same_root')),
+                state                TEXT NOT NULL DEFAULT 'active'
+                    CHECK (state IN ('active','consumed','violated')),
+                consumed_at          TEXT,
+                created_at           TEXT NOT NULL,
+                updated_at           TEXT NOT NULL
+            );
+CREATE TABLE authority_evaluations (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id             TEXT NOT NULL UNIQUE REFERENCES authority_candidates(id),
+                disposition              TEXT NOT NULL
+                    CHECK (disposition IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error')),
+                disposition_code         TEXT NOT NULL
+                    CHECK (disposition_code IN
+                        ('continue_same_root','escalate','not_applicable','evaluator_error',
+                         'low_confidence','timeout','malformed_output','injection_guard','audit_failure')),
+                response_digest          TEXT NOT NULL,
+                response_retention_class TEXT NOT NULL DEFAULT 'digest_only'
+                    CHECK (response_retention_class IN ('digest_only','shadow','indefinite')),
+                response_redaction_class TEXT NOT NULL DEFAULT 'redacted'
+                    CHECK (response_redaction_class IN ('none','redacted')),
+                fence_results_json       TEXT,
+                created_at               TEXT NOT NULL
+            );
+CREATE TABLE authority_policy_activations (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                epoch INTEGER NOT NULL CHECK(epoch > 0),
+                release_id TEXT NOT NULL REFERENCES authority_policy_releases(id) ON DELETE RESTRICT,
+                previous_activation_id TEXT REFERENCES authority_policy_activations(id) ON DELETE RESTRICT,
+                expected_previous_epoch INTEGER CHECK(expected_previous_epoch IS NULL OR expected_previous_epoch >= 0),
+                action TEXT NOT NULL CHECK(action IN ('activate','reactivate_rollback','bootstrap')),
+                actor_kind TEXT NOT NULL CHECK(actor_kind='shared_local_operator_credential'),
+                request_id TEXT NOT NULL UNIQUE,
+                request_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                activation_digest TEXT NOT NULL,
+                UNIQUE(team, epoch)
+            );
+CREATE TABLE authority_policy_releases (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                policy_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK(version > 0),
+                title TEXT NOT NULL,
+                normative_text TEXT NOT NULL,
+                clauses_json TEXT NOT NULL,
+                continuation_phrase TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                policy_digest TEXT NOT NULL UNIQUE,
+                based_on_release_id TEXT REFERENCES authority_policy_releases(id) ON DELETE RESTRICT,
+                actor_kind TEXT NOT NULL CHECK(actor_kind='shared_local_operator_credential'),
+                created_at TEXT NOT NULL,
+                UNIQUE(team, policy_id, version)
+            );
+CREATE TABLE custom_skill_eligibility_events (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id                TEXT NOT NULL REFERENCES custom_skills(id),
+                actor                   TEXT NOT NULL,
+                preview_revision        INTEGER NOT NULL,
+                rule_set_json           TEXT NOT NULL,
+                affected_newly_visible  TEXT NOT NULL,
+                affected_newly_hidden   TEXT NOT NULL,
+                created_at              TEXT NOT NULL
+            );
+CREATE TABLE custom_skill_eligibility_rules (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id      TEXT NOT NULL REFERENCES custom_skills(id),
+                scope_type    TEXT NOT NULL CHECK (scope_type IN ('org', 'team', 'agent')),
+                scope_target  TEXT,
+                effect        TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+                created_at    TEXT NOT NULL,
+                created_by    TEXT NOT NULL,
+                superseded_at TEXT
+            );
+CREATE TABLE custom_skill_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id      TEXT NOT NULL REFERENCES custom_skills(id),
+                event_type    TEXT NOT NULL CHECK (event_type IN ('created', 'version_saved', 'validated', 'retired', 'restored')),
+                actor         TEXT NOT NULL,
+                version_id    INTEGER REFERENCES custom_skill_versions(id),
+                metadata_json TEXT,
+                created_at    TEXT NOT NULL,
+                task_id       TEXT,
+                session_id    TEXT
+            );
+CREATE TABLE custom_skill_materializations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id        TEXT NOT NULL REFERENCES custom_skills(id),
+                agent_name      TEXT NOT NULL,
+                task_id         TEXT,
+                session_context TEXT NOT NULL CHECK (session_context IN ('task', 'thread', 'wake', 'dream')),
+                session_id      TEXT NOT NULL,
+                version_id      INTEGER NOT NULL REFERENCES custom_skill_versions(id),
+                content_hash    TEXT NOT NULL,
+                success         INTEGER NOT NULL DEFAULT 0,
+                error_message   TEXT,
+                created_at      TEXT NOT NULL,
+                CHECK ((session_context = 'task' AND task_id IS NOT NULL) OR (session_context != 'task'))
+            );
+CREATE TABLE custom_skill_purge_events (
+                purge_id       TEXT PRIMARY KEY,
+                skill_id       TEXT NOT NULL UNIQUE REFERENCES custom_skills(id),
+                org_slug       TEXT NOT NULL,
+                slug           TEXT NOT NULL,
+                actor          TEXT NOT NULL,
+                purged_at      TEXT NOT NULL,
+                physical_erasure INTEGER NOT NULL DEFAULT 0 CHECK (physical_erasure = 0)
+            );
+CREATE TABLE custom_skill_versions (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id               TEXT NOT NULL REFERENCES custom_skills(id),
+                parent_version_id      INTEGER REFERENCES custom_skill_versions(id),
+                content_hash           TEXT NOT NULL,
+                content_artifact_key   TEXT NOT NULL,
+                skill_md_cache         TEXT,
+                references_manifest    TEXT,
+                assets_manifest        TEXT,
+                validation_state       TEXT NOT NULL DEFAULT 'validation_required' CHECK (validation_state IN ('valid', 'invalid', 'validation_required')),
+                validator_version       TEXT,
+                validation_findings     TEXT,
+                created_at              TEXT NOT NULL,
+                author_kind             TEXT NOT NULL CHECK (author_kind IN ('agent', 'human')),
+                author_identity          TEXT NOT NULL,
+                source_task_id           TEXT,
+                source_session_id        TEXT,
+                task_brief_digest         TEXT
+            );
+CREATE TABLE custom_skills (
+                id                  TEXT PRIMARY KEY,
+                org_slug            TEXT NOT NULL,
+                slug                TEXT NOT NULL,
+                name                TEXT NOT NULL,
+                description         TEXT NOT NULL DEFAULT '',
+                policy_class        TEXT NOT NULL DEFAULT 'standard_operational' CHECK (policy_class = 'standard_operational'),
+                origin_kind         TEXT NOT NULL CHECK (origin_kind IN ('agent', 'human')),
+                origin_agent        TEXT,
+                created_at          TEXT NOT NULL,
+                created_by          TEXT NOT NULL,
+                current_version_id  INTEGER,
+                retired_at          TEXT,
+                retired_by          TEXT,
+                retired_reason      TEXT, purged_at TEXT, purge_id TEXT,
+                FOREIGN KEY (current_version_id) REFERENCES custom_skill_versions(id)
+            );
+CREATE TABLE dream_kb_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dream_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                body_markdown TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                promoted_kb_slug TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(dream_id, slug),
+                FOREIGN KEY (dream_id) REFERENCES dreams(id)
+            );
+CREATE TABLE dreams (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                window_start TEXT,
+                window_end TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                summary TEXT,
+                transcript_path TEXT,
+                new_learnings_count INTEGER NOT NULL DEFAULT 0,
+                kb_candidate_count INTEGER NOT NULL DEFAULT 0,
+                founder_thread_id TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date)
+            );
+CREATE TABLE escalation_notifications (
+                feishu_message_id TEXT PRIMARY KEY,
+                org_slug          TEXT NOT NULL,
+                task_id           TEXT NOT NULL,
+                chat_id           TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                expires_at        TEXT NOT NULL,
+                consumed_at       TEXT,
+                consumed_by       TEXT,
+                kind              TEXT NOT NULL DEFAULT 'escalation'
+            );
+CREATE TABLE jobs (
+                id                       TEXT PRIMARY KEY,
+                task_id                  TEXT NOT NULL,
+                agent_name               TEXT NOT NULL,
+                title                    TEXT NOT NULL,
+                rationale                TEXT,
+                script_text              TEXT NOT NULL,
+                interpreter              TEXT NOT NULL,
+                cwd_hint                 TEXT,
+                review_required          INTEGER NOT NULL DEFAULT 0,
+                persistent               INTEGER NOT NULL DEFAULT 0,
+                max_runtime_seconds      INTEGER,
+                max_output_bytes         INTEGER NOT NULL DEFAULT 52428800,
+                status                   TEXT NOT NULL DEFAULT 'pending',
+                exit_code                INTEGER,
+                reason                   TEXT,
+                duration_ms              INTEGER,
+                stdout_head              TEXT,
+                stderr_head              TEXT,
+                stdout_path              TEXT,
+                stderr_path              TEXT,
+                stdout_bytes             INTEGER,
+                stderr_bytes             INTEGER,
+                cwd_resolved             TEXT,
+                started_at               TEXT,
+                finished_at              TEXT,
+                reviewed_at              TEXT,
+                reviewed_by              TEXT,
+                reject_reason            TEXT,
+                created_at               TEXT NOT NULL, execution_backend TEXT, selected_runner_id TEXT, remote_bundle_json TEXT, remote_bundle_digest TEXT, current_remote_attempt_id TEXT);
+CREATE TABLE kb_views (
+                slug           TEXT PRIMARY KEY,
+                view_count     INTEGER NOT NULL DEFAULT 0,
+                last_viewed_at TEXT
+            );
+CREATE TABLE manager_supersessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                predecessor_task_id TEXT NOT NULL UNIQUE,
+                successor_task_id TEXT NOT NULL UNIQUE,
+                original_root_task_id TEXT NOT NULL,
+                actor_agent TEXT NOT NULL,
+                actor_session_id TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                attestation_evidence TEXT NOT NULL,
+                predecessor_brief TEXT NOT NULL,
+                successor_brief TEXT NOT NULL,
+                predecessor_brief_sha256 TEXT NOT NULL,
+                successor_brief_sha256 TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(predecessor_task_id) REFERENCES tasks(id),
+                FOREIGN KEY(successor_task_id) REFERENCES tasks(id)
+            );
+CREATE TABLE org_settings (
+                section     TEXT NOT NULL PRIMARY KEY,
+                value_json  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                updated_by  TEXT DEFAULT 'founder'
+            );
+CREATE TABLE processed_event_ids (
+                org_slug          TEXT NOT NULL,
+                feishu_event_id   TEXT NOT NULL,
+                processed_at      TEXT NOT NULL,
+                outcome           TEXT NOT NULL,
+                reason            TEXT,
+                PRIMARY KEY (org_slug, feishu_event_id)
+            );
+CREATE TABLE remote_job_attempts (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL CHECK(ordinal >= 1),
+          runner_id TEXT NOT NULL,
+          runner_generation INTEGER NOT NULL,
+          workspace_id TEXT NOT NULL,
+          workspace_generation INTEGER NOT NULL,
+          bundle_version INTEGER NOT NULL CHECK(bundle_version = 1),
+          bundle_digest TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('reserved','admitted','running','cancelling','reconciling','terminal')),
+          fence_token TEXT NOT NULL UNIQUE,
+          lease_generation INTEGER NOT NULL CHECK(lease_generation >= 1),
+          lease_expires_at TEXT NOT NULL,
+          connection_id TEXT,
+          cancel_requested_at TEXT,
+          cancel_accepted_at TEXT,
+          public_status TEXT CHECK(public_status IN ('completed','failed','rejected')),
+          primary_reason TEXT,
+          terminal_digest TEXT,
+          terminal_committed_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(job_id, ordinal),
+          FOREIGN KEY(job_id) REFERENCES jobs(id),
+          FOREIGN KEY(runner_id) REFERENCES remote_runners(id),
+          FOREIGN KEY(workspace_id, runner_id, runner_generation, workspace_generation)
+            REFERENCES remote_runner_workspaces(id, runner_id, runner_generation, generation)
+        );
+CREATE TABLE remote_phase_receipts (
+          id TEXT PRIMARY KEY,
+          attempt_id TEXT NOT NULL,
+          phase TEXT NOT NULL CHECK(phase IN ('pre_run','workspace_observation','run','post_run','finalization')),
+          ordinal INTEGER NOT NULL CHECK(ordinal >= 1),
+          outcome TEXT NOT NULL CHECK(outcome IN ('not_declared','started','succeeded','failed','timed_out','output_capped','cancelled','skipped','uncertain')),
+          stable_reason TEXT,
+          phase_digest TEXT,
+          started_at TEXT,
+          finished_at TEXT,
+          runtime_limit_ms INTEGER,
+          stdout_limit_bytes INTEGER,
+          stderr_limit_bytes INTEGER,
+          exit_code INTEGER,
+          stdout_bytes INTEGER,
+          stderr_bytes INTEGER,
+          stdout_artifact_key TEXT,
+          stderr_artifact_key TEXT,
+          receipt_json TEXT NOT NULL,
+          receipt_digest TEXT NOT NULL,
+          accepted_frame_seq INTEGER NOT NULL,
+          UNIQUE(attempt_id, phase, ordinal),
+          FOREIGN KEY(attempt_id) REFERENCES remote_job_attempts(id)
+        );
+CREATE TABLE remote_pre_run_observations (
+          id TEXT PRIMARY KEY,
+          attempt_id TEXT NOT NULL,
+          receipt_id TEXT NOT NULL,
+          runner_id TEXT NOT NULL,
+          runner_generation INTEGER NOT NULL,
+          workspace_id TEXT NOT NULL,
+          workspace_generation INTEGER NOT NULL,
+          pre_run_digest TEXT NOT NULL,
+          observation_policy_version INTEGER NOT NULL,
+          exclusions_policy_digest TEXT NOT NULL,
+          required_roots_json TEXT NOT NULL,
+          observed_roots_json TEXT NOT NULL,
+          observation_json TEXT NOT NULL,
+          observation_digest TEXT NOT NULL,
+          complete INTEGER NOT NULL CHECK(complete IN (0,1)),
+          reusable INTEGER NOT NULL CHECK(reusable IN (0,1)),
+          observed_at TEXT NOT NULL,
+          FOREIGN KEY(attempt_id) REFERENCES remote_job_attempts(id),
+          FOREIGN KEY(receipt_id) REFERENCES remote_phase_receipts(id),
+          FOREIGN KEY(workspace_id, runner_id, runner_generation, workspace_generation)
+            REFERENCES remote_runner_workspaces(id, runner_id, runner_generation, generation)
+        );
+CREATE TABLE remote_protocol_frames (
+          attempt_id TEXT NOT NULL,
+          connection_id TEXT NOT NULL,
+          frame_seq INTEGER NOT NULL,
+          frame_type TEXT NOT NULL,
+          payload_digest TEXT NOT NULL,
+          disposition TEXT NOT NULL CHECK(disposition IN ('accepted','duplicate','rejected')),
+          received_at TEXT NOT NULL,
+          PRIMARY KEY(attempt_id, connection_id, frame_seq),
+          FOREIGN KEY(attempt_id) REFERENCES remote_job_attempts(id)
+        );
+CREATE TABLE remote_runner_schema_migrations (
+          name TEXT PRIMARY KEY, stage TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+INSERT INTO "remote_runner_schema_migrations" VALUES('generic_remote_jobs_s2_v1','complete','2026-10-24T11:50:30.829Z');
+CREATE TABLE remote_runner_workspaces (
+          id TEXT PRIMARY KEY,
+          runner_id TEXT NOT NULL,
+          runner_generation INTEGER NOT NULL,
+          agent_name TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK(generation >= 1),
+          state TEXT NOT NULL CHECK(state IN ('ready','leased','recreate_pending','uncertain','retired')),
+          active_attempt_id TEXT,
+          root_locator_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          retired_at TEXT,
+          UNIQUE(id, runner_id, runner_generation, generation),
+          FOREIGN KEY(runner_id) REFERENCES remote_runners(id)
+        );
+CREATE TABLE remote_runners (
+          id TEXT PRIMARY KEY,
+          org_slug TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK(generation >= 1),
+          state TEXT NOT NULL CHECK(state IN ('unavailable','available','busy','draining','revoked','unhealthy')),
+          capacity INTEGER NOT NULL DEFAULT 1 CHECK(capacity = 1),
+          protocol_min INTEGER NOT NULL DEFAULT 1,
+          protocol_max INTEGER NOT NULL DEFAULT 1,
+          capabilities_json TEXT NOT NULL,
+          attestation_json TEXT NOT NULL,
+          attestation_digest TEXT NOT NULL,
+          attested_at TEXT NOT NULL,
+          attestation_expires_at TEXT NOT NULL,
+          cert_serial TEXT NOT NULL,
+          cert_spki_sha256 TEXT NOT NULL,
+          revocation_epoch INTEGER NOT NULL DEFAULT 0 CHECK(revocation_epoch >= 0),
+          last_seen_at TEXT,
+          unavailable_reason TEXT,
+          unhealthy_reason TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          revoked_at TEXT,
+          revoke_reason TEXT,
+          UNIQUE(org_slug, display_name),
+          UNIQUE(org_slug, cert_serial),
+          UNIQUE(org_slug, cert_spki_sha256)
+        );
+CREATE TABLE schedules (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                kind TEXT NOT NULL,
+                fire_at TEXT NOT NULL,
+                recurrence TEXT,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                normalized_brief TEXT NOT NULL,
+                source_instruction TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'armed',
+                active INTEGER NOT NULL DEFAULT 1,
+                expires_at TEXT,
+                indefinite INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                last_fired_at TEXT,
+                fire_count INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT,
+                error TEXT,
+                transcript_path TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            , end_reason TEXT);
+CREATE TABLE session_token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    TEXT,
+                    agent      TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    executor   TEXT NOT NULL,
+                    model      TEXT,
+                    input_tokens          INTEGER,
+                    output_tokens         INTEGER,
+                    cache_read_tokens     INTEGER,
+                    cache_creation_tokens INTEGER,
+                    reasoning_tokens      INTEGER,
+                    usage_raw_json TEXT,
+                    scope_type TEXT,
+                    scope_id TEXT,
+                    thread_id TEXT,
+                    invocation_purpose TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (task_id, agent, session_id)
+                );
+CREATE TABLE skill_validation_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id       TEXT NOT NULL,
+                slug           TEXT NOT NULL,
+                agent          TEXT,
+                source         TEXT NOT NULL DEFAULT 'user_authored',
+                severity       TEXT NOT NULL DEFAULT 'info',
+                ok             INTEGER NOT NULL DEFAULT 1,
+                version        TEXT,
+                findings       TEXT,
+                reason_codes   TEXT,
+                created_at     TEXT NOT NULL
+            );
+CREATE TABLE task_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                legacy_status TEXT,
+                FOREIGN KEY (task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, ordinal),
+                UNIQUE(storage_key)
+            );
+CREATE TABLE task_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
+                output_summary TEXT,
+                decision_json TEXT,
+                confidence_score INTEGER,
+                learnings TEXT,
+                risks_flagged TEXT,
+                duration_seconds INTEGER,
+                token_count INTEGER,
+                estimated_cost REAL,
+                output_dir TEXT,
+                created_at TEXT NOT NULL
+            , waiting_on_job_ids TEXT, verdict TEXT, local_ci TEXT);
+CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_output_dir TEXT
+            , block_kind TEXT, note TEXT, orchestration_step_count INTEGER DEFAULT 0, cancelled_at TEXT, revisit_of_task_id TEXT, last_heartbeat TEXT, session_timeout_seconds INTEGER, blocked_on_job_ids TEXT, dispatched_from_thread_id TEXT, active_chain TEXT, task_type TEXT NOT NULL DEFAULT 'task', active_fanout TEXT, executor_pid INTEGER, current_session_id TEXT, zombie_flagged_at TEXT);
+CREATE TABLE thread_exchange_deferrals (
+                thread_id        TEXT NOT NULL,
+                exchange_id      INTEGER NOT NULL,
+                agent_name       TEXT NOT NULL,
+                state            TEXT NOT NULL CHECK (state IN ('held','released','suppressed')),
+                created_at       TEXT NOT NULL,
+                released_at      TEXT,
+                mint_token_prefix TEXT,
+                catchup_pending  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (thread_id, exchange_id, agent_name),
+                FOREIGN KEY (thread_id, exchange_id)
+                    REFERENCES thread_reply_exchange(thread_id, exchange_id)
+            );
+CREATE TABLE thread_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                invocation_token TEXT NOT NULL UNIQUE,
+                triggering_seq INTEGER NOT NULL,
+                purpose TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                enqueued_at TEXT NOT NULL,
+                started_at TEXT,
+                consumed_at TEXT,
+                session_id TEXT,
+                dispatched_task_id TEXT,
+                decline_reason TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE thread_message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                message_seq INTEGER NOT NULL,
+                ordinal INTEGER NOT NULL,
+                artifact_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL, thread_attachment_id TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                UNIQUE(thread_id, message_seq, ordinal)
+            );
+CREATE TABLE thread_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                speaker TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                body_markdown TEXT,
+                addressed_to_json TEXT,
+                decline_reason TEXT,
+                system_payload_json TEXT,
+                created_at TEXT NOT NULL, sent_from_task_id TEXT, mentions_json TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE thread_participants (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                added_by TEXT NOT NULL, agent_session_id TEXT, last_resumed_seq INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE thread_reply_breaker_episodes (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                executor_key TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('closed','open','probe')),
+                consecutive_failures INTEGER NOT NULL DEFAULT 0
+                    CHECK (consecutive_failures >= 0),
+                opened_at TEXT,
+                cooldown_until TEXT,
+                probe_lease_id TEXT,
+                last_failure_category TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, agent_name, executor_key),
+                UNIQUE (episode_id),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE thread_reply_breaker_receipts (
+                invocation_token TEXT PRIMARY KEY,
+                episode_id TEXT NOT NULL,
+                outcome TEXT NOT NULL CHECK (outcome IN ('failure','success')),
+                failure_category TEXT,
+                recorded_at TEXT NOT NULL
+            );
+CREATE TABLE thread_reply_delivery_state (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                acknowledged_through_seq INTEGER NOT NULL DEFAULT 0,
+                required_through_seq INTEGER NOT NULL DEFAULT 0,
+                queued_invocation_token TEXT,
+                running_invocation_token TEXT,
+                running_from_seq INTEGER,
+                running_through_seq INTEGER,
+                last_terminal_reason TEXT,
+                last_terminal_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE thread_reply_exchange (
+                thread_id        TEXT NOT NULL,
+                exchange_id      INTEGER NOT NULL,
+                state            TEXT NOT NULL CHECK (state IN ('open','released','suppressed')),
+                open_seq         INTEGER NOT NULL,
+                close_seq        INTEGER NOT NULL,
+                opened_at        TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                closed_at        TEXT,
+                close_reason     TEXT CHECK (close_reason IN
+                    ('quiescence','max_priority_wait','founder_aborted',
+                     'thread_archived','participant_removed','corrupt')),
+                deferred_count   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (thread_id, exchange_id),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE thread_scoped_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attachment_id TEXT NOT NULL UNIQUE,
+                thread_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                archived_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                forwarded_from_id TEXT,
+                forwarded_from_kind TEXT,
+                turn_cap INTEGER NOT NULL DEFAULT 500,
+                turns_used INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                transcript_path TEXT,
+                composed_by TEXT NOT NULL DEFAULT 'founder', composed_from_task_id TEXT, composed_from_dream_id TEXT, pinned_at TEXT, mention_routing_enabled INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE work_hours (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                routine_count INTEGER NOT NULL DEFAULT 0,
+                dropped_count INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                spawned_task_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                transcript_path TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date, slot)
+            );
+CREATE INDEX idx_escalation_notifications_task
+                ON escalation_notifications (task_id);
+CREATE INDEX idx_threads_status ON threads(status);
+CREATE INDEX idx_threads_started ON threads(started_at);
+CREATE INDEX idx_thread_participants_agent
+                ON thread_participants(agent_name);
+CREATE UNIQUE INDEX idx_thread_messages_thread_seq
+                ON thread_messages(thread_id, seq);
+CREATE INDEX idx_thread_invocations_token
+                ON thread_invocations(invocation_token);
+CREATE INDEX idx_thread_invocations_thread
+                ON thread_invocations(thread_id);
+CREATE INDEX idx_thread_invocations_pending
+                ON thread_invocations(status) WHERE status = 'pending';
+CREATE INDEX jobs_task_id_idx ON jobs(task_id);
+CREATE INDEX jobs_status_idx  ON jobs(status);
+CREATE INDEX idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX idx_tasks_revisit_of ON tasks(revisit_of_task_id);
+CREATE INDEX idx_tasks_dispatched_from_thread_id ON tasks(dispatched_from_thread_id) WHERE dispatched_from_thread_id IS NOT NULL;
+CREATE INDEX idx_threads_composed_from_task ON threads(composed_from_task_id) WHERE composed_from_task_id IS NOT NULL;
+CREATE INDEX idx_session_token_usage_task ON session_token_usage (task_id);
+CREATE INDEX idx_session_token_usage_agent ON session_token_usage (agent, created_at);
+CREATE INDEX idx_session_token_usage_scope ON session_token_usage (scope_type, scope_id);
+CREATE INDEX idx_session_token_usage_thread ON session_token_usage (thread_id) WHERE thread_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_session_token_usage_scope_unique ON session_token_usage (COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), agent, session_id);
+CREATE INDEX idx_dreams_agent_date
+                ON dreams(agent_name, local_date);
+CREATE INDEX idx_dreams_status
+                ON dreams(status);
+CREATE INDEX idx_dream_candidates_dream
+                ON dream_kb_candidates(dream_id);
+CREATE INDEX idx_dream_candidates_status
+                ON dream_kb_candidates(status);
+CREATE INDEX idx_work_hours_agent_date
+                ON work_hours(agent_name, local_date);
+CREATE INDEX idx_work_hours_status
+                ON work_hours(status);
+CREATE INDEX idx_thread_message_attachments_message
+                ON thread_message_attachments(thread_id, message_seq);
+CREATE INDEX idx_schedules_agent_status
+                ON schedules(agent_name, status);
+CREATE INDEX idx_schedules_status_fire_at
+                ON schedules(status, fire_at);
+CREATE INDEX idx_thread_scoped_attachments_thread
+                ON thread_scoped_attachments(thread_id);
+CREATE INDEX idx_task_attachments_task
+                ON task_attachments(task_id);
+CREATE INDEX idx_sve_skill_id
+                ON skill_validation_events(skill_id);
+CREATE INDEX idx_sve_agent
+                ON skill_validation_events(agent);
+CREATE INDEX idx_threads_composed_from_dream ON threads(composed_from_dream_id) WHERE composed_from_dream_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_task_attachments_storage_key_unique ON task_attachments(storage_key);
+CREATE UNIQUE INDEX idx_custom_skills_org_slug
+                ON custom_skills(org_slug, slug);
+CREATE INDEX idx_custom_skills_origin_agent
+                ON custom_skills(origin_agent) WHERE origin_agent IS NOT NULL;
+CREATE INDEX idx_csv_skill_id ON custom_skill_versions(skill_id);
+CREATE UNIQUE INDEX idx_csv_skill_hash ON custom_skill_versions(skill_id, content_hash);
+CREATE INDEX idx_cser_skill_current
+                ON custom_skill_eligibility_rules(skill_id) WHERE superseded_at IS NULL;
+CREATE UNIQUE INDEX idx_cser_current_scope_unique
+                ON custom_skill_eligibility_rules(skill_id, scope_type, COALESCE(scope_target, '')) WHERE superseded_at IS NULL;
+CREATE INDEX idx_csee_skill_id ON custom_skill_eligibility_events(skill_id);
+CREATE INDEX idx_csm_skill_agent ON custom_skill_materializations(skill_id, agent_name);
+CREATE INDEX idx_csm_session ON custom_skill_materializations(session_id);
+CREATE INDEX idx_cse_skill_id ON custom_skill_events(skill_id);
+CREATE INDEX idx_manager_supersessions_original_root
+                ON manager_supersessions(original_root_task_id);
+CREATE TRIGGER manager_supersessions_no_update
+                BEFORE UPDATE ON manager_supersessions
+                BEGIN SELECT RAISE(ABORT, 'manager supersessions are append-only'); END;
+CREATE TRIGGER manager_supersessions_no_delete
+                BEFORE DELETE ON manager_supersessions
+                BEGIN SELECT RAISE(ABORT, 'manager supersessions are append-only'); END;
+CREATE INDEX idx_thread_reply_delivery_state_thread
+                ON thread_reply_delivery_state(thread_id);
+CREATE UNIQUE INDEX idx_trex_open
+                ON thread_reply_exchange(thread_id) WHERE state = 'open';
+CREATE INDEX idx_trex_state
+                ON thread_reply_exchange(state);
+CREATE INDEX idx_trex_thread_seq
+                ON thread_reply_exchange(thread_id, open_seq);
+CREATE INDEX idx_txed_state
+                ON thread_exchange_deferrals(state);
+CREATE INDEX idx_txed_thread
+                ON thread_exchange_deferrals(thread_id, exchange_id);
+CREATE UNIQUE INDEX idx_cspe_org_slug
+                ON custom_skill_purge_events(org_slug, slug);
+CREATE INDEX idx_authority_candidates_root
+                ON authority_candidates(root_task_id);
+CREATE INDEX idx_authority_candidates_root_outcome
+                ON authority_candidates(root_task_id, disposition);
+CREATE TRIGGER authority_candidates_no_delete
+                BEFORE DELETE ON authority_candidates
+                BEGIN SELECT RAISE(ABORT, 'authority candidates cannot be deleted'); END;
+CREATE TRIGGER authority_candidates_identity_immutable
+                BEFORE UPDATE ON authority_candidates
+                WHEN OLD.claim_key != NEW.claim_key
+                  OR OLD.root_task_id != NEW.root_task_id
+                  OR OLD.team != NEW.team
+                  OR OLD.manager_agent != NEW.manager_agent
+                  OR OLD.manager_session_id != NEW.manager_session_id
+                  OR OLD.causal_event_id != NEW.causal_event_id
+                  OR OLD.causal_event_digest != NEW.causal_event_digest
+                  OR OLD.causal_result_id IS NOT NEW.causal_result_id
+                  OR OLD.policy_id != NEW.policy_id
+                  OR OLD.policy_version != NEW.policy_version
+                  OR OLD.policy_digest != NEW.policy_digest
+                  OR OLD.prompt_id != NEW.prompt_id
+                  OR OLD.prompt_version != NEW.prompt_version
+                  OR OLD.prompt_digest != NEW.prompt_digest
+                  OR OLD.model_id != NEW.model_id
+                  OR OLD.model_version != NEW.model_version
+                  OR OLD.model_digest != NEW.model_digest
+                  OR OLD.snapshot_digest != NEW.snapshot_digest
+                  OR OLD.snapshot_retention_class != NEW.snapshot_retention_class
+                  OR OLD.snapshot_redaction_class != NEW.snapshot_redaction_class
+                  OR OLD.fence_results_json IS NOT NEW.fence_results_json
+                  OR OLD.created_at != NEW.created_at
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority candidate identity is immutable');
+                END;
+CREATE INDEX idx_authority_evaluations_candidate
+                ON authority_evaluations(candidate_id);
+CREATE TRIGGER authority_evaluations_no_update
+                BEFORE UPDATE ON authority_evaluations
+                BEGIN SELECT RAISE(ABORT, 'authority evaluations are append-only'); END;
+CREATE TRIGGER authority_evaluations_no_delete
+                BEFORE DELETE ON authority_evaluations
+                BEGIN SELECT RAISE(ABORT, 'authority evaluations are append-only'); END;
+CREATE INDEX idx_authority_audit_candidate
+                ON authority_audit(candidate_id);
+CREATE TRIGGER authority_audit_no_update
+                BEFORE UPDATE ON authority_audit
+                BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+CREATE TRIGGER authority_audit_no_delete
+                BEFORE DELETE ON authority_audit
+                BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+CREATE INDEX idx_authority_envelopes_root_state
+                ON authority_continue_envelopes(root_task_id, state);
+CREATE TRIGGER authority_continue_envelopes_no_delete
+                BEFORE DELETE ON authority_continue_envelopes
+                BEGIN SELECT RAISE(ABORT, 'authority continue envelopes cannot be deleted'); END;
+CREATE TRIGGER authority_continue_envelopes_identity_immutable
+                BEFORE UPDATE ON authority_continue_envelopes
+                WHEN OLD.candidate_id != NEW.candidate_id
+                  OR OLD.root_task_id != NEW.root_task_id
+                  OR OLD.team != NEW.team
+                  OR OLD.manager_agent != NEW.manager_agent
+                  OR OLD.manager_session_id != NEW.manager_session_id
+                  OR OLD.causal_event_id != NEW.causal_event_id
+                  OR OLD.causal_event_digest != NEW.causal_event_digest
+                  OR OLD.policy_id != NEW.policy_id
+                  OR OLD.policy_version != NEW.policy_version
+                  OR OLD.policy_digest != NEW.policy_digest
+                  OR OLD.clause_id != NEW.clause_id
+                  OR OLD.action != NEW.action
+                  OR OLD.created_at != NEW.created_at
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority continue envelope identity is immutable');
+                END;
+CREATE TRIGGER authority_continue_envelopes_lifecycle_guard
+                BEFORE UPDATE ON authority_continue_envelopes
+                WHEN NOT (
+                    -- active -> consumed|violated: exactly-once; consumed_at
+                    -- is stamped exactly once (NULL -> value).
+                    (OLD.state = 'active' AND NEW.state IN ('consumed','violated')
+                     AND OLD.consumed_at IS NULL AND NEW.consumed_at IS NOT NULL)
+                    -- no-op on the guarded columns (e.g. updated_at-only writes).
+                    OR (OLD.state = NEW.state
+                        AND NEW.consumed_at IS OLD.consumed_at)
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority continue envelope lifecycle is restricted');
+                END;
+CREATE TRIGGER authority_candidates_lifecycle_guard
+                BEFORE UPDATE OF lifecycle_state, disposition, consumed_at
+                ON authority_candidates
+                FOR EACH ROW
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid authority candidate lifecycle transition')
+                    WHERE NOT (
+                        -- created -> evaluated: requires a committed evaluation row
+                        -- whose disposition exactly equals the freshly set
+                        -- disposition (NULL -> value), so an append-only escalate
+                        -- evaluation can never freeze a continue_same_root candidate;
+                        -- consumed_at is still NULL.
+                        (OLD.lifecycle_state = 'created' AND OLD.disposition IS NULL
+                         AND NEW.lifecycle_state = 'evaluated'
+                         AND NEW.disposition IS NOT NULL
+                         AND NEW.consumed_at IS NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = NEW.disposition))
+                        OR
+                        -- evaluated -> consumed: exactly-once; disposition frozen;
+                        -- a committed evaluation row with the SAME frozen
+                        -- disposition must exist; consumed_at is stamped exactly
+                        -- once (NULL -> value).
+                        (OLD.lifecycle_state = 'evaluated'
+                         AND NEW.lifecycle_state = 'consumed'
+                         AND NEW.disposition IS OLD.disposition
+                         AND OLD.consumed_at IS NULL
+                         AND NEW.consumed_at IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM authority_evaluations e
+                                     WHERE e.candidate_id = NEW.id
+                                       AND e.disposition = OLD.disposition))
+                        OR
+                        -- no-op on the guarded columns (e.g. updated_at-only writes).
+                        (NEW.lifecycle_state = OLD.lifecycle_state
+                         AND NEW.disposition IS OLD.disposition
+                         AND NEW.consumed_at IS OLD.consumed_at)
+                    );
+                END;
+CREATE INDEX idx_thread_reply_breaker_due
+                ON thread_reply_breaker_episodes(state, cooldown_until);
+CREATE UNIQUE INDEX idx_thread_reply_breaker_probe_lease
+                ON thread_reply_breaker_episodes(probe_lease_id)
+                WHERE probe_lease_id IS NOT NULL;
+CREATE INDEX idx_thread_reply_breaker_receipts_episode
+                ON thread_reply_breaker_receipts(episode_id);
+CREATE UNIQUE INDEX remote_one_live_workspace
+          ON remote_runner_workspaces(runner_id, runner_generation, agent_name)
+          WHERE state <> 'retired'
+    ;
+CREATE UNIQUE INDEX remote_one_live_attempt_per_job ON remote_job_attempts(job_id)
+          WHERE state <> 'terminal'
+    ;
+CREATE UNIQUE INDEX remote_one_live_attempt_per_runner ON remote_job_attempts(runner_id)
+          WHERE state <> 'terminal'
+    ;
+CREATE INDEX remote_reuse_lookup ON remote_pre_run_observations(
+          runner_id, runner_generation, workspace_id, workspace_generation,
+          pre_run_digest, exclusions_policy_digest, observation_digest
+        ) WHERE complete=1 AND reusable=1
+    ;
+CREATE INDEX idx_authority_policy_releases_team_version
+                ON authority_policy_releases(team, version DESC);
+CREATE TRIGGER authority_policy_releases_validate_insert
+                BEFORE INSERT ON authority_policy_releases
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority policy release base/team mismatch')
+                    WHERE NEW.based_on_release_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM authority_policy_releases r
+                        WHERE r.id=NEW.based_on_release_id AND r.team=NEW.team);
+                END;
+CREATE TRIGGER authority_policy_releases_no_update
+                BEFORE UPDATE ON authority_policy_releases
+                BEGIN SELECT RAISE(ABORT, 'authority policy releases are immutable'); END;
+CREATE TRIGGER authority_policy_releases_no_delete
+                BEFORE DELETE ON authority_policy_releases
+                BEGIN SELECT RAISE(ABORT, 'authority policy releases cannot be deleted'); END;
+CREATE INDEX idx_authority_policy_activations_team_epoch
+                ON authority_policy_activations(team, epoch DESC);
+CREATE TRIGGER authority_policy_activations_no_update
+                BEFORE UPDATE ON authority_policy_activations
+                BEGIN SELECT RAISE(ABORT, 'authority policy activations are immutable'); END;
+CREATE TRIGGER authority_policy_activations_no_delete
+                BEFORE DELETE ON authority_policy_activations
+                BEGIN SELECT RAISE(ABORT, 'authority policy activations cannot be deleted'); END;
+CREATE TRIGGER authority_candidate_policy_pins_validate_insert
+                BEFORE INSERT ON authority_candidate_policy_pins
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority candidate pin identity mismatch')
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM authority_candidates c
+                        JOIN authority_policy_releases r ON r.id=NEW.release_id
+                        JOIN authority_policy_activations a ON a.id=NEW.activation_id
+                        WHERE c.id=NEW.candidate_id AND c.team=r.team
+                          AND c.team=a.team AND a.release_id=r.id
+                          AND a.epoch=NEW.activation_epoch
+                          AND c.policy_id=r.policy_id
+                          AND c.policy_version=CAST(r.version AS TEXT)
+                          AND c.policy_digest=r.policy_digest
+                    );
+                END;
+CREATE TRIGGER authority_candidate_policy_pins_no_update
+                BEFORE UPDATE ON authority_candidate_policy_pins
+                BEGIN SELECT RAISE(ABORT, 'authority candidate policy pins are immutable'); END;
+CREATE TRIGGER authority_candidate_policy_pins_no_delete
+                BEFORE DELETE ON authority_candidate_policy_pins
+                BEGIN SELECT RAISE(ABORT, 'authority candidate policy pins cannot be deleted'); END;
+CREATE TRIGGER authority_policy_activations_validate_insert
+BEFORE INSERT ON authority_policy_activations
+BEGIN
+    SELECT RAISE(ABORT, 'authority activation release/team mismatch')
+    WHERE NOT EXISTS (SELECT 1 FROM authority_policy_releases r
+                      WHERE r.id=NEW.release_id AND r.team=NEW.team);
+    SELECT RAISE(ABORT, 'authority activation predecessor mismatch')
+    WHERE (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)=0
+        AND (NEW.epoch!=1 OR NEW.previous_activation_id IS NOT NULL
+             OR NEW.expected_previous_epoch NOT IN (0))
+    ) OR (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)>0
+        AND NOT EXISTS (
+            SELECT 1 FROM authority_policy_activations a
+            WHERE a.id=NEW.previous_activation_id AND a.team=NEW.team
+              AND a.epoch=NEW.expected_previous_epoch
+              AND NEW.epoch=a.epoch+1
+              AND a.epoch=(SELECT MAX(last.epoch)
+                           FROM authority_policy_activations last
+                           WHERE last.team=NEW.team))
+    );
+    SELECT RAISE(ABORT, 'authority activation action/history mismatch')
+    WHERE (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)=0
+        AND NEW.action!='bootstrap'
+    ) OR (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)>0
+        AND (
+            NEW.action='bootstrap'
+            OR (NEW.action='activate' AND EXISTS (
+                SELECT 1 FROM authority_policy_activations a
+                WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+            ))
+            OR (NEW.action='reactivate_rollback' AND (
+                NOT EXISTS (
+                    SELECT 1 FROM authority_policy_activations a
+                    WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+                )
+                OR NEW.release_id=(
+                    SELECT a.release_id FROM authority_policy_activations a
+                    WHERE a.team=NEW.team ORDER BY a.epoch DESC LIMIT 1
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM authority_policy_releases target
+                    JOIN authority_policy_activations current_activation
+                      ON current_activation.team=NEW.team
+                     AND current_activation.epoch=(
+                         SELECT MAX(last.epoch)
+                         FROM authority_policy_activations last
+                         WHERE last.team=NEW.team
+                     )
+                    JOIN authority_policy_releases current
+                      ON current.id=current_activation.release_id
+                    WHERE target.id=NEW.release_id
+                      AND target.policy_id=current.policy_id
+                      AND target.version<current.version
+                )
+            ))
+        )
+    );
+END;
+DELETE FROM "sqlite_sequence";
+INSERT INTO "sqlite_sequence" VALUES('session_token_usage',0);
+COMMIT;
+"""
+
+
 _release_schema_digest_cache: dict[tuple[str, str, int, bool, bool], str] | None = None
 
 
@@ -824,10 +1936,29 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
     includes layout, source history, naming version, pause layout and inert team-move layout;
     unavailable construction fails closed.
     """
-    global _release_schema_digest_cache
+    # Legacy admission must reject workflow-only histories BEFORE shared cache.
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)):
         return "unavailable"
+    return _build_release_schema_digest(layout, history, naming_version,
+        pause_layout=pause_layout, team_move_layout=team_move_layout)
+
+
+def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False) -> str:
+    """Whole workflow references; legacy authority retains its four histories."""
+    if history in _RELEASE_REFERENCE_HISTORIES:
+        return _release_schema_digest(layout, history, naming_version,
+            pause_layout=pause_layout, team_move_layout=team_move_layout)
+    if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _WORKFLOW_RELEASE_REFERENCE_HISTORIES
+            or type(naming_version) is not int or naming_version not in (0, 1)):
+        return "unavailable"
+    return _build_release_schema_digest(layout, history, naming_version,
+        pause_layout=pause_layout, team_move_layout=team_move_layout)
+
+
+def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool) -> str:
+    """Shared disposable lifetime, entered only after family-specific admission."""
+    global _release_schema_digest_cache
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
     key = (layout, history, naming_version, pause_layout, team_move_layout)
@@ -844,7 +1975,9 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
             if history != 'fresh':
                 import sqlite3
                 with sqlite3.connect(path) as seed:
-                    if history == 'v0':
+                    if history == 'v2-chronological-20260530':
+                        seed.executescript(_WORKFLOW_RELEASE_REFERENCE_PREIMAGE)
+                    elif history == 'v0':
                         seed.executescript(_RELEASE_REFERENCE_PREIMAGES[0])
                     else:
                         for statement in _RELEASE_REFERENCE_PREIMAGES[1]:
@@ -861,6 +1994,18 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
                     with fresh.workflow_schema_transaction() as conn:
                         _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
                         conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
+                elif history == 'v2-chronological-20260530' and layout == "J":
+                    # This complete historical seed retains sequence metadata.
+                    # The strict fresh-J guard stays with genuine fresh creation;
+                    # build only this disposable historical target from complete I.
+                    # Real migrate_coding_schema would recurse through references.
+                    from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
+                    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I")
+                    with fresh.workflow_schema_transaction() as conn:
+                        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+                        if validate_workflow_schema(conn, expected_org_slug="release-reference") != "J":
+                            raise ValueError("workflow_release_reference_requires_j")
                 else:
                     initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
                 if pause_layout:

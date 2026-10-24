@@ -375,6 +375,25 @@ The older draft script still upgrades F to E and reports a validated G as a
 no-write G replay. Legacy authority comparison uses independent complete
 F/E/G whole-database references; authority-v2 remains observed-only.
 
+Current workflow-only historical compatibility (THR320seq150/ROOT12848) retains
+F–J and adds `v2-chronological-20260530`. The fixed independent whole input is
+195 objects from complete historical constructors bda5d062→1be72fe7 and the
+authentic thread sweep, accepted TASK12862 plus manager J addendum after
+DESIGN-ONLY PASS12866:56585 UTF8 bytes/SHA256
+`9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7`.
+Retain its S2 marker and token sequence; live schema is comparison only.
+Only new-history J uses current Database → complete I → canonical coding DDL
+in the existing transaction → full J validation → unchanged Pause/team-move/
+naming order. Actual fresh-J/migration guards and all document histories remain.
+Legacy authority keeps exactly four old histories and both literal preimages,
+rejecting the new name before shared cache access. Five-part cache identity and
+ANY-unavailable refusal remain; whole raw SQL is never filtered or normalized.
+Coding support selects the same workflow helper for all six indirect consumers.
+Generic Database/runtime-audit stay workflow-free; authority-v2 stays observed-only.
+Source delivery supplies no live migration/enablement. Conditional transitions,
+individual target inspections and original-key uncertainty remain governed by
+the coding spec's historical compatibility operator guidance.
+
 Compatible cold reopen preserves the complete durable schema, every table's
 data and row identities, and the file set, modes and non-database bytes.
 Ordinary authority recovery can commit and release an ephemeral lease, changing
