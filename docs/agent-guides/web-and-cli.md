@@ -4349,3 +4349,54 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+## Guided coding host command and Settings handoff
+
+The published human-terminal command is
+`python3 scripts/setup_coding.py --org happyranch`, followed by Settings → Coding.
+Use the actual reviewed pinned source update supplied by root; the runtime guide
+specifies bootstrap, strict flags, all-runtime maintenance and private recovery
+material. No agent may run host setup effects. Managed/unknown attribution and
+active/UNKNOWN original ownership refuse before stop/preparation; no environment
+marker stripping, credential copy or new grant is permitted.
+
+The coordinator reuses existing human `workflows coding release-import-show`
+and `release-import --from-file ABS --json`. There is no browser import button or
+startup import, and existing human server checks/CLI-only/browser/native remote
+exclusions remain. Only CLI1 with empty stdout and the exact stderr line
+`error (404): coding_release_import_not_found` means absence. Other404/409/auth/
+transport/history/receipt errors hold. A valid currently admitted saved receipt
+skips POST and is compared with any original default/explicit operation files.
+
+Fresh absence requires human confirmation of no earlier/uncertain effect,
+exclusive canonical original operation bytes, readback/fsync and the adjacent
+`.effect.json` send intent before one byte-preserving POST. Default original is
+`<daemon-home>/coding-ORG-v1-import.json`, preserving the historical
+`~/.happyranch/coding-happyranch-v1-import.json`. A saved file is not proof of no
+send. Lost output/send, crash, mismatch, existing original or later absence retains
+that original owner/key/body/digest and permits GET readback/original-owner
+reconciliation only, never automatic POST replay/new key. Private command receipts
+and backup manifest give exact commands/exits and recovery locations; uncertainty
+is not rewritten as success. After positive maintenance clearance/confirmation/
+revalidation, durable command intent precedes stop; failure/interruption retains
+observed result or unresolved intent, exact argv, actual/null exit and bounded
+stream digests at the printed existing receipt path. Lifecycle log bodies remain
+in original custody. Receipt-only INCOMPLETE.json and BACKUP-STARTED.json are not
+complete backup; only manifest.json establishes that. Failed persistence prevents
+later effects. The start-reported uv wrapper and daemon.pid Python child have
+separate authenticated start/executable/source/home/ancestry identities; status
+and serving checks use the actual daemon PID/port with repeated pair validation.
+Missing/reused/moving identity holds, independently of loaded-source coverage.
+
+Import stays held when existing serving observations cannot establish required
+loaded workflow owners or actual UI facts. Current selected memory fingerprints
+are incomplete for those owners; disk HEAD/health200/SPA fallback cannot fill the
+gap. No new verifier or attestation endpoint is supplied.
+
+After verified host/import preparation, open the actual printed
+`/orgs/ORG/settings/coding` URL, adopt current metadata, select repositories and
+sha1/sha256 formats and four distinct eligible org agents across teams, including
+an eligible final manager. Leave Admission Disabled, save and reopen; an uncertain
+save uses Check original save. The command chooses/saves/enables nothing. Real
+workflow/Founder persistence/scratch/rejection/revision/control/cross-team/two-org/
+backup/restore/reopen/rollback acceptance remains NOT RUN/open before ordinary use.

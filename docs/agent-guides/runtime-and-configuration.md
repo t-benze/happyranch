@@ -3563,3 +3563,88 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+## Guided human host coding setup
+
+After root supplies the actual reviewed shipped commit S, use the existing human
+host checkout. Retain its previous full HEAD and status before updating; once
+original source consumers are idle, `git fetch origin main`, inspect the promised
+full S, then `git merge --ff-only S`, stopping on each error. No moving-main
+assumption, automatic updater/reset/clean/stash or `.codegraph` traversal is used.
+Engineering reconciles a checkout that cannot fast-forward while preserving work.
+The source environment must already support read-only preflight; missing packages
+are an original-environment-owner hold, never implicit pre-clearance uv sync.
+
+Run `python3 scripts/setup_coding.py --org happyranch` from a genuine human host
+terminal. `--org` is required. Strict optional flags are `--runtime-root ABS`
+(the existing literal active registered runtime; default read from runtimes.yaml),
+`--backup-dir ABS` (exclusive new private destination; default daemon-home/
+operator-backups/coding-ORG-UTC-random), `--ui-profile local|production` (local),
+and `--import-file ABS` (default daemon-home/coding-ORG-v1-import.json). Source is
+the checkout containing the script; daemon home retains its existing configured
+selection. No force/yes/skip/resume/rollback/key/revision override exists.
+
+Managed invocation/workspace/native ancestry or unavailable attribution refuses
+before imports/credentials/effects. All registered runtimes and loaded/broken/
+partial orgs are inspected with raw RO connections and original complete F–J/
+whole-release/data/history/FK/lifecycle readers, without constructing product
+Database/OrgState. Active/UNKNOWN ownership, including old failed preparation
+and retained outer/Pause/move owners, cannot be cleared by the human confirmation.
+Every effect rechecks cooperative exclusion and frozen identities. An already
+stopped host without positive original closure, stale/KILL stop, unavailable
+native observation or earlier-layout profile/recovery owner with no
+supported complete closure composition gives an original-owner hold.
+
+After clearance, confirmation and revalidation, the private recovery directory
+is initialized before stop. command-NNN.intent.json is durable before invocation;
+command-NNN.json records the observed exit (null if unobserved), launch/closure
+uncertainty, stream sizes and bounded digests. Incomplete captures explicitly
+identify prefix-only evidence. Lifecycle stderr/arbitrary log bodies remain with
+the original log owner; only closed safe stdout is retained. An intent without a
+result remains unresolved after interruption/crash or failed persistence; it never
+authorizes replay. Receipt failure prevents the next effect. The printed existing
+receipt path is recovery evidence, not a complete backup or proof of stop closure.
+
+Under a cleared stopped window the command inventories all affected durable
+files/DBs/config/source/environment/UI and writes exclusive 0700/0600 recovery
+material. SQLite backup includes committed WAL and checks integrity/FKs; original
+WAL/SHM remain. Credential contents are never copied/read; custody stays unchanged.
+Aliases, unaccounted files, drift or incomplete inventory prevent dependency/UI
+and migration writes. `INCOMPLETE.json` marks the receipt-only directory before stop;
+`BACKUP-STARTED.json` begins the inventory without replacing pre-stop receipts. Only a full
+`manifest.json` establishes complete backup. `FAILED.json`, when available,
+retains partial mapping. Each saved file records its exact original restore path,
+identity and hash. Recovery is manually owned, never automatic restore/replay;
+pre-J code must not boot J. Restore/rollback acceptance remains NOT RUN.
+
+Locked uv preparation selects the existing Python without downloads; Node24 and
+npm ci precede the matching original build_web profile. The actual selected served
+dist must equal that checkout's web/dist. Needed original migrations run singly,
+requiring exact needed exits/diagnostics, writer0, original post-check0 and full
+exact targets before the next step. A failed/uncertain step leaves last accepted
+layout/command evidence and original recovery owner; no automatic restart.
+
+Start prints the uv wrapper PID; daemon.pid contains its Python child PID.
+The coordinator authenticates both against checked process observations, selected
+executables/source/home/custody, the pre-start boundary and direct parent/start
+relationship. Status must report the actual daemon PID and daemon.port value.
+Repeated pair/file observations bracket status and serving/import checks; absent,
+unrelated, reused or moving identities hold without restart. The saved
+receipts/started-processes.json contains only closed identity evidence.
+
+After one start, missing actual boot/loaded-workflow/source/org/UI observations
+hold import. Current memory loaded fingerprints are partial; they cannot attest
+every workflow compatibility owner. Health200, disk HEAD and SPA/index equality
+are insufficient. The original serving/native owner resolves unavailable proof;
+setup adds no endpoint, maintenance lock, settlement writer or auth grant.
+Finish at Settings → Coding with Admission Disabled. Real workflow/Founder
+persistence/scratch/rejection/revision/control/cross-team/two-org/backup/restore/
+reopen/rollback acceptance remains open before ordinary coding use. Source delivery
+alone is not installed, loaded, operational or enabled acceptance.
+
+SQLite read-only/WAL observation may update SHM reader-coordination metadata;
+retaining the original WAL/SHM means no deletion/reset/checkpoint/journal-mode
+change, not a byte-immutability claim for SHM. Disposable backup observation must
+separate logical/main/WAL preservation from those SQLite-owned readmarks. New
+preparation caches live within the private recovery destination, avoiding writes
+to unrelated existing uv/npm caches; they are not restoration evidence.
