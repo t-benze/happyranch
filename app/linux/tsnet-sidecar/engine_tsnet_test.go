@@ -26,13 +26,15 @@ type fakeTSNetServer struct {
 	upRelease                                <-chan struct{}
 	statusEntered                            chan struct{}
 	statusRelease                            <-chan struct{}
-	statusFn                                 func(context.Context) (*ipnstate.Status, error)
 	ignoreContext                            bool
 	mu                                       sync.Mutex
 	startCalls, upCalls                      int
 	statusCalls, closeCalls, listenCalls     int
 	clearAuthKeyCalls                        int
 	upDeadline, statusDeadline               time.Time
+	startAt, upAt, statusAt                  time.Time
+	upContext, statusContext                context.Context
+	statusTerminalDelivered                 bool
 	upEnteredConsumed, statusEnteredConsumed bool
 	listener                                 net.Listener
 }
@@ -40,6 +42,7 @@ type fakeTSNetServer struct {
 func (f *fakeTSNetServer) Start() error {
 	f.mu.Lock()
 	f.startCalls++
+	f.startAt = time.Now()
 	entered, release, err := f.startEntered, f.startRelease, f.startErr
 	f.mu.Unlock()
 	if entered != nil {
@@ -54,6 +57,8 @@ func (f *fakeTSNetServer) ClearAuthKey() { f.mu.Lock(); defer f.mu.Unlock(); f.c
 func (f *fakeTSNetServer) Up(ctx context.Context) (*ipnstate.Status, error) {
 	f.mu.Lock()
 	f.upCalls++
+	f.upAt = time.Now()
+	f.upContext = ctx
 	f.upDeadline, _ = ctx.Deadline()
 	entered, release, status, err, ignoreContext := f.upEntered, f.upRelease, f.upStatus, f.upErr, f.ignoreContext
 	if f.upEnteredConsumed {
@@ -81,8 +86,13 @@ func (f *fakeTSNetServer) Up(ctx context.Context) (*ipnstate.Status, error) {
 func (f *fakeTSNetServer) Status(ctx context.Context) (*ipnstate.Status, error) {
 	f.mu.Lock()
 	f.statusCalls++
+	if f.statusAt.IsZero() {
+		f.statusAt = time.Now()
+	}
+	f.statusContext = ctx
+	f.statusTerminalDelivered = f.statusTerminalDelivered || ctx.Err() != nil
 	f.statusDeadline, _ = ctx.Deadline()
-	entered, release, err, statusFn, ignoreContext := f.statusEntered, f.statusRelease, f.statusErr, f.statusFn, f.ignoreContext
+	entered, release, err, ignoreContext := f.statusEntered, f.statusRelease, f.statusErr, f.ignoreContext
 	if f.statusEnteredConsumed {
 		entered = nil
 	} else if entered != nil {
@@ -105,9 +115,6 @@ func (f *fakeTSNetServer) Status(ctx context.Context) (*ipnstate.Status, error) 
 	}
 	if err != nil {
 		return nil, err
-	}
-	if statusFn != nil {
-		return statusFn(ctx)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -135,7 +142,7 @@ func runningWithPeer(host, dns string) *ipnstate.Status {
 	return &ipnstate.Status{BackendState: "Running", Peer: map[key.NodePublic]*ipnstate.PeerStatus{{}: {HostName: host, DNSName: dns}}}
 }
 func testTSNetEngine(server *fakeTSNetServer) *TSNetEngine {
-	return &TSNetEngine{newServer: func(EngineConfig, []byte) tsnetServer { return server }, peerPollInterval: time.Millisecond, now: time.Now}
+	return &TSNetEngine{newServer: func(EngineConfig, []byte) tsnetServer { return server }}
 }
 func engineConfig() EngineConfig {
 	return EngineConfig{StateDir: "/state", ControlURL: "https://control.invalid", RoleIdentity: "home-sidecar-test", ExpectedPeers: []string{"expected"}}
@@ -172,63 +179,38 @@ func releaseSignal(t *testing.T, signal chan struct{}) func() {
 }
 
 func TestTSNetEngineCarriesConsumedUpDeadlineIntoPeerPoll(t *testing.T) {
-	upRelease := make(chan struct{})
-	statusRelease := make(chan struct{})
-	server := &fakeTSNetServer{
-		upEntered:     make(chan struct{}),
-		upRelease:     upRelease,
-		upStatus:      runningWithPeer("", "other.example."),
-		statusEntered: make(chan struct{}),
-		statusRelease: statusRelease,
-		statuses:      []*ipnstate.Status{runningWithPeer("", "expected.")},
-	}
+	upRelease, statusRelease := make(chan struct{}), make(chan struct{})
+	releaseUp, releaseStatus := releaseSignal(t, upRelease), releaseSignal(t, statusRelease)
+	server := &fakeTSNetServer{upEntered: make(chan struct{}), upRelease: upRelease, upStatus: runningWithPeer("", "other.example."), statusEntered: make(chan struct{}), statusRelease: statusRelease, statuses: []*ipnstate.Status{runningWithPeer("", "expected.")}}
 	engine := testTSNetEngine(server)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	callerDeadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatal("caller deadline missing")
-	}
-	result := make(chan struct {
-		receipt RedemptionReceipt
-		err     error
-	}, 1)
-	go func() {
-		receipt, err := engine.Start(ctx, engineConfig(), []byte("one-use"))
-		result <- struct {
-			receipt RedemptionReceipt
-			err     error
-		}{receipt, err}
-	}()
-	waitSignal(t, server.upEntered, "Up")
-	if !server.upDeadline.Equal(callerDeadline) {
-		t.Fatalf("Up deadline=%s caller deadline=%s", server.upDeadline, callerDeadline)
-	}
-	time.Sleep(10 * time.Millisecond)
-	releaseSignal(t, upRelease)()
-	waitSignal(t, server.statusEntered, "Status")
-	if !server.statusDeadline.Equal(server.upDeadline) {
-		t.Fatalf("waits used different deadlines: up=%s status=%s", server.upDeadline, server.statusDeadline)
-	}
-	if !server.statusDeadline.Equal(callerDeadline) {
-		t.Fatalf("Status renewed caller deadline: status=%s caller=%s", server.statusDeadline, callerDeadline)
-	}
-	releaseSignal(t, statusRelease)()
-	select {
-	case result := <-result:
-		receipt, err := result.receipt, result.err
-		if err != nil || !receipt.Redeemed || !receipt.Durable || !receipt.ExpectedPeerVisible {
-			t.Fatalf("receipt=%+v err=%v", receipt, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	t.Cleanup(cancel)
+	callerDeadline, _ := ctx.Deadline()
+	type outcome struct { receipt RedemptionReceipt; err error }
+	result := make(chan outcome, 1)
+	settled := false
+	receive := func() outcome {
+		select {
+		case got := <-result:
+			settled = true
+			return got
+		case <-time.After(testWaitTimeout):
+			t.Fatal("Start did not settle")
+			return outcome{}
 		}
-	case <-time.After(testWaitTimeout):
-		t.Fatal("timed out waiting for Start")
 	}
-	if server.startCalls != 1 || server.upCalls != 1 || server.statusCalls == 0 {
-		t.Fatalf("calls start=%d up=%d status=%d", server.startCalls, server.upCalls, server.statusCalls)
-	}
-	if server.clearAuthKeyCalls != 1 {
-		t.Fatalf("auth key clears=%d", server.clearAuthKeyCalls)
-	}
+	t.Cleanup(func() { releaseUp(); releaseStatus(); cancel(); if !settled { receive() }; _ = engine.Close() })
+	go func() { receipt, err := engine.Start(ctx, engineConfig(), []byte("one-use")); result <- outcome{receipt, err} }()
+	waitSignal(t, server.upEntered, "Up")
+	if !server.upAt.Before(callerDeadline) || !server.upDeadline.Equal(callerDeadline) { t.Fatal("Up missed original caller deadline") }
+	time.Sleep(10 * time.Millisecond)
+	releaseUp()
+	waitSignal(t, server.statusEntered, "Status")
+	if !server.statusAt.Before(callerDeadline) || !server.statusDeadline.Equal(callerDeadline) || server.upContext != server.statusContext { t.Fatal("Status missed or renewed original Up context") }
+	releaseStatus()
+	got := receive()
+	if got.err != nil || !got.receipt.Redeemed || !got.receipt.Durable || !got.receipt.ExpectedPeerVisible { t.Fatalf("receipt=%+v err=%v", got.receipt, got.err) }
+	if server.startCalls != 1 || server.upCalls != 1 || server.statusCalls != 1 || server.clearAuthKeyCalls != 1 { t.Fatal("startup/poll/key-clear calls differ") }
 }
 
 func TestTSNetEngineCapsBackgroundStartupAtEightySeconds(t *testing.T) {
@@ -241,15 +223,19 @@ func TestTSNetEngineCapsBackgroundStartupAtEightySeconds(t *testing.T) {
 	}
 	engine := testTSNetEngine(server)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
+	releaseStatus := releaseSignal(t, statusRelease)
 	started := time.Now()
 	result := make(chan error, 1)
+	settled := false
+	receive := func() error { err := waitResult(t, result); settled = true; return err }
+	t.Cleanup(func() { releaseStatus(); cancel(); if !settled { receive() }; _ = engine.Close() })
 	go func() { _, err := engine.Start(ctx, engineConfig(), []byte("one-use")); result <- err }()
 	waitSignal(t, server.statusEntered, "Status")
 	if server.upDeadline.IsZero() || server.statusDeadline.IsZero() {
 		t.Fatalf("missing deadlines: up=%s status=%s", server.upDeadline, server.statusDeadline)
 	}
-	if !server.upDeadline.Equal(server.statusDeadline) {
+	if !server.upDeadline.Equal(server.statusDeadline) || server.upContext != server.statusContext {
 		t.Fatalf("waits used different deadlines: up=%s status=%s", server.upDeadline, server.statusDeadline)
 	}
 	if remaining := time.Until(server.upDeadline); remaining > requiredStartupBudget || remaining < requiredStartupBudget-2*time.Second {
@@ -259,8 +245,8 @@ func TestTSNetEngineCapsBackgroundStartupAtEightySeconds(t *testing.T) {
 		t.Fatalf("startup deadline=%s exceeds 80-second cap from %s", server.upDeadline, started)
 	}
 	cancel()
-	releaseSignal(t, statusRelease)()
-	if err := waitResult(t, result); !errors.Is(err, ErrNetworkJoin) {
+	releaseStatus()
+	if err := receive(); !errors.Is(err, ErrNetworkJoin) {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -275,27 +261,20 @@ func TestTSNetEngineImmediateExpectedHostNameNeedsNoPeerPoll(t *testing.T) {
 
 func TestTSNetEngineDoesNotRefreshCallerDeadlineWhilePeerIsAbsent(t *testing.T) {
 	server := &fakeTSNetServer{upStatus: runningWithPeer("other", "")}
-	engine := testTSNetEngine(server)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	t.Cleanup(cancel)
 	defer cancel()
-	_, err := engine.Start(ctx, engineConfig(), []byte("one-use"))
-	if !errors.Is(err, ErrNetworkJoin) {
-		t.Fatalf("err=%v", err)
-	}
-	if server.statusCalls < 1 {
-		t.Fatal("expected peer polling")
-	}
-	callerDeadline, ok := ctx.Deadline()
-	if !ok || !server.upDeadline.Equal(callerDeadline) {
-		t.Fatalf("absent-peer Up deadline=%s want caller=%s", server.upDeadline, callerDeadline)
-	}
-	if !server.statusDeadline.Equal(callerDeadline) {
-		t.Fatalf("absent-peer poll deadline=%s want caller=%s", server.statusDeadline, callerDeadline)
-	}
+	deadline, _ := ctx.Deadline()
+	engine := testTSNetEngine(server)
+	defer engine.Close()
+	receipt, err := engine.Start(ctx, engineConfig(), []byte("one-use"))
+	if !errors.Is(err, ErrNetworkJoin) || receipt != (RedemptionReceipt{}) { t.Fatalf("receipt=%+v err=%v", receipt, err) }
+	if server.statusCalls < 1 || !server.statusAt.Before(deadline) || !server.upAt.Before(deadline) { t.Fatal("original preexpiry polling setup not reached") }
+	if !server.upDeadline.Equal(deadline) || !server.statusDeadline.Equal(deadline) || server.upContext != server.statusContext { t.Fatal("absent-peer polling renewed original parent/context") }
 }
 
 func TestTSNetEngineRejectsCancelledReadinessBeforePositiveReceipt(t *testing.T) {
-	for _, terminal := range []string{"context_cancelled", "deadline_exceeded"} {
+	for _, terminal := range []string{"context_cancelled", "deadline_exceeded", "pending_deadline", "pending_deadline_cancelled"} {
 		t.Run(terminal, func(t *testing.T) {
 			server := &fakeTSNetServer{upStatus: runningWithPeer("expected", "")}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -304,9 +283,26 @@ func TestTSNetEngineRejectsCancelledReadinessBeforePositiveReceipt(t *testing.T)
 				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 			}
 			cancel()
-			receipt, err := testTSNetEngine(server).Start(ctx, engineConfig(), []byte("one-use"))
-			assertNetworkReason(t, err, terminal)
-			if receipt != (RedemptionReceipt{}) || server.startCalls != 0 || server.upCalls != 0 || server.statusCalls != 0 {
+			want := terminal
+			if strings.HasPrefix(terminal, "pending_deadline") {
+				parent := context.Background()
+				if terminal == "pending_deadline_cancelled" {
+					parent = ctx // delivered cancellation must outrank elapsed clock
+					want = "context_cancelled"
+				} else {
+					want = "deadline_exceeded"
+				}
+				ctx = pendingDeadlineContext{Context: parent, deadline: time.Now().Add(-time.Second), done: make(chan struct{})}
+				if terminal == "pending_deadline" && ctx.Err() != nil { t.Fatal("entry error already delivered") }
+				select { case <-ctx.Done(): t.Fatal("entry Done already delivered"); default: }
+			}
+			factories := 0
+			engine := testTSNetEngine(server)
+			factory := engine.newServer
+			engine.newServer = func(c EngineConfig, credential []byte) tsnetServer { factories++; return factory(c, credential) }
+			receipt, err := engine.Start(ctx, engineConfig(), []byte("one-use"))
+			assertNetworkReason(t, err, want)
+			if receipt != (RedemptionReceipt{}) || factories != 0 || server.startCalls != 0 || server.upCalls != 0 || server.statusCalls != 0 {
 				t.Fatal("terminal caller admitted upstream work")
 			}
 		})
@@ -314,21 +310,90 @@ func TestTSNetEngineRejectsCancelledReadinessBeforePositiveReceipt(t *testing.T)
 }
 
 func TestTSNetEngineDoesNotRenewBudgetAfterContextlessStart(t *testing.T) {
-	release := make(chan struct{})
-	releaseStart := releaseSignal(t, release)
-	server := &fakeTSNetServer{startEntered: make(chan struct{}), startRelease: release, upStatus: runningWithPeer("expected", "")}
-	engine := testTSNetEngine(server)
-	deadline := time.Now().Add(time.Hour)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	engine.now = func() time.Time { return deadline.Add(time.Nanosecond) }
-	result := make(chan error, 1)
-	go func() { _, err := engine.Start(ctx, engineConfig(), []byte("one-use")); result <- err }()
-	waitSignal(t, server.startEntered, "Start")
-	releaseStart()
-	assertNetworkReason(t, waitResult(t, result), "deadline_exceeded")
-	if server.clearAuthKeyCalls != 1 || server.upCalls != 0 || server.statusCalls != 0 {
-		t.Fatalf("late start minted post-start work: clear=%d up=%d status=%d", server.clearAuthKeyCalls, server.upCalls, server.statusCalls)
+	// Keep the original late Start owner and exercise its dependent boundaries
+	// directly: Sidecar's separate success fence cannot mask an adapter receipt.
+	for _, stage := range []string{"factory", "start", "up", "peer"} {
+		shapes := []string{"success", "error", "nil", "nonrunning", "missing_peer"}
+		if stage == "factory" { shapes = []string{"success"} }
+		if stage == "start" { shapes = []string{"success", "error"} }
+		for _, shape := range shapes {
+			t.Run(stage+"/"+shape, func(t *testing.T) {
+				release := make(chan struct{})
+				releaseCall := releaseSignal(t, release)
+				entered := make(chan struct{})
+				server := &fakeTSNetServer{ignoreContext: true, upStatus: runningWithPeer("expected", "")}
+				status := runningWithPeer("expected", "")
+				if shape == "nil" { status = nil }
+				if shape == "nonrunning" { status = &ipnstate.Status{BackendState: "Starting"} }
+				if shape == "missing_peer" { status = runningWithPeer("other", "") }
+				if stage == "start" {
+					server.startEntered, server.startRelease = entered, release
+					if shape == "error" { server.startErr = errors.New("START_SECRET_CANARY") }
+				}
+				if stage == "up" {
+					server.upEntered, server.upRelease, server.upStatus = entered, release, status
+					if shape == "error" { server.upErr = errors.New("tsnet.Up: backend: UP_SECRET_CANARY") }
+				}
+				if stage == "peer" {
+					server.upStatus = runningWithPeer("other", "")
+					server.statusEntered, server.statusRelease = entered, release
+					server.statuses = []*ipnstate.Status{status}
+					if shape == "error" { server.statusErr = errors.New("STATUS_SECRET_CANARY") }
+				}
+				engine := testTSNetEngine(server)
+				factory := engine.newServer
+				factories := 0
+				var factoryAt time.Time
+				engine.newServer = func(c EngineConfig, credential []byte) tsnetServer {
+					factories++
+					factoryAt = time.Now()
+					if stage == "factory" { close(entered); <-release }
+					return factory(c, credential)
+				}
+				deadline := time.Now().Add(750 * time.Millisecond)
+				ctx := pendingDeadlineContext{Context: context.Background(), deadline: deadline, done: make(chan struct{})}
+				type outcome struct { receipt RedemptionReceipt; err error }
+				result := make(chan outcome, 1)
+				settled := false
+				receive := func() outcome {
+					select {
+					case got := <-result: settled = true; return got
+					case <-time.After(testWaitTimeout): t.Fatal("adapter Start did not settle"); return outcome{}
+					}
+				}
+				t.Cleanup(func() { releaseCall(); if !settled { receive() }; _ = engine.Close() })
+				go func() { receipt, err := engine.Start(ctx, engineConfig(), []byte("one-use")); result <- outcome{receipt, err} }()
+				waitSignal(t, entered, stage)
+				entry := factoryAt
+				if stage == "start" { entry = server.startAt }
+				if stage == "up" { entry = server.upAt }
+				if stage == "peer" { entry = server.statusAt }
+				if !entry.Before(deadline) || !time.Now().Before(deadline) { t.Fatal("stage missed genuinely future original deadline") }
+				if stage == "up" || stage == "peer" {
+					if !server.upDeadline.Equal(deadline) { t.Fatal("Up renewed original deadline") }
+					if stage == "peer" && (server.upContext != server.statusContext || !server.statusDeadline.Equal(deadline)) { t.Fatal("Status renewed original context") }
+				}
+				<-time.After(time.Until(deadline))
+				if time.Now().Before(deadline) || ctx.Err() != nil { t.Fatal("original deadline not elapsed with pending parent error") }
+				select { case <-ctx.Done(): t.Fatal("parent delivery not pending"); default: }
+				if stage == "up" || stage == "peer" {
+					if server.upContext.Err() != nil { t.Fatal("effective error already delivered") }
+					select { case <-server.upContext.Done(): t.Fatal("effective delivery not pending"); default: }
+				}
+				releaseCall()
+				got := receive()
+				if stage == "start" && shape == "error" {
+					if got.err != ErrEngineStart { t.Fatalf("late Start error precedence changed: %v", got.err) }
+				} else {
+					assertNetworkReason(t, got.err, "deadline_exceeded")
+				}
+				wantStart, wantUp, wantStatus := 1, 0, 0
+				if stage == "factory" { wantStart = 0 }
+				if stage == "up" || stage == "peer" { wantUp = 1 }
+				if stage == "peer" { wantStatus = 1 }
+				if got.receipt != (RedemptionReceipt{}) || factories != 1 || server.startCalls != wantStart || server.upCalls != wantUp || server.statusCalls != wantStatus || server.clearAuthKeyCalls != 1 { t.Fatal("late boundary minted work/receipt or omitted key clear") }
+			})
+		}
 	}
 }
 
@@ -374,7 +439,14 @@ func TestTSNetEngineMapsInitializationAndReadinessFailures(t *testing.T) {
 			cfg := validConfig(t)
 			dials := 0
 			svc := New(cfg, testTSNetEngine(tc.server), dialFunc(func(context.Context, string, string) (net.Conn, error) { dials++; return nil, errors.New("unexpected") }))
+			t.Cleanup(func() { _ = svc.Stop() })
 			err := svc.Start(context.Background())
+			wantUp := 1
+			if tc.name == "start" { wantUp = 0 }
+			if tc.server.startCalls != 1 || tc.server.clearAuthKeyCalls != 1 || tc.server.upCalls != wantUp { t.Fatal("producer stage not reached") }
+			if strings.HasPrefix(tc.name, "peer_") {
+				if tc.server.statusCalls != 1 || !tc.server.statusAt.Before(tc.server.statusDeadline) || !tc.server.upAt.Before(tc.server.upDeadline) || !tc.server.upDeadline.Equal(tc.server.statusDeadline) || tc.server.upContext != tc.server.statusContext { t.Fatal("producer Status did not reach original preexpiry Up context") }
+			} else if tc.server.statusCalls != 0 { t.Fatal("unexpected producer poll") }
 			if tc.reason == "" {
 				if !errors.Is(err, ErrEngineStart) || err.Error() != ErrEngineStart.Error() {
 					t.Fatal("initialization category changed")
@@ -401,121 +473,32 @@ func TestTSNetEngineMapsInitializationAndReadinessFailures(t *testing.T) {
 	}
 }
 
-type fakeTSNetLocalClient struct {
-	status    *ipnstate.Status
-	statusErr error
-}
-
-func (c fakeTSNetLocalClient) Status(context.Context) (*ipnstate.Status, error) {
-	return c.status, c.statusErr
-}
-
-func TestTSNetEngineNilFactoriesRetainInitializationRefusal(t *testing.T) {
-	for _, name := range []string{"nil_factory", "nil_server"} {
-		t.Run(name, func(t *testing.T) {
-			cfg := validConfig(t)
-			engine := &TSNetEngine{}
-			if name == "nil_server" {
-				engine.newServer = func(EngineConfig, []byte) tsnetServer { return nil }
-			}
-			dials := 0
-			svc := New(cfg, engine, dialFunc(func(context.Context, string, string) (net.Conn, error) { dials++; return nil, errors.New("unexpected") }))
-			err := svc.Start(context.Background())
-			if !errors.Is(err, ErrEngineStart) || err.Error() != ErrEngineStart.Error() || errors.Is(err, ErrNetworkJoin) {
-				t.Fatal("nil factory changed initialization refusal")
-			}
-			_ = svc.Stop()
-			if dials != 0 {
-				t.Fatal("nil factory admitted connector")
-			}
-			if _, err := os.Stat(cfg.CredentialFile); err != nil {
-				t.Fatal("nil factory consumed credential")
-			}
-			if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); !os.IsNotExist(err) {
-				t.Fatal("nil factory committed failed receipt")
-			}
-		})
-	}
-}
-
-func TestProductionTSNetServerStatusUsesLocalClientAndMapsClosedEngineError(t *testing.T) {
-	hostileAcquire := fmt.Errorf("hostile acquisition detail: %w", errors.New("acquire failed"))
-	hostileStatus := fmt.Errorf("hostile status detail: %w", errors.New("status failed"))
-	ready := runningWithPeer("expected", "")
-	for name, tc := range map[string]struct {
-		localClient func() (tsnetLocalClient, error)
-		wantErr     error
-		wantStatus  *ipnstate.Status
-	}{
-		"acquisition failure": {
-			localClient: func() (tsnetLocalClient, error) { return nil, hostileAcquire },
-			wantErr:     hostileAcquire,
-		},
-		"downstream status failure": {
-			localClient: func() (tsnetLocalClient, error) { return fakeTSNetLocalClient{statusErr: hostileStatus}, nil },
-			wantErr:     hostileStatus,
-		},
-		"immediate success": {
-			localClient: func() (tsnetLocalClient, error) { return fakeTSNetLocalClient{status: ready}, nil },
-			wantStatus:  ready,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			production := productionTSNetServer{localClient: tc.localClient}
-			status, err := production.Status(context.Background())
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) || status != nil {
-					t.Fatalf("status=%+v err=%v", status, err)
-				}
-				return
-			}
-			if err != nil || status != tc.wantStatus {
-				t.Fatalf("status=%+v err=%v", status, err)
-			}
-		})
-	}
-
-	for name, localClient := range map[string]func() (tsnetLocalClient, error){
-		"acquisition": func() (tsnetLocalClient, error) { return nil, hostileAcquire },
-		"status": func() (tsnetLocalClient, error) {
-			return fakeTSNetLocalClient{statusErr: hostileStatus}, nil
-		},
-	} {
-		t.Run("closed engine "+name, func(t *testing.T) {
-			production := productionTSNetServer{localClient: localClient}
-			server := &fakeTSNetServer{
-				upStatus: runningWithPeer("other", ""),
-				statusFn: production.Status,
-			}
-			_, err := testTSNetEngine(server).Start(context.Background(), engineConfig(), []byte("one-use"))
-			if !errors.Is(err, ErrNetworkJoin) || err.Error() != ErrNetworkJoin.Error() {
-				t.Fatalf("err=%v, want closed %v", err, ErrNetworkJoin)
-			}
-			assertNetworkReason(t, err, "peer_status_error")
-			if strings.Contains(err.Error(), "hostile") || strings.Contains(err.Error(), "acquire") || strings.Contains(err.Error(), "status") {
-				t.Fatalf("wrapped LocalClient cause leaked through engine: %v", err)
-			}
-		})
-	}
-}
-
 func TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledUp(t *testing.T) {
-	server := &fakeTSNetServer{upEntered: make(chan struct{}), upRelease: make(chan struct{}), upStatus: runningWithPeer("expected", "")}
+	release := make(chan struct{})
+	releaseUp := releaseSignal(t, release)
+	server := &fakeTSNetServer{upEntered: make(chan struct{}), upRelease: release, upStatus: runningWithPeer("mac-client-123", "")}
 	engine := testTSNetEngine(server)
 	cfg := validConfig(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
+
 	result := make(chan error, 1)
-	go func() { result <- New(cfg, engine, &net.Dialer{}).Start(ctx) }()
+	svc := New(cfg, engine, &net.Dialer{})
+	settled := false
+	receive := func() error { err := waitResult(t, result); settled = true; return err }
+	t.Cleanup(func() { releaseUp(); cancel(); if !settled { receive() }; _ = svc.Stop() })
+	go func() { result <- svc.Start(ctx) }()
 	waitSignal(t, server.upEntered, "Up")
 	cancel()
-	assertNetworkReason(t, waitResult(t, result), "context_cancelled")
+	releaseUp()
+	assertNetworkReason(t, receive(), "context_cancelled")
 	if server.listenCalls != 0 {
 		t.Fatalf("listener was admitted: %d calls", server.listenCalls)
 	}
 	if _, err := os.Stat(cfg.CredentialFile); err != nil {
 		t.Fatalf("credential should remain before positive receipt: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); !os.IsNotExist(err) { t.Fatal("marker committed before receipt") }
 	if server.closeCalls != 1 {
 		t.Fatalf("close calls=%d", server.closeCalls)
 	}
@@ -524,20 +507,26 @@ func TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledUp(t *testing.T) {
 func TestProductionAdapterViaSidecarRejectsApparentSuccessAfterCancellation(t *testing.T) {
 	release := make(chan struct{})
 	releaseUp := releaseSignal(t, release)
-	server := &fakeTSNetServer{upEntered: make(chan struct{}), upRelease: release, upStatus: runningWithPeer("expected", ""), ignoreContext: true}
+	server := &fakeTSNetServer{upEntered: make(chan struct{}), upRelease: release, upStatus: runningWithPeer("mac-client-123", ""), ignoreContext: true}
 	engine := testTSNetEngine(server)
 	cfg := validConfig(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
+
 	result := make(chan error, 1)
-	go func() { result <- New(cfg, engine, &net.Dialer{}).Start(ctx) }()
+	svc := New(cfg, engine, &net.Dialer{})
+	settled := false
+	receive := func() error { err := waitResult(t, result); settled = true; return err }
+	t.Cleanup(func() { releaseUp(); cancel(); if !settled { receive() }; _ = svc.Stop() })
+	go func() { result <- svc.Start(ctx) }()
 	waitSignal(t, server.upEntered, "Up")
 	cancel()
 	releaseUp()
-	assertNetworkReason(t, waitResult(t, result), "context_cancelled")
+	assertNetworkReason(t, receive(), "context_cancelled")
 	if server.listenCalls != 0 || server.closeCalls != 1 {
 		t.Fatalf("listen=%d close=%d", server.listenCalls, server.closeCalls)
 	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); !os.IsNotExist(err) { t.Fatal("marker committed before receipt") }
 	if _, err := os.Stat(cfg.CredentialFile); err != nil {
 		t.Fatalf("credential should remain before positive receipt: %v", err)
 	}
@@ -555,13 +544,18 @@ func TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledPeerPoll(t *testin
 	}
 	cfg := validConfig(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
+
 	result := make(chan error, 1)
-	go func() { result <- New(cfg, testTSNetEngine(server), &net.Dialer{}).Start(ctx) }()
+	svc := New(cfg, testTSNetEngine(server), &net.Dialer{})
+	settled := false
+	receive := func() error { err := waitResult(t, result); settled = true; return err }
+	t.Cleanup(func() { releaseStatus(); cancel(); if !settled { receive() }; _ = svc.Stop() })
+	go func() { result <- svc.Start(ctx) }()
 	waitSignal(t, server.statusEntered, "Status")
 	cancel()
 	releaseStatus()
-	assertNetworkReason(t, waitResult(t, result), "context_cancelled")
+	assertNetworkReason(t, receive(), "context_cancelled")
 	if server.listenCalls != 0 || server.closeCalls != 1 {
 		t.Fatalf("listen=%d close=%d", server.listenCalls, server.closeCalls)
 	}
@@ -582,6 +576,7 @@ func TestProductionAdapterViaSidecarWaitsForRunningAndPeerBeforeAdmission(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = listener.Close() })
 	server := &fakeTSNetServer{
 		upEntered:     make(chan struct{}),
 		upRelease:     upRelease,
@@ -597,15 +592,16 @@ func TestProductionAdapterViaSidecarWaitsForRunningAndPeerBeforeAdmission(t *tes
 	sidecar := New(cfg, testTSNetEngine(server), dialFunc(func(context.Context, string, string) (net.Conn, error) {
 		probes++
 		client, peer := net.Pipe()
+		t.Cleanup(func() { _ = client.Close(); _ = peer.Close() })
 		_ = peer.Close()
 		return client, nil
 	}))
-	t.Cleanup(func() { _ = sidecar.Stop() })
-	t.Cleanup(func() {
-		releaseUp()
-		releaseStatus()
-	})
-	go func() { result <- sidecar.Start(context.Background()) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	settled := false
+	receive := func() error { err := waitResult(t, result); settled = true; return err }
+	t.Cleanup(func() { releaseUp(); releaseStatus(); cancel(); if !settled { receive() }; _ = sidecar.Stop() })
+	go func() { result <- sidecar.Start(ctx) }()
 	waitSignal(t, server.upEntered, "Up")
 	if _, err := os.Stat(cfg.CredentialFile); err != nil || probes != 0 || server.listenCalls != 0 {
 		t.Fatalf("admitted while Up blocked: credential=%v probes=%d listens=%d", err, probes, server.listenCalls)
@@ -616,7 +612,7 @@ func TestProductionAdapterViaSidecarWaitsForRunningAndPeerBeforeAdmission(t *tes
 		t.Fatalf("admitted while peer blocked: marker=%v probes=%d listens=%d", err, probes, server.listenCalls)
 	}
 	releaseStatus()
-	if err := waitResult(t, result); err != nil {
+	if err := receive(); err != nil {
 		t.Fatalf("Start error=%v", err)
 	}
 	if probes != 1 || server.upCalls != 1 || server.statusCalls != 1 || server.listenCalls != 1 {
@@ -632,32 +628,46 @@ func TestProductionAdapterViaSidecarWaitsForRunningAndPeerBeforeAdmission(t *tes
 
 func TestTSNetEngineRejectsNilAndEmptyPeerStatusWithoutReceipt(t *testing.T) {
 	for name, server := range map[string]*fakeTSNetServer{
-		"nil-up":     {upStatus: nil},
-		"nil-poll":   {upStatus: runningWithPeer("other", ""), statuses: []*ipnstate.Status{nil}},
-		"empty-peer": {upStatus: &ipnstate.Status{BackendState: "Running"}, statuses: []*ipnstate.Status{&ipnstate.Status{BackendState: "Running"}}},
+		"nil-up": {upStatus: nil},
+		"nil-poll": {upStatus: runningWithPeer("other", ""), statuses: []*ipnstate.Status{nil}},
+		"empty-peer": {upStatus: &ipnstate.Status{BackendState: "Running"}, statuses: []*ipnstate.Status{{BackendState: "Running"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 			defer cancel()
-			receipt, err := testTSNetEngine(server).Start(ctx, engineConfig(), []byte("one-use"))
-			if !errors.Is(err, ErrNetworkJoin) || receipt.Redeemed || receipt.Durable || receipt.ExpectedPeerVisible {
-				t.Fatalf("receipt=%+v err=%v", receipt, err)
-			}
+			deadline, _ := ctx.Deadline()
+			engine := testTSNetEngine(server)
+			defer engine.Close()
+			receipt, err := engine.Start(ctx, engineConfig(), []byte("one-use"))
+			if !errors.Is(err, ErrNetworkJoin) || receipt != (RedemptionReceipt{}) { t.Fatalf("receipt=%+v err=%v", receipt, err) }
+			if server.upCalls != 1 || !server.upAt.Before(deadline) || !server.upDeadline.Equal(deadline) { t.Fatal("Up original parent not reached") }
+			if name != "nil-up" && (server.statusCalls == 0 || !server.statusAt.Before(deadline) || !server.statusDeadline.Equal(deadline) || server.statusContext != server.upContext) { t.Fatal("Status original preexpiry context not reached") }
 		})
 	}
 }
 
-func TestTSNetEnginePeerWaitSelectReportsDeadline(t *testing.T) {
+func TestTSNetEngineDeadlinePollArbitrationRefusesTerminalReceipt(t *testing.T) {
 	server := &fakeTSNetServer{upStatus: runningWithPeer("other", "")}
 	engine := testTSNetEngine(server)
-	engine.peerPollInterval = time.Hour
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
+	defer engine.Close()
+	deadline, _ := ctx.Deadline()
 	receipt, err := engine.Start(ctx, engineConfig(), nil)
-	assertNetworkReason(t, err, "peer_wait_deadline")
-	if receipt != (RedemptionReceipt{}) || server.statusCalls != 0 {
-		t.Fatal("peer-wait select mislabeled status work")
+	if server.upCalls != 1 || !server.upAt.Before(deadline) || !server.upDeadline.Equal(deadline) { t.Fatal("preexpiry nonmatching Up setup not reached") }
+	var metadata interface{ NetworkJoinSubReason() string }
+	if !errors.As(err, &metadata) { t.Fatal("missing finite network category") }
+	reason := metadata.NetworkJoinSubReason()
+	if reason != "deadline_exceeded" && reason != "peer_wait_deadline" { t.Fatalf("unexpected arbitration reason=%q", reason) }
+	assertNetworkReason(t, err, reason)
+	if receipt != (RedemptionReceipt{}) { t.Fatal("terminal arbitration admitted receipt") }
+	if server.statusCalls > 0 {
+		if server.statusContext != server.upContext || !server.statusDeadline.Equal(deadline) { t.Fatal("Status renewed context") }
+		if server.statusTerminalDelivered && reason != "deadline_exceeded" { t.Fatal("reached Status after delivered terminal misclassified") }
 	}
+	// Status0/deadline_exceeded is an earlier terminal fence, never select proof.
+	// peer_wait_deadline labels the selected Done case, never inferred poll order.
+	t.Logf("joined Status=%d terminal-at-entry=%t reason=%s", server.statusCalls, server.statusTerminalDelivered, reason)
 }
 
 func TestProductionAdapterViaSidecarTerminalContextWinsOverLateResult(t *testing.T) {
@@ -691,25 +701,34 @@ func TestProductionAdapterViaSidecarTerminalContextWinsOverLateResult(t *testing
 							server.statusErr = errors.New("TOKEN_CANARY")
 						}
 					}
-					ctx, cancel := context.WithCancel(context.Background())
-					if terminal == "deadline_exceeded" {
-						cancel()
-						ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
-					}
-					defer cancel()
+					ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+					t.Cleanup(cancel)
+
 					cfg := validConfig(t)
 					dials := 0
 					svc := New(cfg, testTSNetEngine(server), dialFunc(func(context.Context, string, string) (net.Conn, error) { dials++; return nil, errors.New("unexpected") }))
 					result := make(chan error, 1)
+					settled := false
+					receive := func() error { err := waitResult(t, result); settled = true; return err }
+					t.Cleanup(func() { releaseCall(); cancel(); if !settled { receive() }; _ = svc.Stop() })
 					go func() { result <- svc.Start(ctx) }()
 					waitSignal(t, entered, stage)
+					deadline, _ := ctx.Deadline()
+					entry := server.startAt
+					if stage == "up" { entry = server.upAt }
+					if stage == "peer" {
+						entry = server.statusAt
+						if server.upContext != server.statusContext || !server.upDeadline.Equal(deadline) || !server.statusDeadline.Equal(deadline) { t.Fatal("peer stage renewed original parent") }
+					}
+					if !entry.Before(deadline) || ctx.Err() != nil { t.Fatal("stage missed original preterminal setup") }
 					if terminal == "context_cancelled" {
 						cancel()
 					} else {
 						waitSignal(t, ctx.Done(), "caller deadline")
 					}
+					if (terminal == "context_cancelled" && !errors.Is(ctx.Err(), context.Canceled)) || (terminal == "deadline_exceeded" && !errors.Is(ctx.Err(), context.DeadlineExceeded)) { t.Fatal("terminal delivery not observed") }
 					releaseCall()
-					assertNetworkReason(t, waitResult(t, result), terminal)
+					assertNetworkReason(t, receive(), terminal)
 					if stage == "start" && (server.clearAuthKeyCalls != 1 || server.upCalls != 0 || server.statusCalls != 0) {
 						t.Fatal("late contextless Start admitted post-start work")
 					}
@@ -774,8 +793,13 @@ func TestCredentialWhitespaceAtProductionAuthKeyInput(t *testing.T) {
 				defer probeServer.Close()
 				defer probeClient.Close()
 				svc := New(cfg, engine, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probeClient, nil }))
+				t.Cleanup(func() { _ = svc.Stop() })
 				err := svc.Start(context.Background())
 				_ = svc.Stop()
+				wantUp, wantListen := 1, 0
+				if failure == "start" { wantUp = 0 }
+				if failure == "success" { wantListen = 1 }
+				if server.startCalls != 1 || server.upCalls != wantUp || server.listenCalls != wantListen || server.statusCalls != 0 { t.Fatal("adapter stage not reached exactly") }
 				if calls != 1 || server.clearAuthKeyCalls != 1 {
 					t.Fatal("credential consumer/clear count differs")
 				}
@@ -822,6 +846,7 @@ func TestProductionAdapterViaSidecarReceivesSeventyFiveSecondAcceptanceCeiling(t
 		}
 		return probe, nil
 	}))
+	t.Cleanup(func() { _ = svc.Stop() })
 	entry := time.Now()
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatal(err)

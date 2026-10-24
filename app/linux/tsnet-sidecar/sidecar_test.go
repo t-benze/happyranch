@@ -398,7 +398,9 @@ type shutdownListener struct {
 	conn                                        net.Conn
 	failure, closed, closeEntered, closeRelease chan struct{}
 	acceptEntered, acceptRelease                chan struct{}
-	closeOnce                                   sync.Once
+	errorEntered, errorRelease                  chan struct{}
+	closeReturned                               chan struct{}
+	errorOnce, closeOnce, closeReturnedOnce     sync.Once
 	events                                      *shutdownEvents
 }
 
@@ -412,6 +414,10 @@ func (l *shutdownListener) Accept() (net.Conn, error) {
 		l.conn = nil
 		return conn, nil
 	}
+	l.errorOnce.Do(func() {
+		if l.errorEntered != nil { close(l.errorEntered) }
+		if l.errorRelease != nil { <-l.errorRelease }
+	})
 	select {
 	case <-l.failure:
 	case <-l.closed:
@@ -419,6 +425,7 @@ func (l *shutdownListener) Accept() (net.Conn, error) {
 	return nil, errors.New("private listener failure")
 }
 func (l *shutdownListener) Close() error {
+	defer func() { if l.closeReturned != nil { l.closeReturnedOnce.Do(func() { close(l.closeReturned) }) } }()
 	l.events.add("listener-close")
 	l.closeOnce.Do(func() { close(l.closed); close(l.closeEntered) })
 	<-l.closeRelease
@@ -430,6 +437,7 @@ type shutdownEngine struct {
 	listener         net.Listener
 	events           *shutdownEvents
 	entered, release chan struct{}
+	returned         chan struct{}
 	err              error
 }
 
@@ -438,6 +446,7 @@ func (e *shutdownEngine) Start(context.Context, EngineConfig, []byte) (Redemptio
 }
 func (e *shutdownEngine) Listen(string) (net.Listener, error) { return e.listener, nil }
 func (e *shutdownEngine) Close() error {
+	defer func() { if e.returned != nil { close(e.returned) } }()
 	e.events.add("engine-close")
 	close(e.entered)
 	<-e.release
@@ -466,109 +475,144 @@ func TestShutdownAcceptCallerYieldsToStopOwner(t *testing.T) {
 		}
 		return
 	}
-	// Drive the real shutdown entry with an accept error observed before Stop
-	// election and delivered afterward. This isolates the stale caller at the
-	// exact method boundary without a scheduler hook in acceptLoop.
 	events := &shutdownEvents{}
-	l := &shutdownListener{failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), events: events}
-	close(l.failure)
-	if _, err := l.Accept(); err == nil {
-		t.Fatal("unexpected listener error was not observed")
-	}
-	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
-	close(e.release)
-	s := New(validConfig(t), e, &net.Dialer{})
-	s.listener = l
-	s.acceptWG.Add(1)
-	resume, acceptDone := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(acceptDone)
-		defer s.acceptWG.Done()
-		<-resume
-		s.shutdown(ErrListener, true)
-	}()
+	probe, probePeer := net.Pipe()
+	t.Cleanup(func() { _ = probe.Close(); _ = probePeer.Close() })
+	l := &shutdownListener{failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), closeReturned: make(chan struct{}), errorEntered: make(chan struct{}), errorRelease: make(chan struct{}), events: events}
+	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
+
+	releaseError := releaseSignal(t, l.errorRelease)
+	releaseListener := releaseSignal(t, l.closeRelease)
+	releaseEngine := releaseSignal(t, e.release)
+	s := New(validConfig(t), e, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probe, nil }))
 	results := make(chan error, 8)
-	for i := 0; i < cap(results); i++ {
-		go func() { results <- s.Stop() }()
-	}
-	awaitShutdown(t, l.closeEntered, "Stop did not acquire listener-first teardown")
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(l.closeRelease) }) })
-	close(resume)
-	awaitShutdown(t, acceptDone, "accept-error teardown blocked the accept drain while Stop owns teardown")
-	releaseOnce.Do(func() { close(l.closeRelease) })
-	for i := 0; i < cap(results); i++ {
-		select {
-		case err := <-results:
-			if err != nil {
-				t.Fatalf("Stop error = %v, want nil", err)
+	launched, received := 0, 0
+	receive := func() error { err := waitResult(t, results); received++; return err }
+	acceptDone := make(chan struct{})
+	observerLaunched, observerJoined := false, false
+	joinAccept := func() { awaitShutdown(t, acceptDone, "actual accept registration did not drain"); observerJoined = true }
+	t.Cleanup(func() {
+		releaseError(); releaseListener(); releaseEngine()
+		_ = probe.Close(); _ = probePeer.Close()
+		if launched == 0 { launched++; go func() { results <- s.Stop() }() }
+		var observer <-chan struct{}
+		if observerLaunched && !observerJoined { observer = acceptDone }
+		timer := time.NewTimer(testWaitTimeout)
+		defer timer.Stop()
+		for received < launched || observer != nil {
+			select {
+			case <-results: received++
+			case <-observer: observerJoined = true; observer = nil
+			case <-timer.C:
+				t.Errorf("cleanup incomplete: Stop results remaining=%d observer pending=%t", launched-received, observer != nil)
+				return
 			}
-		case <-time.After(time.Second):
-			t.Fatal("Stop did not complete after accept drain")
 		}
+	})
+	if err := s.Start(context.Background()); err != nil { t.Fatal(err) }
+	awaitShutdown(t, l.errorEntered, "actual Start-owned Accept did not enter")
+	observerLaunched = true
+	go func() { s.acceptWG.Wait(); close(acceptDone) }()
+	// Elect the deliberate Stop owner before releasing the actual Accept error.
+	launched++
+	go func() { results <- s.Stop() }()
+	awaitShutdown(t, l.closeEntered, "Stop did not acquire listener-first teardown")
+	for launched < cap(results) { launched++; go func() { results <- s.Stop() }() }
+	releaseError()
+	// The real accept owner must finish while Listener.Close is still held.
+	joinAccept()
+	select { case <-e.entered: t.Fatal("engine closed while listener method held"); default: }
+	releaseListener()
+	awaitShutdown(t, l.closeReturned, "Listener.Close did not return")
+	awaitShutdown(t, e.entered, "engine close did not follow actual accept drain")
+	select {
+	case err := <-results:
+		received++
+		t.Fatalf("Stop returned before Engine.Close completion: %v", err)
+	default:
 	}
-	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
-		t.Fatalf("teardown = %s", got)
-	}
-	if err := s.Stop(); err != nil {
-		t.Fatalf("repeated Stop = %v", err)
-	}
+	releaseEngine()
+	awaitShutdown(t, e.returned, "Engine.Close did not return")
+	for received < launched { if err := receive(); err != nil { t.Fatalf("Stop=%v want=%v", err, nil) } }
+	if err := s.Stop(); err != nil { t.Fatalf("repeat Stop=%v want=%v", err, nil) }
+	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" { t.Fatalf("teardown=%s", got) }
 }
 
 func TestStopJoinsAcceptOwnerAfterTeardown(t *testing.T) {
 	events := &shutdownEvents{}
-	l := &shutdownListener{failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), events: events}
-	close(l.closeRelease)
-	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
-	close(e.release)
-	s := New(validConfig(t), e, &net.Dialer{})
-	s.listener = l
-	s.acceptWG.Add(1)
-	teardownDone, releaseAccept, acceptDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(acceptDone)
-		defer s.acceptWG.Done()
-		s.shutdown(ErrListener, true)
-		close(teardownDone)
-		<-releaseAccept // hold the real caller's registration after teardown
-	}()
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseAccept) }) }
-	t.Cleanup(release)
-	awaitShutdown(t, teardownDone, "accept-owned teardown did not complete")
+	probe, probePeer := net.Pipe()
+	t.Cleanup(func() { _ = probe.Close(); _ = probePeer.Close() })
+	l := &shutdownListener{failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), closeReturned: make(chan struct{}), errorEntered: make(chan struct{}), errorRelease: make(chan struct{}), events: events}
+	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
+	e.err = errors.New("private engine failure")
+	releaseError := releaseSignal(t, l.errorRelease)
+	releaseListener := releaseSignal(t, l.closeRelease)
+	releaseEngine := releaseSignal(t, e.release)
+	s := New(validConfig(t), e, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probe, nil }))
 	results := make(chan error, 8)
-	for i := 0; i < cap(results); i++ {
-		go func() { results <- s.Stop() }()
-	}
+	launched, received := 0, 0
+	receive := func() error { err := waitResult(t, results); received++; return err }
+	acceptDone := make(chan struct{})
+	observerLaunched, observerJoined := false, false
+	joinAccept := func() { awaitShutdown(t, acceptDone, "actual accept registration did not drain"); observerJoined = true }
+	t.Cleanup(func() {
+		releaseError(); releaseListener(); releaseEngine()
+		_ = probe.Close(); _ = probePeer.Close()
+		if launched == 0 { launched++; go func() { results <- s.Stop() }() }
+		var observer <-chan struct{}
+		if observerLaunched && !observerJoined { observer = acceptDone }
+		timer := time.NewTimer(testWaitTimeout)
+		defer timer.Stop()
+		for received < launched || observer != nil {
+			select {
+			case <-results: received++
+			case <-observer: observerJoined = true; observer = nil
+			case <-timer.C:
+				t.Errorf("cleanup incomplete: Stop results remaining=%d observer pending=%t", launched-received, observer != nil)
+				return
+			}
+		}
+	})
+	if err := s.Start(context.Background()); err != nil { t.Fatal(err) }
+	awaitShutdown(t, l.errorEntered, "actual Start-owned Accept did not enter")
+	observerLaunched = true
+	go func() { s.acceptWG.Wait(); close(acceptDone) }()
+	// Elect the deliberate Stop owner before releasing the actual Accept error.
+	launched++
+	go func() { results <- s.Stop() }()
+	awaitShutdown(t, l.closeEntered, "Stop did not acquire listener-first teardown")
+	for launched < cap(results) { launched++; go func() { results <- s.Stop() }() }
+	releaseListener()
+	awaitShutdown(t, l.closeReturned, "Listener.Close did not return")
+	// Close may return, but actual Accept and its registration remain held.
 	select {
-	case err := <-results:
-		t.Fatalf("Stop returned before accept-owner registration drained: %v", err)
+	case <-e.entered: t.Fatal("engine closed before Accept returned")
+	case err := <-results: received++; t.Fatalf("Stop returned before Accept: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	release()
-	awaitShutdown(t, acceptDone, "accept owner did not drain")
-	for i := 0; i < cap(results); i++ {
-		select {
-		case err := <-results:
-			if err != ErrListener {
-				t.Fatalf("Stop = %v, want ErrListener", err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("Stop did not join accept owner")
-		}
+	select { case <-acceptDone: observerJoined = true; t.Fatal("Accept registration drained before release"); default: }
+	releaseError()
+	joinAccept()
+	awaitShutdown(t, e.entered, "engine close did not follow actual accept drain")
+	select {
+	case err := <-results:
+		received++
+		t.Fatalf("Stop returned before Engine.Close completion: %v", err)
+	default:
 	}
-	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
-		t.Fatalf("teardown = %s", got)
-	}
+	releaseEngine()
+	awaitShutdown(t, e.returned, "Engine.Close did not return")
+	for received < launched { if err := receive(); err != ErrEngine { t.Fatalf("Stop=%v want=%v", err, ErrEngine) } }
+	if err := s.Stop(); err != ErrEngine { t.Fatalf("repeat Stop=%v want=%v", err, ErrEngine) }
+	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" { t.Fatalf("teardown=%s", got) }
 }
 
 func TestStopRejectsConnectionReturnedAfterListenerClose(t *testing.T) {
 	events := &shutdownEvents{}
 	probe, probePeer := net.Pipe()
+	t.Cleanup(func() { _ = probe.Close(); _ = probePeer.Close() })
 	tail, inbound := net.Pipe()
-	for _, c := range []net.Conn{probe, probePeer, tail, inbound} {
-		defer c.Close()
-	}
+	t.Cleanup(func() { _ = tail.Close(); _ = inbound.Close() })
 	l := &shutdownListener{conn: inbound, failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), acceptEntered: make(chan struct{}), acceptRelease: make(chan struct{}), events: events}
 	close(l.closeRelease)
 	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
@@ -584,17 +628,36 @@ func TestStopRejectsConnectionReturnedAfterListenerClose(t *testing.T) {
 		}
 		return probe, nil
 	}))
+	release := releaseSignal(t, l.acceptRelease)
+	results := make(chan error, 8)
+	launched, received := 0, 0
+	receive := func() error { err := waitResult(t, results); received++; return err }
+	proxyDone := make(chan struct{})
+	observerLaunched, observerJoined := false, false
+	joinProxy := func() { awaitShutdown(t, proxyDone, "late-accept proxy observation did not settle"); observerJoined = true }
+	t.Cleanup(func() {
+		release()
+		for _, c := range []net.Conn{probe, probePeer, tail, inbound} { _ = c.Close() }
+		if launched == 0 { launched++; go func() { results <- s.Stop() }() }
+		var observer <-chan struct{}
+		if observerLaunched && !observerJoined { observer = proxyDone }
+		timer := time.NewTimer(testWaitTimeout)
+		defer timer.Stop()
+		for received < launched || observer != nil {
+			select {
+			case <-results: received++
+			case <-observer: observerJoined = true; observer = nil
+			case <-timer.C:
+				t.Errorf("cleanup incomplete: Stop results remaining=%d observer pending=%t", launched-received, observer != nil)
+				return
+			}
+		}
+	})
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	awaitShutdown(t, l.acceptEntered, "Accept did not begin")
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(l.acceptRelease) }) }
-	t.Cleanup(release)
-	results := make(chan error, 8)
-	for i := 0; i < cap(results); i++ {
-		go func() { results <- s.Stop() }()
-	}
+	for launched < cap(results) { launched++; go func() { results <- s.Stop() }() }
 	awaitShutdown(t, l.closeEntered, "Stop did not close listener first")
 	select {
 	case <-e.entered:
@@ -602,19 +665,10 @@ func TestStopRejectsConnectionReturnedAfterListenerClose(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 	release()
-	for i := 0; i < cap(results); i++ {
-		select {
-		case err := <-results:
-			if err != nil {
-				t.Fatalf("Stop = %v", err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("Stop did not drain late Accept")
-		}
-	}
-	proxyDone := make(chan struct{})
+	for received < launched { if err := receive(); err != nil { t.Fatalf("Stop=%v", err) } }
+	observerLaunched = true
 	go func() { s.proxyWG.Wait(); close(proxyDone) }()
-	awaitShutdown(t, proxyDone, "late-accept proxy observation did not settle")
+	joinProxy()
 	dialMu.Lock()
 	gotDials := dials
 	dialMu.Unlock()
@@ -637,13 +691,13 @@ func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/%s/close-failure-%t", owner, proxy, fail), func(t *testing.T) {
 					events := &shutdownEvents{}
 					probe, probePeer := net.Pipe()
+					t.Cleanup(func() { _ = probe.Close(); _ = probePeer.Close() })
 					tail, inbound := net.Pipe()
+					t.Cleanup(func() { _ = tail.Close(); _ = inbound.Close() })
 					outbound, connector := net.Pipe()
-					for _, c := range []net.Conn{probe, probePeer, tail, inbound, outbound, connector} {
-						defer c.Close()
-					}
-					l := &shutdownListener{conn: inbound, failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), events: events}
-					e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
+					t.Cleanup(func() { _ = outbound.Close(); _ = connector.Close() })
+					l := &shutdownListener{conn: inbound, failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), closeReturned: make(chan struct{}), events: events}
+					e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
 					if fail {
 						e.err = errors.New("private engine failure")
 					}
@@ -659,16 +713,38 @@ func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
 						return outbound, nil
 					})
 					s := New(validConfig(t), e, dial)
+					releaseDial := releaseSignal(t, dialRelease)
+					releaseListener := releaseSignal(t, l.closeRelease)
+					releaseEngine := releaseSignal(t, e.release)
+					results := make(chan error, 8)
+					launched, received := 0, 0
+					receive := func() error { err := waitResult(t, results); received++; return err }
+					acceptDone := make(chan struct{})
+					observerLaunched, observerJoined := false, false
+					joinAccept := func() { awaitShutdown(t, acceptDone, "Stop returned with undrained accept loop"); observerJoined = true }
+					t.Cleanup(func() {
+						releaseListener(); releaseDial(); releaseEngine()
+						for _, c := range []net.Conn{probe, probePeer, tail, inbound, outbound, connector} { _ = c.Close() }
+						if launched == 0 { launched++; go func() { results <- s.Stop() }() }
+						var observer <-chan struct{}
+						if observerLaunched && !observerJoined { observer = acceptDone }
+						timer := time.NewTimer(testWaitTimeout)
+						defer timer.Stop()
+						for received < launched || observer != nil {
+							select {
+							case <-results: received++
+							case <-observer: observerJoined = true; observer = nil
+							case <-timer.C:
+								t.Errorf("cleanup incomplete: Stop results remaining=%d observer pending=%t", launched-received, observer != nil)
+								return
+							}
+						}
+					})
 					if err := s.Start(context.Background()); err != nil {
 						t.Fatal(err)
 					}
 					_ = probePeer.Close()
 					awaitShutdown(t, dialEntered, "proxy did not enter Dial")
-					var dialOnce, listenerOnce, engineOnce sync.Once
-					releaseDial := func() { dialOnce.Do(func() { close(dialRelease) }) }
-					releaseListener := func() { listenerOnce.Do(func() { close(l.closeRelease) }) }
-					releaseEngine := func() { engineOnce.Do(func() { close(e.release) }) }
-					t.Cleanup(func() { releaseDial(); releaseListener(); releaseEngine() })
 					if proxy == "active" {
 						releaseDial()
 						deadline := time.Now().Add(time.Second)
@@ -685,19 +761,17 @@ func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
 							time.Sleep(time.Millisecond)
 						}
 					}
-					results := make(chan error, 8)
 					if owner == "listener" {
 						close(l.failure)
 						awaitShutdown(t, l.closeEntered, "unexpected listener error did not own teardown")
 					}
-					for i := 0; i < cap(results); i++ {
-						go func() { results <- s.Stop() }()
-					}
+					for launched < cap(results) { launched++; go func() { results <- s.Stop() }() }
 					awaitShutdown(t, l.closeEntered, "listener-first teardown did not begin")
 					if owner == "stop" {
 						close(l.failure)
 					}
 					releaseListener()
+					awaitShutdown(t, l.closeReturned, "Listener.Close did not return")
 					if proxy == "inflight" {
 						select {
 						case <-e.entered:
@@ -709,6 +783,7 @@ func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
 					awaitShutdown(t, e.entered, "engine close did not follow proxy drain")
 					select {
 					case err := <-results:
+						received++
 						t.Fatalf("Stop returned before engine completion: %v", err)
 					default:
 					}
@@ -725,22 +800,14 @@ func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
 						}
 					}
 					releaseEngine()
+					awaitShutdown(t, e.returned, "Engine.Close did not return")
 					var want error
 					if owner == "listener" {
 						want = ErrListener
 					} else if fail {
 						want = ErrEngine
 					}
-					for i := 0; i < cap(results); i++ {
-						select {
-						case err := <-results:
-							if err != want {
-								t.Fatalf("Stop = %v, want %v", err, want)
-							}
-						case <-time.After(time.Second):
-							t.Fatal("concurrent Stop did not complete")
-						}
-					}
+					for received < launched { if err := receive(); err != want { t.Fatalf("Stop=%v want=%v", err, want) } }
 					if err := s.Stop(); err != want {
 						t.Fatalf("repeated Stop = %v, want %v", err, want)
 					}
@@ -750,9 +817,9 @@ func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
 					if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
 						t.Fatalf("teardown = %s", got)
 					}
-					acceptDone := make(chan struct{})
+					observerLaunched = true
 					go func() { s.acceptWG.Wait(); close(acceptDone) }()
-					awaitShutdown(t, acceptDone, "Stop returned with undrained accept loop")
+					joinAccept()
 				})
 			}
 		}

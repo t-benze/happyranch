@@ -124,6 +124,9 @@ type Dialer interface {
 }
 
 type Sidecar struct {
+	managed         *ManagedSidecarGuard
+	monitorStop     chan struct{}
+	monitorWG       sync.WaitGroup
 	cfg             Config
 	engine          Engine
 	dialer          Dialer
@@ -142,13 +145,15 @@ type Sidecar struct {
 }
 
 func New(cfg Config, engine Engine, dialer Dialer) *Sidecar {
-	return &Sidecar{cfg: cfg, engine: engine, dialer: dialer, active: make(map[net.Conn]struct{})}
+	return &Sidecar{cfg: cfg, engine: engine, dialer: dialer, active: make(map[net.Conn]struct{}), monitorStop: make(chan struct{})}
 }
 
 func (s *Sidecar) Start(ctx context.Context) error {
 	// This deadline begins at entry, including credential and engine work.
 	// Serving retains ctx; cancelling startup must not cancel accepted proxies.
-	startup, cancel := context.WithDeadline(ctx, time.Now().Add(startupBudget))
+	deadline := time.Now().Add(startupBudget)
+    if s.managed != nil && s.managed.startupDeadline.Before(deadline) {deadline=s.managed.startupDeadline}
+    startup, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	if err := startupContextError(startup); err != nil {
 		return terminalNetworkFailure(err)
@@ -181,6 +186,10 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err := startupContextError(startup); err != nil {
 		clear(credential)
 		return terminalNetworkFailure(err)
+	}
+	if s.managed != nil && ManagedIdentityPreflight(s.cfg) != nil {
+		clear(credential)
+		return ErrCredentialInput
 	}
 	receipt, err := s.engine.Start(startup, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeers}, credential)
 	for i := range credential {
@@ -223,7 +232,16 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		s.closeEngine()
 		return ErrConnector
 	}
-	l, err := s.engine.Listen(s.cfg.ListenAddr)
+	var l net.Listener
+	if s.managed != nil {
+		err = s.managed.Admission(startup, func() error {
+			if startupContextError(startup) != nil { return ErrListener }
+			l, err = s.engine.Listen(s.cfg.ListenAddr)
+			return err
+		})
+	} else {
+		l, err = s.engine.Listen(s.cfg.ListenAddr)
+	}
 	if err != nil || l == nil {
 		if l != nil {
 			_ = l.Close()
@@ -242,6 +260,42 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	s.acceptWG.Add(1)
 	s.mu.Unlock()
 	go s.acceptLoop(ctx, l)
+	if s.managed != nil {
+		s.monitorWG.Add(1)
+		go func() {
+			defer s.monitorWG.Done()
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+                    var cause error
+                    if s.managed.failed.Load(){cause=ErrListener}
+                    go s.shutdown(cause);return
+				case <-s.monitorStop: return
+				case <-ticker.C:
+					s.mu.Lock(); stopping := s.stopping; s.mu.Unlock()
+					if stopping { return }
+					check, cancelCheck := context.WithTimeout(ctx,time.Second)
+					engine, ok := s.engine.(*TSNetEngine)
+					engineHealthy := ok && engine.managedHealthy(check,s.cfg)
+                    // A known local negative vetoes admission BEFORE Check can
+                    // wait for the common lock. Record/signal delivery to the
+                    // wrapper remains a separate bounded observation.
+                    if !engineHealthy { s.managed.observe(check,ErrLifecycle) }
+                    guardErr:=s.managed.Check(check)
+                    healthy:=engineHealthy && guardErr==nil
+					cancelCheck()
+                    if ctx.Err()!=nil{
+                        var cause error
+                        if s.managed.failed.Load(){cause=ErrListener}
+                        go s.shutdown(cause);return
+                    }
+					if !healthy { s.managed.observe(check,ErrLifecycle); go s.shutdown(ErrListener); return }
+				}
+			}
+		}()
+	}
 	return nil
 }
 
@@ -438,7 +492,10 @@ func (s *Sidecar) acceptLoop(ctx context.Context, l net.Listener) {
 			deliberate := s.stopping
 			s.mu.Unlock()
 			if !deliberate {
-				s.shutdown(ErrListener, true)
+                if s.managed!=nil{
+                    s.managed.observe(ctx,ErrListener)
+                }
+				go s.shutdown(ErrListener)
 			}
 			return
 		}
@@ -456,50 +513,69 @@ func (s *Sidecar) acceptLoop(ctx context.Context, l net.Listener) {
 func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 	defer s.proxyWG.Done()
 	outbound, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
-	if err != nil {
-		_ = inbound.Close()
-		return
-	}
-	s.mu.Lock()
-	if s.stopping {
-		s.mu.Unlock()
-		_ = inbound.Close()
-		_ = outbound.Close()
-		return
-	}
-	s.active[inbound] = struct{}{}
-	s.active[outbound] = struct{}{}
-	s.mu.Unlock()
+	// Own every returned socket and any membership before registration can
+	// succeed and then fail Forward's post-action authority proof.
 	defer func() {
 		_ = inbound.Close()
-		_ = outbound.Close()
+		if outbound != nil {
+			_ = outbound.Close()
+		}
 		s.mu.Lock()
 		delete(s.active, inbound)
 		delete(s.active, outbound)
 		s.mu.Unlock()
 	}()
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(outbound, inbound)
-		if c, ok := outbound.(interface{ CloseWrite() error }); ok {
-			_ = c.CloseWrite()
+	if err != nil || outbound == nil {
+		return
+	}
+	register := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.stopping {
+			return ErrListener
 		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(inbound, outbound)
-		if c, ok := inbound.(interface{ CloseWrite() error }); ok {
-			_ = c.CloseWrite()
+		s.active[inbound] = struct{}{}
+		s.active[outbound] = struct{}{}
+		return nil
+	}
+	if s.managed != nil {
+		check, cancel := context.WithTimeout(ctx, time.Second)
+		err = s.managed.Forward(check, register)
+		cancel()
+	} else {
+		err = register()
+	}
+	if err != nil {
+		return
+	}
+	done := make(chan bool, 2)
+	copyFlow := func(dst, src net.Conn) {
+		_, err := io.Copy(dst, src)
+		orderly := false
+		if err == nil {
+			if c, ok := dst.(interface{ CloseWrite() error }); ok {
+				orderly = c.CloseWrite() == nil
+			}
 		}
-		done <- struct{}{}
-	}()
-	<-done
+		done <- orderly
+	}
+	go copyFlow(outbound, inbound)
+	go copyFlow(inbound, outbound)
+	for i := 0; i < 2; i++ {
+		if !<-done {
+			// A copy error or failed/unsupported half-close terminates both
+			// flows. Orderly EOF instead lets the reverse response drain.
+			_ = inbound.Close()
+			_ = outbound.Close()
+		}
+	}
+	// Stop closes both registered sockets independently of copy completion;
+	// proxy ownership ends only after both copies have reported completion.
 }
 
 func (s *Sidecar) Stop() error {
-	s.shutdown(nil, false)
-	// An accept-owned teardown cannot join itself. Every external caller
-	// still waits for the accept loop to release its registration.
+	s.shutdown(nil)
+	// Every caller observes the actual accept-loop registration drained.
 	s.acceptWG.Wait()
 	s.mu.Lock()
 	err := s.stopErr
@@ -511,20 +587,19 @@ func (s *Sidecar) closeEngine() {
 	s.engineCloseOnce.Do(func() { s.engineErr = s.engine.Close() })
 }
 
-// shutdown is the single listener-first teardown path. A losing acceptCaller
-// must return instead of waiting on an owner that may be joining acceptWG.
-// External callers wait for the owner's completion, then Stop joins acceptWG.
-func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
+// shutdown is the single listener-first teardown owner. The accept loop hands
+// failure to an external owner and releases acceptWG before that owner joins.
+// Every external caller converges on stopDone after both work joins and Close.
+func (s *Sidecar) shutdown(cause error) {
 	s.mu.Lock()
 	if s.stopping {
 		done := s.stopDone
 		s.mu.Unlock()
-		if !acceptCaller {
-			<-done
-		}
+		<-done
 		return
 	}
 	s.stopping = true
+	close(s.monitorStop)
 	s.stopDone = make(chan struct{})
 	startDone := s.startDone
 	starting := s.starting
@@ -546,9 +621,8 @@ func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
 	}
 	s.mu.Unlock()
 	s.proxyWG.Wait()
-	if !acceptCaller {
-		s.acceptWG.Wait()
-	}
+	s.acceptWG.Wait()
+	s.monitorWG.Wait()
 	s.closeEngine()
 	teardownFailed = teardownFailed || s.engineErr != nil
 	s.mu.Lock()

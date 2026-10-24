@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -60,70 +62,139 @@ def _digest(doc: dict) -> str:
     return "sha256:" + hashlib.sha256(_canonical(doc)).hexdigest()
 
 
+def _unique_members(pairs: list[tuple[str, object]]) -> dict:
+    value: dict = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+
+def _invalid_constant(_: str) -> None:
+    raise ValueError
+
+
+def _finite_float(raw: str) -> float:
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError
+    return value
+
+
+def _object(value: object, keys: set[str]) -> None:
+    assert type(value) is dict and set(value) == keys
+
+
+def _integer(value: object, *, minimum: int, maximum: int) -> None:
+    assert type(value) is int and minimum <= value <= maximum
+
+
+def _hex(value: object, size: int) -> None:
+    assert type(value) is str and re.fullmatch(r"[0-9a-f]{%d}" % size, value) is not None
+
+
+def _run_identifier(value: object) -> None:
+    assert type(value) is str and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value) is not None
+
+
+def _identifier(value: object) -> None:
+    assert type(value) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}", value) is not None
+
+
 def _load(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    doc = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_members,
+                     parse_constant=_invalid_constant, parse_float=_finite_float)
+    assert type(doc) is dict
+    return doc
 
 
 def validate(doc: dict, *, expected_subject: str | None = None, expected_run: str | None = None) -> None:
-    assert set(doc) == {"schema", "version", "subject", "run", "records", "diagnostics", "terminal", "digest"}
-    assert doc.get("schema") == SCHEMA and doc.get("version") == VERSION
-    subject, run = doc.get("subject"), doc.get("run")
-    assert isinstance(subject, dict) and set(subject) == {"git_head", "package_sha256"}
-    assert len(subject["git_head"]) == 40 and len(subject["package_sha256"]) == 64
-    assert isinstance(run, dict) and set(run) == {"id", "zero_skip", "fake_count", "skip_count"}
-    assert run["zero_skip"] is True and run["fake_count"] == run["skip_count"] == 0 and run["id"]
+    _object(doc, {"schema", "version", "subject", "run", "records", "diagnostics", "terminal", "digest"})
+    assert type(doc["schema"]) is str and doc["schema"] == SCHEMA
+    _integer(doc["version"], minimum=VERSION, maximum=VERSION)
+    subject, run = doc["subject"], doc["run"]
+    _object(subject, {"git_head", "package_sha256"})
+    _hex(subject["git_head"], 40)
+    _hex(subject["package_sha256"], 64)
+    _object(run, {"id", "zero_skip", "fake_count", "skip_count"})
+    _run_identifier(run["id"])
+    assert run["zero_skip"] is True
+    _integer(run["fake_count"], minimum=0, maximum=0)
+    _integer(run["skip_count"], minimum=0, maximum=0)
     if expected_subject is not None:
+        _hex(expected_subject, 40)
         assert subject["git_head"] == expected_subject
     if expected_run is not None:
+        _run_identifier(expected_run)
         assert run["id"] == expected_run
-    records = doc.get("records")
-    assert isinstance(records, list)
+    records = doc["records"]
     expected = {(phase, observation) for phase, values in PHASES.items() for observation in values}
+    assert type(records) is list and len(records) == len(expected)
     seen: set[tuple[str, str]] = set()
     assertion_ids: set[str] = set()
     for sequence, record in enumerate(records, 1):
-        assert set(record) == {"sequence", "phase", "observation", "assertion"}
+        _object(record, {"sequence", "phase", "observation", "assertion"})
+        _integer(record["sequence"], minimum=1, maximum=len(expected))
         assert record["sequence"] == sequence
+        assert type(record["phase"]) is str and type(record["observation"]) is str
         key = (record["phase"], record["observation"])
         assert key in expected and key not in seen
         assertion = record["assertion"]
-        assert set(assertion) == {"id", "kind", "status", "completed_sequence"}
+        _object(assertion, {"id", "kind", "status", "completed_sequence"})
+        _identifier(assertion["id"])
         assert assertion["id"] not in assertion_ids
+        assert type(assertion["kind"]) is str
         assert assertion["kind"] == record["observation"] and assertion["kind"] not in FORBIDDEN_KINDS
-        assert assertion["status"] == "completed" and assertion["completed_sequence"] == sequence
+        assert type(assertion["status"]) is str and assertion["status"] == "completed"
+        _integer(assertion["completed_sequence"], minimum=1, maximum=len(expected))
+        assert assertion["completed_sequence"] == sequence
         seen.add(key); assertion_ids.add(assertion["id"])
     assert seen == expected
-    diagnostics = doc.get("diagnostics")
-    assert isinstance(diagnostics, list) and diagnostics
+    diagnostics = doc["diagnostics"]
+    assert type(diagnostics) is list and diagnostics
     diagnostic_ids: set[str] = set()
     for receipt in diagnostics:
-        assert set(receipt) == {"id", "category", "phase", "actor", "unit", "outcome", "terminal", "assertion"}
-        assert receipt["id"] and receipt["id"] not in diagnostic_ids
-        assert receipt["category"] in DIAGNOSTIC_PHASES
-        assert receipt["phase"] == DIAGNOSTIC_PHASES[receipt["category"]]
-        assert receipt["actor"] in DIAGNOSTIC_ACTORS and receipt["unit"] in DIAGNOSTIC_UNITS
-        assert receipt["outcome"] == "failed" and receipt["terminal"] is True
-        assert receipt["assertion"] == {"status": "completed"}
+        _object(receipt, {"id", "category", "phase", "actor", "unit", "outcome", "terminal", "assertion"})
+        _identifier(receipt["id"])
+        assert receipt["id"] not in diagnostic_ids
+        assert type(receipt["category"]) is str and receipt["category"] in DIAGNOSTIC_PHASES
+        assert type(receipt["phase"]) is str and receipt["phase"] == DIAGNOSTIC_PHASES[receipt["category"]]
+        assert type(receipt["actor"]) is str and receipt["actor"] in DIAGNOSTIC_ACTORS
+        assert type(receipt["unit"]) is str and receipt["unit"] in DIAGNOSTIC_UNITS
+        assert type(receipt["outcome"]) is str and receipt["outcome"] == "failed"
+        assert receipt["terminal"] is True
+        _object(receipt["assertion"], {"status"})
+        assert type(receipt["assertion"]["status"]) is str and receipt["assertion"]["status"] == "completed"
         rendered = json.dumps(receipt, sort_keys=True).lower()
         assert not any(marker in rendered for marker in SECRET_MARKERS)
         diagnostic_ids.add(receipt["id"])
-    terminal = doc.get("terminal")
-    assert terminal == {"status": "complete", "record_count": len(records), "last_sequence": len(records)}
-    assert doc.get("digest") == _digest(doc)
+    terminal = doc["terminal"]
+    _object(terminal, {"status", "record_count", "last_sequence"})
+    assert type(terminal["status"]) is str and terminal["status"] == "complete"
+    for field in ("record_count", "last_sequence"):
+        _integer(terminal[field], minimum=len(expected), maximum=len(expected))
+    assert type(doc["digest"]) is str and doc["digest"].startswith("sha256:")
+    _hex(doc["digest"][7:], 64)
+    assert doc["digest"] == _digest(doc)
 
 
 def validate_denial_matrix(doc: dict, *, expected_arm: str | None = None) -> None:
-    assert set(doc) == {"schema", "version", "arm_id", "operations"}
-    assert doc["schema"] == "happyranch.n3.sandbox-denial-matrix" and doc["version"] == 1
-    assert doc["arm_id"] == "shipping-unit"
+    _object(doc, {"schema", "version", "arm_id", "operations"})
+    assert type(doc["schema"]) is str and doc["schema"] == "happyranch.n3.sandbox-denial-matrix"
+    _integer(doc["version"], minimum=1, maximum=1)
+    assert type(doc["arm_id"]) is str and doc["arm_id"] == "shipping-unit"
     if expected_arm is not None:
-        assert doc["arm_id"] == expected_arm
+        assert type(expected_arm) is str and doc["arm_id"] == expected_arm
     operations = doc["operations"]
-    assert isinstance(operations, list) and [row.get("id") for row in operations] == list(DENIAL_OPERATIONS)
-    for row in operations:
-        assert set(row) == {"id", "measured", "result", "category", "errno"}
+    assert type(operations) is list and len(operations) == len(DENIAL_OPERATIONS)
+    for operation, row in zip(DENIAL_OPERATIONS, operations):
+        _object(row, {"id", "measured", "result", "category", "errno"})
+        assert type(row["id"]) is str and row["id"] == operation
         assert row["measured"] is True
-        assert row["result"] in DENIAL_RESULTS and row["category"] in DENIAL_CATEGORIES
+        assert type(row["result"]) is str and row["result"] in DENIAL_RESULTS
+        assert type(row["category"]) is str and row["category"] in DENIAL_CATEGORIES
+        assert row["errno"] is None or type(row["errno"]) is str
         assert row["errno"] in DENIAL_ERRNOS
         rendered = json.dumps(row, sort_keys=True).lower()
         assert not any(marker in rendered for marker in SECRET_MARKERS)

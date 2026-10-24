@@ -1,40 +1,19 @@
 package main
 
-// TASK-8489: corrected TASK8466 real command-seam Q1-Q8 and real-consumer
-// H1-H7 regression coverage for the managed N3 composite readiness path.
-//
-// Every observation in this file is made through the real exported seam
-// (systemdSidecarState / systemdStopSidecar) against a per-case fail-closed
-// systemctl fixture on PATH that accepts only the exact canonical argv and
-// never forwards to the host manager.  The health child is this test binary
-// re-executed as a helper process, so the real child health FD, the real
-// canonical generation/sequence records, and real process termination and
-// reaping are exercised.
-//
-// TASK8468 finding 5 corrections implemented here:
-//  1. The supervisor stop closure forwards the context the production
-//     consumer actually supplied (never the supervisor parent), the health
-//     child asserts NOTIFY_SOCKET absence, the supervisor keeps sole
-//     ownership of cmd.Wait, product waits fail (rather than kill and
-//     return success), and test-owned teardown is a separate
-//     TEST_TEARDOWN_BEGIN-delimited path.
-//  2. Q6 is the exact accepted state/result/PID table and Q8 keeps the real
-//     deadline/cancellation seams with a 2s normal entry barrier and proven
-//     helper reaping.
-//  3. H1/H2 negative assertions run behind a real probe gate (a completed
-//     observation/consumer-progress boundary) instead of a bare probe
-//     counter, and never-recovers bounds STOPPING by the original 250ms
-//     deadline plus the accepted 2s scheduling allowance.
-//  4. H3 includes a real entered query-deadline consumer case.
-//  5. H5 covers initially healthy and unhealthy with completed
-//     still-present/absence observations before any product child cleanup;
-//     H6 finishes each negative observation before asserting no cleanup.
-//  6. H7 cancels the context actually supplied to removeSidecarAdmission
-//     only after an entered re-observation barrier and keeps the separate
-//     production Background-context behavior.
-//
-// Bounds: ordinary barrier/join 2s, real query plus teardown 3s, real
-// admission plus teardown 7s.
+// Historical TASK8489/TASK8466 v1 query and superviseConnector cases.
+// The shipping command selects superviseManagedConnector, not this consumer.
+// Q1-Q8 retain the four-property systemdSidecarState parser/command boundary.
+// H1-H7 and later consumer cases retain their original legacy notifications,
+// admission ordering, cancellation, Wait/scanner observations and bounds.
+// The restored H1045 systemdStopSidecar uses the per-case PATH show/stop
+// fixture; that fixture never forwards to PID1. Historical supervisor/helper
+// retention is subject to the separately recorded exact exception.
+// These cases do not prove managed lifecycle2 authority, pinned withdrawal,
+// actual managed listener/flow closure, joins, receipt leases or R10/D30 timing.
+// Every selected managed requirement and its missing proof remains owed.
+// No assertion/input/bound is changed; no test is removed, skipped or executed.
+// Historical fixture bounds remain: barrier/join 2s, query/teardown 3s,
+// admission/teardown 7s. They are not managed operation allowances.
 
 import (
 	"context"
@@ -363,7 +342,7 @@ func hr8466HealthyReply(order string) string {
 // hr8466FixtureScript is the per-case fail-closed systemctl stand-in.  It
 // accepts only the exact canonical show/stop argv, refuses to run when
 // NOTIFY_SOCKET leaked, records every invocation plus an exact-start and
-// exact-completion receipt for each observation, renders the reply bytes for
+// reply-emitted receipt (not consumer completion), renders the reply bytes for
 // the current state token, and can be told to hold the sidecar present or to
 // delay the observation beyond the real query deadline.
 const hr8466FixtureScript = `#!/bin/sh
@@ -490,7 +469,7 @@ func (f *hr8466Fixture) requireStopFailure() { writeHR8466File(f.failStop, "fail
 func (f *hr8466Fixture) releaseChild(i int)  { appendHR8466File(f.barrier, strconv.Itoa(i)+"\n") }
 
 // holdFirstUnhealthyShow rewrites the fixture systemctl stand-in so the first
-// nonhealthy show stays alive after its completion receipt until the test
+// nonhealthy show stays alive after its reply-emitted receipt until the test
 // releases it.  The receipt (“show-done“) is written before the shell exits
 // and therefore before the production parser/cmd.Output boundary returns, so a
 // test that arms its gate on that receipt can capture the wrong observation.
@@ -559,9 +538,9 @@ func assertHR8466ScannerJoined(t *testing.T, timeout time.Duration) {
 	}
 }
 
-// beginTeardown records the explicit test-owned teardown boundary before any
-// test-owned exit/TERM/kill action so those actions can never be mistaken for
-// product child cleanup.
+// beginTeardown records the actual test teardown boundary before its TERM/kill
+// rescue so those actions are excluded from product child cleanup assertions.
+// Controlled spontaneous-exit inputs keep observation open through h.waitDone.
 func (f *hr8466Fixture) beginTeardown() {
 	f.teardownOnce.Do(func() { appendHR8466Event(f.events, "TEST_TEARDOWN_BEGIN") })
 }
@@ -579,11 +558,10 @@ func (f *hr8466Fixture) productEvents() []string {
 	return out
 }
 
-// exitChild is a test-owned action: it records the teardown boundary first and
-// then asks the fixture child to exit so a supervisor blocked on a negative
-// admission can settle.
+// exitChild supplies a controlled spontaneous exit, not teardown. Product TERM
+// remains observable until the supervisor's actual result joins; only teardown
+// closes that interval before test-owned kill.
 func (f *hr8466Fixture) exitChild() {
-	f.beginTeardown()
 	writeHR8466File(f.childExit, "exit")
 }
 
@@ -621,9 +599,9 @@ func (f *hr8466Fixture) waitEvent(t *testing.T, exact string, timeout time.Durat
 	}
 }
 
-// waitShowComplete waits until the fixture has completed `want` observations of
-// the named state (the reply bytes were emitted), which is the real
-// observation-completion boundary.
+// waitShowComplete counts `want` shell reply emissions for the named state.
+// show-done precedes command exit, cmd.Output and consumer classification; it
+// does not establish a completed consumer observation.
 func (f *hr8466Fixture) waitShowComplete(t *testing.T, state string, want int, timeout time.Duration) []string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -639,7 +617,7 @@ func (f *hr8466Fixture) waitShowComplete(t *testing.T, state string, want int, t
 			return events
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("completed observation %q count=%d, want >=%d; events=%v", "show-done:"+state, count, want, events)
+			t.Fatalf("shell reply %q count=%d, want >=%d; events=%v", "show-done:"+state, count, want, events)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -820,9 +798,9 @@ type hr8466Supervisor struct {
 	code     int
 }
 
-// startHR8466Supervisor starts the real supervisor.  The stop callback forwards
-// the context production actually supplied (the real admission seam uses
-// context.Background()); the harness never substitutes the supervisor parent.
+// startHR8466Supervisor starts the unselected historical superviseConnector.
+// The stop callback forwards the context supplied by that legacy consumer;
+// it does not exercise the managed retirement closure or its finite context.
 func startHR8466Supervisor(t *testing.T, f *hr8466Fixture, startup, stale time.Duration) *hr8466Supervisor {
 	t.Helper()
 	h := &hr8466Supervisor{
@@ -849,8 +827,15 @@ func startHR8466Supervisor(t *testing.T, f *hr8466Fixture, startup, stale time.D
 	}()
 	select {
 	case h.cmd = <-started:
-	case code := <-h.done:
-		t.Fatalf("supervisor exited before starting its child: code=%d", code)
+	case h.code = <-h.done:
+		h.finished = true
+		// Completion can race the already-buffered started handle. Keep it
+		// for supplementary reaping checks without taking cmd.Wait ownership.
+		select {
+		case h.cmd = <-started:
+		default:
+		}
+		t.Fatalf("supervisor exited during child startup: code=%d", h.code)
 	case <-time.After(hr8466NormalBarrier):
 		t.Fatal("supervisor never started its child")
 	}
@@ -1105,6 +1090,22 @@ func TestSystemdSidecarStateDeadlinesAndCancellation(t *testing.T) {
 			}
 			start := time.Now()
 			done := make(chan sidecarObservation, 1)
+			var result sidecarObservation
+			queryJoined := false
+			// Cancellation releases the query, but only its actual result joins
+			// it. Register ownership before launch and before helper-entry waits.
+			t.Cleanup(func() {
+				cancel()
+				if queryJoined {
+					return
+				}
+				select {
+				case result = <-done:
+					queryJoined = true
+				case <-time.After(hr8466QueryBound):
+					t.Error("cleanup did not join the cancelled sidecar query")
+				}
+			})
 			go func() { done <- systemdSidecarState(ctx) }()
 			if mode == "in-flight" {
 				deadline := time.Now().Add(hr8466NormalBarrier)
@@ -1117,9 +1118,10 @@ func TestSystemdSidecarStateDeadlinesAndCancellation(t *testing.T) {
 				cancel()
 			}
 			select {
-			case got := <-done:
-				if got != sidecarUnknown {
-					t.Fatalf("%s = %d, want sidecarUnknown", mode, got)
+			case result = <-done:
+				queryJoined = true
+				if result != sidecarUnknown {
+					t.Fatalf("%s = %d, want sidecarUnknown", mode, result)
 				}
 			case <-time.After(hr8466QueryBound):
 				t.Fatal("query did not terminate within its real-query plus teardown bound")
@@ -1356,6 +1358,22 @@ func TestConsumerNeverRecoversHonorsOriginalDeadline(t *testing.T) {
 	// races the identical join bound below).
 	released := make(chan struct{})
 	stopRelease := make(chan struct{})
+	var stopReleaseOnce sync.Once
+	releaseJoined := false
+	joinRelease := func() {
+		stopReleaseOnce.Do(func() { close(stopRelease) })
+		if releaseJoined {
+			return
+		}
+		select {
+		case <-released:
+			releaseJoined = true
+		case <-time.After(hr8466NormalBarrier):
+			t.Error("release helper did not join within the normal barrier bound")
+		}
+	}
+	// Runs before deferred supervisor teardown and fixture temp/env cleanup.
+	defer joinRelease()
 	go func() {
 		defer close(released)
 		for i := 0; i < 6; i++ {
@@ -1388,12 +1406,7 @@ func TestConsumerNeverRecoversHonorsOriginalDeadline(t *testing.T) {
 	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
 		t.Fatalf("never-recovers admission exit code=%d, want 0", code)
 	}
-	close(stopRelease)
-	select {
-	case <-released:
-	case <-time.After(hr8466NormalBarrier):
-		t.Fatal("release helper did not join within the normal barrier bound")
-	}
+	joinRelease()
 	assertHR8466NoFixtureLeak(t, f)
 }
 
@@ -1577,7 +1590,7 @@ func TestConsumerAdmissionOrderingBeforeChildCleanup(t *testing.T) {
 			}
 		}
 		if showAbsent < 0 || term < showAbsent {
-			t.Fatalf("child cleanup preceded the completed observed absence: events=%v", events)
+			t.Fatalf("child cleanup preceded the absence reply emission: events=%v", events)
 		}
 		if code := h.waitDone(hr8466AdmissionBound); code != 0 {
 			t.Fatalf("absent admission exit code=%d, want 0", code)
@@ -1599,21 +1612,22 @@ func TestConsumerAdmissionOrderingBeforeChildCleanup(t *testing.T) {
 			f.releaseChild(0)
 			events := f.waitStop(t)
 			stopIndex := firstHR8466Index(events, "stop")
-			// A completed still-present re-observation must follow the stop.
+			// A still-present reply must be emitted after stop; this does not
+			// establish command return or consumer completion.
 			deadline := time.Now().Add(hr8466NormalBarrier)
 			for {
 				events = f.productEvents()
-				completedAfterStop := 0
+				emittedAfterStop := 0
 				for i := stopIndex + 1; i < len(events); i++ {
 					if events[i] == "show-done:"+initial {
-						completedAfterStop++
+						emittedAfterStop++
 					}
 				}
-				if completedAfterStop >= 1 {
+				if emittedAfterStop >= 1 {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("no completed still-present re-observation after stop: events=%v", events)
+					t.Fatalf("no still-present reply emitted after stop: events=%v", events)
 				}
 				time.Sleep(time.Millisecond)
 			}
@@ -1624,8 +1638,8 @@ func TestConsumerAdmissionOrderingBeforeChildCleanup(t *testing.T) {
 				t.Fatalf("stop count = %d within the admission attempt, want 1; events=%v", got, events)
 			}
 
-			// Release absence only now; a completed absence observation must
-			// precede the product child TERM.
+			// Release absence only now; its shell reply emission must precede
+			// product TERM. The final supervisor result joins consumer completion.
 			f.setState("absent")
 			events = f.waitTerm(t)
 			term := firstHR8466Index(events, "term")
@@ -1636,7 +1650,7 @@ func TestConsumerAdmissionOrderingBeforeChildCleanup(t *testing.T) {
 				}
 			}
 			if showAbsent < 0 || showAbsent > term {
-				t.Fatalf("product TERM preceded a completed absence observation: events=%v", events)
+				t.Fatalf("product TERM preceded the absence reply emission: events=%v", events)
 			}
 			if got := hr8466EventCount(events, "stop"); got != 1 {
 				t.Fatalf("stop count = %d after absence, want 1; events=%v", got, events)
@@ -1650,9 +1664,9 @@ func TestConsumerAdmissionOrderingBeforeChildCleanup(t *testing.T) {
 }
 
 // H6: stop failure, an initially unknown query, and present -> stop -> unknown
-// all deny admission and never perform product child cleanup.  Each negative
-// observation must complete before the no-cleanup assertion; the initially
-// unknown query issues no stop.
+// all deny admission and never perform product child cleanup. Shell emissions
+// arrange the controlled exit; the final no-cleanup assertion follows the actual
+// supervisor result. The initially unknown query issues no stop.
 func TestConsumerNegativeAdmissionNeverCleansUpChild(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1693,8 +1707,8 @@ func TestConsumerNegativeAdmissionNeverCleansUpChild(t *testing.T) {
 			default:
 				f.waitShowComplete(t, tc.initial, 1, hr8466NormalBarrier)
 			}
-			// The negative observation is complete; now assert no product
-			// child cleanup, before the explicit test teardown boundary.
+			// Shell bytes alone do not complete refusal. This preliminary sample
+			// stays open through controlled child exit and the actual final result.
 			events := f.productEvents()
 			if hr8466HasEvent(events, "term") {
 				t.Fatalf("negative admission performed product child cleanup: events=%v", events)
@@ -1706,8 +1720,12 @@ func TestConsumerNegativeAdmissionNeverCleansUpChild(t *testing.T) {
 			if code := h.waitDone(hr8466AdmissionBound); code != 1 {
 				t.Fatalf("negative admission exit code=%d, want 1", code)
 			}
-			if hr8466HasEvent(f.productEvents(), "term") {
-				t.Fatalf("negative admission terminated the product child: events=%v", f.productEvents())
+			events = f.productEvents()
+			if hr8466HasEvent(events, "term") {
+				t.Fatalf("negative admission terminated the product child: events=%v", events)
+			}
+			if tc.name == "initially-unknown" && hr8466HasEvent(events, "stop") {
+				t.Fatalf("unknown query issued a stop before final refusal: events=%v", events)
 			}
 			assertHR8466NoFixtureLeak(t, f)
 		})
@@ -1743,16 +1761,45 @@ func TestConsumerAdmissionTimeoutAndDetachedContext(t *testing.T) {
 		f.holdPresent()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		stopHelper := make(chan struct{})
+		helperDone := make(chan bool, 1)
+		var stopHelperOnce sync.Once
+		helperJoined, enteredReobservation := false, false
+		joinHelper := func() {
+			stopHelperOnce.Do(func() { close(stopHelper) })
+			cancel()
+			if helperJoined {
+				return
+			}
+			select {
+			case enteredReobservation = <-helperDone:
+				helperJoined = true
+			case <-time.After(hr8466NormalBarrier):
+				t.Error("cancellation helper did not join within the normal barrier bound")
+			}
+		}
+		defer joinHelper()
 		// Cancel only after a re-observation has actually entered, never on the
-		// stop event.
+		// stop event. Abort rescue releases both waits before collecting result.
 		go func() {
-			if !waitHR8466EventPrefixBool(f.events, "stop", hr8466NormalBarrier) {
+			entered := false
+			defer func() { helperDone <- entered }()
+			if !waitHR8466LineOrStop(f.events, "stop", stopHelper, hr8466NormalBarrier) {
 				return
 			}
 			deadline := time.Now().Add(hr8466NormalBarrier)
-			for len(hr8466Events(f.entered)) < 2 && time.Now().Before(deadline) {
+			for len(hr8466Events(f.entered)) < 2 {
+				select {
+				case <-stopHelper:
+					return
+				default:
+				}
+				if !time.Now().Before(deadline) {
+					return
+				}
 				time.Sleep(time.Millisecond)
 			}
+			entered = true
 			cancel()
 		}()
 		start := time.Now()
@@ -1761,6 +1808,10 @@ func TestConsumerAdmissionTimeoutAndDetachedContext(t *testing.T) {
 		}
 		if elapsed := time.Since(start); elapsed > hr8466NormalBarrier {
 			t.Fatalf("cancellation not honored during the entered re-observation: %s", elapsed)
+		}
+		joinHelper()
+		if !enteredReobservation {
+			t.Fatal("cancellation helper did not observe entry to the re-observation")
 		}
 		for _, line := range hr8466Events(f.entered) {
 			fields := strings.Fields(line)
@@ -1854,9 +1905,9 @@ func assertHR8466NoReadyWatchdog(t *testing.T, h *hr8466Supervisor, ready, watch
 	}
 }
 
-// assertHR8466TermAfterAbsence requires any product child TERM to follow a
-// completed confirmed-absence observation; readiness is never permission to
-// clean up the child.
+// assertHR8466TermAfterAbsence checks that any logged product TERM follows an
+// absence reply emission. It does not itself prove command/consumer completion;
+// callers own the actual supervisor result. Readiness grants no cleanup permission.
 func assertHR8466TermAfterAbsence(t *testing.T, events []string) {
 	t.Helper()
 	term := firstHR8466Index(events, "term")
@@ -1865,7 +1916,7 @@ func assertHR8466TermAfterAbsence(t *testing.T, events []string) {
 	}
 	absent := firstHR8466Index(events, "show-done:absent")
 	if absent < 0 || absent > term {
-		t.Fatalf("product child TERM without a preceding completed absence observation: events=%v", events)
+		t.Fatalf("product child TERM without a preceding absence reply emission: events=%v", events)
 	}
 }
 
@@ -1948,7 +1999,7 @@ func TestConsumerExpiredStartupRefusedAdmissionRejectsLateReady(t *testing.T) {
 		deadline := time.Now().Add(hr8466NormalBarrier)
 		for hr8466EventCount(f.productEvents(), "stop-failed") < 2 {
 			if time.Now().After(deadline) {
-				t.Fatalf("late record did not trigger a completed refused admission: events=%v", f.productEvents())
+				t.Fatalf("late record did not emit another stop-failure reply: events=%v", f.productEvents())
 			}
 			time.Sleep(time.Millisecond)
 		}
@@ -2286,9 +2337,9 @@ func TestConsumerTerminalChildStatesBlockLateNotifications(t *testing.T) {
 
 // Case 5: terminal readiness and child-cleanup permission are separately
 // asserted.  STOPPING latches readiness immediately while a still-present
-// sidecar withholds child cleanup; only a completed confirmed-absence
-// observation then permits the product TERM.  No admission retry policy is
-// introduced.
+// sidecar withholds child cleanup; product TERM is required to follow an
+// absence reply emission and the final result is joined. These shell events
+// alone do not prove consumer completion. No admission retry policy is introduced.
 func TestConsumerReadinessTerminalIndependentOfChildCleanupPermission(t *testing.T) {
 	f := newHR8466Fixture(t)
 	f.setPlan("ready", "failed")
@@ -2312,17 +2363,17 @@ func TestConsumerReadinessTerminalIndependentOfChildCleanupPermission(t *testing
 	deadline := time.Now().Add(hr8466NormalBarrier)
 	for {
 		events = f.productEvents()
-		completed := 0
+		emitted := 0
 		for i := stopIndex + 1; i < len(events); i++ {
 			if events[i] == "show-done:healthy" {
-				completed++
+				emitted++
 			}
 		}
-		if completed >= 1 {
+		if emitted >= 1 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no completed still-present re-observation after stop: events=%v", events)
+			t.Fatalf("no still-present reply emitted after stop: events=%v", events)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -2549,7 +2600,7 @@ func TestConsumerScannerJoinedOnChildExitWithPendingRecord(t *testing.T) {
 }
 
 // R3 counterexample: the reviewer delayed the initial unhealthy shell after its
-// completion receipt.  Arming on that receipt would capture the still-unparsed
+// reply-emitted receipt. Arming on it would capture the still-unparsed
 // initial unhealthy observation; waiting for the real probe result and
 // asserting the expected later index/classification is the corrected proof.
 func TestConsumerLaterCancellationRequiresCompletedFirstProbe(t *testing.T) {
@@ -2562,7 +2613,7 @@ func TestConsumerLaterCancellationRequiresCompletedFirstProbe(t *testing.T) {
 
 	f.waitChildWaiting(t, 0)
 	f.releaseChild(0)
-	// The shell completion receipt lands before the production parser returns.
+	// The shell reply-emitted receipt lands before the production parser returns.
 	f.waitShowComplete(t, "unhealthy", 1, hr8466NormalBarrier)
 	f.releaseHeldShow()
 	// Only now has the real first observation completed and been classified.
@@ -2625,6 +2676,9 @@ func TestConsumerRefusedStopThenSpontaneousExitNotifiesStoppingOnce(t *testing.T
 	f.exitChild()
 	if code := h.waitDone(hr8466AdmissionBound); code != 1 {
 		t.Fatalf("refused cleanup changed exit classification: %d", code)
+	}
+	if events := f.productEvents(); hr8466HasEvent(events, "term") {
+		t.Fatalf("child cleanup attempted before completed refusal and exit: events=%v", events)
 	}
 	if got := h.count("STOPPING=1"); got != 1 {
 		t.Fatalf("terminal refusal then spontaneous child exit emitted STOPPING %d times: %v",
@@ -2855,9 +2909,10 @@ func TestConsumerExpiredPostReadyDeliveryRetainsTerminalAdmissionFence(t *testin
 				}
 				// show-done is before cmd.Output/parser return, so it cannot
 				// safely arm a gate for the next observation. Keep the actual
-				// completed-result receipts instead. Two later records and two
-				// healthy admission completions prove at least one later record
-				// was consumed even if the elapsed timer also won a select.
+				// completed query results instead. Two later records, two healthy
+				// query results and two stop-failed emissions establish later input
+				// consumption even if the timer also won a select. The shell bytes
+				// do not complete refusal; h.waitDone owns that final boundary.
 				probesBefore := h.probe.count()
 				failuresBefore := hr8466EventCount(f.productEvents(), "stop-failed")
 				f.setState("healthy")

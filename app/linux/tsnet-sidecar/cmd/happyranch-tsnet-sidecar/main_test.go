@@ -1,5 +1,10 @@
 package main
 
+// Retained superviseConnector and admission-removal cases exercise historical
+// v1 behavior. The shipping supervise-connector command selects
+// superviseManagedConnector. These cases do not prove managed lifecycle2
+// admission, authority, retirement, joins, or timing.
+
 import (
 	"bytes"
 	"context"
@@ -478,18 +483,40 @@ func TestStructuredChildHealthAbortsPendingDeliveryOnStop(t *testing.T) {
 	failed := make(chan error, 1)
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	var stopOnce sync.Once
+	release := func() { stopOnce.Do(func() { close(stop) }) }
+	joined := false
+	// Own release and the actual scanner result before launch or a fatal wait.
+	t.Cleanup(func() {
+		release()
+		if joined {
+			return
+		}
+		select {
+		case <-done:
+			joined = true
+		case <-time.After(2 * time.Second):
+			t.Error("cleanup did not join the cancelled health scanner within 2s")
+		}
+	})
 	go func() {
 		defer close(done)
 		scanChildHealth(bytes.NewBufferString(healthRecord("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, "ready")), records, failed, stop)
 	}()
 	waitHR8466BlockedScanner(t, 2*time.Second)
-	close(stop)
+	release()
 	select {
 	case <-done:
+		joined = true
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancellation did not unblock the pending scanChildHealth delivery")
 	}
-	if _, ok := <-records; ok {
+	select {
+	case _, ok := <-records:
+		if ok {
+			t.Fatal("scanChildHealth delivered a record after pending-delivery cancellation")
+		}
+	default:
 		t.Fatal("scanChildHealth did not close the records channel on cancellation")
 	}
 	select {
@@ -739,15 +766,14 @@ func readFixtureLog(t *testing.T, path string) string {
 	return string(raw)
 }
 
-// TestAdmissionRemovalUsesRealNamedQueryAndStop wires the real named-property
-// probe and real stop through the real admission-removal consumer, using only
-// a per-case fail-closed systemctl fixture on PATH (never host forwarding).
-//
-// This is the command-level admission case.  The real supervisor-level
-// consumer assertions (child TERM/cleanup ordering after observed absence,
-// notification suppression, the real 5s timeout and the detached admission
-// context) live in health_consumer_test.go so a seam name is never mistaken
-// for executed coverage.
+// TestAdmissionRemovalUsesRealNamedQueryAndStop preserves the historical
+// systemdSidecarState/systemdStopSidecar/removeSidecarAdmission command contract.
+// Its PATH fixture supplies show/stop replies and never forwards to PID1.
+// H4/H5/H6 retain their original absent/present/refused assertions and bounds.
+// This unselected legacy path is retained only by the separately recorded
+// historical-retention exception. It is not managed lifecycle2 proof.
+// The related legacy supervisor cases remain in health_consumer_test.go;
+// selected managed behavior and physical/timing proof remain owed/unexecuted.
 func TestAdmissionRemovalUsesRealNamedQueryAndStop(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state")

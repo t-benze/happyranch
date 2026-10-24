@@ -80,8 +80,17 @@ def _invalid_constant(_: str) -> None:
     raise ValueError("nonfinite value")
 
 
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError("nonfinite value")
+    return number
+
+
 def _closed_json(raw: str) -> Any:
-    return json.loads(raw, object_pairs_hook=_unique_members, parse_constant=_invalid_constant)
+    # Decode the whole frame before attribution, including ignored members.
+    return json.loads(raw, object_pairs_hook=_unique_members,
+                      parse_constant=_invalid_constant, parse_float=_finite_float)
 
 
 def _receipt(message: str, *, allow_unknown: bool = False, full: bool = False) -> dict[str, Any] | None:
@@ -89,7 +98,7 @@ def _receipt(message: str, *, allow_unknown: bool = False, full: bool = False) -
         return None
     try:
         raw = _closed_json(message.removeprefix(RECEIPT_PREFIX))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return {}
     if not isinstance(raw, dict) or set(raw) not in (RECEIPT_KEYS, RECEIPT_KEYS | {"sub_reason"}):
         return {}
@@ -125,7 +134,7 @@ def collect(*, lines: list[str], invocation_id: str, boot_id: str, since_us: int
     for line in lines:
         try:
             event = _closed_json(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             losses.add("parse_loss")
             continue
         if not isinstance(event, dict):
@@ -136,14 +145,19 @@ def collect(*, lines: list[str], invocation_id: str, boot_id: str, since_us: int
             continue
         saw_record = True
         timestamp = event.get("__REALTIME_TIMESTAMP")
-        if not isinstance(timestamp, str) or not timestamp.isdecimal():
+        try:
+            # Match the existing journal realtime/monotonic timestamp domain.
+            if not isinstance(timestamp, str) or re.fullmatch(r"[1-9][0-9]{0,17}", timestamp) is None:
+                raise ValueError("time")
+            timestamp_us = int(timestamp)
+        except ValueError:
             losses.add("parse_loss")
             continue
         if (
             event.get("_SYSTEMD_UNIT") != SIDECAR_UNIT
             or _compact_hex(event.get("_BOOT_ID"), size=32) != expected_boot
             or _compact_hex(event.get("_SYSTEMD_INVOCATION_ID"), size=32) != expected_invocation
-            or not since_us <= int(timestamp) <= until_us
+            or not since_us <= timestamp_us <= until_us
         ):
             losses.add("attribution_loss")
             continue
@@ -169,8 +183,8 @@ def collect_jobs(*, lines: list[str], boot_id: str, since_us: int, until_us: int
         return {"jobs": [], "loss": "parse_loss"}
     for line in lines:
         try:
-            event = json.loads(line)
-        except ValueError:
+            event = _closed_json(line)
+        except (ValueError, RecursionError):
             losses.add("parse_loss")
             continue
         if not isinstance(event, dict):
@@ -189,10 +203,15 @@ def collect_jobs(*, lines: list[str], boot_id: str, since_us: int, until_us: int
             losses.add("attribution_loss")
             continue
         timestamp = event.get("__REALTIME_TIMESTAMP")
-        if not isinstance(timestamp, str) or not timestamp.isdecimal():
+        try:
+            # Match the existing journal realtime/monotonic timestamp domain.
+            if not isinstance(timestamp, str) or re.fullmatch(r"[1-9][0-9]{0,17}", timestamp) is None:
+                raise ValueError("time")
+            timestamp_us = int(timestamp)
+        except ValueError:
             losses.add("parse_loss")
             continue
-        if _compact_hex(event.get("_BOOT_ID"), size=32) != expected_boot or not since_us <= int(timestamp) <= until_us:
+        if _compact_hex(event.get("_BOOT_ID"), size=32) != expected_boot or not since_us <= timestamp_us <= until_us:
             losses.add("attribution_loss")
             continue
         job_id_text = event.get("JOB_ID")
@@ -947,11 +966,247 @@ CONNECTOR_LABEL = re.compile(
 )
 
 
+
+# Version2 is a separate grammar and retention budget. It never supplies a v1
+# Stop receipt, readiness proof, or an override of the successful-dial veto.
+RECOVERY_V2_PREFIX = "connector_recovery_v2 "
+RECOVERY_V2_KEYS = frozenset({
+    "version", "phase", "reason", "origin", "outcome", "exit",
+    "policy_revision", "generation", "sequence", "rate_count",
+})
+RECOVERY_V2_PHASES = {
+    "context": frozenset({"invocation_started", "publication_observed", "boot_validated", "boot_refused"}),
+    "decision": frozenset({"intentional_stop", "sidecar_loss", "child_loss", "health_invalid",
+        "startup_expired", "freshness_expired", "watchdog_failed", "state_invalid",
+        "state_io_failed", "transaction_pending", "lock_unavailable", "identity_lost"}),
+    "withdrawal": frozenset({"admission_absent", "admission_unknown"}),
+    "cleanup": frozenset({"join_failed", "cleanup_blocked"}),
+    "readmission": frozenset({"fresh_listener_recovered", "healthy_reset"}),
+    "terminal": frozenset({"intentional_stop", "restart_requested", "cleanup_blocked",
+        "manager_refused", "rate_deferred", "rate_window_exhausted"}),
+}
+
+
+def _recovery_v2_record(message: str) -> dict[str, Any]:
+    if not message.startswith(RECOVERY_V2_PREFIX) or len(message.encode("utf-8")) > 512:
+        raise ValueError("recovery grammar")
+    encoded = message.removeprefix(RECOVERY_V2_PREFIX)
+    raw = _closed_json(encoded)
+    if (not isinstance(raw, dict) or set(raw) != RECOVERY_V2_KEYS
+            or json.dumps(raw, sort_keys=True, separators=(",", ":")) != encoded
+            or type(raw["version"]) is not int or raw["version"] != 2
+            or not isinstance(raw["phase"], str) or raw["phase"] not in RECOVERY_V2_PHASES
+            or not isinstance(raw["reason"], str) or raw["reason"] not in RECOVERY_V2_PHASES[raw["phase"]]
+            or raw["origin"] not in ("intentional_request", "crash_observed", "unknown")
+            or raw["outcome"] not in ("pending", "stopped", "restart_requested", "fresh_listener_recovered", "deferred", "blocked")
+            or raw["exit"] is not None and (type(raw["exit"]) is not int or raw["exit"] not in (0, 1, 78))
+            or raw["policy_revision"] is not None and (type(raw["policy_revision"]) is not int or not 1 <= raw["policy_revision"] <= 2**63 - 1)
+            or raw["generation"] is not None and (not isinstance(raw["generation"], str) or re.fullmatch(r"[0-9a-f]{32}", raw["generation"]) is None or raw["generation"] == "0" * 32)
+            or type(raw["sequence"]) is not int or not 0 <= raw["sequence"] <= 2**64 - 1
+            or type(raw["rate_count"]) is not int or not 0 <= raw["rate_count"] <= 3):
+        raise ValueError("recovery schema")
+    phase, reason, outcome, code = raw["phase"], raw["reason"], raw["outcome"], raw["exit"]
+    if raw["policy_revision"] is None and raw["generation"] is not None:
+        raise ValueError("recovery context")
+    if raw["generation"] is None and raw["sequence"] != 0:
+        raise ValueError("recovery sequence")
+    if phase != "terminal" and code is not None:
+        raise ValueError("recovery nonterminal")
+    if reason == "publication_observed" and (raw["origin"] != "unknown" or outcome != "pending" or code is not None):
+        raise ValueError("publication is not acknowledgement")
+    if reason == "boot_validated" and (outcome != "pending" or code is not None):
+        raise ValueError("boot is not readiness")
+    if reason in {"rate_deferred", "rate_window_exhausted"} and (outcome != "deferred" or code != 1):
+        raise ValueError("rate is not cleanup")
+    if reason == "intentional_stop" and phase == "terminal" and (outcome != "stopped" or code != 0 or raw["origin"] != "intentional_request"):
+        raise ValueError("stopped terminal")
+    if reason == "restart_requested" and (outcome != "restart_requested" or code != 1):
+        raise ValueError("restart terminal")
+    if reason in {"cleanup_blocked", "manager_refused"} and phase == "terminal" and (outcome != "blocked" or code != 78):
+        raise ValueError("blocked terminal")
+    if reason == "fresh_listener_recovered" and outcome != "fresh_listener_recovered":
+        raise ValueError("recovery is not request")
+    if reason == "healthy_reset" and (outcome != "pending" or raw["rate_count"] != 0):
+        raise ValueError("reset publication")
+    return raw
+
+
+def _recovery_v2_projection(event: dict[str, Any], boot: str, since: int, until: int,
+                            state: dict[str, Any]) -> None:
+    raw = _recovery_v2_record(event["MESSAGE"])
+    invocation, pid = event.get("_SYSTEMD_INVOCATION_ID"), event.get("_PID")
+    timestamp, monotonic, cursor = event.get("__REALTIME_TIMESTAMP"), event.get("__MONOTONIC_TIMESTAMP"), event.get("__CURSOR")
+    if (event.get("_SYSTEMD_UNIT") != CONNECTOR_UNIT or event.get("_BOOT_ID") != boot
+            or not isinstance(invocation, str) or re.fullmatch(r"[0-9a-f]{32}", invocation) is None or invocation == "0" * 32
+            or not isinstance(pid, str) or re.fullmatch(r"[1-9][0-9]{0,9}", pid) is None or not 1 < int(pid) <= 2**31 - 1
+            or any(not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]{0,17}", value) is None for value in (timestamp, monotonic))
+            or not since <= int(timestamp) <= until
+            or not isinstance(cursor, str) or not 0 < len(cursor) <= 512 or not cursor.isascii() or not cursor.isprintable()):
+        state["losses"].add("attribution_loss")
+        return
+    previous = state["identities"].get(invocation)
+    current = (pid, raw["generation"], raw["sequence"], int(monotonic), raw["policy_revision"])
+    # A live invocation retains its actual admission-policy revision. The
+    # closed producer may project a newer policy ONLY at its final proven
+    # stopped inhibition, after the same generation's physical cleanup.
+    stopped_revision = (previous is not None and previous[4] is not None
+        and raw["policy_revision"] is not None and raw["policy_revision"] > previous[4]
+        and previous[1] is not None and previous[1] == raw["generation"]
+        and raw["phase"] == "terminal" and raw["reason"] == "intentional_stop"
+        and raw["origin"] == "intentional_request" and raw["outcome"] == "stopped" and raw["exit"] == 0)
+    terminal_seen = any(key[0] == invocation and key[1] == "terminal"
+        for key in state["seen"])
+    if (cursor in state["cursors"] or terminal_seen or previous is not None and (
+            previous[0] != pid or previous[1] is not None and previous[1] != raw["generation"]
+            or raw["sequence"] < previous[2] or int(monotonic) < previous[3]
+            or previous[4] is not None and previous[4] != raw["policy_revision"] and not stopped_revision)):
+        state["losses"].add("attribution_loss")
+        return
+    if raw["phase"] == "decision" and invocation in state["decisions"]:
+        raise ValueError("duplicate recovery decision")
+    key = (invocation, raw["phase"], raw["reason"])
+    if key in state["seen"]:
+        raise ValueError("duplicate recovery consequence")
+    state["seen"].add(key)
+    state["cursors"].add(cursor)
+    state["identities"][invocation] = current
+    if raw["phase"] == "decision":
+        state["decisions"].add(invocation)
+    projected = dict(raw, invocation=invocation, pid=int(pid), realtime_us=int(timestamp), monotonic_us=int(monotonic))
+    # Attribution/cursor/decision/terminal state above keeps advancing even
+    # after this grammar's first capacity refusal; no holes or later refill.
+    if state["retention_closed"]:
+        return
+    if not _connector_journal_fits(state["legacy_events"], state["events"] + [projected]):
+        state["retention_closed"] = True
+        state["losses"].add("truncated")
+        return
+    state["events"].append(projected)
+
+
+# One delivered UTF8+LF envelope, with independently latched whole prefixes.
+# These are ceilings, not promised history or terminal-event retention.
+_CONNECTOR_JOURNAL_CAP = 2048
+_CONNECTOR_LEGACY_ARRAY_CAP = 512
+_CONNECTOR_RECOVERY_ARRAY_CAP = 896
+_CONNECTOR_METADATA_CAP = 640
+_CONNECTOR_LEGACY_LOSSES = frozenset({
+    "unattempted", "observed", "empty", "attribution_loss", "truncated",
+    "parse_loss", "query_error", "timeout", "reap_unconfirmed", "launch_failure",
+})
+_CONNECTOR_RECOVERY_LOSSES = frozenset({
+    "unavailable", "attribution_loss", "truncated", "parse_loss", "query_error",
+    "timeout", "reap_unconfirmed",
+})
+
+
+def _connector_journal_json(raw: str) -> Any:
+    return _closed_json(raw)
+
+
 def _connector_journal_empty(loss: str) -> dict[str, Any]:
-    # Window-only attribution cannot name the original activation if earlier
-    # journal entries rotated or were lost. Never substitute current MainPID.
+    # Never substitute a current activation for the unavailable original pin.
+    recovery_loss = "unavailable" if loss in {"unattempted", "launch_failure"} else loss
     return {"unit": CONNECTOR_UNIT, "events": [], "original_invocation": None,
-            "attribution": "window_only", "losses": [loss], "tail_complete": False}
+            "attribution": "window_only", "losses": [loss], "tail_complete": False,
+            "recovery_v2": {"events": [], "losses": sorted({"unavailable", recovery_loss}),
+                            "tail_complete": False}}
+
+
+def _connector_journal_bytes(value: Any) -> bytes:
+    return (json.dumps(value, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8", "strict")
+
+
+def _connector_journal_fits(legacy: list[dict[str, Any]], recovery: list[dict[str, Any]]) -> bool:
+    # Admission checks a complete candidate with the longest possible losses.
+    # Local array reservations cannot borrow the other grammar's unused space.
+    candidate = _connector_journal_empty("unattempted")
+    candidate.update(events=legacy, losses=["attribution_loss", "truncated", "parse_loss",
+        "query_error", "timeout", "reap_unconfirmed", "launch_failure"])
+    candidate["recovery_v2"].update(events=recovery, losses=["unavailable", "attribution_loss",
+        "truncated", "parse_loss", "query_error", "timeout", "reap_unconfirmed"])
+    legacy_bytes = len(_connector_journal_bytes(legacy)) - 1
+    recovery_bytes = len(_connector_journal_bytes(recovery)) - 1
+    whole_bytes = len(_connector_journal_bytes(candidate))
+    metadata_bytes = whole_bytes - legacy_bytes - recovery_bytes
+    return (len(legacy) <= 6 and len(recovery) <= 16
+            and legacy_bytes <= _CONNECTOR_LEGACY_ARRAY_CAP
+            and recovery_bytes <= _CONNECTOR_RECOVERY_ARRAY_CAP
+            and metadata_bytes <= _CONNECTOR_METADATA_CAP
+            and whole_bytes <= _CONNECTOR_JOURNAL_CAP)
+
+
+def _connector_journal_delivery(raw: bytes) -> str:
+    """Validate the entire closed delivery BEFORE shell substitution strips LF/NUL."""
+    if (not 0 < len(raw) <= _CONNECTOR_JOURNAL_CAP or not raw.endswith(b"\n")
+            or b"\x00" in raw or b"\n" in raw[:-1] or b"\r" in raw):
+        raise ValueError("journal framing")
+    text = raw.decode("utf-8", "strict")
+    value = _connector_journal_json(text)
+    if (not isinstance(value, dict) or set(value) != {
+            "unit", "events", "original_invocation", "attribution", "losses", "tail_complete", "recovery_v2"}
+            or value["unit"] != CONNECTOR_UNIT or value["original_invocation"] is not None
+            or value["attribution"] != "window_only"):
+        raise ValueError("journal envelope")
+    recovery = value["recovery_v2"]
+    if not isinstance(recovery, dict) or set(recovery) != {"events", "losses", "tail_complete"}:
+        raise ValueError("recovery envelope")
+    for projection, vocabulary in ((value, _CONNECTOR_LEGACY_LOSSES), (recovery, _CONNECTOR_RECOVERY_LOSSES)):
+        events, losses = projection["events"], projection["losses"]
+        if (type(events) is not list or type(losses) is not list
+                or any(type(loss) is not str or loss not in vocabulary for loss in losses)
+                or len(losses) != len(set(losses)) or type(projection["tail_complete"]) is not bool
+                or projection["tail_complete"] and any(loss not in {"observed", "empty", "unavailable"} for loss in losses)):
+            raise ValueError("journal projection")
+    legacy_keys = {"invocation", "pid", "realtime_us", "monotonic_us", "phase", "reason", "generation", "sequence"}
+    context_keys = {"invocation", "pid", "realtime_us", "monotonic_us"}
+    for rows, keys in ((value["events"], legacy_keys), (recovery["events"], RECOVERY_V2_KEYS | context_keys)):
+        for row in rows:
+            if (not isinstance(row, dict) or set(row) != keys
+                    or not isinstance(row["invocation"], str)
+                    or re.fullmatch(r"[0-9a-f]{32}", row["invocation"]) is None or row["invocation"] == "0" * 32
+                    or type(row["pid"]) is not int or not 1 < row["pid"] <= 2**31 - 1
+                    or any(type(row[key]) is not int or not 0 < row[key] < 10**18 for key in ("realtime_us", "monotonic_us"))):
+                raise ValueError("journal event")
+            if keys == legacy_keys:
+                if (not isinstance(row["phase"], str) or row["phase"] not in {"context", "observation", "first", "consequence"}
+                        or not isinstance(row["reason"], str) or row["reason"] not in CONNECTOR_REASONS
+                        or type(row["sequence"]) is not int or not 0 <= row["sequence"] <= 2**64 - 1
+                        or row["generation"] is not None and (not isinstance(row["generation"], str)
+                            or re.fullmatch(r"[0-9a-f]{32}", row["generation"]) is None)):
+                    raise ValueError("legacy event")
+            else:
+                message = RECOVERY_V2_PREFIX + json.dumps({key: row[key] for key in RECOVERY_V2_KEYS}, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                _recovery_v2_record(message)
+    if not _connector_journal_fits(value["events"], recovery["events"]) or _connector_journal_bytes(value) != raw:
+        raise ValueError("journal size or compact framing")
+    return text
+
+
+def _emit_connector_journal(value: dict[str, Any]) -> bool:
+    # The fallback is itself checked; no oversized or empty-success delivery.
+    fallback = False
+    try:
+        raw = _connector_journal_bytes(value)
+        if len(raw) > _CONNECTOR_JOURNAL_CAP or not _connector_journal_fits(value["events"], value["recovery_v2"]["events"]):
+            value = _connector_journal_empty("truncated")
+            raw = _connector_journal_bytes(value)
+            fallback = True
+        text = _connector_journal_delivery(raw)
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        raw = _connector_journal_bytes(_connector_journal_empty("parse_loss"))
+        text = _connector_journal_delivery(raw)
+        fallback = True
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    return not fallback
+
+
+class _ConnectorJournalCancelled(Exception):
+    def __init__(self, value: dict[str, Any], status: int):
+        self.value = value
+        self.status = status
+        super().__init__("journal cancelled")
 
 
 def capture_connector_journal(boot: str | None, since: int | None, until: int | None) -> dict[str, Any]:
@@ -961,29 +1216,41 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
             or boot == "0" * 32 or since is None or until is None
             or not 0 < since <= until < 10**18):
         result["losses"] = ["attribution_loss"]
+        result["recovery_v2"]["losses"] = ["attribution_loss"]
         return result
     deadline = time.monotonic() + 3
     losses: set[str] = set()
+    shared_losses: set[str] = set()
+    retention_closed = False
+    eof = query_ok = reaped = False
     pending = bytearray()
     total = frames = 0
     cursors: set[str] = set()
     identities: dict[str, tuple[str, str, int, int]] = {}
     firsts: set[str] = set()
     events = result["events"]
+    recovery = {"events": [], "losses": set(), "identities": {}, "cursors": set(),
+                "decisions": set(), "seen": set(), "retention_closed": False, "legacy_events": events}
 
     def project(frame: bytes) -> None:
-        nonlocal frames
+        nonlocal frames, retention_closed
         frames += 1
         if frames > 256:
-            losses.add("truncated")
+            shared_losses.add("truncated")
             return
         try:
-            event = _closed_json(frame.decode("utf-8", "strict"))
+            event = _connector_journal_json(frame.decode("utf-8", "strict"))
             if not isinstance(event, dict):
                 raise ValueError("shape")
             message = event.get("MESSAGE")
             if not isinstance(message, str):
                 raise ValueError("message")
+            if message.startswith(RECOVERY_V2_PREFIX):
+                try:
+                    _recovery_v2_projection(event, boot, since, until, recovery)
+                except (ValueError, TypeError, UnicodeError, RecursionError):
+                    recovery["losses"].add("parse_loss")
+                return
             if not message.startswith("connector_supervisor "):
                 return
             matched = CONNECTOR_LABEL.fullmatch(message)
@@ -1037,22 +1304,25 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
             projected = {"invocation": invocation, "pid": int(pid), "realtime_us": int(timestamp),
                          "monotonic_us": int(monotonic), "phase": phase, "reason": reason,
                          "generation": None if generation == "unavailable" else generation, "sequence": sequence}
-            # The emitted cap includes wrapper/loss metadata; rejected/raw text
-            # never consumes retained slots. At most six events are admitted.
-            candidate = dict(result, events=events + [projected], losses=["attribution_loss", "truncated", "parse_loss", "query_error", "timeout", "reap_unconfirmed"], tail_complete=False)
-            if len(events) >= 6 or len(json.dumps(candidate, separators=(",", ":")).encode()) > 2048:
+            if retention_closed:
+                return
+            if not _connector_journal_fits(events + [projected], recovery["events"]):
+                retention_closed = True
                 losses.add("truncated")
                 return
             events.append(projected)
-        except (ValueError, UnicodeError, RecursionError):
-            losses.add("parse_loss")
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            # Without a safely identified v2 record, malformed framing/JSON/
+            # shape is shared loss. Identifiable v2 projection errors returned
+            # above after recording only that grammar's loss.
+            shared_losses.add("parse_loss")
 
     argv = ["journalctl", "-u", CONNECTOR_UNIT, "-b", boot,
             "--since", f"@{since // 1000000}.{since % 1000000:06d}",
             "--until", f"@{until // 1000000}.{until % 1000000:06d}",
             "--output=json", "--all", "--no-pager",
             "--output-fields=MESSAGE,_SYSTEMD_UNIT,_BOOT_ID,_SYSTEMD_INVOCATION_ID,_PID,__REALTIME_TIMESTAMP,__MONOTONIC_TIMESTAMP,__CURSOR",
-            "--grep=^connector_supervisor "]
+            "--grep=^(connector_supervisor |connector_recovery_v2 )"]
     process = None
     cancelled = 0
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
@@ -1063,9 +1333,18 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
         # Neither launch-handle acquisition nor entry into/finalization of
         # cleanup may be unwound by a first or repeated catchable signal.
         cancelled = cancelled or signum
+        # Propagate to the enclosing nonthrowing capture/delivery owner so
+        # its first delivered signal survives both nested handler lifetimes.
+        previous = handlers[signum]
+        if callable(previous) and previous is not signal.default_int_handler:
+            try:
+                previous(signum, _frame)
+            except BaseException:
+                # Inherited handlers cannot unwind handle acquisition/reaping.
+                pass
 
     def read() -> None:
-        nonlocal total, pending
+        nonlocal total, pending, eof, query_ok
         assert process is not None
         assert process.stdout is not None
         with selectors.DefaultSelector() as selector:
@@ -1073,104 +1352,118 @@ def capture_connector_journal(boot: str | None, since: int | None, until: int | 
             selector.register(process.stdout, selectors.EVENT_READ)
             while selector.get_map():
                 if cancelled:
-                    raise SystemExit(128 + cancelled)
+                    shared_losses.add("timeout")
+                    return
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    losses.add("timeout")
+                    shared_losses.add("timeout")
                     break
                 for key, _ in selector.select(min(remaining, 0.05)):
                     if cancelled:
-                        raise SystemExit(128 + cancelled)
+                        shared_losses.add("timeout")
+                        return
                     if time.monotonic() >= deadline:
-                        losses.add("timeout")
+                        shared_losses.add("timeout")
                         break
                     chunk = os.read(key.fd, min(4096, 65537 - total))
                     if not chunk:
                         selector.unregister(key.fileobj)
+                        eof = True
                         break
                     total += len(chunk)
                     if total > 65536:
-                        losses.add("truncated")
+                        shared_losses.add("truncated")
                         break
                     pending.extend(chunk)
                     while b"\n" in pending:
                         frame, _, rest = pending.partition(b"\n")
                         pending = bytearray(rest)
                         if len(frame) > 8192:
-                            losses.add("truncated")
+                            shared_losses.add("truncated")
                             break
                         project(frame)
-                        if frames >= 256 or "truncated" in losses:
-                            losses.add("truncated")
+                        if frames >= 256 or "truncated" in shared_losses:
+                            shared_losses.add("truncated")
                             break
                     if len(pending) > 8192 or frames >= 256:
-                        losses.add("truncated")
-                if "timeout" in losses or "truncated" in losses:
+                        shared_losses.add("truncated")
+                if "timeout" in shared_losses or "truncated" in shared_losses:
                     break
             if not selector.get_map():
                 if pending:
-                    losses.add("parse_loss")
+                    shared_losses.add("parse_loss")
+                status = None
                 while True:
                     if cancelled:
-                        raise SystemExit(128 + cancelled)
+                        shared_losses.add("timeout")
+                        return
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        losses.add("timeout")
+                        shared_losses.add("timeout")
                         break
                     try:
                         status = process.wait(timeout=min(remaining, 0.05))
                         # grep's no-match exit1 is not independently trusted as
                         # empty: query failure must remain explicit.
                         if status != 0:
-                            losses.add("query_error")
+                            shared_losses.add("query_error")
                         if time.monotonic() >= deadline:
-                            losses.add("timeout")
+                            shared_losses.add("timeout")
                         break
                     except subprocess.TimeoutExpired:
                         continue
-                result["tail_complete"] = not losses
+                query_ok = status == 0 and time.monotonic() < deadline
 
     try:
         for item in signals:
             signal.signal(item, defer_cancel)
-        if cancelled:
-            raise SystemExit(128 + cancelled)
-        try:
-            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, start_new_session=True)
-        except OSError:
-            losses.add("launch_failure")
-        if cancelled:
-            raise SystemExit(128 + cancelled)
-        if process is not None:
+        if not cancelled:
+            try:
+                process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                           stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
+                shared_losses.add("launch_failure")
+        if process is not None and not cancelled:
             read()
     except (OSError, ValueError):
-        losses.add("query_error")
+        shared_losses.add("query_error")
     finally:
         try:
-            # Leave the same nonthrowing handlers installed through the whole
-            # bounded TERM/KILL/leader/adopted-child reap and pipe closure.
             try:
-                if process is not None and not _terminate_observation(process):
-                    losses.add("reap_unconfirmed")
+                if process is not None:
+                    reaped = _terminate_observation(process)
+                    if not reaped:
+                        shared_losses.add("reap_unconfirmed")
             except OSError:
-                losses.add("reap_unconfirmed")
+                shared_losses.add("reap_unconfirmed")
             finally:
                 if process is not None and process.stdout is not None:
                     try:
                         process.stdout.close()
                     except OSError:
-                        losses.add("reap_unconfirmed")
+                        reaped = False
+                        shared_losses.add("reap_unconfirmed")
         finally:
             for item, handler in handlers.items():
                 signal.signal(item, handler)
     if cancelled:
-        raise SystemExit(128 + cancelled)
-    # Original-invocation pin is deliberately unavailable, even when some
-    # trusted window labels survive exit. A later restart cannot become original.
-    result["losses"] = sorted(losses) or ["observed" if events else "empty"]
-    if losses:
-        result["tail_complete"] = False
+        shared_losses.add("timeout")
+    # Neither a local cap nor the other grammar's loss alters this tail.
+    # Actual original EOF/query success/confirmed group reap are all required.
+    complete = eof and query_ok and reaped and not shared_losses
+    legacy_losses = losses | shared_losses
+    recovery_losses = recovery["losses"] | {
+        "unavailable" if loss == "launch_failure" else loss for loss in shared_losses
+    }
+    result["losses"] = sorted(legacy_losses) or ["observed" if events else "empty"]
+    result["tail_complete"] = complete and not losses
+    result["recovery_v2"] = {
+        "events": recovery["events"],
+        "losses": sorted(recovery_losses) or ([] if recovery["events"] else ["unavailable"]),
+        "tail_complete": complete and not recovery["losses"],
+    }
+    if cancelled:
+        raise _ConnectorJournalCancelled(result, 128 + cancelled)
     return result
 
 
@@ -1324,6 +1617,55 @@ def hold_negative_unit_reference(boot: str | None, run: str | None) -> int:
     return 1
 
 
+def _run_connector_journal(args: argparse.Namespace) -> int:
+    # Own cancellation through initialization and provisional emission. The shell
+    # wrapper retains ownership through its final validated file publication.
+    # Other capture modes and the negative-reference interface are unchanged.
+    cancelled = 0
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    handlers = {item: signal.getsignal(item) for item in signals}
+
+    def defer_cancel(signum: int, _frame: Any) -> None:
+        nonlocal cancelled
+        cancelled = cancelled or signum
+        # Propagate to the enclosing nonthrowing capture/delivery owner so
+        # its first delivered signal survives both nested handler lifetimes.
+        previous = handlers[signum]
+        if callable(previous) and previous is not signal.default_int_handler:
+            try:
+                previous(signum, _frame)
+            except BaseException:
+                # Inherited handlers cannot unwind handle acquisition/reaping.
+                pass
+
+    value = _connector_journal_empty("launch_failure")
+    status = 1
+    try:
+        for item in signals:
+            signal.signal(item, defer_cancel)
+        try:
+            if not cancelled and _initialize_observation_owner():
+                if not cancelled:
+                    value = capture_connector_journal(args.boot_id, args.since_us, args.until_us)
+                    failures = (set(value["losses"]) | set(value["recovery_v2"]["losses"])) - {"observed", "empty", "unavailable"}
+                    status = 1 if failures else 0
+        except _ConnectorJournalCancelled as exc:
+            value, status = exc.value, exc.status
+        except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+            value = _connector_journal_empty("query_error")
+            status = 1
+        if cancelled:
+            value["losses"] = sorted((set(value["losses"]) - {"observed", "empty", "unattempted"}) | {"timeout"})
+            value["recovery_v2"]["losses"] = sorted(set(value["recovery_v2"]["losses"]) | {"timeout"})
+            value["tail_complete"] = value["recovery_v2"]["tail_complete"] = False
+        if not _emit_connector_journal(value):
+            status = status or 1
+        return 128 + cancelled if cancelled else status
+    finally:
+        for item, handler in handlers.items():
+            signal.signal(item, handler)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("receipts", "jobs", "plain", "headscale", "headscale-process", "headscale-read", "headscale-log", "headscale-nodes", "connector", "connector-process", "connector-journal", "negative-unit-reference"), default="receipts")
@@ -1337,6 +1679,8 @@ def main() -> int:
     parser.add_argument("--connector-pid", type=int)
     parser.add_argument("--run-id")
     args = parser.parse_args()
+    if args.mode == "connector-journal":
+        return _run_connector_journal(args)
     if args.mode == "negative-unit-reference":
         return hold_negative_unit_reference(args.boot_id, args.run_id)
     if args.mode == "connector-process":
@@ -1344,7 +1688,7 @@ def main() -> int:
             parser.error("invalid connector PID")
         print(json.dumps(_connector_process(args.connector_pid), separators=(",", ":")))
         return 0
-    if args.mode in {"headscale", "connector", "connector-journal"}:
+    if args.mode in {"headscale", "connector"}:
         def interrupted(signum: int, frame: Any) -> None:
             for item in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
                 signal.signal(item, signal.SIG_IGN)
@@ -1356,9 +1700,9 @@ def main() -> int:
             # Linux shipping capture owns all descendants until bounded reap.
             # Failure to establish that ownership launches no observation.
             if not _initialize_observation_owner():
-                print(json.dumps(_connector_journal_empty("launch_failure") if args.mode == "connector-journal" else _connector_unknown("launch_failure") if args.mode == "connector" else {"process_state": "unknown", "log": {"events": [], "losses": ["launch_failure"]}, "nodes": _unknown_nodes("launch_failure")}, separators=(",", ":")))
+                print(json.dumps(_connector_unknown("launch_failure") if args.mode == "connector" else {"process_state": "unknown", "log": {"events": [], "losses": ["launch_failure"]}, "nodes": _unknown_nodes("launch_failure")}, separators=(",", ":")))
                 return 0
-            print(json.dumps(capture_connector_journal(args.boot_id, args.since_us, args.until_us) if args.mode == "connector-journal" else capture_connector() if args.mode == "connector" else capture_headscale(Path(args.work) if args.work else None, args.headscale_pid), separators=(",", ":")))
+            print(json.dumps(capture_connector() if args.mode == "connector" else capture_headscale(Path(args.work) if args.work else None, args.headscale_pid), separators=(",", ":")))
         except KeyboardInterrupt:
             return 1
         return 0

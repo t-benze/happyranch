@@ -30,13 +30,8 @@ type tsnetServer interface {
 	Close() error
 }
 
-type tsnetLocalClient interface {
-	Status(context.Context) (*ipnstate.Status, error)
-}
-
 type productionTSNetServer struct {
-	server      *tsnet.Server
-	localClient func() (tsnetLocalClient, error)
+	server *tsnet.Server
 }
 
 func (s productionTSNetServer) Start() error  { return s.server.Start() }
@@ -45,11 +40,7 @@ func (s productionTSNetServer) Up(ctx context.Context) (*ipnstate.Status, error)
 	return s.server.Up(ctx)
 }
 func (s productionTSNetServer) Status(ctx context.Context) (*ipnstate.Status, error) {
-	localClient := s.localClient
-	if localClient == nil {
-		localClient = func() (tsnetLocalClient, error) { return s.server.LocalClient() }
-	}
-	client, err := localClient()
+	client, err := s.server.LocalClient()
 	if err != nil {
 		return nil, err
 	}
@@ -64,10 +55,8 @@ func (s productionTSNetServer) Close() error { return s.server.Close() }
 // readiness plus a matching expected peer is the positive receipt boundary;
 // Sidecar alone commits that receipt and starts connector/listener work.
 type TSNetEngine struct {
-	server           tsnetServer
-	newServer        func(EngineConfig, []byte) tsnetServer
-	peerPollInterval time.Duration
-	now              func() time.Time
+	server    tsnetServer
+	newServer func(EngineConfig, []byte) tsnetServer
 }
 
 func NewTSNetEngine() *TSNetEngine {
@@ -75,26 +64,33 @@ func NewTSNetEngine() *TSNetEngine {
 		newServer: func(c EngineConfig, credential []byte) tsnetServer {
 			return productionTSNetServer{server: &tsnet.Server{Dir: c.StateDir, Hostname: c.RoleIdentity, ControlURL: c.ControlURL, AuthKey: string(credential), Ephemeral: false}}
 		},
-		peerPollInterval: 200 * time.Millisecond,
-		now:              time.Now,
 	}
 }
 
 func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []byte) (RedemptionReceipt, error) {
-	if ctx.Err() != nil {
-		return RedemptionReceipt{}, terminalNetworkFailure(ctx.Err())
+	if err := startupContextError(ctx); err != nil {
+		return RedemptionReceipt{}, terminalNetworkFailure(err)
 	}
 	// Start is contextless upstream work, so it cannot be interrupted here.  The
 	// deadline still starts at adapter entry: a late Start return must not mint a
 	// fresh readiness/peer budget.
 	readyCtx, cancel := context.WithTimeout(ctx, tsnetStartupBudget)
 	defer cancel()
+	if err := startupContextError(readyCtx); err != nil {
+		return RedemptionReceipt{}, terminalNetworkFailure(err)
+	}
 	if e.newServer == nil {
 		return RedemptionReceipt{}, ErrEngineStart
 	}
 	e.server = e.newServer(c, credential)
 	if e.server == nil {
 		return RedemptionReceipt{}, ErrEngineStart
+	}
+	// Allocation may itself consume the original bound. Refuse Start while
+	// releasing the allocated server's credential reference on this path too.
+	if err := startupContextError(readyCtx); err != nil {
+		e.server.ClearAuthKey()
+		return RedemptionReceipt{}, terminalNetworkFailure(err)
 	}
 	startErr := e.server.Start()
 	// Release the adapter's string reference on every returned Start result,
@@ -103,33 +99,25 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	if startErr != nil {
 		return RedemptionReceipt{}, ErrEngineStart
 	}
-	now := e.now
-	if now == nil {
-		now = time.Now
-	}
-	if ctx.Err() != nil {
-		return RedemptionReceipt{}, terminalNetworkFailure(ctx.Err())
-	}
-	if deadline, ok := ctx.Deadline(); ok && !now().Before(deadline) {
-		return RedemptionReceipt{}, terminalNetworkFailure(context.DeadlineExceeded)
-	}
-	if readyCtx.Err() != nil {
-		return RedemptionReceipt{}, terminalNetworkFailure(readyCtx.Err())
+	if err := startupContextError(readyCtx); err != nil {
+		return RedemptionReceipt{}, terminalNetworkFailure(err)
 	}
 
 	status, err := e.server.Up(readyCtx)
-	if err != nil || readyCtx.Err() != nil || status == nil || status.BackendState != "Running" {
+	if terminal := startupContextError(readyCtx); terminal != nil {
+		return RedemptionReceipt{}, terminalNetworkFailure(terminal)
+	}
+	if err != nil || status == nil || status.BackendState != "Running" {
 		return RedemptionReceipt{}, readinessNetworkFailure(readyCtx, err, status, false)
 	}
 	if expectedPeerVisible(status, c.ExpectedPeers) {
+		if err := startupContextError(readyCtx); err != nil {
+			return RedemptionReceipt{}, terminalNetworkFailure(err)
+		}
 		return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, nil
 	}
 
-	poll := e.peerPollInterval
-	if poll <= 0 {
-		poll = 200 * time.Millisecond
-	}
-	ticker := time.NewTicker(poll)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
@@ -139,11 +127,20 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 			}
 			return RedemptionReceipt{}, terminalNetworkFailure(readyCtx.Err())
 		case <-ticker.C:
+			if err := startupContextError(readyCtx); err != nil {
+				return RedemptionReceipt{}, terminalNetworkFailure(err)
+			}
 			status, err = e.server.Status(readyCtx)
-			if err != nil || readyCtx.Err() != nil || status == nil || status.BackendState != "Running" {
+			if terminal := startupContextError(readyCtx); terminal != nil {
+				return RedemptionReceipt{}, terminalNetworkFailure(terminal)
+			}
+			if err != nil || status == nil || status.BackendState != "Running" {
 				return RedemptionReceipt{}, readinessNetworkFailure(readyCtx, err, status, true)
 			}
 			if expectedPeerVisible(status, c.ExpectedPeers) {
+				if err := startupContextError(readyCtx); err != nil {
+					return RedemptionReceipt{}, terminalNetworkFailure(err)
+				}
 				return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, nil
 			}
 		}
@@ -158,8 +155,8 @@ func terminalNetworkFailure(err error) error {
 }
 
 func readinessNetworkFailure(ctx context.Context, err error, status *ipnstate.Status, peer bool) error {
-	if ctx.Err() != nil {
-		return terminalNetworkFailure(ctx.Err())
+	if terminal := startupContextError(ctx); terminal != nil {
+		return terminalNetworkFailure(terminal)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return terminalNetworkFailure(err)
@@ -188,6 +185,9 @@ func readinessNetworkFailure(ctx context.Context, err error, status *ipnstate.St
 		if peer {
 			reason = "peer_not_running"
 		}
+	}
+	if terminal := startupContextError(ctx); terminal != nil {
+		return terminalNetworkFailure(terminal)
 	}
 	return NetworkJoinFailure{SubReason: reason}
 }
