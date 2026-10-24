@@ -2482,6 +2482,18 @@ Historical memory_read closure uses payload.task_id while preserving outer AGENT
 scope: one complete bounded action read per capture, selecting only required
 full-history owners. Closing/atomic discovery includes late preboot reads;
 exhausted scan/transport budgets refuse rather than certify absence.
+Native audit materialization reuses payloads only inside one invocation's
+coherent SQLite snapshot. Completed window/action predicates suppress redundant
+payload fetches in later overlapping queries; the original SQL filters, complete
+columns, ordering and limits still select every matching row. SQLite NULL/type
+and JSON filter semantics stay unchanged. Every new payload is strictly decoded
+before selector exclusions, including consumer-free historical evidence; reused
+records retain their exact values and consume existing serialization/work budgets.
+SQL metadata rows/bytes/VM/time and the original shared deadline still count;
+there is no second allowance or cross-call cache. Closing, pair-attempt and
+atomic rereads start fresh. Unique evidence can still exhaust a bound and refuse;
+lower duplicate bytes alone prove neither complete acquisition nor durable health.
+
 Both report front doors remove their former all-history/task preflight. Empty or
 short no-epoch diagnostics remain CLOSED. Closing and locked publication rereads
 recompute membership and compare controls as well as records; no prepared-ID
