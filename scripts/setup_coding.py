@@ -50,7 +50,7 @@ def require_human_host() -> None:
     if sys.platform != 'linux':
         raise HostRefusal('host ancestry observation unavailable on this platform; original platform observer owner must supply supported attribution')
     pid, visited = os.getpid(), set()
-    while pid > 1:
+    while pid >= 1:
         if pid in visited or len(visited) >= 128:
             raise HostRefusal('host ancestry incomplete')
         visited.add(pid)
