@@ -1315,7 +1315,6 @@ export const en = {
   'threads.page.rail.tasksLoading': 'Loading…',
   'threads.page.rail.tasksError': 'Couldn’t load tasks',
   'threads.page.rail.tasksEmpty': 'No tasks dispatched from this thread yet',
-  'threads.page.rail.originTask': 'Origin task: {id}',
   'threads.page.rail.thisThread': 'This thread',
   'threads.page.rail.freshTokens': 'Fresh tokens',
   'threads.page.rail.cost': 'Cost',
