@@ -382,6 +382,18 @@ not. The complete scan consumes the existing row/byte/SQL/deadline/transport
 budgets, including unrelated returned reads, and exhaustion refuses rather than
 asserting absence. Closing and locked atomic rereads repeat this discovery, so
 late preboot payload-owned membership cannot hide behind prepared IDs.
+Native audit materialization reuses payloads only inside one invocation's
+coherent SQLite snapshot. Completed window/action predicates suppress redundant
+payload fetches in later overlapping queries; the original SQL filters, complete
+columns, ordering and limits still select every matching row. SQLite NULL/type
+and JSON filter semantics stay unchanged. Every new payload is strictly decoded
+before selector exclusions, including consumer-free historical evidence; reused
+records retain their exact values and consume existing serialization/work budgets.
+SQL metadata rows/bytes/VM/time and the original shared deadline still count;
+there is no second allowance or cross-call cache. Closing, pair-attempt and
+atomic rereads start fresh. Unique evidence can still exhaust a bound and refuse;
+lower duplicate bytes alone prove neither complete acquisition nor durable health.
+
 Every required missing task,
 result, job, lifecycle, control or genuine callback remains a refusal.
 
