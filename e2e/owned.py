@@ -445,7 +445,27 @@ class Owned:
                 if time.monotonic() >= end:
                     reason = "no_budget"
                     return
-                self.evidence_slots[selected] = candidate  # Complete is LAST.
+                claim = slot
+                # Failure cleanup must own the candidate BEFORE installation:
+                # an interruption after the store must clear its positive data,
+                # not merely the displaced claim. An earlier interruption leaves
+                # that claim incomplete and permanently consumed.
+                slot = candidate
+                self.evidence_slots[selected] = candidate  # Last positive write.
+                # Formatting and even the store can straddle main's closure.
+                # The active window never reopens, references never revert and
+                # a revoked claim never returns to claimed. Checking AFTER the
+                # store therefore detects invalidation before/during it, without
+                # another check/store gap. Closure after this check follows a
+                # valid earlier completion. Until this gate finishes, stopped-
+                # watcher-only freeze excludes all inspection of these slots.
+                if (evidence is not self.evidence_binding or phase is not self.evidence_phase
+                        or claim["state"] != "claimed" or self.evidence_slots[selected] is not candidate):
+                    reason = "reentry"
+                    return
+                if selected == "active" and not self.evidence_active_open:
+                    reason = "unbound"
+                    return
                 reason = "none"
             except TimeoutError:
                 reason = "interrupted"

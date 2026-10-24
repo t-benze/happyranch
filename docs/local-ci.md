@@ -2431,6 +2431,31 @@ eligible exit stay distinct and establish no adoption/exclusive custody/reaping.
 Only original actual positive returns and ORIGINAL decode supply raw W/decoded E;
 conservative generation joins never transfer status to the phase.
 
+TASK12814 corrects independent FULL reviewer12810's HIGH active-slot race in
+Owned.sample only, within manager step40's existing qualified radius. In the exact
+schedule, watcher passes the old checks, main closes the phase during formatting
+(and may replace its reference), then watcher installs a candidate within time.
+The candidate is now the failure-cleanup target BEFORE store, and a post-store
+gate checks the original claim, binding/phase references and monotone active
+window. Invalidated attempts permanently refuse with null targets/stat fields;
+an interruption scrubs the installed candidate, not just the displaced claim.
+There is no later positive store/check-store gap, new lock/wait/clock or window
+reopen. Stopped-watcher-only freeze prevents provisional content escaping.
+
+The SAME R2-08/R3-05/R3-06 case/four-answer record covers closure before/during/
+after formatting through installation and post-check, phase/reference replacement,
+claim reentry, and interruption before handoff/between handoff-store/after store
+before admission. Independent FINAL bytes after stopped/ended freeze require
+refused/unbound for closure alone, refused/reentry for changed reference/claim,
+or incomplete/interrupted with null targets/stat fields (an unfinished displaced
+claim projects incomplete/incomplete). The unaffected completion before closure
+remains complete/none/bound_live with a subsequently terminal phase. Closure after
+the successful post-check follows that earlier valid store; global unavailable
+freeze remains data=null/omission. C exceptions, H actual ordering and J reopened
+FINAL bytes have separate risks; existing hosted Ubuntu EACH3.12/3.14/private-root/
+public boundaries and four answers remain. No executable test, fixture, verifier,
+seam or proof is added; this schedule is source-supported, not historically proved.
+
 Only a usable original cleanup return positively reporting watcher_stopped=true,
 ended main writes and SAME positive cleanup deadline permit ONE detached closed
 freeze. Active/unknown watcher/missing return means no live-slot inspection/copy.
