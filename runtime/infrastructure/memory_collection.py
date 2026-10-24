@@ -3048,8 +3048,17 @@ def acquire_memory_collection_response(org: Any) -> tuple[bytes, Any]:
                 baseline_controls = controls
             if _hash_metadata(controls) != _hash_metadata(baseline_controls):
                 raise CensusReadUnavailable("census_control_changed")
-            if previous is not None and not _semantic_evidence_projection(previous["tables"], tables):
-                _check_collection_movement(previous["tables"], tables, previous["revision"], revision, budget)
+            if previous is not None:
+                # Every previously observed completed output remains immutable,
+                # even when SQL is unchanged or new references have appeared.
+                for job_id, output in previous["outputs"].items():
+                    budget.check()
+                    if (job_id not in outputs
+                            or _hash_metadata(output) != _hash_metadata(outputs[job_id])):
+                        raise CensusReadUnavailable("census_output_changed")
+                budget.check()
+                if not _semantic_evidence_projection(previous["tables"], tables):
+                    _check_collection_movement(previous["tables"], tables, previous["revision"], revision, budget)
             fence()
             # Recompute the complete selection; never reread just opening IDs.
             closing_tables = org.db.read_memory_collection_evidence(view=view)
@@ -3059,11 +3068,13 @@ def acquire_memory_collection_response(org: Any) -> tuple[bytes, Any]:
             _identity_schema(closing_identity)
             if closing_identity != baseline_identity:
                 raise CensusReadUnavailable("observation_identity_moving")
-            closing_revision = _serving_revision(observer)
             closing = _serving_snapshot(observer)
+            # The metadata lock samples this actual server boundary. Close SQL
+            # afterwards so a commit through the cutoff cannot escape its fence.
+            cutoff = closing["sampled_at"]
+            closing_revision = _serving_revision(observer)
             budget.record(closing)
             fence(closing)
-            cutoff = _now()
             closing_view = public(closing, closing_identity, cutoff)
             _check_collection_capture(closing, closing_tables, closing_view, closing_outputs, budget)
             if _hash_metadata([row for row in closing_tables["audit_log"] if row["action"] in CONTROL_ACTIONS]) != _hash_metadata(baseline_controls):
@@ -3090,7 +3101,8 @@ def acquire_memory_collection_response(org: Any) -> tuple[bytes, Any]:
                 "closing": {"snapshot": closing, "revision": closing_revision, "identity": closing_identity,
                             "tables": closing_tables, "view": closing_view, "outputs": closing_outputs},
             }, budget)
-            previous = {"tables": closing_tables, "revision": closing_revision}
+            previous = {"tables": closing_tables, "revision": closing_revision,
+                        "outputs": closing_outputs}
 
 
 def _collection_get(client: Any, org: str, path: str, params: dict | None, budget: _CensusBudget) -> dict:

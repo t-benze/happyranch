@@ -2513,6 +2513,12 @@ It takes no query parameters and returns exactly `tables`, `view`, `outputs`,
 `cutoff`; the aware UTC cutoff belongs to the server acquisition. This is raw
 acquisition evidence, never health, acceptance or an epoch receipt. The canonical
 HTTP reader consumes this strict envelope with no fallback to paged acquisition.
+The closing metadata snapshot supplies its actual server-sampled cutoff, followed
+by the final SQL revision fence; a relevant commit through that boundary cannot
+escape the complete pair checks. Every observed completed output must remain
+present and byte-identical across all attempts, including without active controls
+and for historical selected outputs. New references extend that obligation;
+movement never establishes a replacement baseline.
 One request-local original budget and observer/context/boot/source identity fence
 cover both full current internal snapshots, complete selected captures, metadata,
 files, outputs, serialization/transport and all movement-only fresh-pair attempts.
