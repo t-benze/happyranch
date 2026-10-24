@@ -1841,6 +1841,139 @@ cannot satisfy the case. The original retained POST is then forwarded once to
 boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
 upstream response are distinct; no killed CLI response/exit is fabricated.
 
+### E07 process-state observations (TASK12784 / ROOT12738)
+
+Manager step31 accepts TASK12782's exact50050B design/SHA256
+`3de9f37ac0d3bc69f02011368ced38e020c651fad2fde129a0e8b6d8fec7b97f`
+after independent TASK12783 **DESIGN ONLY PASS** (29157B/SHA256
+`9e12849b391b5b14d047cb18e52e5c4e3d4cba0d13fd7e0f053831044527e45e`).
+Founder THR291seq362 authorizes ordinary bounded recovery under SAME ROOT12738;
+the ONE native retry consumed by12741/revisit12724 is not reused. This extends
+the existing cascade/window/complete-reader/R2-01/X-01 keeper records only.
+Original30/SAME13/ordered56 EACH3.12/3.14,16sites/full maps and genuine dynamic
+20E05/24E07 source-file membership remain unchanged, as do EACH25 prior
+R2-01/X-01 proof gaps. Terminal-unchanged's inputs/assertions remain unchanged.
+
+`closure` first assembles the ORIGINAL `processes` identity reads in their
+original order, `groups`, `sampled` and `pending`, with original exceptions.
+Those fields remain the sole closure oracle. Only then each process row gains
+`diagnostic`, and the snapshot gains `controller_diagnostic`. Neither can supply
+`observed_start`, remove a group member, clear pending, create a freeze or accept
+same-generation Z as closed. All public/SQL/terminal/freeze/late POST409 and
+dead-downstream gates, full1s/<=50ms observations and original ends remain.
+
+Each diagnostic contains entered/finished, expected_start, target_a, parent,
+target_b, parent_pin and relation. Each attempted read contains only PID,
+start/state/PPID, finite reason and its own entered/finished times. ONE
+unbuffered stat read acquires at most4097B and admits at most4096B, requires
+the final LF record and comm-closing delimiter, exact requested leading PID,
+sufficient tail fields, single ASCII state letter,20-digit nonnegative PPID
+and20-digit positive start ticks. State/PPID/start come from that SAME buffer's
+tail0/1/19; comm/raw stat/path/exception/argv/environ/credentials are not exported.
+Reasons are `observed`, `absent`, `unreadable`, `interrupted`, `empty`, `partial`,
+`oversized`, `malformed`. Every non-observed reason has null start/state/PPID;
+only ENOENT/ESRCH means absent at that separate read, never at another interval.
+Booleans/nonfinite times/wrong scalar types are invalid optional content.
+
+TargetA admits ONE parent read then targetB only after a valid original-generation
+match with positive PPID. Absent/unknown/reused A stops the triple; PPID0 has
+no-parent. Bracketing requires A/B start and PPID agreement, allowing real state
+changes. Relations are target-absent/target-unknown/target-reused/no-parent,
+target-changed, parent-missing/parent-unknown/parent-reused, or bracketed.
+Parent reuse is claimed only against an existing tree/CLI/daemon or bracketed
+context pin. Unpinned parent generation is measured only. Self/ONEparent/self
+context joins the existing scenarios PID/daemon PPID and, when available,
+owner.add controller generation. The measured immediate parent has launcher
+ROLE **UNKNOWN**: no independent same-invocation launcher pin exists. Numeric
+PPID, source Popen structure or another invocation's active.json cannot grant it.
+Sequential reads do not establish atomic genealogy, continuous custody,
+adoption, wait/reap ownership, no PID race, or a causal cancellation fix.
+
+At most17 existing targets (tree16+CLI), three reads each plus three context
+reads gives54 reads/221238 acquiredB PER closure, with no old sample dropped or
+truncated. Existing `c.remaining()` checks before I/O and after completed work/
+before return charge the ORIGINAL effective minimum including local/observation/
+inherited ends. TimeoutError precedes OSError; raising alarms, KeyboardInterrupt,
+SystemExit, GeneratorExit and controller RuntimeError propagate. Ordinary narrow
+I/O/parse failures supply finite UNKNOWN reasons without retry. No outer
+assertion/deadline catch, timer operation, phase/case mutation or new allowance
+is added. The interrupted unreturned latest sample remains lost/UNKNOWN.
+Finite bytes do not certify syscall latency,50ms cadence, serialization size,
+RSS or100MiB fit; actual cost/fit remain **UNPROVED**, never a reason to widen.
+
+Failure consumption is useful **MANUAL inspection** of existing safely sanitized/
+staged e07.json/observations.json, with source/run/attempt/archive/pin/interval
+attribution and original failure intact. A completed prefix can survive later
+timeout through original wrapper/main full fresh context, evidence export and
+safe staging BEFORE REQUIRED:U, even with later root loss/export failure.
+This is conditional: stage_small_evidence alone does NOT stage e07. No completed
+sample, unreturned work, exhausted other ends, residual owner, failed capture/[],
+unsafe/missing full context or write/staging/export interruption can withhold
+all detail. Original raw W/P/object/savedTB/creator/selected/H0/adapter, THREE
+publishers/conditional poison ATTEMPT, capture B→[]→B versus failed[]→C,
+preparation expiry, frozen sanitation, withholding, sticky failure and terminal
+COMMIT stay intact. No extra save/capture/raw rescue/last-good/bearer-only context
+or fabricated final screenshot/scenario/cleanup follows.
+
+`validate_e07` independently checks optional diagnostics for COMPLETE cases
+only, AFTER every original full e07==observations.e07==row.e07, actual-source,
+manifest/prefix and final behavioral gate. Historical absence means unobserved;
+valid UNKNOWN gives no state or closure credit. It checks all retained samples,
+strict keys/types/nulls/finite times, original target order/pins, sequential read
+and parent relations, supported controller receipts and54-read cardinality.
+It imports no producer parser; copied agreement cannot prove a syscall ran.
+Actual aggregate.main's E04-first failed try SKIPS validate_e07, so these checks
+are no automatic failure-tail consumer. main/_diagnostic_projection/Health,
+run.py launcher pins, new carrier/channel/protocol/observer/driver/venue are
+outside this selected implementation.
+
+Finite accepted cases below use the EXISTING disposable hosted Ubuntu genuine
+/proc, synthetic orgs/private root, real public CLI/browser/provider stubs and
+original controller/launcher on EACH Python3.12/3.14. C observes actual error/
+object/TB/selection; H observes actual same-invocation process/timer/file/custody;
+J independently reopens frozen safe evidence. J proves neither private C objects
+nor unexported H state. No executable test/fixture/seam is added or run here.
+
+| Existing requirement → finite precondition/input/action | Independent FINAL observable | C/H/J distinct risk |
+| --- | --- | --- |
+| Cascade: matching original generation in R/S/Z/D/T/t/I/X/other state; original disappearance or PID reuse → unchanged poll, later stat | Original match always blocks closure; later same-buffer state/PPID has its own pin/time. Absence/reuse cannot rewrite earlier identity. | C original gate; H actual transitions; J attribution, not OS execution proof. |
+| Cascade: EACCES/EIO/EINTR/empty/short/overlength/missing delimiter/LF/wrong PID/state/PPID/start/20-digit overflow → bounded read/parse | Finite UNKNOWN/nulls; original identity errors still escape; no null-as-disappearance. | C narrow exceptions; H real I/O; J strict types/reasons. |
+| Cascade/context: valid A, PPID0 or ONE parent then B; parent absent/reused/unpinned; B changed/missing/error; R↔S/Z; controller/daemon/wrapper/provider/unrelated parent | Only stable same-generation PPID bracket gives measured relation; parent pin comparison only where available; launcher role UNKNOWN. | H sequential races/custody; J independently ordered complete pins, no adoption/wait inference. |
+| Late CLI: shared closure after delayed409/dead downstream during full1s/<=50ms negative window | All original IPC/content/witness/generation/group/pending/final assertions retained; diagnostic cost can cause a real failure. | C public/window decision; H actual time; J original completed evidence. |
+| Terminal unchanged: shared full export after genuine terminal refusals | Exact original human409/task/result/audit/lineage/job/thread/public content still required. | Unchanged keeper, no new terminal case. |
+| R2-01: no incoming or existing W/P; interrupt before/during read/parse, after sample or before return; each original global/case/local/observation/inherited bound expires; residual positive/expired/native timer | Real raising exception and original outgoing/TB/creator/selected precedence survive; previous completed prefix may survive, unreturned sample may not; no bound/timer release by diagnostics. | C actual object/TB; H alarm/work effects; J cannot reconstruct them. |
+| X-01: completed prefix→later timeout→save fails, authentic eligible exit and ALL other original ends positive→full fresh capture/export/staging→REQUIRED:U/root loss/export failure | Safe earlier diagnostic MAY survive with original FAIL/variants{}/false cleanup/error precedence; no fabricated final receipts. | C original selection; H real publication/root effects; J frozen noncredit. |
+| X-01 withholding: absent completed sample, lost latest sample, exhausted end/residual owner, capture/failed[]/context/write/staging failure | UNKNOWN/missing detail stays withheld, sticky incomplete/FAIL remains; no fallback repair/second save. | C/H actual refusal/custody; J absence is no closure. |
+| COMPLETE reader: optional absent/valid/UNKNOWN/malformed, wrong generation/parent/order/nonfinite/type/source or contradictory copy | Old absence remains unobserved; malformed positives refuse; every original equality/source/final gate still controls, skipped E04 path stays skipped. | J independent exported-content check cannot certify OS facts. |
+
+Each affected keeper has these four answers; EACH finite subinput above remains
+candidate **NOT RUN**, intended-failure/restored-pass **PROOF NOT RUN**,
+sensitivity **UNPROVED**. Independent DESIGN acceptance is not test-authoring
+or behavioral PASS; the genuine failed venue is no unavailable-support exemption.
+
+| Keeper | 1. Observable contract | 2. Credible regression | 3. Nearest keeper/gap and distinct risk | 4. Test-only production seam |
+| --- | --- | --- | --- | --- |
+| Cascade / closure / exercise.closed | Known generation must disappear before freeze; state/parent remains at its own pin/time. | Forgiving None replaces original oracle, Z accepted, stale/reused state attributed. | Initial tree/launch owns pre-cancel identity, Owned owns later cleanup; existing cascade owns pre-rescue observation. C gate/H race/J attribution differ. | NO flag/export/module/injection/observer/driver. |
+| Late CLI / negative window | Genuine delayed409/EOF or peer-gone plus unchanged full1s/50ms/generation/group/pending. | Widen timing for diagnostic cost, ignore Z, substitute diagnostic for response. | Cascade freeze and terminal request do not own post-forward IPC/window; existing window keeper retained. H time differs from J consistency. | NO new seam/retry. |
+| validate_e07 COMPLETE optional reader | Independently reopened typed ordered pin/context relation; UNKNOWN gives no closure credit; all original gates. | Import producer oracle, accept reused attribution or bypass source/full equality/finals. | Producer assertions do not own export consistency; existing complete reader does. It cannot own failed-tail reachability or syscall proof. | NO venue/fixture/production export. |
+| R2-01 EACH affected read/parse/interruption/budget input | Actual outgoing/TB/raw W-P/savedTB/creator/selected under original ends. | Catch TimeoutError under OSError, broad swallow/retry/renew/release, overwrite original winner. | Existing25 wrapper inputs stay open; R2-06/07 own capture[], not process observation interruption. C private identity and H alarm cannot be inferred from J. | NO injected source/runnable case/seam. |
+| X-01 EACH affected prefix/timeout/save/capture/staging/root-loss/withholding input | Safe earlier snapshot may survive while original FAIL/variants{}/false cleanup/error precedence and withholding persist. | Raw partial rescue, stage_small-as-e07, lost-context refresh, sticky failure reset or snapshot-as-closure. | R2-01 stops at propagation; R3-01/09 own collection/withholding and R3-07/X-02 COMMIT. Existing X-01 owns SAME-invocation composition; J cannot recover lost C/H facts. | NO carrier/channel/verifier/driver/venue. |
+
+Latest ASSESSED40038807544 remains FAILED/HealthFAIL11/EACH56UNKNOWN-null-zeroPASS/
+skipped0. BOTH initiating closure-poll-sleep absolute TimeoutErrors and483/476
+provider+CLI matching generations, absent wrapper/empty scope/pendingfalse remain
+historical; postcancel state/PPID/adoption/waitowner/PR1180 cause remain UNKNOWN/
+UNPROVED. Eight Playwright errors+eight incompleteE05 EACH/provider observernull/
+REQUIRED:U/direct82/missing finals/cleanupfalse/export ValueError remain. TERM15/
+3.12 and INT2/3.14 are diagnostic-only. Prior FOUR archives/all122members/57logs
+retain their attribution; this source leg collects none. Units RETIRED;
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/211270–271.
+Protected12/mutation/repetition and Product execution are not allocated here.
+Old12724 exact custody tuple remains UNKNOWN/separate OPEN, not reconciled by
+this source work. Fresh FULL independent review/same-final-H scoped SOURCE QA,
+normal hooks/nonforce and TWOstatic head/main plus manager guarded merge remain;
+source/static acceptance does not establish Product/reset/native closure.
+
 | Case or changed evidence consumer | Contract | Credible defect | Prior gap | Shipping seam |
 | --- | --- | --- | --- | --- |
 | Cascade browser, SQL/public frames and receipt assertions | Two cancelled tasks, exact shared timestamp/note/two founder audits; P result retained, W result absent; real terminal UI; one active cancelled receipt, no queued cancellation | Wrong cascade/status, lost result, result race overwrite, surviving child or parent resume | Original53 and launcher interruption do not cancel a live public product tree | Real create/delegate, CancelTaskDialog/cancel route, run-step/host containment, read-only SQL and public detail/recall/tree/list |

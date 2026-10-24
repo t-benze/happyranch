@@ -1680,6 +1680,67 @@ variants,38 starts=A12+B26,23 tasks/31 results (alpha22/30,beta1/1),21 completed
 and two cancelled. Real browser cascade and terminal CLI refusals precede
 forwarding W's original captured provider CLI request; independent serialized
 content, process/socket provenance and a full1s unchanged window are required.
+The [accepted process-state extension](../e2e/README.md#e07-process-state-observations-task12784--root12738)
+(TASK12784/manager step31, exact TASK12782 design50050B/3de9f37a after independent
+TASK12783 DESIGN ONLY PASS29157B/9e12849b) adds only local optional diagnostics in
+`e07.closure` and independent COMPLETE-case `aggregate.validate_e07` inspection.
+Original identity reads/order/exceptions, groups/sampled/pending are assembled
+FIRST and remain the sole closure oracle; same-generation Z still blocks it.
+All closure/public/late409/dead-downstream/terminal/freeze/content and full1s/
+<=50ms gates and original effective ends remain unchanged.
+
+Per existing process row `diagnostic`, plus snapshot `controller_diagnostic`,
+retain scalar PID/start/state/PPID/entered/finished/reason only: one unbuffered
+4097B acquisition/4096B admission, final delimiter/LF record/requested PID,
+same-buffer tail0/1/19, ASCII state and20-digit numeric bounds. Reasons observed/
+absent/unreadable/interrupted/empty/partial/oversized/malformed have strict null/
+type rules. Valid original-generation A alone admits ONE parent then B;
+stable start/PPID bracketing allows state changes but proves no atomic custody,
+adoption, wait ownership or fix. Original tree/CLI/daemon/context pins alone
+support parent reuse comparisons. Self/ONEparent/self measures controller and
+its immediate parent; launcher ROLE remains UNKNOWN, with no new launcher pin.
+At most17 targets/54 reads/221238 acquiredB PER closure; no old sample is dropped.
+This is no syscall-latency/serialization/RSS/100MiB-fit guarantee; actual cost and
+fit remain UNPROVED, never grounds for widened bounds.
+
+Existing c.remaining checks before I/O and after work/before return charge the
+original global/case/local/observation/inherited minimum. TimeoutError precedes
+OSError; real raising alarms/KeyboardInterrupt/SystemExit/GeneratorExit/controller
+RuntimeError propagate. No broad outer catch/retry/timer/phase/case mutation/new
+allowance/backfill; the unreturned latest sample remains lost/UNKNOWN.
+
+Selected failure consumption is MANUAL inspection of existing safely staged
+e07/observations with original source/run/attempt/archive/pin/time attribution.
+Completed prefix→later timeout→original wrapper/main full fresh capture/evidence
+export→safe staging BEFORE REQUIRED:U may survive root loss/export failure, with
+FAIL/variants{}/false cleanup intact. stage_small alone does NOT stage e07.
+Missing sample/exhausted other ends/residual owner/capture failed[]/missing full
+context/unsafe or interrupted publication may withhold everything. Raw W/P/
+savedTB/creator/selected/H0/adapter/THREEpublishers, capture B→[]→B versus failed[]→C,
+frozen withholding/sticky failure/terminal COMMIT stay intact; no raw rescue,
+last-good/bearer-only context, extra save/capture or fabricated final receipts.
+Actual aggregate.main's E04-first failed try SKIPS validate_e07. Its optional
+checks apply only AFTER all original COMPLETE equality/source/manifest/final
+gates, independently of producer parsing. Absent/valid UNKNOWN supplies no OS
+or closure fact; no syscall proof follows. No main/_diagnostic_projection/Health/
+run.py/channel/protocol/observer/driver/venue edit is selected.
+
+The linked nearest case record retains finite requirement→input/action→FINAL
+observable→C/H/J/environment cases and EACH five keeper's four answers: cascade,
+late window, COMPLETE reader, R2-01, X-01. Original30/SAME13/ordered56 EACH3.12/
+3.14/16sites/full maps/dynamic20E05-24E07 and EACH25 prior proof gaps remain.
+Candidate NOT RUN / intended-failure-restored-pass PROOF NOT RUN / sensitivity
+UNPROVED; genuine failed venue is no unavailable-support exemption. Latest
+ASSESSED40038807544 remains FAILED/HealthFAIL11/EACH56UNKNOWN-null-zeroPASS/skipped0,
+BOTH poll-sleep absolute TimeoutErrors/provider+CLI generations present, state/
+PPID/adoption/waitowner/cause unproved; TERM15/INT2 diagnostic-only. No new
+archive/member/behavioral/test-authoring/Product/reset/native-closure acceptance.
+Units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342/211270–271. Only source/AST/byte/doc inspection and supported static
+commands are permitted in this leg. Required all via durable jobs/TWOstatic
+head/main, independent FULL review/same-H scoped SOURCE QA, normal hooks/nonforce
+and manager guarded merge remain; no Product/protected proof allocation here.
+
 The E05 witness prefix is bound to its actual byte/record offset, with every
 E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
 retain all missing proof. R/full remains HELD, with no new restart/rotation code.

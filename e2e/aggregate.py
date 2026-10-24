@@ -2139,6 +2139,126 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and image(case) == image(observations["e07"]) == image(row["e07"]),
           "earliest cancelled original, full selected body and identical public references/copies")
 
+    # Optional diagnostics belong ONLY to complete cases. All original equality,
+    # actual-source and behavioral gates above remain mandatory. This reader
+    # neither imports the stat parser nor makes a claim that a syscall ran.
+    def diag_number(value: object, *, zero: bool = False) -> bool:
+        return type(value) is int and (0 if zero else 1) <= value < 10**20
+
+    def diag_ticks(value: object) -> bool:
+        return (type(value) is str and 1 <= len(value) <= 20 and value.isascii()
+                and value.isdecimal() and int(value) > 0)
+
+    def diag_time(value: object) -> bool:
+        return type(value) in (int, float) and 0 <= value < float("inf")
+
+    def read_observation(value: object, pid: int, lower: float, upper: float) -> None:
+        check(type(value) is dict and set(value) == {
+            "pid", "start", "state", "ppid", "reason", "entered", "finished"}, "diagnostic read keys")
+        check(diag_number(value["pid"]) and value["pid"] == pid
+              and diag_time(value["entered"]) and diag_time(value["finished"])
+              and lower <= value["entered"] <= value["finished"] <= upper, "diagnostic read identity/interval")
+        check(type(value["reason"]) is str and value["reason"] in {
+            "observed", "absent", "unreadable", "interrupted", "empty", "partial", "oversized", "malformed"},
+              "finite diagnostic read reason")
+        if value["reason"] == "observed":
+            check(diag_ticks(value["start"]) and diag_number(value["ppid"], zero=True)
+                  and type(value["state"]) is str and len(value["state"]) == 1
+                  and value["state"] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+                  "same-buffer diagnostic scalars")
+        else:
+            check(all(value[k] is None for k in ("start", "state", "ppid")), "UNKNOWN/absence has no scalar fact")
+
+    def association(value: object, pid: int, pin: str | None, pins: dict,
+                    lower: float, upper: float) -> int:
+        check(type(value) is dict and set(value) == {
+            "entered", "finished", "expected_start", "target_a", "parent", "target_b", "parent_pin", "relation"},
+              "diagnostic association keys")
+        check(diag_time(value["entered"]) and diag_time(value["finished"])
+              and lower <= value["entered"] <= value["finished"] <= upper
+              and (value["expected_start"] is None if pin is None else
+                   diag_ticks(value["expected_start"]) and value["expected_start"] == pin),
+              "diagnostic original pin/interval")
+        a, p, b = value["target_a"], value["parent"], value["target_b"]
+        read_observation(a, pid, value["entered"], value["finished"])
+        reads = 1
+        if a["reason"] != "observed":
+            expected = "target-absent" if a["reason"] == "absent" else "target-unknown"
+        elif pin is not None and a["start"] != pin:
+            expected = "target-reused"
+        elif a["ppid"] == 0:
+            expected = "no-parent"
+        else:
+            reads = 3
+            read_observation(p, a["ppid"], a["finished"], value["finished"])
+            read_observation(b, pid, p["finished"], value["finished"])
+            parent_pin = pins.get(a["ppid"])
+            check(value["parent_pin"] is None if parent_pin is None else
+                  diag_ticks(value["parent_pin"]) and value["parent_pin"] == parent_pin,
+                  "parent pin comes only from existing generation/context")
+            if b["reason"] != "observed" or b["start"] != a["start"] or b["ppid"] != a["ppid"]:
+                expected = "target-changed"
+            elif p["reason"] != "observed":
+                expected = "parent-missing" if p["reason"] == "absent" else "parent-unknown"
+            elif parent_pin is not None and p["start"] != parent_pin:
+                expected = "parent-reused"
+            else:
+                expected = "bracketed"
+        if reads == 1:
+            check(p is None and b is None and value["parent_pin"] is None, "unconfirmed target has no parent walk")
+        check(type(value["relation"]) is str and value["relation"] == expected,
+              "independent sequential relation, never closure/adoption/wait ownership")
+        return reads
+
+    def diagnostics(closed: dict, upper: float) -> None:
+        processes = closed["processes"]
+        present = "controller_diagnostic" in closed or any("diagnostic" in p for p in processes)
+        if not present:
+            return  # Historical absence is unobserved; no backfill or credit.
+        check(type(processes) is list and len(processes) == len(tree["chain"])+1 <= 17
+              and [(p["pid"], p["start"]) for p in processes]
+              == [(p["pid"], p["start"]) for p in tree["chain"]+[child]],
+              "all original targets/order, no diagnostic truncation")
+        pins = {}
+        for p in [*processes, transport["daemon"]]:
+            check(diag_number(p["pid"]) and diag_ticks(p["start"])
+                  and (p["pid"] not in pins or pins[p["pid"]] == p["start"]), "unambiguous original diagnostic pins")
+            pins[p["pid"]] = p["start"]
+        check(diag_time(closed["sampled"]) and case["entered"] <= closed["sampled"] <= upper,
+              "original sample time before optional work")
+        check("controller_diagnostic" in closed and all("diagnostic" in p for p in processes)
+              and diag_number(phase["pid"]) and transport["daemon"]["ppid"] == phase["pid"],
+              "complete optional records and controller invocation PID join")
+        context = closed["controller_diagnostic"]
+        reads = association(context, phase["pid"], None, pins, closed["sampled"], upper)
+        # A surviving owner.add receipt can corroborate self generation. It
+        # never supplies the missing independent launcher generation/role pin.
+        identities = row["cleanup"].get("identities", {})
+        check(type(identities) is dict, "optional controller owner identities")
+        controller_pin = identities.get(str(phase["pid"]))
+        if controller_pin is not None:
+            check(diag_ticks(controller_pin), "retained controller generation pin")
+            for observation in (context["target_a"], context["target_b"]):
+                if observation is not None and observation["reason"] == "observed":
+                    check(observation["start"] == controller_pin, "observed self matches retained owner pin")
+        if context["relation"] == "bracketed":
+            for observation in (context["target_a"], context["parent"]):
+                pins.setdefault(observation["pid"], observation["start"])
+        last = context["finished"]
+        for p in processes:
+            check(p["observed_start"] is None or diag_ticks(p["observed_start"]), "original observed start type")
+            reads += association(p["diagnostic"], p["pid"], p["start"], pins, last, upper)
+            last = p["diagnostic"]["finished"]
+        check(reads <= 54, "per-closure finite diagnostic read cardinality")
+
+    for index, closed in enumerate(case["closure_samples"]):
+        upper = (case["closure_samples"][index+1]["sampled"]
+                 if index+1 < len(case["closure_samples"]) else freeze["entered"])
+        diagnostics(closed, min(upper, case["phases"][1]["end"], case["finished"]))
+    for index, sample in enumerate(samples):
+        upper = samples[index+1]["entered"] if index+1 < len(samples) else window["finished"]
+        diagnostics(sample["closure"], min(upper, case["phases"][3]["end"], case["finished"]))
+
 
 def _decode_diagnostic(path: Path) -> tuple[object, tuple]:
     """One exported-file decode; bound selected duplicate bookkeeping only."""
