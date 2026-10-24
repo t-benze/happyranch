@@ -367,11 +367,15 @@ Founder THR-091 seq480 narrows the census to current boot/epoch activity plus
 its referenced lifecycle, retry, delegation, QA/job and epoch/invalidation
 records. All activity in that window is selected before attribution filtering;
 a read/search now using an old retired SID retains the old task and interval.
-Ancestry-only dependencies retain their parent/revisit graph facts; owners used
-for lifecycle/proof retain original results, lifecycle and control history plus
-direct revisits. Historical seals and SID-less intent/expectation/binding rows
-from other boots have no current-census consumer. No prose/command ID scraping
-or unrelated global same-SID audit/result search supplies an admission gate;
+Ancestry-only dependencies retain their parent/revisit graph facts. Selected
+current `task_scratch_report` rows stay raw and unchanged; their outer task_id
+uses graph-only ownership. Every other audit action retains full-history
+ownership. An independent lifecycle/read, QA/job/retry/probe or acceptance/control
+reference promotes the same owner to full in either discovery order, checking
+the earlier graph facts and retaining original results, lifecycle and control
+history plus direct revisits. Historical seals and SID-less
+intent/expectation/binding rows from other boots have no current-census consumer.
+No prose/command ID scraping or unrelated global same-SID audit/result search supplies an admission gate;
 PR1084's supplied-liveSID trust limit remains. Same-owner contradictions still
 refuse the strict failed-before-exposure class. Historical `memory_read` rows
 retain their AGENT-scoped outer task_id; the owner is payload.task_id. Each

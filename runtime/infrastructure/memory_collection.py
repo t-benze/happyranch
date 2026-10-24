@@ -1034,8 +1034,10 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
 
     Adapters exhaust existing filtered reads or refuse. Every historical task
     has a consumer: current activity attribution, ancestry/revisit or an exact
-    structured delegation/acceptance/job key. All results/history of each such
-    owner and all direct revisits remain visible, including later candidates.
+    structured delegation/acceptance/job key. Current scratch reports stay raw;
+    their outer owners need only graph facts unless independently reached by a
+    full-history reference. Every other audit action retains full owner history,
+    results and direct revisits, including later candidates.
     Closing/atomic callers run this selection again rather than reread IDs.
     """
     intents = audit({"action": "memory_runtime_intent"}, boot=view["boot_id"])
@@ -1059,7 +1061,7 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
         budget.record(row)
         tables[name][key] = row
         if name == "audit_log":
-            references(row["task_id"])
+            references(row["task_id"], history=row["action"] != "task_scratch_report")
             body = row["payload"]
             if isinstance(body, dict):
                 # Attribution is a dependency; arbitrary historical prose,

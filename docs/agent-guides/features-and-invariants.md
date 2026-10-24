@@ -2474,10 +2474,14 @@ corrective memory spec for exact values and prepared-output custody limits.
 Backend and canonical CLI JSON/text share the report core and seq480 selector:
 current boot/epoch activity, including unknown attribution and current calls on
 preboot retired SIDs, plus genuine referenced lifecycle/ancestry/retry, QA/job and
-epoch/invalidation evidence. Ancestry-only reads retain graph facts; proof and
-interval owners retain original results/history and direct revisits. Unrelated
-global same-SID records are outside admission under PR1084's supplied-liveSID
-trust limit. Related contradictions and missing required evidence still refuse.
+epoch/invalidation evidence. Ancestry-only reads retain graph facts. Selected
+current `task_scratch_report` rows stay raw and unchanged; their outer task_id
+uses graph-only ownership. Every other audit action retains full-history
+ownership. An independent lifecycle/read, QA/job/retry/probe or acceptance/control
+reference promotes the same owner to full in either discovery order, checking
+the earlier graph facts and retaining original results/history and direct
+revisits. Unrelated global same-SID records are outside admission under PR1084's
+supplied-liveSID trust limit. Related contradictions and missing required evidence still refuse.
 Historical memory_read closure uses payload.task_id while preserving outer AGENT
 scope: one complete bounded action read per capture, selecting only required
 full-history owners. Closing/atomic discovery includes late preboot reads;
