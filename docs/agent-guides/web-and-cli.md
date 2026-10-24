@@ -4389,9 +4389,13 @@ and serving checks use the actual daemon PID/port with repeated pair validation.
 Missing/reused/moving identity holds, independently of loaded-source coverage.
 
 Import stays held when existing serving observations cannot establish required
-loaded workflow owners or actual UI facts. Current selected memory fingerprints
-are incomplete for those owners; disk HEAD/health200/SPA fallback cannot fill the
-gap. No new verifier or attestation endpoint is supplied.
+loaded workflow owners or actual UI facts. Selected memory identity now observes
+twelve real already-loaded workflow objects, with OrgState alias and actual org import-store binding agreement, closed
+rows/hashes, unchanged budgets/bookends and recursive nested-code comparison.
+Missing/malformed/moving coverage or independent observation errors still hold;
+finite identity proves neither startup invocation nor transitive workflow behavior.
+Disk HEAD/health200/SPA fallback cannot fill an observation gap. No new verifier
+or attestation endpoint is supplied.
 
 After verified host/import preparation, open the actual printed
 `/orgs/ORG/settings/coding` URL, adopt current metadata, select repositories and
@@ -4400,3 +4404,33 @@ an eligible final manager. Leave Admission Disabled, save and reopen; an uncerta
 save uses Check original save. The command chooses/saves/enables nothing. Real
 workflow/Founder persistence/scratch/rejection/revision/control/cross-team/two-org/
 backup/restore/reopen/rollback acceptance remains NOT RUN/open before ordinary use.
+
+Each script-originated refusal gives one instruction:
+`Send this output to engineering_manager`, with incident/stage, last completed/accepted layout and
+attempted/uncertain effects. Main-owned stdlib context survives constructor/
+argument/exec/helper/tool failures and interruption after the unchanged entry guard.
+Early detail is output-only, never a claimed saved file. Only permitted private
+receipt custody allows a bounded exclusive diagnostic, called saved after
+write/readback/fsync. Arbitrary exception/argv/environment/transport/log/file/
+credential bodies are not printed. Persistence/reporting failure retains original
+cause/effects and attempts one fallback; all sinks/kill/pre-main delivery is not
+guaranteed. No-change claims need positive pre-effect proof, not a missing
+Coordinator or RO SQLite/constructor inspection.
+
+The complete five-field preparation reference LIST is validated before use.
+Only valid empty permits the next original check; valid nonempty holds exact
+private references, with independent error/pending/null-cutoff facts retained.
+Missing/wrong containers and any malformed row refuse, without coercion/filtering.
+Closed identity validation precedes set/dict projection; all boot/source/runtime/
+org/cutoff/error checks remain. Separate memory qualification may be required;
+no epoch reset/collection acceptance occurs.
+
+Reserved relocation _pending (all four original inboxes) and historical native
+started/failed preparations remain Engineering/original-owner holds pending
+authenticated positive disposition/outer closure. Loader omission, empty storage,
+terminal labels, absent Pause/PID and completed commands cannot release them.
+No general historical ordinary-start-to-positive-outer-close reader is supplied.
+Stage evidence distinguishes custody, stop, backup, preparation subcommands/UI,
+each migration/last accepted layout, start/pair/serving and original import file/
+intent/send/receipt/readback. Failed commands never become successful from a later
+effect observation; uncertainty permits no next effect or replay/new key.

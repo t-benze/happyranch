@@ -23,6 +23,12 @@ import yaml
 class Hold(ValueError):
     """An observation is unavailable or an original owner still owns work."""
 
+    def __init__(self, message: str, *, category: str = 'observation_hold', details: dict | None = None) -> None:
+        super().__init__(message)
+        # Message interpolation is private, never a terminal-safe diagnostic.
+        self.category = category
+        self.details = details
+
 
 def literal(path: Path, *, missing: bool = False) -> Path:
     if not path.is_absolute() or '..' in path.parts or '.' in path.parts:
@@ -153,7 +159,10 @@ def owner_hold(org: str, table: str, row) -> None:
     keys = ('id', 'task_id', 'root_task_id', 'record_id', 'source_id', 'session_id',
             'current_session_id', 'preparation_id', 'operation_id', 'namespace', 'writer_id', 'invocation_id')
     owner = ', '.join(f'{k}={row[k]}' for k in keys if k in row.keys() and row[k] is not None)
-    raise Hold(f'{org}: {table} {owner}; original owner must reconcile journal/native/outer closure; no stop attempted')
+    raise Hold(f'{org}: {table} {owner}; original owner must reconcile journal/native/outer closure; no stop attempted',
+               category='original_owner_unsettled',
+               details={'org': org, 'table': table,
+                        'owner': {k: row[k] for k in keys if k in row.keys() and row[k] is not None}})
 
 
 def inspect_org_owners(conn: sqlite3.Connection, layout: str, org: str) -> None:
@@ -212,7 +221,11 @@ def inspect_org_owners(conn: sqlite3.Connection, layout: str, org: str) -> None:
         payload = json.loads(row['payload'])
         if payload.get('disposition') == 'unclosed_preparation' or payload.get('kind') == 'started':
             raise Hold(f'{org}: {row["task_id"]} SID={payload.get("session_id")} invocation={payload.get("invocation_id")} audit={row["id"]}: '
-                       'original native preparation/outer closure observation unavailable; original task/native owner must reconcile; no terminal/PID inference')
+                       'original native preparation/outer closure observation unavailable; original task/native owner must reconcile; no terminal/PID inference',
+                       category=('native_preparation_closure_unavailable' if payload.get('disposition') == 'unclosed_preparation'
+                                 else 'native_started_closure_unavailable'),
+                       details={'org': org, 'task_id': row['task_id'], 'audit_id': row['id'],
+                                'session_id': payload.get('session_id'), 'invocation_id': payload.get('invocation_id')})
 
     if layout in ('I', 'J'):
         _validate_coding_source_idle(conn, expected_org_slug=org)
@@ -282,6 +295,25 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
         result['directories'].append((str(directory), identity(directory), tuple(p.name for p in entries)))
         for org in entries:
             literal(org)
+            if org.name in ('_pending', '_archive') and org.is_dir():
+                # Loader omission is not an idle observation. Preserve reserved
+                # custody and all immediate inbox identities; never open an org
+                # DB here, traverse archive contents or clear an empty tree.
+                pin = identity(org)
+                details = {'path': str(org), 'identity': pin,
+                           'directory': result['directories'][-1]}
+                if org.name == '_pending':
+                    members = sorted(org.iterdir())
+                    if len(members) > 1024:
+                        raise Hold('reserved relocation census budget exhausted')
+                    details['members'] = [(p.name, identity(p)) for p in members]
+                    if (identity(org) != pin or tuple(p.name for p in sorted(org.iterdir()))
+                            != tuple(p.name for p in members)
+                            or [(p.name, identity(p)) for p in members] != details['members']):
+                        raise Hold('reserved relocation custody moved')
+                raise Hold('reserved storage retains its original owner; loader omission and empty storage prove no clearance',
+                           category='reserved_relocation_custody' if org.name == '_pending' else 'reserved_archive_custody',
+                           details=details)
             if not org.is_dir() or not re.fullmatch(r'[a-z0-9-]{1,40}', org.name):
                 # Pending/archive entries cannot silently disappear from scope.
                 raise Hold(f'{org}: unaccounted/partial org entry; original registry/org owner must reconcile')

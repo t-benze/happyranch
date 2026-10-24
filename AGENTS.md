@@ -4499,10 +4499,13 @@ source drift or uncertain writer stops the sequence without automatic restart,
 restore or replay. This is cooperative maintenance, not a new daemon lock.
 
 Actual serving boot/source/org/UI observations precede human CLI release import.
-Current selected memory fingerprints do not cover every workflow compatibility
-owner: missing coverage gives an explicit original-serving-owner hold before
-import; health200/disk HEAD/index equality are insufficient. Exact import absence
-alone permits fresh confirmation, exclusive original canonical file and fsynced
+Selected memory identity observes twelve already-loaded workflow objects through
+OrgState validator-alias and actual org import-store binding agreement. Closed
+rows, origins, recursive code/source hashes and unchanged budgets/bookends must
+agree before import; missing/malformed/moving coverage and unrelated observation
+errors still hold. This finite identity is neither startup invocation nor
+transitive workflow proof; health200/disk HEAD/index equality are insufficient.
+Exact import absence alone permits fresh confirmation, exclusive original canonical file and fsynced
 send intent before one POST. Existing/uncertain originals remain owned; GET
 readback never authorizes another key/replay. No browser import surface changes.
 
@@ -4514,3 +4517,38 @@ Real workflow, Founder persistence, scratch/rejection/revision/control,
 cross-team/two-org, backup/restore/reopen/rollback acceptance remain NOT RUN/open
 before ordinary coding use. See the ordered-coding spec and runtime/CLI guides
 for flags, recovery receipts, explicit pinned bootstrap and observation limits.
+
+The setup correction under ROOT12897 retains these operational holds. Reserved
+`_pending` is relocation custody with complete immediate membership/identities,
+including all four retained inboxes, never an ignored or empty-tree clearance.
+Historical native `started` audits are launch facts without a general supported
+ordinary-start-to-positive-outer-close reader. Engineering coordinates original
+relocation/native/job owners and authenticated positive disposition; terminal
+labels, absent Pause/PID and completed commands cannot clear UNKNOWN/failed owners.
+
+Every script-originated refusal has an incident/stage, last completed stage and
+accepted layout, truthful attempted/uncertain effects, and one instruction:
+`Send this output to engineering_manager`. Main owns the in-memory context before
+the unchanged host guard, including partial constructor failures. Pre-custody
+detail exists only in output; after permitted private receipt custody, an
+exclusive bounded diagnostic is called saved only after write/readback/fsync.
+No arbitrary exception/argv/environment/transport/log/credential bodies are
+printed. Persistence/reporting failure preserves the original cause/effects and
+uses a once-only fallback; all-sink failure, kill and pre-main failure have no
+delivery guarantee. Nothing-was-changed claims require positive pre-effect proof;
+constructor temporaries and RO SQLite sidecars prevent a global inference.
+
+The serving preparation field is the complete original five-field reference LIST:
+only valid empty permits the next original check; valid nonempty retains exact
+private references and holds, including observation_pending/null-cutoff facts.
+Missing, wrong-container and malformed rows (including a bad tail) refuse without
+coercion/filtering/deduplication. Closed identity, boot/cutoff, source/runtime/org
+and every independent error remain mandatory. New selected identity may require
+fresh genuine memory qualification; no epoch/collection acceptance is performed.
+
+Receipt-only/partial custody, stop attempt versus positive closure, partial/full
+backup, individual preparation commands/UI, every attempted migration versus last
+accepted layout, start/pair/serving, and original import file/intent/send/receipt/
+readback remain distinct. Failed commands remain failed; no next effect, automatic
+restart/restore/replay or new key follows uncertainty. Source delivery leaves
+Coding Disabled and real host/workflow/Founder/backup/recovery acceptance open.

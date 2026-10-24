@@ -3633,9 +3633,17 @@ unrelated, reused or moving identities hold without restart. The saved
 receipts/started-processes.json contains only closed identity evidence.
 
 After one start, missing actual boot/loaded-workflow/source/org/UI observations
-hold import. Current memory loaded fingerprints are partial; they cannot attest
-every workflow compatibility owner. Health200, disk HEAD and SPA/index equality
-are insufficient. The original serving/native owner resolves unavailable proof;
+hold import. Selected memory identity adds twelve already-loaded workflow objects:
+five workflow_schema readers/validators, three workflow_coding_schema readers/validators,
+and the actual org CodingReleaseImportStore get/import_release/_current/_receipt
+methods. Already-loaded module bindings, OrgState validator alias and bound
+__func__/class/org agreement must match; no import/reload/new store supplies proof.
+Existing origin/co_filename/interpreter, recursive nested-code/source comparison,
+closed sorted distinct rows, file/code/acquisition budgets and opening/closing
+bookends remain. This is finite current-object identity, not proof of startup
+invocation or transitive workflow behavior. Changed identity may need separate
+genuine memory qualification; epochs and collection acceptance are untouched.
+Health200, disk HEAD and SPA/index equality are insufficient. The original serving/native owner resolves unavailable proof;
 setup adds no endpoint, maintenance lock, settlement writer or auth grant.
 Finish at Settings → Coding with Admission Disabled. Real workflow/Founder
 persistence/scratch/rejection/revision/control/cross-team/two-org/backup/restore/
@@ -3648,3 +3656,45 @@ change, not a byte-immutability claim for SHM. Disposable backup observation mus
 separate logical/main/WAL preservation from those SQLite-owned readmarks. New
 preparation caches live within the private recovery destination, avoiding writes
 to unrelated existing uv/npm caches; they are not restoration evidence.
+
+Setup refusals carry an incident/stage and safe bounded class/function-line
+references, last completed stage/accepted layout and attempted/uncertain effects.
+The sole instruction is `Send this output to engineering_manager`. Main creates
+the stdlib in-memory context before the unchanged guard and passes it into the
+constructor; partial initialization, parser2/help0, exec/bootstrap/tool failures
+and interruption share it. Before permitted private custody, detail is output-only
+and no private diagnostic file is claimed. Later a bounded exclusive diagnostic
+is saved only after write/readback/fsync in the existing receipts directory.
+Original failure/effects survive failed persistence/reporting; a minimal fallback
+is attempted once. No arbitrary exception bodies, argv/environment, source/locals,
+HTTP/lifecycle/file/credential/receipt bodies are echoed. All-sink failure, kill or
+pre-main failure has no delivery guarantee. Constructor temporaries and RO SQLite
+SHM prevent a global no-change inference; only positive pre-effect proof permits it.
+
+Serving preparations consume the producer's original five-field LIST
+(ordinal/task_id/agent/session_id/expectation_known). Validate the entire list
+before classification: only valid empty permits the next original check; valid
+nonempty holds exact originals privately, preserving independent observation
+errors/pending/null cutoff. Missing/null/int0/bool/object and malformed rows, even
+a bad tail after valid rows, refuse without coercion/filter/deduplication. Closed
+identity validation precedes projections; missing/malformed identity and every
+boot/cutoff/source/runtime/org/error check remain mandatory. Family epoch and
+Danze profile errors are independent holds, not fixed by workflow coverage.
+
+Reserved _pending retains complete immediate membership/identity and an original
+relocation-owner hold, even empty; all four original inboxes remain untouched.
+_archive remains held without archive traversal. Historical native started audits
+are launch facts, not paired unclosed markers; no general ordinary-start-to-
+positive-outer-close reader is available. Engineering owns original relocation/
+native/job read-only investigation and any precise separately authorized recovery
+decision. Pending JOB1989/1698/1637, UNKNOWN12877/5388/5389/5390 and FAILED12568/
+12298 preparations retain original evidence/release conditions. No label/PID/age/
+empty Pause or other settled store clears them. This source work is NOT READY.
+
+Effects are recorded before fallible writes/launches and accepted only after
+original checks: receipt-only/partial custody, stop/positive closure, partial/full
+backup, uv/npm/UI preparation, each migration/last accepted layout, start/pair/
+serving and original import file/intent/CLI send/receipt/GET. A returned command
+is not stage acceptance; a failed command remains failed despite later effect
+observation. Persistence failure prevents continuation and retains original keys,
+bytes, intents/results and uncertainty. No automatic restart/restore/resume/replay.

@@ -34,6 +34,170 @@ class HostRefusal(ValueError):
     """A safe host-entry diagnostic with no private product payload."""
 
 
+class ArgumentRefusal(ValueError):
+    """Parser exit2 without echoing untrusted argv or parser messages."""
+
+
+class SetupParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ArgumentRefusal()
+
+
+class DiagnosticContext:
+    """Invocation-local facts, not a recovery cursor or settlement authority.
+
+    This exists before the host guard and survives a partial constructor.
+    Exception bodies, argv, environment and transport bodies are never rendered.
+    """
+    def __init__(self) -> None:
+        self.incident = 'coding-setup-' + secrets.token_hex(8)
+        self.stage = 'host-entry'
+        self.observation = 'host-entry'
+        self.last_completed = 'none'
+        self.layout = 'not-yet-accepted'
+        self.effects = {name: 'not-attempted' for name in (
+            'receipt-custody', 'stop', 'backup', 'preparation-uv', 'preparation-npm', 'preparation-ui',
+            'migration-G', 'migration-H', 'migration-I', 'migration-J', 'start', 'start-pair', 'serving',
+            'import-file', 'import-intent', 'import-send', 'import-receipt', 'import-readback')}
+        self.pre_effect = True
+        self.receipts = None
+        self.references = {}
+        self.paths = {}
+        self.preparations = {}
+        self.observations = {}
+        self.checks = {}
+        self.command = None
+        self.secondary = []
+        self.reported = False
+
+    def enter(self, stage: str) -> None:
+        self.stage = stage
+        self.observation = stage
+
+    def observe(self, observation: str) -> None:
+        self.observation = observation
+
+    def accepted(self, stage: str) -> None:
+        self.last_completed = stage
+
+    def effect(self, name: str, state: str) -> None:
+        self.pre_effect = False
+        self.effects[name] = state
+
+    @staticmethod
+    def token(value: object) -> str:
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value) else 'unavailable'
+
+    def report(self, exc: BaseException) -> None:
+        if self.reported:
+            return
+        self.reported = True
+        category = ('arguments_invalid' if isinstance(exc, ArgumentRefusal) else
+                    'host_entry_refused' if isinstance(exc, HostRefusal) else
+                    'interrupted' if isinstance(exc, KeyboardInterrupt) else 'observation_or_effect_failed')
+        allowed = {
+            'observation_hold', 'original_owner_unsettled', 'reserved_relocation_custody', 'reserved_archive_custody',
+            'native_preparation_closure_unavailable', 'native_started_closure_unavailable',
+            'preparation_list_invalid', 'preparations_owned', 'serving_observation_unavailable', 'command_failed',
+        }
+        hold_type = globals().get('Hold')
+        if hold_type is not None and isinstance(exc, hold_type) and exc.category in allowed:
+            category = exc.category
+        owner_references = {}
+        if hold_type is not None and isinstance(exc, hold_type) and isinstance(exc.details, dict):
+            for key in ('org', 'table', 'task_id', 'session_id', 'invocation_id', 'audit_id', 'path'):
+                value = exc.details.get(key)
+                if key == 'audit_id' and type(value) is int and value > 0:
+                    owner_references[key] = value
+                elif key == 'path':
+                    if (isinstance(value, str) and len(value) <= 4096 and value.startswith('/')
+                            and all(ord(c) >= 32 for c in value) and '..' not in Path(value).parts):
+                        owner_references[key] = value  # JSON escaping below, never shell prose
+                elif isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value):
+                    owner_references[key] = value
+            owner = exc.details.get('owner')
+            if isinstance(owner, dict):
+                for key in ('id', 'task_id', 'root_task_id', 'record_id', 'source_id', 'session_id',
+                            'current_session_id', 'preparation_id', 'operation_id', 'writer_id', 'invocation_id'):
+                    value = owner.get(key)
+                    if (type(value) is int and value > 0
+                            or isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value)):
+                        owner_references['owner.' + key] = value
+        locations = []
+        tb = exc.__traceback__
+        while tb is not None:
+            path = Path(tb.tb_frame.f_code.co_filename)
+            if path.is_absolute() and path.is_relative_to(_SOURCE):
+                relative = str(path.relative_to(_SOURCE))
+                if re.fullmatch(r'[A-Za-z0-9_./-]{1,256}', relative):
+                    locations.append(f'{relative}:{self.token(tb.tb_frame.f_code.co_name)}:{tb.tb_lineno}')
+            tb = tb.tb_next
+        facts = {
+            'incident': self.incident, 'category': category, 'exception_class': self.token(type(exc).__name__),
+            'stage': self.stage, 'last_completed': self.last_completed, 'last_accepted_layout': self.layout,
+            'observation': self.observation,
+            'effects': dict(self.effects), 'current_command': self.command, 'locations': locations[-8:],
+            'secondary_failures': self.secondary[:],
+            'serving_checks': self.checks,
+            'owner_references': owner_references,
+            'candidate_or_observed_paths': self.paths,
+        }
+        detail = 'detail exists only in this output; no private diagnostic file saved'
+        saved = None
+        if self.receipts is not None:
+            try:
+                # Only structured owner/observation facts go into private detail;
+                # never serialize arbitrary exception text or traceback locals.
+                private = dict(facts, references=self.references, active_preparations=self.preparations,
+                               observations=self.observations,
+                               hold_details=exc.details if hold_type is not None and isinstance(exc, hold_type) else None)
+                raw = canonical(private)
+                if len(raw) > _LIMIT:
+                    raise ValueError('diagnostic_size_limit')
+                path = self.receipts / (self.incident + '.json')
+                exclusive(path, raw)
+                saved = str(path)
+                detail = 'private diagnostic saved: ' + json.dumps(saved, ensure_ascii=True)
+            except BaseException as persistence:
+                facts['diagnostic_persistence_failed'] = self.token(type(persistence).__name__)
+                detail += '; private diagnostic persistence failed; any partial file is incomplete'
+        guidance = {
+            'reserved_relocation_custody': 'Engineering owns original relocation ledgers and positive writer/disposition evidence; loader omission or empty storage cannot release custody.',
+            'reserved_archive_custody': 'Engineering owns original reserved archive custody; no archive traversal or clearance is inferred.',
+            'native_started_closure_unavailable': 'Historical started audit is a launch fact, not an unclosed marker. Engineering/native owner needs authentic original positive outer-close evidence; no general historical reader is available.',
+            'native_preparation_closure_unavailable': 'Engineering/native preparation owner needs authenticated original preparation/outer disposition. Terminal status, absent Pause/PID and age cannot release this hold.',
+            'preparation_list_invalid': 'Engineering/serving observer owns the malformed or unavailable five-field preparation list.',
+            'preparations_owned': 'Engineering/original preparation owners need positive original closure; exact references remain private and independent observation errors/cutoffs remain held.',
+            'original_owner_unsettled': 'Engineering coordinates original journal/native/outer owners and positive disposition; no terminal-label or PID inference.',
+        }.get(category, 'Engineering inspects the stage, source locations and original owners; failed or uncertain effects prevent the next effect.')
+        public = dict(facts)
+        # Original references/observation bodies stay in memory/private custody.
+        # Only a fixed-shape command summary is suitable for terminal output.
+        public['current_command'] = self.command
+        unchanged = 'Nothing was changed. ' if self.pre_effect else 'Change-free status is not established. '
+        message = ('Setup held: ' + json.dumps(public, sort_keys=True, ensure_ascii=True) + '\n'
+                   + unchanged + detail + '\n' + guidance
+                   + '\nPreserve original intents/results/keys/bytes; no automatic restart/restore/replay.'
+                   + '\nSend this output to engineering_manager')
+        raw = message.encode('utf8')
+        try:
+            written = os.write(2, raw)
+            if written != len(raw):
+                # Finish the undelivered suffix once, without repeating a
+                # possibly delivered instruction or recursively reporting.
+                if os.write(2, raw[written:]) != len(raw) - written:
+                    raise OSError('report_output_short_write')
+        except BaseException:
+            fallback = (f'Setup held incident={self.incident} stage={self.stage} category={category} '
+                        f'last_completed={self.last_completed} layout={self.layout} '
+                        f'effects={json.dumps(self.effects, sort_keys=True)}; reporting_failed; '
+                        + detail + '\nSend this output to engineering_manager')
+            try:
+                os.write(2, fallback.encode('utf8'))
+            except BaseException:
+                pass  # No delivery/persistence guarantee after all sinks fail.
+
+
 def require_human_host() -> None:
     """Stdlib only; run before even importing the product preflight helper."""
     if any(key in os.environ for key in _MARKERS):
@@ -105,7 +269,9 @@ def exclusive(path: Path, raw: bytes) -> None:
 
 
 class Coordinator:
-    def __init__(self, args):
+    def __init__(self, args: argparse.Namespace, diagnostic: DiagnosticContext) -> None:
+        self.diagnostic = diagnostic
+        diagnostic.enter('constructor-path-custody')
         self.args = args
         self.home = literal(Path(os.environ.get('HAPPYRANCH_DAEMON_HOME') or str(Path.home() / '.happyranch')))
         self.source = literal(_SOURCE)
@@ -118,29 +284,41 @@ class Coordinator:
         self.commands = []
         self.boots = None
         self.python = self.source / '.venv' / 'bin' / 'python'
+        diagnostic.enter('constructor-python')
         self.python_pin = self.python_identity()
         self.cli = [str(self.python), '-m', 'cli.main']
-        self.tools = {name: self.tool(name) for name in ('git', 'uv', 'node', 'npm', 'bash')}
+        self.tools = {}
+        for name in ('git', 'uv', 'node', 'npm', 'bash'):
+            diagnostic.enter('constructor-tool-' + name)
+            self.tools[name] = self.tool(name)
+        diagnostic.enter('constructor-environment')
         self.environment = dict(os.environ)
         for key in ('PYTHONPATH', 'PYTHONHOME', 'UV_PROJECT_ENVIRONMENT', 'UV_PYTHON', 'UV_WORKING_DIRECTORY', 'UV_PROJECT'):
             if key in os.environ:
                 raise Hold(f'unsupported {key} redirection; original environment owner must reconcile without stripping it')
         if os.environ.get('VIRTUAL_ENV') not in (None, str(self.source / '.venv')):
             raise Hold('VIRTUAL_ENV differs from the selected source environment')
+        diagnostic.enter('constructor-source')
         self.source_pin = self.prepare_source()
         for name in ('uv', 'node', 'npm'):
+            diagnostic.enter('constructor-version-' + name)
             code, version, err = self.command([self.tools[name]['path'], '--version'])
             if err or (name == 'node' and re.fullmatch(r'v24\.[0-9]+\.[0-9]+\n', version) is None):
                 raise Hold(f'{name} version unavailable/unsupported; Node24 required before maintenance')
             self.tools[name]['version'] = version.strip()
+        diagnostic.enter('constructor-registry')
         registered = registry(self.home)
         self.runtime = literal(args.runtime_root or Path(registered['active']))
+        diagnostic.enter('constructor-maintenance')
+        diagnostic.pre_effect = False  # RO SQLite may affect reader sidecars.
         self.frozen = observe_maintenance(self.home, self.runtime)
         self.accepted_layouts = {o['path']: o['layout'] for o in self.frozen['orgs']}
         self.target = next((o for o in self.frozen['orgs'] if o['runtime'] == str(self.runtime) and o['org'] == args.org), None)
         if self.target is None:
             raise Hold('target org is not an existing admitted registered org; org creation is excluded')
         self.last_layout = self.target['layout']
+        diagnostic.layout = self.last_layout
+        diagnostic.enter('constructor-settings-ui')
         from runtime.config import Settings
         self.settings = Settings()
         self.config_pin = digest(read_file(self.home / 'config.yaml')) if (self.home / 'config.yaml').exists() else None
@@ -149,14 +327,17 @@ class Coordinator:
             raise Hold('served UI resolves outside the selected source; original source/UI owner must reconcile')
         self.dist = self.source / 'web' / 'dist'
         literal(self.dist, missing=True)
+        diagnostic.enter('constructor-import-backup-paths')
         self.import_file = args.import_file or self.home / f'coding-{args.org}-v1-import.json'
         literal(self.import_file, missing=True)
+        diagnostic.paths['original_import_candidate'] = str(self.import_file)
         for root in (self.source, *(Path(r) for r in registered['registered'])):
             if self.import_file.is_relative_to(root):
                 raise Hold('original import file must be outside affected source/runtime trees')
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         self.backup = args.backup_dir or self.home / 'operator-backups' / f'coding-{args.org}-{stamp}-{secrets.token_hex(6)}'
         literal(self.backup, missing=True)
+        diagnostic.paths['backup_candidate_complete_only_with_manifest'] = str(self.backup)
         if self.backup.exists():
             raise Hold(f'backup destination already exists: {self.backup}')
         for root in (self.source, *(Path(r) for r in registered['registered'])):
@@ -164,6 +345,7 @@ class Coordinator:
                 raise Hold(f'backup overlaps affected source/runtime: {root}')
         if self.import_file.is_relative_to(self.backup) or self.backup.is_relative_to(self.import_file):
             raise Hold('import file overlaps recovery destination')
+        diagnostic.accepted('constructor')
 
     @staticmethod
     def tool(name):
@@ -186,9 +368,11 @@ class Coordinator:
                 'environment_identity': identity(self.source / '.venv')[:4],
                 'pyvenv': digest(read_file(self.source / '.venv/pyvenv.cfg')), 'version': sys.version}
 
-    def command(self, argv, *, cwd=None, accept=(0,), private=False):
+    def command(self, argv, *, cwd=None, accept=(0,), private=False, effect=None):
         """Persist intent before launch and bounded observed results before return."""
         import tempfile
+        self.diagnostic.command = {'state': 'not-launched', 'exit': None, 'launch_observed': False,
+                                   'effect': effect}
         lifecycle = 'scripts/daemon.sh' in argv
         if lifecycle and not self.receipts:
             raise Hold('durable pre-stop evidence unavailable; no lifecycle effect')
@@ -203,15 +387,27 @@ class Coordinator:
         if self.receipts:
             self.counter += 1
             prefix = self.receipts / f'command-{self.counter:03d}'
+            self.diagnostic.paths['current_command_candidate'] = str(prefix)
             # An intent without a result is deliberately unresolved. Failure to
             # durably save intent prevents Popen, including the original stop.
+            self.diagnostic.effect('command-receipt', 'intent-write-attempted')
+            self.diagnostic.observe('command-intent')
             exclusive(prefix.with_suffix('.intent.json'), canonical(intent))
+            self.diagnostic.references['last_command_intent'] = str(prefix.with_suffix('.intent.json'))
+            self.diagnostic.effect('command-receipt', 'intent-durable')
         child, failure, cleanup_failure = None, None, None
         stdout, stderr = b'', b''
         sizes, exit_code, reason = None, None, None
+        self.diagnostic.effect('command-capture', 'temporary-custody-attempted')
+        self.diagnostic.observe('command-capture')
+        self.diagnostic.command['state'] = 'capture-attempted'
         try:
             with tempfile.TemporaryFile(dir=self.receipts) as out, tempfile.TemporaryFile(dir=self.receipts) as err:
                 try:
+                    self.diagnostic.command['state'] = 'launch-attempted-effect-uncertain'
+                    self.diagnostic.observe('command-launch')
+                    if effect is not None:
+                        self.diagnostic.effect(effect, 'attempted-effect-uncertain')
                     child = subprocess.Popen(argv, cwd=cwd or self.source, stdout=out, stderr=err)
                     deadline = time.monotonic() + 1800
                     while child.poll() is None:
@@ -267,14 +463,34 @@ class Coordinator:
         elif private and complete:
             result.update(stdout=stdout.decode('utf8', errors='replace'), stderr=stderr.decode('utf8', errors='replace'))
         self.commands.append(result)
-        if prefix:
-            exclusive(prefix.with_suffix('.json'), canonical(result))
-            if private and not lifecycle and complete:
-                exclusive(prefix.with_suffix('.stdout'), stdout)
-                exclusive(prefix.with_suffix('.stderr'), stderr)
-        if reason is not None or exit_code not in accept:
-            raise Hold(f'command {argv[0]} {argv[1:]} exit={exit_code}, uncertainty={reason}; '
-                       f'last accepted layout {self.last_layout}; preserve original command/owner; evidence {self.receipts}') from None
+        failed = reason is not None or exit_code not in accept
+        if effect is not None and self.diagnostic.effects[effect] != 'not-attempted':
+            self.diagnostic.effect(effect, 'command-failed-effect-uncertain' if failed else 'command-returned-stage-not-accepted')
+        self.diagnostic.command = {'state': 'failed-or-uncertain' if failed else 'command-returned-not-stage-acceptance',
+                                   'exit': exit_code, 'launch_observed': child is not None,
+                                   'effect': effect,
+                                   'uncertainty': reason, 'stdout_digest': digest(stdout), 'stderr_digest': digest(stderr),
+                                   'failure_type': self.diagnostic.token(type(failure).__name__) if failure else None,
+                                   'cleanup_failure': cleanup_failure}
+        original = Hold('original command failed or is uncertain; preserve command intent/result', category='command_failed') if failed else None
+        try:
+            if prefix:
+                self.diagnostic.observe('command-result-persistence')
+                self.diagnostic.effect('command-receipt', 'result-write-attempted')
+                exclusive(prefix.with_suffix('.json'), canonical(result))
+                self.diagnostic.references['last_command_result'] = str(prefix.with_suffix('.json'))
+                if private and not lifecycle and complete:
+                    exclusive(prefix.with_suffix('.stdout'), stdout)
+                    exclusive(prefix.with_suffix('.stderr'), stderr)
+                self.diagnostic.effect('command-receipt', 'result-durable')
+        except BaseException as persistence:
+            self.diagnostic.effect('command-receipt', 'result-persistence-failed-or-partial')
+            if original is not None:
+                self.diagnostic.secondary.append('command_result_persistence:' + self.diagnostic.token(type(persistence).__name__))
+                raise original from None
+            raise
+        if original is not None:
+            raise original from None
         return exit_code, stdout.decode('utf8', errors='strict'), stderr.decode('utf8', errors='strict')
 
     def prepare_source(self):
@@ -304,21 +520,27 @@ class Coordinator:
                           'scripts/setup_coding.py', 'scripts/_coding_setup_preflight.py', 'scripts/daemon.sh', 'scripts/build_web.sh')}}
 
     def revalidate(self, *, offline=False, accepted_target=None):
+        self.diagnostic.observe('revalidate-host')
         require_human_host()
         if identity(self.home)[:4] != self.home_pin:
             raise Hold('daemon-home identity changed; original host owner must reconcile')
+        self.diagnostic.observe('revalidate-source-environment')
         if dict(os.environ) != self.environment or self.prepare_source() != self.source_pin:
             raise Hold('frozen source/environment changed; preserve recovery material and original owners')
+        self.diagnostic.observe('revalidate-python')
         if self.python_identity() != self.python_pin:
             raise Hold('selected Python/environment identity changed; original environment owner must reconcile')
+        self.diagnostic.observe('revalidate-ui-config')
         if hasattr(self, 'ui') and self.ui_inventory() != self.ui:
             raise Hold('prepared UI artifact moved; original source/UI owner must reconcile')
         config = digest(read_file(self.home / 'config.yaml')) if (self.home / 'config.yaml').exists() else None
         if config != self.config_pin:
             raise Hold('daemon configuration changed; original configuration owner must reconcile')
         for name, pinned in self.tools.items():
+            self.diagnostic.observe('revalidate-tool-' + name)
             if self.tool(name) != {k: v for k, v in pinned.items() if k != 'version'}:
                 raise Hold(f'frozen executable changed: {name}')
+        self.diagnostic.observe('revalidate-maintenance')
         current = observe_maintenance(self.home, self.runtime)
         expected = dict(self.accepted_layouts)
         if accepted_target is not None:
@@ -329,10 +551,13 @@ class Coordinator:
                 or [(o['path'], o['identity']) for o in current['orgs']] != [(o['path'], o['identity']) for o in self.frozen['orgs']]
                 or {o['path']: o['layout'] for o in current['orgs']} != expected):
             raise Hold('runtime/org/database membership or identity changed')
+        self.diagnostic.observe('revalidate-processes')
         self.process_boundary(offline=offline)
         if not offline and hasattr(self, 'started'):
+            self.diagnostic.observe('revalidate-started-pair')
             self.revalidate_start()
         if not offline:
+            self.diagnostic.observe('revalidate-live-scope')
             self.live_scope()
             if hasattr(self, 'started'):
                 self.revalidate_start()
@@ -341,15 +566,20 @@ class Coordinator:
     def live_scope(self):
         """Supplement durable history with actual serving/native observations."""
         from cli.client.client import OpcClient
+        from runtime.infrastructure.memory_collection import _identity_schema
         with OpcClient.from_env() as client:
             if hasattr(self, 'started') and client.base_url != f'http://127.0.0.1:{self.started["port"]}':
                 raise Hold('serving client port differs from authenticated daemon; import held')
             health = client.get('/api/v1/health')
-            if health.status_code != 200 or health.json().get('active_runtime') != str(self.runtime):
+            health_body = health.json() if health.status_code == 200 else None
+            if not isinstance(health_body, dict) or health_body.get('active_runtime') != str(self.runtime):
                 raise Hold('original serving runtime observation unavailable/mismatched')
-            native = health.json().get('host_sessions', {})
-            admission, residue = native.get('admission', {}), native.get('residue', {})
-            if (native.get('wired') is not True or native.get('backend', {}).get('healthy') is not True
+            native = health_body.get('host_sessions')
+            if not isinstance(native, dict) or not isinstance(native.get('backend'), dict):
+                raise Hold('native serving containers unavailable', category='serving_observation_unavailable')
+            admission, residue = native.get('admission'), native.get('residue')
+            if (not isinstance(admission, dict) or not isinstance(residue, dict)
+                    or native.get('wired') is not True or native['backend'].get('healthy') is not True
                     or any(type(admission.get(k)) is not int for k in ('active', 'queue_depth', 'admitted_total', 'released_total'))
                     or type(residue.get('survivors_count')) is not int
                     or admission.get('active') != 0 or admission.get('queue_depth') != 0
@@ -363,17 +593,57 @@ class Coordinator:
             if response.status_code != 200:
                 raise Hold('loaded/broken org census unavailable')
             body = response.json()
-            if body.get('broken') != [] or {(o['slug'], o['root']) for o in body.get('orgs', [])} != expected:
+            if (not isinstance(body, dict) or not isinstance(body.get('orgs'), list)
+                    or any(not isinstance(o, dict) or not isinstance(o.get('slug'), str)
+                           or not isinstance(o.get('root'), str) for o in body['orgs'])
+                    or body.get('broken') != [] or {(o['slug'], o['root']) for o in body['orgs']} != expected):
                 raise Hold('loaded/broken/partial org census disagrees with complete registry; original org attachment owner must reconcile')
             observations = {}
             for slug, root in expected:
                 response = client.get(f'/api/v1/orgs/{quote(slug, safe="")}/audit', params={'action': 'memory_collection_seal', 'limit': 1})
                 if response.status_code != 200:
                     raise Hold(f'{slug}: original serving observer unavailable')
-                view = response.json().get('memory_collection_observation', {})
-                loaded = view.get('installed_identity', {})
+                body = response.json()
+                view = body.get('memory_collection_observation') if isinstance(body, dict) else None
+                if not isinstance(view, dict):
+                    raise Hold('serving response/view container unavailable', category='serving_observation_unavailable')
+                preparations = view.get('active_preparations')
+                # Match the producer's original nested references predicate.
+                # Validate the entire original list before classifying it;
+                # neither falsey coercion nor filtering can turn work into idle.
+                def references(value: object) -> bool:
+                    if not isinstance(value, list):
+                        return False
+                    for row in value:
+                        if (not isinstance(row, dict)
+                                or set(row) != {'ordinal', 'task_id', 'agent', 'session_id', 'expectation_known'}
+                                or type(row['ordinal']) is not int or row['ordinal'] <= 0
+                                or not isinstance(row['task_id'], str) or re.fullmatch(r'TASK-[0-9]{3,}', row['task_id']) is None
+                                or not isinstance(row['agent'], str) or not row['agent'].strip()
+                                or (row['session_id'] is not None and
+                                    (not isinstance(row['session_id'], str) or not row['session_id'].strip()))
+                                or type(row['expectation_known']) is not bool):
+                            return False
+                    return True
+                valid = references(preparations)
+                self.diagnostic.observations[slug] = {key: view.get(key) for key in
+                                                     ('org', 'sampled_at', 'observation_error', 'boot_id', 'data_through')}
+                self.diagnostic.checks[slug] = {
+                    'preparations': 'invalid' if not valid else 'nonempty' if preparations else 'empty',
+                    'observation_error_present': view.get('observation_error') is not None,
+                    'boot_present': bool(view.get('boot_id')), 'cutoff_present': bool(view.get('data_through')),
+                    'identity_valid': False,
+                }
+                if not valid:
+                    raise Hold('preparation reference list malformed or unavailable', category='preparation_list_invalid')
+                self.diagnostic.preparations[slug] = preparations  # exact original, including every row
+                loaded = view.get('installed_identity')
+                _identity_schema(loaded)
+                self.diagnostic.checks[slug]['identity_valid'] = True
+                if preparations:
+                    raise Hold('original preparations retain ownership', category='preparations_owned')
                 if (view.get('observation_error') is not None or not view.get('boot_id') or not view.get('data_through')
-                        or type(view.get('active_preparations')) is not int or view.get('active_preparations') != 0 or loaded.get('org_root') != root
+                        or loaded.get('org_root') != root
                         or loaded.get('runtime_root') != str(self.runtime) or loaded.get('source_root') != str(self.source)):
                     raise Hold(f'{slug}: serving boot/source/native preparation/outer observation unknown; original observer owner must reconcile before any effect')
                 observations[slug] = view
@@ -429,11 +699,14 @@ class Coordinator:
                     raise Hold(f'process {row.pid}: daemon source root is unverified')
 
     def confirm(self, text):
+        self.diagnostic.observe('human-confirmation')
         if input(text + '\nType CONFIRM to continue: ') != 'CONFIRM':
             raise Hold('human confirmation declined; no next effect')
 
     def initialize_receipts(self) -> None:
         """After host/maintenance confirmation, before any lifecycle effect."""
+        self.diagnostic.enter('receipt-custody')
+        self.diagnostic.effect('receipt-custody', 'creation-attempted-backup-incomplete')
         if self.backup.parent == self.home / 'operator-backups' and not self.backup.parent.exists():
             self.backup.parent.mkdir(mode=0o700)
         literal(self.backup.parent)
@@ -442,7 +715,11 @@ class Coordinator:
             raise Hold('exclusive recovery destination custody/mode unavailable')
         receipts = self.backup / 'receipts'
         receipts.mkdir(mode=0o700)
+        if receipts.lstat().st_uid != os.getuid() or stat.S_IMODE(receipts.lstat().st_mode) != 0o700:
+            raise Hold('private receipt custody/mode unavailable')
         self.receipts = receipts
+        self.diagnostic.receipts = receipts
+        self.diagnostic.paths['private_receipt_directory_observed'] = str(receipts)
         exclusive(self.backup / 'INCOMPLETE.json', canonical({
             'complete': False, 'phase': 'receipts-only; backup not yet started',
             'source': self.source_pin, 'installation': self.frozen,
@@ -454,11 +731,16 @@ class Coordinator:
                 os.fsync(fd)
             finally:
                 os.close(fd)
+        self.diagnostic.references['incomplete'] = str(self.backup / 'INCOMPLETE.json')
+        self.diagnostic.effect('receipt-custody', 'accepted-receipts-only-backup-incomplete')
+        self.diagnostic.accepted('receipt-custody')
         print(f'   Recovery evidence: {self.receipts}; backup INCOMPLETE until manifest.json')
 
     def stop(self):
+        self.diagnostic.enter('stop-preflight')
         self.revalidate()
         self.initialize_receipts()
+        self.diagnostic.enter('stop-original-process')
         path = self.home / 'daemon.pid'
         if not path.exists():
             raise Hold('already-stopped installation lacks positive original lifecycle closure; original host owner must reconcile; no PID-absence inference')
@@ -474,16 +756,21 @@ class Coordinator:
         cmd = (Path('/proc') / str(pid) / 'cmdline').read_bytes()
         if b'runtime.daemon' not in cmd and b'uv' not in cmd:
             raise Hold('daemon PID does not identify the original lifecycle executable')
-        code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'stop', '--force'], private=True)
+        self.diagnostic.enter('stop-command')
+        code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'stop', '--force'], private=True, effect='stop')
+        self.diagnostic.enter('stop-closure')
         if out != 'daemon stopped\n' or err:
             raise Hold('stop was stale, force-killed or ambiguous; original host/native owner must reconcile; no automatic restart')
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'status'], accept=(1,), private=True)
         if out != 'not running\n' or err or pid in {r.pid for r in checked_processes()}:
             raise Hold('original daemon stop closure unavailable; no preparation/migration/restart')
         self.revalidate(offline=True)
+        self.diagnostic.effect('stop', 'accepted-original-closure')
+        self.diagnostic.accepted('stop')
 
     def backup_inventory(self):
         """Complete stopped-window copies, with SQLite backup rather than copydb."""
+        self.diagnostic.enter('backup-preflight')
         self.revalidate(offline=True)
         # Reuse the exclusive pre-stop receipt directory. It is not a backup
         # until the full inventory and copies have closed below.
@@ -492,6 +779,8 @@ class Coordinator:
         inventory = {'complete': False, 'source': self.source_pin, 'installation': self.frozen,
                      'tools': self.tools, 'python': self.python_pin, 'commands_before_backup': self.commands[:], 'files': [],
                      'restore': 'manual original-owner operation only; preserve credential custody; pre-J code must never boot J'}
+        self.diagnostic.enter('backup-inventory-copies')
+        self.diagnostic.effect('backup', 'attempted-incomplete')
         exclusive(self.backup / 'BACKUP-STARTED.json', canonical(inventory))
         dest = self.backup / 'files'
         dest.mkdir(mode=0o700)
@@ -573,14 +862,19 @@ class Coordinator:
                 os.fsync(fd)
             finally:
                 os.close(fd)
+            self.diagnostic.observe('backup-complete-manifest')
             inventory['complete'] = True
             exclusive(self.backup / 'manifest.json', canonical(inventory))
         except BaseException as original:
             try:
                 exclusive(self.backup / 'FAILED.json', canonical(inventory))
-            except BaseException:
+            except BaseException as persistence:
+                self.diagnostic.secondary.append('backup_failure_persistence:' + self.diagnostic.token(type(persistence).__name__))
                 original.add_note('partial backup manifest publication also failed; retain INCOMPLETE.json and all original/copy files')
             raise
+        self.diagnostic.references['manifest'] = str(self.backup / 'manifest.json')
+        self.diagnostic.effect('backup', 'accepted-complete-manifest-restore-unverified')
+        self.diagnostic.accepted('backup')
         print(f'3. Backup complete: {self.backup}/manifest.json (restore NOT RUN; no automatic rollback)')
 
     @staticmethod
@@ -630,12 +924,17 @@ class Coordinator:
             os.fsync(f.fileno())
 
     def prepare(self):
+        self.diagnostic.enter('preparation-preflight')
         print('4. Preparing locked source environment and matching UI')
         self.revalidate(offline=True)
         if not (self.backup / 'manifest.json').exists():
             raise Hold('complete recovery manifest unavailable')
+        self.diagnostic.enter('preparation-uv')
         self.command([self.tools['uv']['path'], 'sync', '--locked', '--no-python-downloads', '--python', str(self.python),
-                      '--cache-dir', str(self.backup / 'preparation-uv-cache')])
+                      '--cache-dir', str(self.backup / 'preparation-uv-cache')], effect='preparation-uv')
+        self.diagnostic.effect('preparation-uv', 'command-accepted-environment-may-have-changed')
+        self.diagnostic.accepted('preparation-uv-command')
+        self.diagnostic.enter('preparation-python-origins')
         self.revalidate(offline=True)
         code, version, err = self.command([str(self.python), '--version'])
         if err or re.fullmatch(r'Python 3\.(12|13|14)\.[0-9]+\n', version) is None:
@@ -650,14 +949,22 @@ class Coordinator:
         code, version, err = self.command([self.tools['node']['path'], '--version'])
         if not re.fullmatch(r'v24\.[0-9]+\.[0-9]+\n', version) or err:
             raise Hold('Node 24 required; no alternate toolchain download')
-        self.command([self.tools['npm']['path'], 'ci', '--cache', str(self.backup / 'preparation-npm-cache')], cwd=self.source / 'web')
+        self.diagnostic.enter('preparation-npm')
+        self.command([self.tools['npm']['path'], 'ci', '--cache', str(self.backup / 'preparation-npm-cache')], cwd=self.source / 'web', effect='preparation-npm')
+        self.diagnostic.effect('preparation-npm', 'command-accepted-dependencies-may-have-changed')
+        self.diagnostic.accepted('preparation-npm-command')
         self.revalidate(offline=True)
-        self.command([self.tools['bash']['path'], 'scripts/build_web.sh', *(['--production'] if self.args.ui_profile == 'production' else [])])
+        self.diagnostic.enter('preparation-ui-build')
+        self.command([self.tools['bash']['path'], 'scripts/build_web.sh', *(['--production'] if self.args.ui_profile == 'production' else [])], effect='preparation-ui')
+        self.diagnostic.enter('preparation-ui-observation')
         from runtime.daemon.routes.web_static import _resolve_dist_dir
         if _resolve_dist_dir(self.settings) != self.dist:
             raise Hold('built UI is not the selected served artifact')
         self.ui = self.ui_inventory()
         exclusive(self.receipts / 'prepared-ui.json', canonical(self.ui))
+        self.diagnostic.references['prepared_ui'] = str(self.receipts / 'prepared-ui.json')
+        self.diagnostic.effect('preparation-ui', 'accepted-artifact-receipt')
+        self.diagnostic.accepted('preparation')
 
     def ui_inventory(self):
         raw = read_file(self.dist / 'index.html')
@@ -675,20 +982,25 @@ class Coordinator:
         return result
 
     def run_transition(self, source_layouts, target_layout, script, arguments, needed_exit, needed_text):
+        self.diagnostic.enter('migration-' + target_layout + '-preflight')
         current = self.revalidate(offline=True)
         layout = next(o['layout'] for o in current['orgs'] if o['path'] == self.target['path'])
         self.last_layout = layout
+        self.diagnostic.layout = layout
         if layout not in source_layouts:
             if 'FEGHIJ'.index(layout) >= 'FEGHIJ'.index(target_layout):
                 return  # whole current readers accepted; no earlier writer
             raise Hold(f'unsupported transition {layout} to {target_layout}')
         print(f'5. Checking {layout} → {target_layout}')
         argv = [str(self.python), f'scripts/{script}', *arguments]
+        self.diagnostic.enter('migration-' + target_layout + '-needed-check')
         code, out, err = self.command([*argv, '--check'], accept=(0, 1, 3), private=True)
         if code != needed_exit or out != needed_text + '\n' or err:
             raise Hold(f'{script} check exit={code}: unexpected/refused result; no writer; original migration owner must reconcile')
         self.revalidate(offline=True)
-        self.command([*argv, *(['--confirm-cooperative-offline'] if target_layout == 'J' else [])], private=True)
+        self.diagnostic.enter('migration-' + target_layout + '-writer')
+        self.command([*argv, *(['--confirm-cooperative-offline'] if target_layout == 'J' else [])], private=True, effect='migration-' + target_layout)
+        self.diagnostic.enter('migration-' + target_layout + '-post-check')
         code, out, err = self.command([*argv, '--check'], private=True)
         expected = (f'ready: org {self.args.org}; layout G; compatible reader required\n' if target_layout == 'G' else
                     'already-compatible: empty coding layout J; J-compatible reader required\n' if target_layout == 'J' else
@@ -701,6 +1013,9 @@ class Coordinator:
             raise Hold(f'{script}: whole target mismatch {actual}; no next writer/start')
         self.accepted_layouts[self.target['path']] = target_layout
         self.last_layout = target_layout
+        self.diagnostic.layout = target_layout
+        self.diagnostic.effect('migration-' + target_layout, 'accepted-complete-target')
+        self.diagnostic.accepted('migration-' + target_layout)
 
     def migrate(self):
         from runtime.infrastructure.workflow_schema import (submission_migration_guidance,
@@ -808,6 +1123,8 @@ class Coordinator:
     def serving(self):
         """Use existing observations; missing compatibility coverage holds import."""
         from cli.client.client import OpcClient
+        from runtime.infrastructure.memory_collection import _identity_schema
+        self.diagnostic.enter('serving-source-ui')
         self.revalidate()
         if self.ui_inventory() != self.ui:
             raise Hold('prepared served artifact moved')
@@ -821,10 +1138,16 @@ class Coordinator:
                 response = client.get(f'/api/v1/orgs/{quote(org["org"], safe="")}/audit', params={'action': 'memory_collection_seal', 'limit': 1})
                 if response.status_code != 200:
                     raise Hold(f'{org["org"]}: loaded/broken org observation unavailable; original serving owner must reconcile')
-                view = response.json().get('memory_collection_observation', {})
+                body = response.json()
+                view = body.get('memory_collection_observation') if isinstance(body, dict) else None
+                if not isinstance(view, dict):
+                    raise Hold('serving response/view container unavailable', category='serving_observation_unavailable')
                 loaded = view.get('installed_identity')
                 if view.get('observation_error') is not None or not view.get('boot_id') or not loaded:
                     raise Hold(f'{org["org"]}: boot/loaded observation unavailable; original serving observer owner must reconcile')
+                _identity_schema(loaded)  # closed rows before any set/dict projection
+                if view['boot_id'] != self.boots.get(org['org']):
+                    raise Hold('serving boot moved since live-scope bookend')
                 # Require actual original workflow owners, not a disk HEAD or
                 # healthy status inferred to cover unobserved loaded code.
                 if (loaded.get('source_root') != str(self.source) or loaded.get('runtime_root') != org['runtime']
@@ -860,10 +1183,13 @@ class Coordinator:
             self.confirm(f'Open http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding in your browser. Confirm the actual Coding page renders, not a placeholder/error. Loaded owner and asset checks above remain required.')
 
         self.revalidate_start()
+        self.diagnostic.effect('serving', 'accepted-selected-source-assets-human-render')
+        self.diagnostic.accepted('serving')
 
     def import_release(self):
         from runtime.workflows._coding_release_history import parse_import_command
         from runtime.workflows.coding_release_import import ImportReceipt
+        self.diagnostic.enter('import-original-readback')
         self.revalidate()
         show = [*self.cli, 'workflows', 'coding', 'release-import-show', '--org', self.args.org, '--json']
         code, out, err = self.command(show, accept=(0, 1), private=True)
@@ -879,6 +1205,8 @@ class Coordinator:
                 if command['operation_key'] != receipt.operation_key or digest(raw) != receipt.request_digest:
                     raise Hold(f'original import file/receipt mismatch: {path}; preserve all originals; readback only')
             print('7. Existing admitted release import verified; POST skipped')
+            self.diagnostic.effect('import-readback', 'accepted-existing-POST-skipped')
+            self.diagnostic.accepted('import-existing-readback')
             return
         if (code, out, err) != (1, '', 'error (404): coding_release_import_not_found\n'):
             raise Hold('import readback failed; only exact coding_release_import_not_found is absence; no POST')
@@ -891,27 +1219,51 @@ class Coordinator:
         raw = canonical({'format': 'workflow-coding-release-import-command@1',
                          'operation_key': 'coding-setup-' + secrets.token_hex(16), 'expected_current_version': 0})
         command = parse_import_command(raw)
+        self.diagnostic.enter('import-original-file')
+        self.diagnostic.effect('import-file', 'exclusive-write-attempted')
         exclusive(self.import_file, raw)
+        self.diagnostic.references['import_file'] = str(self.import_file)
+        self.diagnostic.effect('import-file', 'accepted-durable-original-bytes')
+        self.diagnostic.accepted('import-original-file')
+        self.diagnostic.enter('import-original-intent')
+        self.diagnostic.effect('import-intent', 'exclusive-write-attempted')
         exclusive(effect, canonical({'operation_file': str(self.import_file), 'operation_key': command['operation_key'],
                                      'request_digest': digest(raw), 'send_intent': True,
                                      'recovery': 'preserve original; release-import-show only; no automatic POST/replay/new key'}))
+        self.diagnostic.references['import_intent'] = str(effect)
+        self.diagnostic.effect('import-intent', 'accepted-durable-intent-not-send-proof')
+        self.diagnostic.accepted('import-original-intent')
+        self.diagnostic.enter('import-presend-revalidation')
         self.revalidate()
         if read_file(self.import_file, 1024) != raw:
             raise Hold('original import bytes changed before send; preserve original owner, no POST')
         # Exactly one invocation; every exception leaves original file/intent.
+        self.diagnostic.enter('import-original-cli-send')
         code, out, err = self.command([*self.cli, 'workflows', 'coding', 'release-import', '--org', self.args.org,
-                                      '--from-file', str(self.import_file), '--json'], private=True)
+                                      '--from-file', str(self.import_file), '--json'], private=True, effect='import-send')
+        self.diagnostic.enter('import-receipt-validation')
         receipt = ImportReceipt.model_validate_json(out)
         if err or receipt.replayed or receipt.operation_key != command['operation_key'] or receipt.request_digest != digest(raw):
             raise Hold('import receipt mismatch; preserve original file/intent; original owner readback only')
+        self.diagnostic.effect('import-receipt', 'exclusive-write-attempted')
         exclusive(self.receipts / 'import-post.json', canonical(receipt.model_dump()))
+        self.diagnostic.references['import_post'] = str(self.receipts / 'import-post.json')
+        self.diagnostic.effect('import-receipt', 'accepted-durable-receipt-readback-pending')
+        self.diagnostic.accepted('import-receipt')
+        self.diagnostic.enter('import-post-readback')
+        self.diagnostic.effect('import-readback', 'attempted')
         code, out, err = self.command(show, private=True)
         readback = ImportReceipt.model_validate_json(out)
         if err or readback != receipt or readback.current.state != 'admitted':
             raise Hold('import readback mismatch/authority unavailable; preserve original owner; never resend')
         exclusive(self.receipts / 'import-readback.json', canonical(readback.model_dump()))
+        self.diagnostic.references['import_readback'] = str(self.receipts / 'import-readback.json')
+        self.diagnostic.effect('import-send', 'accepted-original-receipt-and-readback')
+        self.diagnostic.effect('import-readback', 'accepted-durable-readback')
+        self.diagnostic.accepted('import')
 
     def run(self):
+        self.diagnostic.enter('initial-maintenance-revalidation')
         self.revalidate()
         print(f'1. Source {self.source} HEAD={self.source_pin["head"]}; runtime {self.runtime}; org {self.args.org}; layout {self.last_layout}')
         print(f'   Shared scope: {self.frozen["registry"]["registered"]}; UI {self.dist} ({self.args.ui_profile}); backup {self.backup}')
@@ -922,25 +1274,35 @@ class Coordinator:
         self.prepare()
         self.migrate()
         print('6. Starting selected compatible source once')
+        self.diagnostic.enter('start-preflight')
         self.revalidate(offline=True)
         self.before_start = {(r.pid, r.start_identity) for r in checked_processes()}
         self.start_floor = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf('SC_CLK_TCK'))
-        code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'start'], private=True)
+        self.diagnostic.enter('start-command')
+        code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'start'], private=True, effect='start')
         started = re.fullmatch(r'daemon started \(pid ([1-9][0-9]*), port ([1-9][0-9]*)\)\n', out)
         if started is None or err:
             raise Hold('original start returned an unexpected result; preserve original host owner, no automatic restart/import')
         wrapper_pid, port = (int(x) for x in started.groups())
+        self.diagnostic.enter('start-pair-observation')
+        self.diagnostic.effect('start-pair', 'observation-attempted')
         self.started = self.started_processes(wrapper_pid, port)
         exclusive(self.receipts / 'started-processes.json', canonical(self.started))
+        self.diagnostic.references['started_pair'] = str(self.receipts / 'started-processes.json')
+        self.diagnostic.effect('start-pair', 'accepted-pair-receipt-status-pending')
         self.boots = None  # Only this accepted original start permits a new boot.
+        self.diagnostic.enter('start-status')
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'status'], private=True)
         self.revalidate_start()
         pid = self.started['daemon']['pid']
         if out != f'running (pid {pid}, port {port})\n' or err:
             raise Hold('original new status mismatches actual daemon PID/port; import held')
+        self.diagnostic.effect('start', 'accepted-original-pair-and-status-serving-pending')
+        self.diagnostic.accepted('start-pair-status')
         self.serving()
         print('7. Checking original human release import')
         self.import_release()
+        self.diagnostic.enter('settings-disabled-handoff')
         port = read_file(self.home / 'daemon.port', 64).decode().strip()
         print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding')
         print('Adopt current metadata; select repositories and sha1/sha256 formats; choose four distinct eligible org agents across teams and an eligible final manager. Leave Admission Disabled. Save and reopen; uncertain saves use Check original save.')
@@ -961,10 +1323,12 @@ def absolute_path(value):
 
 
 def main(argv=None):
-    coordinator = None
+    diagnostic = DiagnosticContext()
     try:
         require_human_host()
-        parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+        diagnostic.accepted('host-entry')
+        diagnostic.enter('arguments')
+        parser = SetupParser(description=__doc__, allow_abbrev=False)
         parser.add_argument('--org', required=True)
         parser.add_argument('--runtime-root', type=absolute_path)
         parser.add_argument('--backup-dir', type=absolute_path)
@@ -972,9 +1336,11 @@ def main(argv=None):
         parser.add_argument('--import-file', type=absolute_path)
         args = parser.parse_args(argv)
         if re.fullmatch(r'[a-z0-9-]{1,40}', args.org) is None:
-            raise HostRefusal('invalid org slug')
+            raise ArgumentRefusal()
         # Use only the existing installed source environment; never uv run here
         # (it may sync). Missing preflight dependencies give an owner hold.
+        diagnostic.accepted('arguments')
+        diagnostic.enter('selected-environment')
         selected = _SOURCE / '.venv' / 'bin' / 'python'
         if Path(sys.prefix) != _SOURCE / '.venv':
             if not selected.exists():
@@ -982,31 +1348,27 @@ def main(argv=None):
             for directory in (_SOURCE / '.venv', _SOURCE / '.venv/bin'):
                 if directory.is_symlink() or directory.stat().st_uid != os.getuid():
                     raise HostRefusal('selected environment has aliased/foreign custody; original environment owner must reconcile')
+            diagnostic.enter('selected-environment-exec')
             os.execv(str(selected), [str(selected), str(Path(__file__).absolute()), *(sys.argv[1:] if argv is None else argv)])
+        diagnostic.enter('preflight-helper-import')
+        diagnostic.effect('initialization', 'helper-import-attempted-caches-possible')
         sys.path.insert(0, str(_SOURCE))
         global Hold, literal, identity, read_file, registry, observe_maintenance, read_database, checked_processes
         from scripts._coding_setup_preflight import (Hold, literal, identity, read_file, registry,
                                                      observe_maintenance, read_database, checked_processes)
         print('1. Inspecting installation, source and original maintenance owners')
-        coordinator = Coordinator(args)
+        coordinator = Coordinator(args, diagnostic)
+        diagnostic.enter('initial-revalidation')
         coordinator.run()
         return 0
+    except SystemExit as exc:
+        if diagnostic.stage == 'arguments' and exc.code == 0:
+            return 0  # argparse help, after the unchanged host-entry guard
+        diagnostic.report(exc)
+        return 2 if diagnostic.stage == 'arguments' else 1
     except (Exception, KeyboardInterrupt) as exc:
-        # Do not leak private exception bodies from product readers/transports.
-        if isinstance(exc, (HostRefusal, globals().get('Hold', HostRefusal))):
-            message = str(exc)
-        elif isinstance(exc, KeyboardInterrupt):
-            message = 'interrupted; original command/effect may be uncertain'
-        elif isinstance(exc, ValueError) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,256}', str(exc)):
-            message = str(exc) + '; original source/history reader owner must reconcile'
-        else:
-            message = f'{type(exc).__name__}: observation/command unavailable; original owner must reconcile'
-        print('Setup held: ' + message, file=sys.stderr)
-        if coordinator:
-            print(f'Last accepted layout: {coordinator.last_layout}; recovery evidence: {coordinator.receipts or "not initialized (no lifecycle effect permitted)"}; '
-                  f'backup candidate: {coordinator.backup} (complete only with manifest.json); '
-                  f'original import: {coordinator.import_file}. No automatic restore/restart/replay. Keep originals.', file=sys.stderr)
-        return 1
+        diagnostic.report(exc)
+        return 2 if isinstance(exc, ArgumentRefusal) else 1
 
 
 if __name__ == '__main__':
