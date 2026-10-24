@@ -504,6 +504,21 @@ withdrawable. A tombstone committed during selection excludes the skill at the
 publication barrier; it does not recall already-running work. Canonical-store,
 production-boundary, and materialization tests own these guarantees.
 
+Custom-skill selection captures all selected rows and eligibility rules in one
+Database-owned coherent read view, releasing it before artifact reads, hashing
+and package construction. The builder refuses a pre-existing caller transaction
+before those effects and again before each outcome writer; it never commits or
+rolls back that caller's work. Each final version/purge check and successful
+materialization INSERT share one explicit owned transaction under the Database
+RLock. A spec is returned only after that transaction commits. Artifact/build
+failures still omit the affected skill and record its bound failure when possible;
+storage failures propagate even if a failed outcome can be recorded. Existing
+native failed-cleanup retention remains in force after possible package effects.
+The INSERT-only custom service gains no commit authority. Final publication takes
+the org barrier before its synchronized read, releases DB ownership before both
+root repairs, and keeps the barrier through those repairs. No DB lock spans
+package/filesystem work, barrier acquisition or native cleanup arbitration.
+
 System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
 settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
 conversations, workspace files and skill links remain inert and are not cleaned

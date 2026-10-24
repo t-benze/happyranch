@@ -10,12 +10,13 @@ import shutil
 import subprocess
 import threading
 import time
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from runtime.config import Settings
 
@@ -602,14 +603,17 @@ def _publish_canonical_specs(
 
         conn = getattr(db, "_conn", db)
         with service.canonical_publication_barrier(slug):
-            current_custom = {
-                row["slug"]: row
-                for row in conn.execute(
-                    "SELECT slug, current_version_id, purged_at "
-                    "FROM custom_skills WHERE org_slug=?",
-                    (slug,),
-                ).fetchall()
-            }
+            view = (db.coherent_read_view() if hasattr(db, "coherent_read_view")
+                    else nullcontext(conn))
+            with view as reader:
+                current_custom = {
+                    row["slug"]: row
+                    for row in reader.execute(
+                        "SELECT slug, current_version_id, purged_at "
+                        "FROM custom_skills WHERE org_slug=?",
+                        (slug,),
+                    ).fetchall()
+                }
             expected_specs = [
                 spec for spec in expected_specs
                 if spec["slug"] not in current_custom
@@ -832,36 +836,64 @@ def _materialize_unified_canonical(
 
 
 def select_custom_skill_rows(db, *, slug, agent_name, team):
-    """Pure current B2 eligibility, shared with the actual package builder."""
+    """Capture current B2 eligibility before releasing shared DB ownership."""
     from runtime.skills.eligibility import EligibilityRecipient, EligibilityRule, SkillEligibilityState, resolve_custom_skill_eligibility
     conn = getattr(db, "_conn", db)
-    rows = conn.execute(
-        """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
+    view = (db.coherent_read_view() if hasattr(db, "coherent_read_view")
+            else nullcontext(conn))
+    selected = []
+    with view as reader:
+        rows = reader.execute(
+            """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
                   v.content_hash, v.content_artifact_key, v.validation_state
            FROM custom_skills s
            JOIN custom_skill_versions v ON v.id = s.current_version_id
            WHERE s.org_slug = ?""",
-        (slug,),
-    ).fetchall()
-    recipient = EligibilityRecipient(agent_name, (team,))
-    for row in rows:
-        rules = conn.execute(
-            """SELECT scope_type, scope_target, effect
+            (slug,),
+        ).fetchall()
+        recipient = EligibilityRecipient(agent_name, (team,))
+        for row in rows:
+            rules = reader.execute(
+                """SELECT scope_type, scope_target, effect
                FROM custom_skill_eligibility_rules
                WHERE skill_id = ? AND superseded_at IS NULL""",
-            (row["id"],),
-        ).fetchall()
-        decision = resolve_custom_skill_eligibility(
-            SkillEligibilityState(
-                bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
-            ),
-            [EligibilityRule(**dict(rule)) for rule in rules],
-            recipient,
-        )
-        if not decision.visible:
-            continue
+                (row["id"],),
+            ).fetchall()
+            decision = resolve_custom_skill_eligibility(
+                SkillEligibilityState(
+                    bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
+                ),
+                [EligibilityRule(**dict(rule)) for rule in rules],
+                recipient,
+            )
+            if decision.visible:
+                selected.append(row)
+    return selected
 
-        yield row
+
+@contextmanager
+def _custom_skill_materialization_writer(db: Any) -> Iterator[Any]:
+    """Own only this outcome's SQL interval, never another caller's work.
+
+    Raw connections retain their existing standalone use; production Database
+    callers share its RLock. No package, publication-barrier acquisition or
+    native cleanup work belongs inside this interval.
+    """
+    conn = getattr(db, "_conn", db)
+    with getattr(db, "_lock", nullcontext()):
+        if conn.in_transaction:
+            raise ValueError("custom_skill_materialization_caller_transaction_not_allowed")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.commit()
+        except BaseException as exc:
+            try:
+                conn.rollback()
+            except BaseException as rollback:
+                exc.add_note(f"custom materialization rollback failed: {rollback!r}")
+                raise exc from rollback
+            raise
 
 
 def _build_custom_skill_canonical_specs(
@@ -880,7 +912,8 @@ def _build_custom_skill_canonical_specs(
 
     Each visible skill is independent: an artifact/build fault is persisted as
     a failed materialization for an identified task session and does not block
-    system, managed, or sibling custom skills.
+    system, managed, or sibling custom skills. Persistence failures propagate;
+    no spec is admitted before its owned outcome transaction commits.
     """
     import hashlib
     import tempfile
@@ -888,17 +921,14 @@ def _build_custom_skill_canonical_specs(
     from runtime.infrastructure.artifact_store import ArtifactStore
     from runtime.orchestrator._paths import OrgPaths
     from runtime.skills.custom import service
-    from runtime.skills.eligibility import (
-        EligibilityRecipient,
-        EligibilityRule,
-        SkillEligibilityState,
-        resolve_custom_skill_eligibility,
-    )
-
     conn = getattr(db, "_conn", db)
-    rows = select_custom_skill_rows(db, slug=slug, agent_name=agent_name, team=team)
+    # Refuse before artifact/store effects rather than adopting pending caller
+    # writes. Recheck ownership at every later SQL interval as well.
+    with getattr(db, "_lock", nullcontext()):
+        if conn.in_transaction:
+            raise ValueError("custom_skill_materialization_caller_transaction_not_allowed")
+        rows = select_custom_skill_rows(db, slug=slug, agent_name=agent_name, team=team)
     artifact_store = ArtifactStore(OrgPaths(org_root).artifacts_dir)
-    recipient = EligibilityRecipient(agent_name, (team,))
     specs: list[dict] = []
     recordable = (
         session_id is not None
@@ -908,6 +938,7 @@ def _build_custom_skill_canonical_specs(
 
     for row in rows:
         package_effects = False
+        persistence_started = False
         try:
             artifact_key = row["content_artifact_key"]
             if not artifact_key:
@@ -936,31 +967,32 @@ def _build_custom_skill_canonical_specs(
             # during that window cannot publish a stale canonical spec or a
             # new link in either provider root. Existing canonical bytes are
             # retained by the logical-purge contract.
-            current = conn.execute(
-                "SELECT current_version_id, purged_at FROM custom_skills "
-                "WHERE id=? AND org_slug=?",
-                (row["id"], slug),
-            ).fetchone()
-            if (
-                current is None
-                or current["purged_at"] is not None
-                or current["current_version_id"] != row["version_id"]
-            ):
-                continue
+            persistence_started = True
+            with _custom_skill_materialization_writer(db) as writer:
+                current = writer.execute(
+                    "SELECT current_version_id, purged_at FROM custom_skills "
+                    "WHERE id=? AND org_slug=?",
+                    (row["id"], slug),
+                ).fetchone()
+                if (
+                    current is None
+                    or current["purged_at"] is not None
+                    or current["current_version_id"] != row["version_id"]
+                ):
+                    continue
+                if recordable:
+                    service.record_materialization(
+                        writer, skill_id=row["id"], agent_name=agent_name,
+                        task_id=task_id, session_context=session_context,
+                        session_id=session_id, version_id=row["version_id"],
+                        content_hash=row["content_hash"], success=True,
+                    )
             specs.append({
                 "slug": row["slug"],
                 "version": str(row["version_id"]),
                 "content_hash": row["content_hash"],
                 "tree_hash": tree_hash,
             })
-            if recordable:
-                service.record_materialization(
-                    conn, skill_id=row["id"], agent_name=agent_name,
-                    task_id=task_id, session_context=session_context,
-                    session_id=session_id, version_id=row["version_id"],
-                    content_hash=row["content_hash"], success=True,
-                )
-                conn.commit()
         except Exception as exc:
             # The native builder can leave canonical/package effects before
             # returning an omitted custom spec. Retain the actual native owner even
@@ -977,14 +1009,20 @@ def _build_custom_skill_canonical_specs(
                     exc.add_note(f"custom package preparation evidence failed: {evidence!r}")
                     raise exc from evidence
             if recordable:
-                service.record_materialization(
-                    conn, skill_id=row["id"], agent_name=agent_name,
-                    task_id=task_id, session_context=session_context,
-                    session_id=session_id, version_id=row["version_id"],
-                    content_hash=row["content_hash"], success=False,
-                    error_message=str(exc),
-                )
-                conn.commit()
+                try:
+                    with _custom_skill_materialization_writer(db) as writer:
+                        service.record_materialization(
+                            writer, skill_id=row["id"], agent_name=agent_name,
+                            task_id=task_id, session_context=session_context,
+                            session_id=session_id, version_id=row["version_id"],
+                            content_hash=row["content_hash"], success=False,
+                            error_message=str(exc),
+                        )
+                except BaseException as evidence:
+                    exc.add_note(f"custom materialization failure recording failed: {evidence!r}")
+                    raise exc from evidence
+            if persistence_started:
+                raise
 
     return specs
 
