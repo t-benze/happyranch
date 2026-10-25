@@ -3474,16 +3474,45 @@ obligation and admitted-stage validators (through the scalar anchor builder).
 No parser/callback/formatter/writer/public consumer receives their containers;
 public audit graphs remain independently allocated.
 
-Ordinary private caps are 8 roots, 4096 retained rows/root and 8 MiB aggregate
-recursive actual object sizes, once per identity, including containers/entry/
-key/bookend metadata. LRU evicts complete entries; oversize/unsupported or failed
-accounting evaluates complete evidence uncached, never a prefix or false absence.
-Eviction and exit drop pending references too. These are retention bounds,
+THR308seq151 / ROOT12914 keeps private caps of 8 entries across both maps,
+4096 retained rows/root and 8 MiB. Each immutable private payload (actual root
+key, complete raw tuples, decoded history) receives one complete supported-builtin
+identity-deduplicated charge C. Actual metadata M plus every retained entry's C
+upper-bounds the object graph; sharing may overcharge and reduce effective
+capacity. M covers the actual session and materialized field dictionary, field
+keys/owned values, both actual map allocations/keys, wrappers/charge integers,
+epoch/attachments/flags and all group metadata. Borrowed Database/connection
+owners are excluded only at explicit fields. Prospective measurement substitutes
+field values, never a copied field-dictionary allocation, and stops only at fully
+charged payload tuples. Hits, evictions and map transfers never rewalk old payloads.
+
+Shallow trial admission appends/evicts whole entries only in the trial. Publish
+only a surviving fitting candidate; benign oversize/all-protected rejection leaves
+the original map object/allocation/order/wrapper/payload/charge identities intact.
+Empty/error/partial or over-row-cap histories are not retained. Accounting/copy/
+planning Exception clears retention; complete current evidence still evaluates
+uncached. Strict JSON/projection/authentication/cleanup failures retain their
+original boundaries; BaseException invalidates and escapes immediately.
+
+Discovery affinity uses windows of at most 16 already-fetched chronological
+positions and 8 repeated-root (exact-string key, first, last) descriptors.
+Bounded pairwise raw-key scans do no future evidence work. A plan must fit with
+existing entries; nonfit discards it without evicting entries for planning.
+Every projection and first-use full history read remains chronological. Protect
+only complete fitting histories reached/admitted, through last use in the window;
+evict LRU unprotected entries, rejecting an all-protected trial unchanged.
+Never pin oversized/empty/rejected roots. Release all group state at last use/
+window end, exit, invalidation, escape and before fallback/exact/cross-read
+publication. Eligible histories may remain ordinary LRU for both-pass reuse;
+exact rechecks/effects keep original chronology and individual fresh closure.
+
+Eviction and exit release whole entries/charges. These are retention bounds,
 excluding transient fetch/parse/traversal and SQLite native memory; no hard
-RSS/time/whole-startup bound or speedup is promised.
-S1–S3/Q1–Q5 behavior, separate discovery/exact query counts and sensitivity remain
-NOT RUN/PROOF NOT RUN without the accepted producer/barrier/downstream observer;
-ROOT12801 owns that explicit limitation.
+RSS/time/whole-startup bound or speedup is promised. S1–S3/Q1–Q5 behavior,
+separate discovery/exact SELECT/fetch/decode counts and sensitivity remain
+NOT RUN/PROOF NOT RUN without the accepted producer/barrier/downstream observer.
+ROOT12914 accepts current source-delivery uncertainty; historical ROOT12801
+limitations stay attached to their original delivery.
 
 For a persisted result, the zombie reaper first invokes the real guarded
 `_consume_completion_report`. A v2 session then clears `zombie_flagged_at` only
