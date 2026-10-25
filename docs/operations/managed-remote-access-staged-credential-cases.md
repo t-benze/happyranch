@@ -1,23 +1,40 @@
 # PR800 staged credential and mode cases — THR228seq428
 
-**Current PR800 allocation — THR228seq621 / sole ROOT TASK-12797.**
-The new grant is **0/1 used before publication**; every prior grant remains
-exhausted. The manager alone may publish one reviewed PR800 update and collect
-its single automatic N3 attempt1, then report the actual result before further
-repair or rerun. The update must synchronize same-repository `task/TASK-6475`
-to `main` from verified old head `1045f94a0072bfe4ea04c52c5256584e2dff821d`
-to a distinct valid40hex event after equal to the actual PR head and checkout/
-proof subject. Manual, reopen, main, rerun and later-update events refuse.
-TASK-12798 performs only authorized local compile/lint preparation; it does not
-publish or spend the run. Source/compile approval is not runtime, crash/reboot,
-restart, installer or N6 acceptance. Earlier ROOT12232/11824 and allocation/hold
-passages retain their historical scope; seq621 supersedes the local compile and
-one-update/run holds only as stated here. No merge or deployment is authorized.
-Selected614 removes the BOTH-positive-absence-only trust obstruction in source;
-all other prerequisites still decide admission. The reduced campaign retains
-uncovered assertions and an unconditional incomplete/nonzero terminal refusal;
-no full PASS or actual reboot proof follows. Lint/static gates and separate
-Product E2E policy remain unchanged. This documentary record grants no run.
+**Current PR800 allocation — THR228seq641 / sole ROOT TASK-12916.**
+Founder seq641 authorizes **ONE publication and ONE automatic attempt1** of a
+**PARTIAL installer + same-boot diagnostic** campaign, as proposed in seq638.
+The new allocation starts **publication0/1 and automatic attempt0/1**; seq621's
+publication1/1 and run1/1 are spent by actual FAILED run40056485462 at
+`c8fdc845a50fc7c6f2740d87480b3dec0a47548f`. Every older grant remains exhausted;
+that failure, its original AttributeError, empty records/diagnostics, terminalnull
+and cleanupUNPROVED remain unchanged. The manager alone owns publication and
+collection, and must report the actual result before any further repair,
+publication or rerun. No retry or consultant three-run allowance is granted.
+The one update must synchronize same-repository PR800 `task/TASK-6475` to `main`
+from verified public before `c8fdc845a50fc7c6f2740d87480b3dec0a47548f` to a
+distinct valid40hex event after equal to the actual PR head, checkout and proof
+subject, on attempt1 only. Manual, reopen, main, rerun and later-update events
+cannot renew this grant. TASK-12919 performs LOCAL source/static preparation;
+FULL independent final-head review and same-head SOURCE/STATIC QA precede the
+manager's publication. The automatic run must build that corrected subject's
+actual wheel, frozen connector and package; old package bytes are not its proof.
+The PARTIAL ceiling is conditional installer, startup and same-boot diagnostics;
+fresh PID after a crash is SAME boot. Preserve all original assertions, strict
+evidence and cleanup requirements and the unconditional incomplete/nonzero exit:
+this campaign cannot yield complete N3/PASS. Missing startup/consumed-state,
+barrier/stop-wins, rollback/full-OLD, credential-negative, diagnostic, measured
+engine-close and physical-owner/keeper proof remains outstanding. Complete N3
+still requires genuine reboot, both writer orders, rate/backoff/qualified reset
+and intentional-stop-after-reboot evidence, original deadlines, successful
+cleanup and complete terminal/validation. Reboot testing AND venue procurement
+are expressly **DEFERRED until a working flow is demonstrated**, not waived.
+Selected614's BOTH-positive-absence-only trust default leaves all other admission
+gates intact, including actual installed AND loaded authority. Source/static
+approval proves no sealing, installer, self-heal, complete N3, N6 or release
+acceptance. Earlier allocation/hold passages retain historical scope; seq641
+supersedes only the one publication/automatic-attempt hold stated here. No merge
+or deployment is authorized. Required lint/static gates and separate Product E2E
+policy remain unchanged. These banners describe the grant, not runtime success.
 
 **Current managed-access precedence — sole ROOT TASK-12232.** LOCAL incomplete delivery; all publication/run grants are exhausted. Publication, execution and cleanup remain **HELD**. See [the current LOCAL lifecycle2 contract](#current-local-lifecycle2-source--root12232--task12399). Earlier owner, allocation and lifecycle1/H1045 passages below are historical snapshots; their last-slot instructions grant no continuation, readiness or cleanup.
 
