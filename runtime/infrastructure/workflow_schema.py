@@ -1635,7 +1635,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         return 'ready'
     if layout != 'G':
         raise ValueError('workflow_author_handoff_requires_g: ' + submission_migration_guidance(org_slug=expected_org_slug))
-    _validate_submission_source_ownership(conn, layout)
+    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
     try:
         conn.execute('BEGIN IMMEDIATE')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
@@ -1645,7 +1645,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
             return 'ready'
         if layout != 'G':
             raise ValueError('workflow_author_handoff_requires_g')
-        _validate_submission_source_ownership(conn, layout)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
         retained = _retained_rows(conn)
         _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
@@ -1719,7 +1719,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout in ('G', 'H', 'I', 'J'):
         return 'ready'
-    _validate_submission_source_ownership(conn, layout)
+    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
     for event in _records(conn, 'SELECT * FROM workflow_events'):
         _event_revision(conn, event)
     conn.execute('PRAGMA foreign_keys=OFF')
@@ -1732,7 +1732,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         if layout in ('G', 'H', 'I', 'J'):
             conn.rollback()
             return 'ready'
-        _validate_submission_source_ownership(conn, layout)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
         revisions = {e['id']: _event_revision(conn, e) for e in _records(conn, 'SELECT * FROM workflow_events')}
         retained = _retained_rows(conn)
         conn.execute('CREATE TEMP TABLE submission_stage AS SELECT rowid AS original_rowid,* FROM workflow_submissions')
@@ -1800,7 +1800,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         return 'ready'
     if layout != 'H':
         raise ValueError('workflow_document_revision_requires_h: ' + revision_migration_guidance())
-    _validate_submission_source_ownership(conn, layout)
+    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
     conn.execute('PRAGMA foreign_keys=OFF')
     try:
         if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 0:
@@ -1809,7 +1809,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'H':
             raise ValueError('workflow_document_revision_source_changed')
         _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
-        _validate_submission_source_ownership(conn, 'H')
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout='H')
         retained = _retained_rows(conn)
         conn.execute('CREATE TEMP TABLE revision_intents AS SELECT rowid AS original_rowid,* FROM workflow_draft_dispatch_intents')
         conn.execute('DROP TABLE workflow_draft_dispatch_intents')
@@ -1843,21 +1843,30 @@ def coding_migration_guidance() -> str:
     return ('Use a compatible reader. Run scripts/migrate_workflow_coding_schema.py --runtime-root '
             '<absolute-runtime-root> --org <org-slug> --check read-only (exit 3 if migration needed, '
             'exit 0 if compatible empty J). Writes require --confirm-cooperative-offline, exact I, '
-            'documented daemon stop and reconciled host/producer/outer-tail, '
-            'publication/profile/source/Pause/team-move ownership under cooperative offline control. '
+            'positive current stopped state and complete writer/preparation/process exclusion across all '
+            'affected runtimes, shared-daemon stores and cooperative hosts through return, including '
+            'publication/profile/source/Pause/team-move/restart activity. Historical uncertainty alone '
+            'requires no closure certification; preserve original records and reserved storage. '
             'Observed path/file/lifecycle drift or unavailable observations refuse; direct same-user '
             'file/DB swapping is outside this cooperative guarantee. Migration behavior is unexecuted. '
             'Startup/reopen/enable never installs J. Even empty J blocks pre-J downgrade; '
             'populated coding requires K2a2.')
 
 
-def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
-    """J-only offline ownership fence, without PID/TTL/terminal-label discharge."""
+def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug: str,
+                                 layout: str = 'I') -> None:
+    """Migration-only current ownership, for complete F/E/G/H/I/J readers.
+
+    This SELECT-only classification is not clearance by terminal label or PID.
+    Callers must separately maintain complete current host/process/preparation
+    and cooperative exclusion, including other hosts, through the operation.
+    Retained uncertainty is preserved, not certified closed or replayed here.
+    """
     def refuse(owner: str) -> None:
         raise ValueError(f'workflow_coding_source_owner_unresolved: {owner}; '
-                         'original owner must reconcile its complete journal/host/outer-tail closure')
+                         'Engineering/operator must establish complete present exclusion; preserve historical evidence')
 
-    _validate_submission_source_ownership(conn, 'I')
+    _validate_submission_source_ownership(conn, layout)
     # Queued/admitted operations and source result-action processing also own
     # work, even before a PID/host reservation exists.
     for table, predicate in (
@@ -1865,20 +1874,27 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
         ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
         ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
         ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
-        ('workflow_draft_dispatch_intents', "state NOT IN ('cancelled','failed','completed')"),
-        ('tasks', "status NOT IN ('completed','failed','cancelled','superseded') OR "
-                  "active_chain IS NOT NULL OR active_fanout IS NOT NULL OR blocked_on_job_ids IS NOT NULL OR executor_pid IS NOT NULL"),
-        ('task_completion_recoveries', "state!='callback_consumed' OR settled_at IS NULL"),
-        ('jobs', "status NOT IN ('completed','failed','rejected','cancelled')"),
+        ('tasks', "status NOT IN ('completed','failed','cancelled','superseded')"),
+        # Claimed recovery and accepted-but-unconsumed callbacks can still act,
+        # including on a terminal task. Ended recovery history is not activity.
+        ('task_completion_recoveries', "state NOT IN ('callback_consumed','expired','restart_settled','superseded')"),
+        ('jobs', "status NOT IN ('pending','completed','failed','rejected','cancelled')"),
         ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
         ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
         ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
-        ('schedules', "active=1 OR session_id IS NOT NULL OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
+        # schedule_store.list_due consumes armed rows. Terminal occurrences
+        # retain their runtime SID; current native execution is separately
+        # excluded by the complete preparation/process/cooperative window.
+        ('schedules', "active=1 OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
         ('remote_job_attempts', "state!='terminal'"),
         ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
     ):
-        if conn.execute(f'SELECT 1 FROM {table} WHERE {predicate} LIMIT 1').fetchone():
-            refuse(table)
+        rows = _records(conn, f'SELECT * FROM {table} WHERE {predicate} LIMIT 1')
+        if rows:
+            row = rows[0]
+            reference = next((row[key] for key in ('id', 'task_id', 'namespace', 'agent_name')
+                              if key in row and row[key] is not None), None)
+            refuse(table + (':' + str(reference) if reference is not None else ''))
     # Authenticate terminal F5 projections and their own actual callbacks and
     # host terminal evidence; missing or orphan edges are never an idle label.
     from runtime.workflows.review_dispatch import validate_review_dispatch_storage
@@ -1888,13 +1904,18 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
         refuse('workflow_dispatch_graph')
     for request_id in requests:
         validate_review_dispatch_storage(conn, request_id=request_id)
-    for intent in _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents'):
-        if intent['host_launch_started']:
-            terminal = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq DESC LIMIT 1',
-                                (intent['id'],))
-            if (not terminal or _stored_json(terminal[0]['event_bytes'], terminal[0]['event_digest'])
-                    .get('terminal_evidence') != {'host_quiescent': True}):
-                refuse('workflow_draft_dispatch_intents:' + intent['id'])
+    if layout != 'F' and conn.execute("SELECT 1 FROM workflow_draft_dispatch_intents "
+            "WHERE state NOT IN ('cancelled','failed','completed') LIMIT 1").fetchone():
+        refuse('workflow_draft_dispatch_intents')
+    # jobs.py::_run_job_core_impl requires a current pending/in_progress,
+    # noncancelled task. A retained pending job on an ended owner cannot auto
+    # launch. Missing/mismatched attribution is never classified historical.
+    for job in _records(conn, "SELECT * FROM jobs WHERE status='pending'"):
+        task = conn.execute('SELECT status,assigned_agent,cancelled_at FROM tasks WHERE id=?',
+                            (job['task_id'],)).fetchone()
+        if (task is None or task[1] != job['agent_name']
+                or task[0] not in ('completed','failed','cancelled','superseded')):
+            refuse('jobs:' + str(job['id']))
     # The source callback/result action claim has no separate lease table:
     # native current task + recovery + Pause attribution owns it. It cannot
     # be released by a result label while processing still owns the source.
@@ -1902,11 +1923,19 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
     from runtime.infrastructure.team_move_store import validate_team_move_schema
     if validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True):
         for row in _records(conn, 'SELECT * FROM task_pause_controls'):
-            if (row['held'] or row['release_pending_generation'] is not None
-                    or decode_journal(row['admission_journal_json'])['entries']):
-                # Safe owners remove their entry only after native outer
-                # settlement. producer_settled explicitly retains uncertainty.
-                refuse('task_pause_controls:' + row['root_task_id'])
+            # Validate the whole original journal, including owner ancestry,
+            # without requiring historical native settlement. Current result
+            # processing still holds even after a task's terminal transition.
+            for entry in decode_journal(row['admission_journal_json'])['entries']:
+                task = conn.execute('SELECT status,assigned_agent FROM tasks WHERE id=?',
+                                    (entry['task_id'],)).fetchone()
+                if (task is None or task[1] != entry['agent']
+                        or task[0] not in ('completed','failed','cancelled','superseded')
+                        or entry['phase'] in ('action_started','result_processing')):
+                    refuse('task_pause_controls:' + row['root_task_id'])
+            # A held bit or release generation on an ended root cannot consume
+            # work alone; all nonterminal tasks were excluded above. Native
+            # preparations/processes remain independently observed by caller.
     if validate_team_move_schema(conn, org_slug=expected_org_slug):
         if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot IS NOT NULL LIMIT 1').fetchone():
             refuse('team_move_operations')
@@ -1944,18 +1973,20 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
     for episode in _records(conn, 'SELECT * FROM task_completion_recoveries'):
         result = conn.execute('SELECT task_id,agent,session_id FROM task_results WHERE id=?',
                               (episode['accepted_result_id'],)).fetchone()
-        if (type(episode['accepted_result_id']) is not int or result is None
-                or tuple(result) != (episode['task_id'], episode['agent'], episode['accepted_result_session_id'])):
+        if ((episode['state'] == 'callback_consumed' or episode['accepted_result_id'] is not None)
+                and (type(episode['accepted_result_id']) is not int or result is None
+                     or tuple(result) != (episode['task_id'], episode['agent'], episode['accepted_result_session_id']))):
             refuse('task_completion_recoveries:' + str(episode['id']))
     for recovery in _records(conn, 'SELECT * FROM workflow_recovery_claims'):
-        # Effect-recorded is not a standalone quiescence certificate.
+        # Preserve actual task/result attribution as validity, without adding
+        # a historical host-closure requirement for effect-recorded legacy rows.
         task = conn.execute('SELECT 1 FROM tasks WHERE id=?', (recovery['record_id'],)).fetchone()
-        if task is None or recovery['record_class'] == 'legacy_task':
-            # An effect-recorded legacy claim lacks a persisted host closure
-            # reader. Terminal/PID/expiry labels cannot replace that evidence.
+        if task is None:
             refuse('workflow_recovery_claims:' + recovery['record_id'])
-        drafts = conn.execute('SELECT id FROM workflow_draft_dispatch_intents WHERE task_id=?',
-                              (recovery['record_id'],)).fetchall()
+        if recovery['record_class'] == 'legacy_task':
+            continue
+        drafts = [] if layout == 'F' else conn.execute(
+            'SELECT id FROM workflow_draft_dispatch_intents WHERE task_id=?', (recovery['record_id'],)).fetchall()
         bridges = conn.execute('SELECT request_id FROM workflow_request_task_bridges WHERE task_id=?',
                                (recovery['record_id'],)).fetchall()
         if len(drafts) + len(bridges) != 1:

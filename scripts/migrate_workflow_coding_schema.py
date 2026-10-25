@@ -28,8 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--org', required=True)
     parser.add_argument('--check', action='store_true', help='Read-only; exit 3 if migration needed, exit 0 if compatible empty J')
     parser.add_argument('--confirm-cooperative-offline', action='store_true', help=(
-        'Operator affirms documented daemon stop, all hosts/outer tails reconciled, '
-        'and no cooperative daemon/host/publication/profile/move restart until return. '
+        'Operator maintains positive current stopped state and complete current writer/preparation/process exclusion, '
+        'across all affected runtimes/shared-daemon stores/cooperative hosts, with no publication/profile/move/restart until return. Historical uncertainty alone needs no closure certification. '
         'This is not PID absence or an OS exclusion guarantee.'))
     args = parser.parse_args(argv)
     conn = None
@@ -64,8 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.confirm_cooperative_offline:
             raise ValueError('workflow_coding_cooperative_offline_confirmation_required: ' + coding_migration_guidance())
         offline = _lifecycle_snapshot(args.runtime_root)
-        # A stale PID does not prove stop; the documented stop owner removes
-        # both lifecycle files. Unknown or unregistered daemon homes refuse.
+        # Positive current stopped control requires both lifecycle files absent,
+        # with maintained cooperative exclusion, not historical shutdown proof.
+        # Unknown or unregistered daemon homes refuse.
         if (any(item[1] is not None for item in offline if item[0] in ('daemon.pid', 'daemon.port'))
                 or not any(item[0] == 'runtimes.yaml' and item[1] is not None for item in offline)):
             raise ValueError('workflow_coding_documented_daemon_stop_unproven')
