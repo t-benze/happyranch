@@ -37,7 +37,7 @@ def save(c: Controller) -> None:
     (c.root / "raw/e07.json").write_text(c.sanitize(json.dumps(c.e07, indent=2)))
 
 
-def frame(c: Controller, parent: str | None = None, child: str | None = None) -> dict:
+def frame(c: Controller, parent: str | None = None, child: str | None = None) -> tuple[dict, dict]:
     record = dict(entered=time.monotonic(), sql={}, public={}, http_indices={})
     for org in ("alpha", "beta"):
         record["sql"][org] = c.stores[org].cancellation_frame()
@@ -55,9 +55,10 @@ def frame(c: Controller, parent: str | None = None, child: str | None = None) ->
     record.update(metrics=c.get("/api/v1/metrics"), witnesses=rows, witness_bytes=len(raw),
                   pending=bool(select.select([c.server], [], [], 0)[0]))
     authenticate_public(record, c.http)
-    public_content(record["public"])
+    # Keep derived comparison data local, separate from the complete raw export.
+    comparison = content(record)
     record["finished"] = time.monotonic()
-    return record
+    return record, comparison
 
 
 def host(record: dict, admitted: int, released: int, active: int, previous: dict) -> dict:
@@ -332,7 +333,8 @@ def public_content(value: dict) -> str:
             result[key] = {**body, "tasks": [{**t, "pause": pause_content(t["pause"])} for t in body["tasks"]]}
         else:
             # Only the detail envelope has Pause. Recalls remain complete.
-            result[key] = {**body, "": json.loads(detail_content(body[""]))}
+            detail = body[""]
+            result[key] = {**body, "": {**detail, "pause": pause_content(detail["pause"])}}
     # JSON comparison also distinguishes false from 0 and lists from objects.
     return json.dumps(result, sort_keys=True)
 
@@ -425,7 +427,7 @@ def exercise(c: Controller) -> None:
     try:
         try:
             phase("capture",16)
-            baseline = frame(c)
+            baseline, _ = frame(c)
             c.e07["baseline"] = baseline
             host(baseline,24,24,0,prior["final_anchor"]["projection"]["receipts"])
             c.e07["anchors"].append(dict(name="E05-end-B24",samples=[baseline]))
@@ -444,7 +446,7 @@ def exercise(c: Controller) -> None:
             require(type(result["id"]) is int, "E07 real INTEGER parent result")
             c.e07["parent_result"] = result
             def parked() -> dict | None:
-                snap = frame(c,P,W)
+                snap, _ = frame(c,P,W)
                 c.e07["frames"].append(snap)
                 t = {x["id"]:x for x in snap["sql"]["alpha"]["tables"]["tasks"]}
                 if t[P]["block_kind"] != "delegated":
@@ -457,7 +459,7 @@ def exercise(c: Controller) -> None:
                 host(snap,26,25,1,prior["final_anchor"]["projection"]["receipts"])
                 return snap
             live = c.poll(parked,"E07 P released, W sole live")
-            second = frame(c,P,W)
+            second, _ = frame(c,P,W)
             require(host(second,26,25,1,prior["final_anchor"]["projection"]["receipts"]) == host(live,26,25,1,prior["final_anchor"]["projection"]["receipts"]), "E07 two live projections")
             c.e07["live"] = [live,second]
             c.e07["anchors"].append(dict(name="P-success-W-live-B25",samples=[live,second]))
@@ -505,13 +507,13 @@ def exercise(c: Controller) -> None:
                         result[task]["detail_snapshot"] = detail
                 return result
             c.e07["browser_cancel"] = c.browser.e07_cancel(P,W, expected=browser_expected(second))
-            def closed() -> dict | None:
+            def closed() -> tuple[dict, dict] | None:
                 observed = closure(c,tree,held["launch"]["child"])
                 c.e07.setdefault("closure_samples",[]).append(observed)
                 if any(p["start"] == p["observed_start"] for p in observed["processes"]) or any(g["pids"] for g in observed["groups"].values()):
                     return None
                 require(not observed["pending"], "E07 no resumption peer")
-                snap = frame(c,P,W)
+                snap, snap_content = frame(c,P,W)
                 c.e07["frames"].append(snap)
                 audits = snap["sql"]["alpha"]["tables"]["audit_log"]
                 if not any(a["task_id"] == W and a["action"] == "session_end" for a in audits):
@@ -520,10 +522,10 @@ def exercise(c: Controller) -> None:
                     return None
                 cancelled(c,snap,parent,worker,result)
                 host(snap,26,26,0,second["metrics"]["host_sessions"]["receipts"])
-                return snap
-            freeze = c.poll(closed,"E07 product closure before rescue")
-            freeze2 = frame(c,P,W)
-            require(content(freeze) == content(freeze2)
+                return snap, snap_content
+            freeze, freeze_content = c.poll(closed,"E07 product closure before rescue")
+            freeze2, freeze2_content = frame(c,P,W)
+            require(freeze_content == freeze2_content
                     and host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
             receipt = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
             require(receipt["terminal_reason"] == "cancelled" and receipt["invocation_kind"] == "task", "E07 one active cancellation receipt")
@@ -542,9 +544,10 @@ def exercise(c: Controller) -> None:
                 require(not record["stdout"]["truncated"] and "ActiveState=inactive" in record["stdout"]["text"],"E07 product unit inactive")
             c.e07["units"] = unit_rows
             # Freeze only after unit inactivity too, before any terminal CLI action.
-            freeze,freeze2 = frame(c,P,W),frame(c,P,W)
+            freeze, freeze_content = frame(c,P,W)
+            freeze2, freeze2_content = frame(c,P,W)
             cancelled(c,freeze,parent,worker,result)
-            require(content(freeze) == content(freeze2)
+            require(freeze_content == freeze2_content
                     and host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"])
                     == host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
             c.e07["freeze"] = [freeze,freeze2]
@@ -571,9 +574,9 @@ def exercise(c: Controller) -> None:
             complete = next(t for t in baseline["sql"]["alpha"]["tables"]["tasks"] if t["parent_task_id"] is None and t["status"] == "completed")
             c.e07["completed_target"] = complete
             c.e07["refusals"] = [terminal_cli(c,P,"cancelled","E07_DUPLICATE"), terminal_cli(c,complete["id"],"completed","E07_TERMINAL")]
-            after = frame(c,P,W)
+            after, after_content = frame(c,P,W)
             c.e07["after_refusals"] = after
-            require(content(after) == content(freeze),"E07 both terminal refusals leave full content unchanged")
+            require(after_content == freeze_content,"E07 both terminal refusals leave full content unchanged")
 
             phase("forward-and-observe",42)
             require(c.case_deadline-time.monotonic() > 1,"E07 full negative window must fit")
@@ -589,10 +592,10 @@ def exercise(c: Controller) -> None:
             window["end"] = window["entered"]+1
             require(window["end"] < c.case_deadline,"E07 reserve full second")
             while True:
-                sample = frame(c,P,W)
+                sample, sample_content = frame(c,P,W)
                 sample["closure"] = closure(c,tree,held["launch"]["child"])
                 window["samples"].append(sample)
-                require(content(sample) == content(freeze) and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
+                require(sample_content == freeze_content and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
                 host(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
                 require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
                         and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
@@ -608,7 +611,7 @@ def exercise(c: Controller) -> None:
             window["finished"] = time.monotonic()
 
             phase("archive",50)
-            final = frame(c,P,W)
+            final, final_content = frame(c,P,W)
             c.e07["final"] = final
             c.e07["anchors"].append(dict(name="final-B26",samples=[final]))
             live_tasks = {t["id"]:t for t in second["sql"]["alpha"]["tables"]["tasks"]}
@@ -618,7 +621,7 @@ def exercise(c: Controller) -> None:
                 require({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
                         == {k:v for k,v in final_tasks[task].items() if k not in changed_fields}, "E07 exact cancellation field delta")
             cancelled(c,final,parent,worker,result)
-            require(content(final) == content(freeze) and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
+            require(final_content == freeze_content and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
             raw, rows = witnesses(c)
             require(len(c.starts) == 38 and len({s["session"] for s in c.starts}) == 38 and not c.holds
                     and sum(w["kind"] == "stub" for w in rows) == 38
