@@ -5,7 +5,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from runtime.infrastructure.db._shared import _task_move_admission, _late_database_now as _now, _synchronized
 from runtime.infrastructure.db.task_reconciliation import (
@@ -243,7 +243,399 @@ class _RetryEvidenceRefusal(Exception):
     """Internal control flow for invalid recorded evidence, never SQLite errors."""
 
 
+# Closed repository-preparation evidence. These rows do not overlay old Pause
+# history; only the original live owner can close its own new obligation.
+_REPO_PREPARATION_FIELDS = frozenset({"version", "owner", "repository", "obligation", "sequence",
+    "phase", "command", "probe", "request_ref", "handle_ref", "pid", "start_pin", "attempted", "started",
+    "returncode", "consumed", "receipt", "complete", "cause", "inventory", "capture_complete", "capture_truncated", "state_digest"})
+_REPO_PREPARATION_PHASES = frozenset({"opened", "intent", "attempted", "started", "consumed", "finished", "not_admitted",
+    "worker_returned", "outer_closed", "closed"})
+_REPO_PREPARATION_PROBES = frozenset({"identity_after_fetch", "source_after_fetch", "target_type",
+    "ancestry_forward", "ancestry_reverse", "final_branch", "final_head"})
+
+
+class RepositoryPreparationError(ValueError):
+    def __init__(self, code: str, status: int = 409):
+        self.code, self.status = code, status
+        super().__init__(code)
+
+
+def _repository_require(condition: bool, code: str = "conflicting_history", status: int = 409) -> None:
+    if not condition:
+        raise RepositoryPreparationError(code, status)
+
+
+def repository_preparation_command(raw: bytes) -> dict:
+    import re
+    _repository_require(len(raw) <= 16384, "invalid_request", 422)
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            _repository_require(key not in result, "invalid_request", 422)
+            result[key] = value
+        return result
+    try:
+        body = json.loads(raw.decode("utf8", errors="strict"), object_pairs_hook=unique)
+        _repository_require(type(body) is dict and set(body) == {"version", "operation_key",
+            "expected_state_digest", "invocation_id", "attempt_id"}, "invalid_request", 422)
+        _repository_require(type(body["version"]) is int and body["version"] == 1, "invalid_request", 422)
+        for name, pattern in (("operation_key", r"[A-Za-z0-9._:-]{1,128}"),
+                ("expected_state_digest", r"[a-f0-9]{64}"), ("invocation_id", r"[a-f0-9]{32}"),
+                ("attempt_id", r"[a-f0-9]{32}")):
+            _repository_require(type(body[name]) is str and re.fullmatch(pattern, body[name]) is not None,
+                "invalid_request", 422)
+        return body
+    except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
+        if isinstance(exc, RepositoryPreparationError):
+            raise
+        raise RepositoryPreparationError("invalid_request", 422) from None
+
+
+def repository_preparation_event(owner: dict, repository: dict, obligation: str, sequence: int, phase: str, **facts: Any) -> dict:
+    body = {name: None for name in _REPO_PREPARATION_FIELDS}
+    body.update(version=1, owner=owner, repository=repository, obligation=obligation,
+        sequence=sequence, phase=phase, attempted=False, started=False, consumed=False, complete=False,
+        capture_complete=False, capture_truncated=False)
+    _repository_require(not facts.keys() - _REPO_PREPARATION_FIELDS)
+    body.update(facts)
+    validate_repository_preparation_event(body)
+    return body
+
+
+def validate_repository_preparation_owner(owner: dict) -> None:
+    import re
+    _repository_require(type(owner) is dict and set(owner) == {"org", "kind", "scope", "agent", "session_id",
+        "invocation_id", "attempt_id", "boot_id", "native_id", "source"})
+    _repository_require(owner["kind"] in {"task", "thread", "dream", "schedule", "wake"})
+    for key in set(owner) - {"native_id", "source"}:
+        _repository_require(type(owner[key]) is str and 0 < len(owner[key]) <= 256
+            and all(c.isprintable() for c in owner[key]))
+    _repository_require((type(owner["native_id"]) is int and owner["native_id"] > 0) if owner["kind"] == "thread"
+        else type(owner["native_id"]) is str and 0 < len(owner["native_id"]) <= 256)
+    for key in ("invocation_id", "attempt_id"):
+        _repository_require(re.fullmatch(r"[a-f0-9]{32}", owner[key]) is not None)
+    _repository_require(type(owner["source"]) is str and re.fullmatch(r"[a-f0-9]{64}", owner["source"]) is not None)
+
+
+def validate_repository_preparation_event(body: dict) -> None:
+    import re
+    _repository_require(type(body) is dict and body.keys() == _REPO_PREPARATION_FIELDS)
+    _repository_require(type(body["version"]) is int and body["version"] == 1)
+    validate_repository_preparation_owner(body["owner"])
+    _repository_require(type(body["obligation"]) is str and re.fullmatch(r"[a-f0-9]{32}", body["obligation"]) is not None)
+    _repository_require(type(body["sequence"]) is int and 0 <= body["sequence"] < 512)
+    _repository_require(body["phase"] in _REPO_PREPARATION_PHASES)
+    _repository_require(body["command"] in {None, "probe", "fetch", "merge", "submodule"})
+    _repository_require(body["probe"] is None or body["probe"] in _REPO_PREPARATION_PROBES)
+    for key in ("attempted", "started", "consumed", "complete", "capture_complete", "capture_truncated"):
+        _repository_require(type(body[key]) is bool)
+    for key, pattern in (("request_ref", r"[a-f0-9]{32}"), ("handle_ref", r"[a-f0-9]{64}"),
+            ("start_pin", r"[a-f0-9]{64}")):
+        _repository_require(body[key] is None or type(body[key]) is str and re.fullmatch(pattern, body[key]) is not None)
+    _repository_require(body["pid"] is None or type(body["pid"]) is int and body["pid"] > 0)
+    _repository_require(body["returncode"] is None or type(body["returncode"]) is int and -(2**31) <= body["returncode"] < 2**31)
+    if body["phase"] in {"intent", "attempted", "started", "consumed", "finished"}:
+        _repository_require(body["request_ref"] is not None and body["command"] is not None)
+    if body["phase"] == "started":
+        _repository_require(body["started"] and body["pid"] is not None and body["handle_ref"] is not None)
+    if body["phase"] == "closed":
+        _repository_require(body["complete"] and body["state_digest"] is not None)
+    _repository_require(not body["started"] or body["attempted"])
+    _repository_require(not body["consumed"] or body["started"] and body["returncode"] is not None)
+    _repository_require(body["state_digest"] is None or type(body["state_digest"]) is str
+        and re.fullmatch(r"[a-f0-9]{64}", body["state_digest"]) is not None)
+    repository = body["repository"]
+    _repository_require(type(repository) is dict and set(repository) == {"path", "device", "inode"})
+    _repository_require(type(repository["path"]) is str and 0 < len(repository["path"]) <= 4096
+        and repository["path"].startswith("/") and "\0" not in repository["path"])
+    _repository_require(all(type(repository[k]) is int and repository[k] >= 0 for k in ("device", "inode")))
+    receipt = body["receipt"]
+    if receipt is not None:
+        _repository_require(type(receipt) is dict and set(receipt) == {"quiescent", "survivors", "cleanup_error", "cleanup_status"})
+        _repository_require(receipt["quiescent"] is None or type(receipt["quiescent"]) is bool)
+        _repository_require(receipt["survivors"] is None or type(receipt["survivors"]) is int and 0 <= receipt["survivors"] <= 65536)
+        _repository_require(type(receipt["cleanup_error"]) is bool)
+        _repository_require(receipt["cleanup_status"] in {None, "clean", "term", "kill", "incomplete"})
+    if body["cause"] is not None:
+        from runtime.orchestrator.launch_refusals import validate_preparation_cause
+        validate_preparation_cause(body["cause"])
+    inventory = body["inventory"]
+    if inventory is not None:
+        _repository_require(type(inventory) is dict and set(inventory) == {"intervals", "retained", "outer_closed"})
+        _repository_require(type(inventory["outer_closed"]) is bool and type(inventory["intervals"]) is list
+            and len(inventory["intervals"]) <= 128 and type(inventory["retained"]) is list and len(inventory["retained"]) <= 128)
+        for interval in inventory["intervals"]:
+            _repository_require(type(interval) is dict and set(interval) == {"id", "kind", "closed", "failed"}
+                and interval["kind"] in {"native", "scratch"}
+                and type(interval["id"]) is int and interval["id"] >= 0
+                and type(interval["closed"]) is bool and type(interval["failed"]) is bool)
+        for effect in inventory["retained"]:
+            _repository_require(type(effect) is dict and set(effect) == {"path", "disposition", "receipt"}
+                and type(effect["path"]) is str and 0 < len(effect["path"]) <= 4096 and "\0" not in effect["path"]
+                and effect["disposition"] == "retained" and type(effect["receipt"]) is str
+                and re.fullmatch(r"[a-f0-9]{64}", effect["receipt"]) is not None)
+    _repository_require(len(json.dumps(body, ensure_ascii=False).encode()) <= 16384, "evidence_unavailable", 503)
+
+
+def repository_preparation_closed(events: list[dict]) -> bool:
+    """Independently reconstruct every command and the final owner inventory."""
+    requests, returned, outer = {}, False, False
+    worker_seen, outer_seen = False, False
+    for ordinal, event in enumerate(events):
+        phase, request = event["phase"], event["request_ref"]
+        if phase == "opened":
+            _repository_require(ordinal == 0)
+        elif phase == "intent":
+            _repository_require(not worker_seen)
+            _repository_require(request is not None and request not in requests)
+            requests[request] = [event]
+        elif phase == "not_admitted":
+            _repository_require(not worker_seen and request in requests and requests[request][-1]["phase"] == "intent")
+            _repository_require(event["complete"] and not event["attempted"] and not event["started"]
+                and not event["consumed"] and event["pid"] is None and event["handle_ref"] is None
+                and event["start_pin"] is None and event["returncode"] is None and event["receipt"] is None)
+            requests[request].append(event)
+        elif phase in {"attempted", "started", "consumed", "finished"}:
+            _repository_require(not worker_seen and request in requests)
+            prior = requests[request][-1]
+            expected = {"attempted": "intent", "started": "attempted", "consumed": "started", "finished": "consumed"}[phase]
+            _repository_require((prior["phase"] == expected or phase == "finished" and prior["phase"] in {"attempted", "started"})
+                and prior["command"] == event["command"])
+            requests[request].append(event)
+        elif phase == "worker_returned":
+            _repository_require(not worker_seen)
+            worker_seen = True
+            returned = event["complete"]
+        elif phase == "outer_closed":
+            _repository_require(not outer_seen and returned)
+            outer_seen = True
+            inventory = event["inventory"]
+            outer = bool(event["complete"] and inventory is not None and inventory["outer_closed"]
+                and all(v["closed"] and not v["failed"] for v in inventory["intervals"])
+                and [v["id"] for v in inventory["intervals"]] == list(range(len(inventory["intervals"]))))
+    complete = bool(returned and outer and requests)
+    for phases in requests.values():
+        end = phases[-1]
+        receipt = end["receipt"]
+        if len(phases) == 2 and end["phase"] == "not_admitted":
+            continue
+        complete &= bool(len(phases) == 5 and end["phase"] == "finished" and end["complete"]
+            and end["consumed"] and phases[3]["consumed"] and phases[3]["returncode"] == end["returncode"]
+            and phases[2]["pid"] is not None and phases[2]["handle_ref"] is not None and phases[2]["start_pin"] is not None
+            and receipt is not None and receipt["quiescent"] is True and receipt["survivors"] == 0
+            and not receipt["cleanup_error"] and receipt["cleanup_status"] in {"clean", "term", "kill"})
+    return complete
+
+
 class TasksMixin:
+    def repository_preparation_history_uncommitted(self, scope: str) -> list[dict]:
+        """Bounded whole scoped stream; sentinel/invalid bytes refuse, never truncate."""
+        rows = self._conn.execute("SELECT id,agent,CASE WHEN typeof(payload)='text' AND "
+            "length(CAST(payload AS BLOB))<=16384 THEN payload END AS payload FROM audit_log "
+            "WHERE task_id=? AND action='repository_preparation' ORDER BY id LIMIT 4097", (scope,))
+        history, streams, total = [], {}, 0
+        complete_streams = {}
+        owners = {}
+        for row in rows:
+            _repository_require(len(history) < 4096 and type(row["payload"]) is str, "evidence_unavailable", 503)
+            raw = row["payload"]
+            total += len(raw.encode())
+            _repository_require(total <= 2*1024*1024, "evidence_unavailable", 503)
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    _repository_require(key not in result)
+                    result[key] = value
+                return result
+            try:
+                event = json.loads(raw, object_pairs_hook=unique)
+                validate_repository_preparation_event(event)
+            except (ValueError, TypeError, RecursionError, KeyError):
+                raise RepositoryPreparationError("conflicting_history") from None
+            _repository_require(event["owner"]["scope"] == scope and event["owner"]["agent"] == row["agent"])
+            owner_key = (event["owner"]["invocation_id"], event["owner"]["attempt_id"])
+            if owner_key in owners:
+                _repository_require(owners[owner_key] == event["owner"])
+            owners[owner_key] = event["owner"]
+            key = event["obligation"]
+            previous = streams.get(key)
+            if previous is None:
+                _repository_require(event["sequence"] == 0 and event["phase"] == "opened")
+            else:
+                _repository_require(event["sequence"] == previous["sequence"]+1 and event["owner"] == previous["owner"]
+                    and event["repository"] == previous["repository"] and previous["phase"] != "closed")
+            streams[key] = event
+            complete_streams.setdefault(key, []).append(event)
+            history.append({"id": row["id"], "event": event})
+        for stream in complete_streams.values():
+            repository_preparation_closed(stream)
+        return history
+
+    def append_repository_preparation_uncommitted(self, body: dict) -> int:
+        validate_repository_preparation_event(body)
+        history = self.repository_preparation_history_uncommitted(body["owner"]["scope"])
+        same = [row["event"] for row in history if row["event"]["obligation"] == body["obligation"]]
+        _repository_require(body["sequence"] == len(same))
+        if same:
+            _repository_require(body["owner"] == same[0]["owner"] and body["repository"] == same[0]["repository"]
+                and same[-1]["phase"] != "closed")
+        else:
+            _repository_require(body["phase"] == "opened")
+        positive = repository_preparation_closed(same+[body])
+        if body["phase"] == "closed":
+            _repository_require(positive, "unresolved_preparation")
+        _repository_require(len(history) < 4096, "evidence_unavailable", 503)
+        return self.insert_audit_log_uncommitted(body["owner"]["scope"], body["owner"]["agent"],
+            "repository_preparation", body)
+
+    def repository_preparation_snapshot_uncommitted(self, task_id: str, invocation_id=None, attempt_id=None) -> dict:
+        explicit_owner = invocation_id is not None or attempt_id is not None
+        task = self.get_task(task_id)
+        _repository_require(task is not None, "unknown_task", 404)
+        history = self.repository_preparation_history_uncommitted(task_id)
+        _repository_require(all(v["event"]["owner"]["kind"] == "task" for v in history))
+        # Older optional first-cause records retain their literal interpretation.
+        rows = self._conn.execute("SELECT id,payload FROM audit_log WHERE task_id=? "
+            "AND action='task_native_launch_boundary' ORDER BY id DESC LIMIT 129", (task_id,)).fetchall()
+        _repository_require(len(rows) <= 128, "evidence_unavailable", 503)
+        native = []
+        for row in rows:
+            _repository_require(type(row["payload"]) is str and len(row["payload"].encode()) <= 8192,
+                "evidence_unavailable", 503)
+            try:
+                native.append(json.loads(row["payload"]))
+            except (ValueError, TypeError, RecursionError):
+                raise RepositoryPreparationError("conflicting_history") from None
+        if invocation_id is None:
+            selected = history[-1]["event"]["owner"] if history else next((v for v in native
+                if type(v) is dict and type(v.get("invocation_id")) is str and type(v.get("attempt_id")) is str), None)
+            if selected is not None:
+                invocation_id, attempt_id = selected["invocation_id"], selected["attempt_id"]
+        events = [v["event"] for v in history if (v["event"]["owner"]["invocation_id"],
+            v["event"]["owner"]["attempt_id"]) == (invocation_id, attempt_id)]
+        if explicit_owner:
+            authenticated = bool(events) or any(type(v) is dict and v.get("kind") == "refused"
+                and v.get("invocation_id") == invocation_id and v.get("attempt_id") == attempt_id
+                and type(v.get("first_cause")) is dict and v["first_cause"].get("stage") == "repository_pull"
+                for v in native)
+            _repository_require(authenticated, "unrecognized_scope", 422)
+        owner = events[0]["owner"] if events else None
+        cause = next((v.get("first_cause") for v in native if type(v) is dict
+            and v.get("invocation_id") == invocation_id and v.get("attempt_id") == attempt_id), None)
+        cause = next((v["cause"] for v in events if v["cause"] is not None), cause)
+        if cause is not None:
+            from runtime.orchestrator.launch_refusals import validate_preparation_cause
+            validate_preparation_cause(cause)
+        streams = {}
+        for event in events:
+            streams.setdefault(event["obligation"], []).append(event)
+        missing = []
+        if not owner:
+            missing.extend(["original_tuple", "original_children", "original_receipts", "earlier_effects",
+                "worker_return", "outer_intervals", "original_source_boot"])
+        elif not streams or any(not repository_preparation_closed(v) or v[-1]["phase"] != "closed" for v in streams.values()):
+            missing.append("complete_native_preparation")
+        store = getattr(self, "_task_pause_store", None)
+        live = None if store is None else store._live.get(invocation_id)
+        from runtime.orchestrator.task_pause import TaskInvocation
+        if type(live) is not TaskInvocation or live.refusal_attempt_id != attempt_id:
+            live = None
+            missing.append("original_owner")
+        elif live.launch_observed or live.attempt_committed:
+            missing.append("conflicting_started")
+        elif getattr(live, "_repository_worker_active", False):
+            missing.append("active_worker")
+        elif getattr(live, "_repository_completion_active", False):
+            missing.append("active_preparation")
+        if live is not None and live.move_reservation.cleanup_failed:
+            missing.append("native_cleanup_uncertainty")
+        if live is not None and not all(live.move_reservation.repository_obligations.values()):
+            missing.append("unsettled_obligation")
+        if live is not None and streams:
+            current_intervals = getattr(live, "_repository_effect_intervals", None)
+            inventories = [e["inventory"] for e in events if e["phase"] == "outer_closed"]
+            if (not inventories or inventories[-1]["intervals"] != current_intervals
+                    or any(not v["closed"] or v["failed"] for v in current_intervals)):
+                missing.append("outer_intervals")
+        pause = None if store is None else store.row_uncommitted(store.root_uncommitted(task_id)["id"])
+        if pause is None:
+            missing.append("pause_control")
+        elif pause["held"]:
+            missing.append("held")
+        # Digest binds raw historical bytes plus current native business/control
+        # state; it is not evidence of process absence or a new-owner grant.
+        state = {"task": dict(self._conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()),
+            "history": history, "native": native, "pause": pause,
+            "live": None if live is None else {"invocation": live.identity, "attempt": live.refusal_attempt_id,
+                "worker": getattr(live, "_repository_worker_active", False),
+                "completion": getattr(live, "_repository_completion_active", False),
+                "intervals": getattr(live, "_repository_effect_intervals", None),
+                "obligations": sorted(live.move_reservation.repository_obligations.items()),
+                "unknown": live.move_reservation.cleanup_failed}}
+        digest = hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        return {"version": 1, "task_id": task_id, "invocation_id": invocation_id, "attempt_id": attempt_id,
+            "owner": owner, "state_digest": digest, "eligible": not missing, "missing_predicates": missing,
+            "first_cause": cause, "committed": False}
+
+    def repository_preparation_operation_uncommitted(self, task_id: str, body: dict):
+        import re
+        from runtime.orchestrator.launch_refusals import validate_preparation_cause
+        rows = self._conn.execute("SELECT id,agent,payload FROM audit_log WHERE task_id=? "
+            "AND action='repository_preparation_reconciliation' ORDER BY id LIMIT 129", (task_id,)).fetchall()
+        _repository_require(len(rows) <= 128, "evidence_unavailable", 503)
+        matches = []
+        for row in rows:
+            _repository_require(row["agent"] == "founder" and type(row["payload"]) is str
+                and len(row["payload"].encode()) <= 16384, "evidence_unavailable", 503)
+            def unique(pairs):
+                value = {}
+                for key, item in pairs:
+                    _repository_require(key not in value)
+                    value[key] = item
+                return value
+            try:
+                saved = json.loads(row["payload"], object_pairs_hook=unique)
+                _repository_require(type(saved) is dict and set(saved) == {"command", "response"})
+                command = repository_preparation_command(json.dumps(saved["command"]).encode())
+                response = saved["response"]
+                _repository_require(type(response) is dict and set(response) == {"version", "task_id", "invocation_id",
+                    "attempt_id", "owner", "state_digest", "eligible", "missing_predicates", "first_cause", "committed", "code"})
+                _repository_require(type(response["version"]) is int and response["version"] == 1
+                    and response["task_id"] == task_id and response["invocation_id"] == command["invocation_id"]
+                    and response["attempt_id"] == command["attempt_id"] and response["state_digest"] == command["expected_state_digest"]
+                    and re.fullmatch(r"[a-f0-9]{64}", response["state_digest"]) is not None
+                    and type(response["committed"]) is bool and type(response["eligible"]) is bool
+                    and type(response["missing_predicates"]) is list and len(response["missing_predicates"]) <= 16
+                    and all(v in {"original_tuple", "original_children", "original_receipts", "earlier_effects",
+                        "worker_return", "outer_intervals", "original_source_boot", "complete_native_preparation",
+                        "original_owner", "conflicting_started", "active_worker", "active_preparation", "native_cleanup_uncertainty", "unsettled_obligation", "pause_control", "held"}
+                        for v in response["missing_predicates"]))
+                if response["owner"] is not None:
+                    validate_repository_preparation_owner(response["owner"])
+                    _repository_require(response["owner"]["kind"] == "task" and response["owner"]["scope"] == task_id
+                        and response["owner"]["invocation_id"] == command["invocation_id"]
+                        and response["owner"]["attempt_id"] == command["attempt_id"])
+                if response["first_cause"] is not None:
+                    validate_preparation_cause(response["first_cause"])
+                _repository_require(response["code"] in {None, "original_owner_unavailable", "held", "active_owner",
+                    "unresolved_preparation", "stale_state"} and response["committed"] == (response["code"] is None))
+                if response["committed"]:
+                    _repository_require(response["eligible"] and not response["missing_predicates"])
+                    history = self.repository_preparation_history_uncommitted(task_id)
+                    streams = {}
+                    for fact in history:
+                        event = fact["event"]
+                        if fact["id"] < row["id"] and event["owner"] == response["owner"]:
+                            streams.setdefault(event["obligation"], []).append(event)
+                    _repository_require(bool(streams) and all(repository_preparation_closed(v) for v in streams.values()))
+                if command["operation_key"] == body["operation_key"]:
+                    _repository_require(command == body, "conflicting_history")
+                    matches.append(response)
+            except (ValueError, TypeError, KeyError, RecursionError):
+                raise RepositoryPreparationError("conflicting_history") from None
+        _repository_require(len(matches) <= 1)
+        return matches[0] if matches else None
+
     def terminal_worktree_audit_high_watermark(self) -> int:
         row = self._conn.execute('SELECT COALESCE(MAX(id),0) FROM audit_log').fetchone()
         return row[0]

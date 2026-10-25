@@ -674,6 +674,29 @@ are not covered by that rail — are documented in the **manage-agent** skill an
 `docs/agent-guides/agent-executors-and-permissions.md`.
 
 
+## Repository preparation evidence
+
+Repository refresh uses the same original native preparation owner, cooperative
+common-Git-directory descriptor lease and configured host containment for all Git
+children/probes. Its original30s budget includes scan/queue/admission and siblings.
+Only complete already-persisted original child/tree/earlier-effect/worker/outer
+proof under current authority can close that selected new obligation. Every other
+failure retains sticky UNKNOWN before attribution; later child exit, source update
+or restart supplies no historical clearance. Existing old optional causes remain.
+
+Read-only `happyranch tasks preparation-recovery TASK --org ORG --json` reports
+the original tuple, digest and missing predicates. Human-only reconcile-preparation
+uses the unchanged native bearer/human boundary and an absolute --from-file body
+with exactly version1, operation_key, expected_state_digest, invocation_id and
+attempt_id (<=16KiB, duplicate/unknown keys refused). No caller-supplied proof,
+PID/quiescence, force, retry, successor or exception is accepted. After an uncertain
+POST/COMMIT, inspect --operation-key ORIGINAL_KEY; retain the exact body/key and
+never automatically apply again. Refusal audit is not settlement or retry authority.
+Original absent owners are never reconstructed;12738/12724 remain unresolved.
+This source contract grants no agent human-write entitlement, live historical
+inspect/apply, deployment/restart, cleanup or historical journal reset. Finish
+only the actual current task/SID report-completion as this skill's final action.
+
 ## Native launch-refusal outcomes
 
 Optional pull diagnostic labels describe advisory wording only; absent labels or historical exit128 remain unknown and grant no cleanup or retry authority.

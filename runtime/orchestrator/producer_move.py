@@ -71,8 +71,10 @@ def producer_preparation_effects(owner):
         yield
         return
     token = _current.set(owner)
+    from runtime.orchestrator.workspace_adapters import _repo_effect_interval
     try:
-        yield
+        with _repo_effect_interval(owner):
+            yield
     except BaseException as exc:
         try:
             owner.failed_cleanup()
@@ -154,6 +156,28 @@ class ProducerPreparation:
         self.executor = self.model = None
         self.attempt_open = False
         self.safe_defer = False
+
+        self._repository_preparations = {}
+        self._repository_effect_intervals = []
+        self._repository_retained_effects = []
+        self._repository_worker_active = False
+
+    def repository_preparation_binding(self):
+        from runtime.orchestrator.workspace_adapters import _repo_owner_binding
+        return _repo_owner_binding(self)
+
+    def repository_preparation_revalidate(self, evidence):
+        from runtime.orchestrator.workspace_adapters import _repo_preparation_writer
+        with _repo_preparation_writer(self, evidence):
+            self.admission.revalidate_uncommitted(self)
+
+    def record_repository_preparation(self, evidence, body):
+        from runtime.orchestrator.workspace_adapters import _repo_native_record
+        return _repo_native_record(self, evidence, body)
+
+    def settle_repository_preparation(self, evidence):
+        from runtime.orchestrator.workspace_adapters import _repo_native_settle
+        return _repo_native_settle(self, evidence)
 
     @property
     def move_reservation(self):
@@ -295,13 +319,15 @@ class ProducerPreparation:
             _current.reset(token)
 
     def finish(self, *, deferred=False, failed=False):
+        failed = failed or any(not v.closed for v in self._repository_preparations.values())
         with self.admission.db._lock:
             if self.attempt_open:
                 self.direct_terminal()
             self.save(producer_settled=True, deferred=deferred,
                 failed_cleanup=self.state.failed_cleanup or failed)
             self.owner_live = False
-            self.admission.live.pop((self.state.kind, self.state.source_id), None)
+            if all(v.closed for v in self._repository_preparations.values()):
+                self.admission.live.pop((self.state.kind, self.state.source_id), None)
 
 
 class _DeferredJob:

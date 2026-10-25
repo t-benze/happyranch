@@ -150,6 +150,67 @@ class TaskInvocation:
     refusal_attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     launch_observed: bool = False
     preparation_cause: dict | None = None
+    _repository_preparations: dict = field(default_factory=dict, repr=False)
+    _repository_effect_intervals: list = field(default_factory=list, repr=False)
+    _repository_retained_effects: list = field(default_factory=list, repr=False)
+    _repository_worker_active: bool = False
+
+    def repository_preparation_binding(self):
+        from runtime.orchestrator.workspace_adapters import _repo_owner_binding
+        return _repo_owner_binding(self)
+
+    def repository_preparation_revalidate(self, evidence):
+        from runtime.orchestrator.launch_refusals import _current
+        from runtime.orchestrator.workspace_adapters import _repo_preparation_writer
+        with _repo_preparation_writer(self, evidence):
+            self.store.held_uncommitted(self.task.id)
+            self.orch._team_moves.revalidate_uncommitted(self.move_reservation)
+            if self.store._live.get(self.identity) is not self or not _current(self) or self.launch_observed:
+                raise RuntimeError("repository_preparation_owner_changed")
+
+    def record_repository_preparation(self, evidence, body):
+        if evidence.owner is not self or body["owner"] != self.repository_preparation_binding()[0]:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        from runtime.orchestrator.workspace_adapters import _repo_preparation_writer
+        from runtime.orchestrator.launch_refusals import _current
+        try:
+            with _repo_preparation_writer(self, evidence):
+                self.store.held_uncommitted(self.task.id)
+                self.orch._team_moves.revalidate_uncommitted(self.move_reservation)
+                if (self.store._live.get(self.identity) is not self or not _current(self)
+                        or self.launch_observed or self.attempt_committed):
+                    raise RuntimeError("repository_preparation_owner_changed")
+                if body["phase"] == "opened":
+                    self.move_reservation.repository_obligations[body["obligation"]] = False
+                    self._repository_preparations[body["obligation"]] = evidence
+                    self.move_reservation.repository_evidence[body["obligation"]] = evidence
+                elif self._repository_preparations.get(body["obligation"]) is not evidence:
+                    raise RuntimeError("repository_preparation_wrong_obligation")
+                from runtime.orchestrator.workspace_adapters import _repo_check_closure_uncommitted
+                _repo_check_closure_uncommitted(self, evidence, body)
+                return self.orch._db.append_repository_preparation_uncommitted(body)
+        except BaseException:
+            self.move_reservation.failed_cleanup()
+            raise
+
+    def settle_repository_preparation(self, evidence):
+        if evidence.closed:
+            return (evidence.owner is self and self._repository_preparations.get(evidence.obligation) is evidence
+                and self.move_reservation.repository_obligations.get(evidence.obligation) is True)
+        if (evidence.owner is not self or not evidence.worker_returned or evidence.uncertain
+                or evidence.pending or self.move_reservation.cleanup_failed):
+            return False
+        from runtime.orchestrator.workspace_adapters import _repo_effect_inventory
+        inventory = _repo_effect_inventory(self)
+        evidence.emit("outer_closed", complete=True, inventory=inventory)
+        self.repository_preparation_revalidate(evidence)
+        from runtime.orchestrator.workspace_adapters import _repo_closure_digest
+        evidence.emit("closed", complete=True, state_digest=_repo_closure_digest(self, evidence))
+        # Only this obligation becomes closed, after durable positive proof.
+        # Neither the old Boolean nor a historical Pause UNKNOWN is cleared.
+        with self.orch._db._lock:
+            self.move_reservation.repository_obligations[evidence.obligation] = True
+        return True
 
     @property
     def store(self) -> TaskPauseStore:
@@ -228,17 +289,19 @@ class TaskInvocation:
             if entry["phase"] in {"retry_deferred", "recovery_deferred"}:
                 entry["phase"] = "prepared"
                 self.store.save_journal_uncommitted(row)
+        from runtime.orchestrator.workspace_adapters import _repo_effect_interval
         try:
-            yield
+            with _repo_effect_interval(self):
+                yield
         except BaseException as exc:
-            self.record_preparation_cause("native_preparation", exc)
             try:
                 self.failed_cleanup()
-            except BaseException as evidence:
-                exc.add_note(f"task preparation evidence failed: {evidence!r}")
-                logging.getLogger(__name__).exception(
-                    "task %s session %s owner %s preparation evidence failed; original error preserved",
-                    self.task.id, self.session_id, self.identity)
+            except BaseException:
+                exc.add_note("task preparation evidence persistence unavailable; original error retained")
+            try:
+                self.record_preparation_cause("native_preparation", exc)
+            except BaseException:
+                exc.add_note("task preparation cause unavailable; original error retained")
             raise
 
     def _business_uncommitted(self, entry: dict) -> float | None:
@@ -598,7 +661,8 @@ class TaskInvocation:
             reservation = self.move_reservation
             move_unknown = reservation is not None and (reservation.cleanup_failed
                 or (reservation.possible_launch and not reservation.quiescent))
-            unknown = entry["context"].get("execution_unknown", False) or entry["phase"] == "unknown" or move_unknown
+            unknown = (entry["context"].get("execution_unknown", False) or entry["phase"] == "unknown" or move_unknown
+                or reservation is not None and not all(reservation.repository_obligations.values()))
             if self.unsettled or unknown:
                 if move_unknown:
                     entry["context"]["execution_unknown"] = True

@@ -3172,6 +3172,36 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/preparation-recovery": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "operation_key",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/tasks/{task_id}/progress": {
       "POST": {
         "params": [
@@ -3225,6 +3255,33 @@
       }
     },
     "/api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/reconcile-preparation": {
       "POST": {
         "params": [
           [

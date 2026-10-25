@@ -16,11 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import Depends, APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse
 
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
@@ -103,6 +104,169 @@ def _reconciliation_error(exc: Exception) -> HTTPException:
 
 _RECONCILIATION_RESPONSES = {code: {"model": ReconciliationRefusal} for code in (403, 404, 409, 422, 503)}
 _RECONCILIATION_RESPONSES[401] = {"description": "Existing bearer refusal"}
+
+
+class PreparationRecoveryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: int
+    task_id: str
+    invocation_id: str | None
+    attempt_id: str | None
+    owner: dict | None
+    state_digest: str
+    eligible: bool
+    missing_predicates: list[str]
+    first_cause: dict | None
+    committed: bool
+    code: str | None = None
+
+
+class ReconcilePreparationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: int = Field(ge=1, le=1)
+    operation_key: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    expected_state_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    invocation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    attempt_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+def _preparation_error(exc):
+    from runtime.infrastructure.db.tasks import RepositoryPreparationError
+    if isinstance(exc, RepositoryPreparationError):
+        return HTTPException(exc.status, detail={"code": exc.code, "committed": False})
+    if isinstance(exc, sqlite3.Error):
+        return HTTPException(503, detail={"code": "storage_unavailable", "committed": None, "readback_required": True})
+    if isinstance(exc, PauseControlError):
+        code = "held" if exc.detail.get("code") == "root_paused" else "control_unavailable"
+        return HTTPException(409 if code == "held" else 503, detail={"code": code, "committed": False})
+    return HTTPException(503, detail={"code": "evidence_unavailable", "committed": False})
+
+
+@router.get("/tasks/{task_id}/preparation-recovery", response_model=PreparationRecoveryResponse,
+    responses={code: {"description": "Bounded preparation refusal"} for code in (401, 404, 409, 422, 503)})
+async def preparation_recovery(task_id: str, request: Request, org: OrgDep,
+        operation_key: str | None = Query(default=None, pattern=r"^[A-Za-z0-9._:-]{1,128}$")) -> dict:
+    from runtime.infrastructure.db.tasks import RepositoryPreparationError, _repository_require
+    try:
+        _repository_require(0 < len(task_id) <= 256 and task_id.isprintable(), "invalid_request", 422)
+        async for chunk in request.stream():
+            _repository_require(not chunk, "invalid_request", 422)
+        _repository_require(len(request.query_params.multi_items()) <= 1, "invalid_request", 422)
+        _repository_require(not set(request.query_params)-{"operation_key"}, "invalid_request", 422)
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            view = org.db.repository_preparation_snapshot_uncommitted(task_id)
+            if operation_key is not None:
+                # Exact-key readback after a lost POST response/COMMIT. No
+                # control action, second apply or replacement operation key.
+                rows = org.db._conn.execute("SELECT payload FROM audit_log WHERE task_id=? "
+                    "AND action='repository_preparation_reconciliation' ORDER BY id LIMIT 129", (task_id,)).fetchall()
+                _repository_require(len(rows) <= 128, "evidence_unavailable", 503)
+                found = []
+                for row in rows:
+                    _repository_require(type(row[0]) is str and len(row[0].encode()) <= 16384,
+                        "evidence_unavailable", 503)
+                    saved = _json.loads(row[0])
+                    if saved["command"]["operation_key"] == operation_key:
+                        found.append(org.db.repository_preparation_operation_uncommitted(task_id, saved["command"]))
+                _repository_require(len(found) == 1, "operation_unavailable", 404)
+                return found[0]
+            return view
+    except (RepositoryPreparationError, PauseControlError, sqlite3.Error, CensusReadUnavailable,
+            ValueError, KeyError, TypeError) as exc:
+        raise _preparation_error(exc) from None
+
+
+@router.post("/tasks/{task_id}/reconcile-preparation", response_model=PreparationRecoveryResponse,
+    dependencies=[Depends(_require_human)],
+    responses={code: {"description": "Bounded preparation refusal; no settlement"} for code in (401, 403, 404, 409, 422, 503)},
+    openapi_extra={"requestBody": {"required": True, "content": {"application/json": {
+        "schema": ReconcilePreparationBody.model_json_schema()}}}})
+async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
+    from runtime.infrastructure.db.tasks import (
+        RepositoryPreparationError, _repository_require, repository_preparation_command,
+    )
+    from runtime.orchestrator.workspace_adapters import _repo_refresh_lease
+    import time
+    try:
+        _repository_require(0 < len(task_id) <= 256 and task_id.isprintable(), "invalid_request", 422)
+        raw = bytearray()
+        async for chunk in request.stream():
+            _repository_require(len(raw)+len(chunk) <= 16384, "invalid_request", 422)
+            raw.extend(chunk)
+        _repository_require(not request.query_params and not request.headers.getlist("X-HappyRanch-Task-Session"),
+            "invalid_request", 422)
+        body = repository_preparation_command(bytes(raw))
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            replay = org.db.repository_preparation_operation_uncommitted(task_id, body)
+            if replay is not None:
+                return replay if replay["committed"] else JSONResponse(status_code=409, content=replay)
+            view = org.db.repository_preparation_snapshot_uncommitted(task_id, body["invocation_id"], body["attempt_id"])
+            store = getattr(org.db, "_task_pause_store", None)
+            live = None if store is None else store._live.get(body["invocation_id"])
+        # An absent old owner cannot be recreated. Persist that refusal under
+        # the original task, preserving every journal/result/reservation byte.
+        _repository_require(org.sessions is not None and store is not None, "control_unavailable", 503)
+        native_binding = None if live is None else live.repository_preparation_binding()[0]
+        deadline = time.monotonic()+30.0
+        with org.db._memory_collection_read_budget():
+            root_id = store.root_uncommitted(task_id)["id"]
+        with ExitStack() as stack:
+            if live is not None:
+                _repository_require(live.refusal_attempt_id == body["attempt_id"], "conflicting_history")
+                stack.enter_context(org.sessions.binding_lease(task_id, live.agent))
+                # Current cooperative resource exclusion precedes root/move/DB.
+                for evidence in ([] if "active_worker" in view["missing_predicates"] else live._repository_preparations.values()):
+                    lease = stack.enter_context(_repo_refresh_lease(evidence.repo_dir,
+                        deadline=deadline, cancel_requested=None))
+                    _repository_require(lease[0] == evidence.repository, "stale_state")
+                    lease[1]()
+            for lock in (store.gate(root_id), org.orchestrator._team_moves.gate, org.db._lock):
+                _repository_require(lock.acquire(timeout=max(0.0, deadline-time.monotonic())), "control_unavailable", 503)
+                stack.callback(lock.release)
+            _repository_require(time.monotonic() < deadline, "control_unavailable", 503)
+            with org.db._memory_collection_read_budget(publication=True):
+                with store.writer(task_id, admission=True):
+                    replay = org.db.repository_preparation_operation_uncommitted(task_id, body)
+                    if replay is not None:
+                        return replay if replay["committed"] else JSONResponse(status_code=409, content=replay)
+                    _repository_require(store.root_uncommitted(task_id)["id"] == root_id, "stale_state")
+                    current = org.db.repository_preparation_snapshot_uncommitted(task_id,
+                        body["invocation_id"], body["attempt_id"])
+                    _repository_require(current["state_digest"] == body["expected_state_digest"], "stale_state")
+                    missing = current["missing_predicates"]
+                    code = None
+                    if "original_owner" in missing:
+                        code = "original_owner_unavailable"
+                    elif "held" in missing:
+                        code = "held"
+                    elif "active_worker" in missing or "active_preparation" in missing:
+                        code = "active_owner"
+                    elif missing:
+                        code = "unresolved_preparation"
+                    elif native_binding != current["owner"]:
+                        code = "stale_state"
+                    else:
+                        from runtime.orchestrator.launch_refusals import _current
+                        if (store._live.get(live.identity) is not live or not _current(live)
+                                or live.move_reservation.cleanup_failed):
+                            code = "unresolved_preparation"
+                        else:
+                            store.held_uncommitted(task_id)
+                            live.orch._team_moves.revalidate_uncommitted(live.move_reservation)
+                            selected = list(live._repository_preparations.values())
+                            if (not selected or any(not e.closed for e in selected)
+                                    or not all(live.settle_repository_preparation(e) for e in selected)):
+                                code = "unresolved_preparation"
+                    response = dict(current, committed=code is None, code=code)
+                    org.db.insert_audit_log_uncommitted(task_id, "founder", "repository_preparation_reconciliation",
+                        {"command": body, "response": response})
+            if code is not None:
+                # Refusal audit committed, settlement did not. Keep first cause.
+                return JSONResponse(status_code=409, content=response)
+            return response
+    except (RepositoryPreparationError, PauseControlError, sqlite3.Error, CensusReadUnavailable,
+            OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        raise _preparation_error(exc) from None
 
 
 @router.post("/tasks/{task_id}/reconcile-failed-continuation", response_model=ReconciliationResponse,
