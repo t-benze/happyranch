@@ -165,3 +165,25 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
             if current.kind == 'f5' and current.state == 'queued':
                 queue.enqueue_if_absent(slug, task_id)
     return True
+
+
+def rediscover_returned(coding: Any) -> None:
+    """Replay only committed caller notifications, never a stage or PR action.
+
+    Terminal coding sources are absent from ordinary nonterminal startup scans.
+    Complete reader validation precedes any notification; literal old complete
+    records without the additive return are deliberately left alone.
+    """
+    from runtime.workflows.coding_authority_history import _Budget
+    from runtime.workflows.coding_progression import notify_returned
+    db = coding.db
+    with db.coherent_read_view() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
+            return
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema
+        _, inventory = _read_workflow_schema(conn, expected_org_slug=coding.org.slug, budget=_Budget())
+        if inventory is None:
+            return
+        returned = tuple(key for key, entry in inventory.queued.runs.items() if entry['native'].get('returned'))
+    for instance in returned:
+        notify_returned(coding, instance)

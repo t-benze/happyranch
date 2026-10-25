@@ -1,9 +1,4 @@
-"""Native owner for disabled development, review, QA and final manager.
-
-Queue and launch admission remain unavailable until the whole coding engine is
-present. Original native writers compose complete readers and the coding
-ordered edges through QA; finalization, controls and legacy effects remain absent.
-"""
+"""Coding stages through the native queue, host, callback and settlement owners."""
 from __future__ import annotations
 
 import asyncio
@@ -111,20 +106,22 @@ class CodingDispatcher:
                 raise
 
     def require_task_ready(self, task_id: str) -> None:
-        require_ready()
+        require_ready(self.org)
         with self.db._lock:
-            self._entry(self.db._conn, task_id)
+            entry = self._entry(self.db._conn, task_id)
+            _check(entry['command']['format'] == 'workflow-coding-start@2')
 
     def queue_admission_allowed(self, task_id: str) -> bool:
         # This check precedes generation, SID, Pause preparation, counter and
         # host effects. It has no caller/config readiness Boolean.
         try:
-            require_ready()
+            require_ready(self.org)
         except CodingStartError:
             return False
         with self.db._lock:
             entry = self._entry(self.db._conn, task_id)
-            return (task_id == entry['attempt']['task_id'] and entry['attempt']['state'] == 'queued'
+            return (entry['command']['format'] == 'workflow-coding-start@2'
+                    and task_id == entry['attempt']['task_id'] and entry['attempt']['state'] == 'queued'
                     and entry['run']['current_attempt_id'] == entry['attempt']['id']
                     and entry['run']['state'] == entry['attempt']['stage']
                     and entry['native']['source_settled'] and not entry['native'].get('ownership_unknown')
@@ -138,7 +135,7 @@ class CodingDispatcher:
         with self.db._lock:
             coding = classify_task(self.db, task_id, org_slug=self.org.slug).kind == 'coding_attempt'
         if coding:
-            require_ready()  # Before creating a SID or preparing any owner.
+            require_ready(self.org)  # Before creating a SID or preparing any owner.
             with self.db._lock:
                 entry = self._entry(self.db._conn, task_id)
                 task = self.db.get_task(task_id)
@@ -239,7 +236,7 @@ class CodingDispatcher:
             queue.enqueue_if_absent(self.org.slug, task_id)
 
     def dispatch(self, task_id: str) -> None:
-        require_ready()  # Direct owned routing cannot bypass native queue denial.
+        require_ready(self.org)  # Direct owned routing cannot bypass native queue denial.
         from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint
         with self.db._lock:
             entry = self._entry(self.db._conn, task_id)
@@ -284,6 +281,7 @@ class CodingDispatcher:
         from runtime.workflows._coding_settings_execution import _current_configuration, _settings_family
         from runtime.workflows.activation import author_capacity_blocked
         from runtime.workflows.coding_bootstrap import effective_bindings
+        _check(callback or _settings_family(entry['command']))
         _check(not self.org._runner_admission_closed and invocation.orch is self.org.orchestrator
                and invocation.owner == 'coding' and invocation.workflow_dispatcher is self
                and invocation is invocation.store._live.get(invocation.identity))
@@ -425,7 +423,7 @@ class CodingDispatcher:
             async with self.org.db_lock:
                 yield None
             return
-        require_ready()
+        require_ready(self.org)
         capture = self.org.workflow_authority.capture_admission()
         self._policies(entry)
         async with self.org.workflow_authority._async_writer_lock:
@@ -439,7 +437,7 @@ class CodingDispatcher:
                         yield capture
 
     async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
-        require_ready()  # Alternate native TaskInvocation.commit remains closed.
+        require_ready(self.org)  # Alternate native TaskInvocation.commit remains closed.
         with self.db._lock:
             entry = self._entry(self.db._conn, invocation.task.id)
         self._policies(entry)
@@ -456,7 +454,7 @@ class CodingDispatcher:
                         return invocation._commit_local(ctx)
 
     def _claim_launch_uncommitted(self, invocation: Any) -> None:
-        require_ready()
+        require_ready(self.org)
         conn = self.db._conn
         entry = self._entry(conn, invocation.task.id)
         invocation.coding_launch_admission = self._eligible(conn, entry, invocation, invocation.coding_capture, invocation.coding_sessions)
@@ -688,7 +686,7 @@ class CodingDispatcher:
         if len(invocations) != 1:
             return False
         invocation = invocations[0]
-        require_ready()
+        require_ready(self.org)
         invocation.coding_callback_admission = self._eligible(conn, entry, invocation, capture, (), callback=True)
         self.db._insert_task_result(task_id=task_id, agent=agent, session_id=session_id, **payload)
         result_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
@@ -758,6 +756,8 @@ class CodingDispatcher:
                 return
             if self.db._conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone() is None:
                 return
+        from runtime.orchestrator.run_step import _RootWorktreeTransitions, _capture_root_worktree_transition, _root_worktree_batch
+        transitions = _RootWorktreeTransitions()
         with self._writer() as (conn, budget):
             saved = queued_storage(conn, self.org.slug, budget=budget)
             ownership = saved.owners.get(invocation.task.id)
@@ -849,6 +849,14 @@ class CodingDispatcher:
                     record_qa_in_writer(self, conn, entry)
                 elif entry['attempt']['stage'] == 'manager_closeout':
                     record_final_in_writer(self, conn, entry)
+                    # The same transaction records performed work and returns
+                    # its caller. Any reader/closure failure rolls both back.
+                    from runtime.workflows.coding_progression import return_in_writer
+                    with _capture_root_worktree_transition(self.org.orchestrator, entry['source']['task_id'],
+                            'coding_return', transitions):
+                        return_in_writer(self, conn, self._entry(conn, invocation.task.id, budget=budget))
+        if transitions:
+            _root_worktree_batch(self.org.orchestrator, transitions)
         # Native close/move release was recorded and committed before any new
         # current-authority allocation, with no await or enqueue in that writer.
         from runtime.workflows.coding_progression import reconcile_run
@@ -1063,7 +1071,10 @@ class CodingDispatcher:
                         command=entry['command'], roles=entry['roles'], developer=developer, subject=scope['subject']))
                 supplement['developer'] = scope['developer']
                 supplement['subject'] = scope['subject']
-        return '\n\n' + _canonical(supplement).decode('utf8') + _CANCELLATION_INSTRUCTION
+        return ('\n\n' + _canonical(supplement).decode('utf8') + _CANCELLATION_INSTRUCTION
+                + ('\nThe original queued brief records the historical unavailable source checkpoint. '
+                   'This actual admitted settings-pinned invocation now executes the bound development work.'
+                   if development and entry['command']['format'] == 'workflow-coding-start@2' else ''))
 
     def revision_instruction(self, entry: dict, task_id: str, agent: str, session_id: str) -> str:
         from runtime.workflows.coding_revision import ROLES, returned_findings, revision_scope

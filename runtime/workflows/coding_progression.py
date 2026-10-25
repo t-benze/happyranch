@@ -2,7 +2,8 @@
 
 The native outer owner records settlement first. A separate current-authority
 transaction reselects that original result and graph. Only committed queued
-work is notified, and readiness remains unconditionally unavailable.
+work is notified. A performed merge returns the original source and carrier
+only after positive original native settlement.
 """
 from __future__ import annotations
 
@@ -410,9 +411,110 @@ def record_final_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     _append(dispatcher, conn, entry, 'manager_completed', facts, output, now=stamp())
 
 
+def return_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
+    """Close structural/caller rows after recorded work, without a new result."""
+    from runtime.workflows.coding_dispatch import stamp
+    from runtime.workflows.coding_revision import _copy_allowance
+    budget = entry['_budget']
+    run, current, native = entry['run'], entry['attempt'], entry['native']
+    if (native.get('returned') or run['state'] != 'complete'
+            or entry['command']['format'] != 'workflow-coding-start@2'):
+        return
+    _check(conn is dispatcher.db._conn and conn.in_transaction
+           and entry['command']['format'] == 'workflow-coding-start@2'
+           and current['stage'] == 'manager_closeout' and native.get('cancellation') is None
+           and native['final_output']['outcome'] == 'merged')
+    for stage in native['stages'].values():
+        _check(stage['source_settled'] and stage['cleanup_recorded'] and stage['cleanup']
+               and stage['terminal'] == 'success' and not stage.get('ownership_unknown'))
+    previous = native['history'][-1]
+    _check(previous['event_kind'] == 'manager_completed')
+    result = native['callback']
+    subject = native['final_output']['subject']
+    note = ('Coding workflow merged: ' + subject['navigation']['pr_url'] + ' head=' + subject['head']
+            + '; manager_result=' + str(result['id']))
+    carrier_id = json.loads(entry['event']['event_bytes'])['evidence']['facts']['carrier_task_id']
+    facts = dict(format='workflow-coding-return@1', result_id=result['id'],
+        output_digest=_hash(result['output_summary'].encode('utf8')),
+        source_task_id=entry['source']['task_id'], carrier_task_id=carrier_id)
+    internal = dict(format='workflow-coding-return-command@1', kind='return',
+        source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']], facts=facts)
+    key = 'coding-internal:' + _hash(_canonical([run['instance_id'], 'return', result['id'], internal]))
+    principal, now = 'service:' + dispatcher.producer, stamp()
+    event_id = identity('event', dispatcher.org.slug, run['instance_id'], principal, key)
+    for value in (run, entry['attempts'], entry['tasks'], entry['authority']):
+        _copy_allowance(value, budget)
+    before, after = dispatcher._projection(entry), deepcopy(dispatcher._projection(entry))
+    after['run'].update(cas_version=run['cas_version'] + 1, last_event_id=event_id)
+    for task_id in (entry['source']['task_id'], carrier_id):
+        original = entry['tasks'][task_id]
+        _check(original['status'] == 'in_progress' and original['block_kind'] == 'delegated'
+               and original['cancelled_at'] is None and original['completed_at'] is None)
+        conn.execute('UPDATE tasks SET status=?,block_kind=NULL,completed_at=?,updated_at=?,note=?,'
+            'final_output_summary=?,final_output_dir=? WHERE id=?',
+            ('completed', now, now, note, result['output_summary'], result['output_dir'], task_id))
+        entry['tasks'][task_id] = {**original, 'status': 'completed', 'block_kind': None,
+            'completed_at': now, 'updated_at': now, 'note': note, 'final_output_summary': result['output_summary'],
+            'final_output_dir': result['output_dir']}
+    after['tasks'] = [dict(id=k, record=encode_row(t)) for k, t in sorted(entry['tasks'].items())]
+    body = dict(format='workflow-coding-event@9', id=event_id, instance_id=run['instance_id'],
+        event_seq=previous['event_seq'] + 1, event_kind='return', attempt_id=current['id'],
+        operation=dict(org_slug=dispatcher.org.slug, principal=principal, key=key, request_digest=_hash(_canonical(internal))),
+        previous_digest=previous['event_digest'], before=before, after=after, created_at=now,
+        evidence=dict(kind='return', command=internal, origin=dict(kind='settled_result',
+            principal=current['principal'], task_id=current['task_id'], session_id=current['session_id'],
+            result_id=result['id'], claim=native['claim']), authority=entry['authority'], rows=[], facts=facts,
+            native_task_observations=native.get('pending_observations', [])))
+    raw = _canonical(body)
+    _check(len(raw) <= 16777216 and body['event_seq'] <= entry['source']['budgets']['coding_event_limit'])
+    conn.execute('INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (event_id, run['instance_id'], body['event_seq'], current['id'], dispatcher.org.slug, principal,
+         key, body['operation']['request_digest'], 'return', previous['event_digest'], raw, _hash(raw), now))
+    changed = conn.execute('UPDATE workflow_coding_runs SET cas_version=?,last_event_id=? '
+        'WHERE instance_id=? AND cas_version=? AND current_attempt_id=?',
+        (after['run']['cas_version'], event_id, run['instance_id'], run['cas_version'], current['id']))
+    _check(changed.rowcount == 1)
+
+
+def notify_returned(dispatcher: Any, instance: str) -> bool:
+    """Read the committed return before idempotent native caller notifications."""
+    from runtime.models import TaskStatus
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _maybe_post_thread_followup
+    with dispatcher.db._lock:
+        entry = queued_storage(dispatcher.db._conn, dispatcher.org.slug).runs[instance]
+        if not entry['native'].get('returned'):
+            return False
+        source_id = entry['source']['task_id']
+        carrier_id = entry['tasks'][entry['attempt']['task_id']]['parent_task_id']
+    orch = dispatcher.org.orchestrator
+    orch._update_task_history(carrier_id)
+    orch._update_task_history(source_id)
+    _enqueue_parent_if_waiting(orch, source_id)
+    # The ordinary thread tail is not an idempotent API. Serialize its existing
+    # stored SYSTEM marker with this coding-only rediscovery producer. A partial
+    # native thread tail is retained, never repeated as a second notification.
+    with dispatcher.db._lock:
+        task = dispatcher.db.get_task(source_id)
+        if task.parent_task_id is None:
+            chain = dispatcher.db.walk_revisit_chain(source_id, max_hops=200)
+            original = chain[-1] if chain else task
+            if original.dispatched_from_thread_id is not None:
+                budget = _Budget()
+                for row in rows(dispatcher.db._conn, 'thread_messages', budget,
+                        where="thread_id=? AND kind='system'", args=(original.dispatched_from_thread_id,)):
+                    if row['system_payload_json'] is None:
+                        continue
+                    payload = _read_json(row['system_payload_json'].encode('utf8'), budget)
+                    _check(type(payload) is dict)
+                    if payload.get('task_id') == source_id and payload.get('status') == 'completed':
+                        return True
+                _maybe_post_thread_followup(orch, source_id, status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    return True
+
+
 
 async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
-    require_ready()
+    require_ready(dispatcher.org)
     org, db = dispatcher.org, dispatcher.db
     with db._lock:
         entry = queued_storage(db._conn, org.slug).runs[instance]
@@ -443,8 +545,10 @@ async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
 
 
 def reconcile_run(dispatcher: Any, instance: str, queue: Any) -> None:
+    if notify_returned(dispatcher, instance):
+        return
     try:
-        require_ready()
+        require_ready(dispatcher.org)
     except CodingStartError:
         return
     from runtime.infrastructure.task_pause_controls import PauseControlError

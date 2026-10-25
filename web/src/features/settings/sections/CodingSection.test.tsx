@@ -130,7 +130,9 @@ describe('CodingSection — route, initial and populated states', () => {
     await screen.findByTestId('coding-initial');
     const nav = screen.getByRole('complementary');
     expect(within(nav).getByRole('link', { name: 'Coding' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('Coding execution is disabled in this release');
+    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('Coding starts follow Admission');
+    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('Admission is Disabled by default.');
+    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('Saving does not start a run.');
     expect(screen.getByTestId('coding-current')).toHaveTextContent('4');
     expect(screen.getByRole('radio', { name: /Disabled/ })).toBeChecked();
     await user.click(screen.getByTestId('coding-save'));
@@ -629,7 +631,8 @@ describe('CodingSection — ordering, org isolation and locale', () => {
     act(() => screen.getByTestId('test-set-locale-zh-CN').click());
     expect(await screen.findByRole('combobox', { name: /开发者/ })).toHaveValue('frontend_engineer');
     expect(screen.getByRole('combobox', { name: /开发者/ })).toHaveFocus();
-    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('此版本中编码执行已停用');
+    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('编码启动遵循准入设置');
+    expect(screen.getByTestId('coding-readiness')).toHaveTextContent('保存不会启动流程。');
     act(() => screen.getByTestId('test-set-locale-en').click());
     expect(select(/Developer/)).toHaveValue('frontend_engineer');
     expect(seen.length).toBe(before);

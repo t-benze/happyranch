@@ -1481,7 +1481,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                             and decision_payload.get('action') == 'workflow_start'):
                         from runtime.workflows.coding_start import CodingStartError, require_start_ready
                         try:
-                            require_start_ready(org.db._conn, org.slug, decision_payload['workflow'])
+                            require_start_ready(org.db._conn, org, decision_payload['workflow'])
                         except CodingStartError as exc:
                             # Refuse before persisting a fresh unsupported start result,
                             # including on I; never poison old/native history or spend

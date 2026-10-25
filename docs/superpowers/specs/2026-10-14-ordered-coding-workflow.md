@@ -1,5 +1,64 @@
 # Ordered coding workflow — agent-read contract
 
+## Current explicit coding execution and caller return — ROOT13015
+
+Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
+coding integration. This current contract supersedes unconditional-disabled
+instructions in the historical K3/R2/revision/source checkpoints below; their
+original observations, failures, approvals and immutable encodings remain history.
+
+New starts require the mounted native queue/host/runtime, complete valid J/import,
+current canonical settings with Admission Explicit and matching settings/release/
+mapping pins, and the existing current-authority/native admission predicates.
+Missing, malformed or Disabled settings refuse before callback persistence, spend
+or allocation. Disabled remains the default; ordinary routing remains legacy.
+Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
+work retains its original pins across later disable/default changes and still
+requires current selected-role/repository authority, Pause/move and native proof.
+
+Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
+this is neither per-org admission nor installed/loaded/operational acceptance.
+The strict historical false/downstream-unavailable pair remains readable. Settings
+copy in both locales distinguishes capability, admission and saving from a run.
+
+The existing four distinct actual roles and their genuine task/SID/INTEGER results
+progress through development, independent review, QA and final live manager.
+The selected final manager alone performs the existing local guarded expected-head,
+non-admin action and independent actual MERGED/commit/aware-time observation before
+its own callback. No daemon PR I/O, job executor or callback substitution is added.
+Fresh revisions and the bounded no-action manager successor use the same return.
+
+After manager_completed records merged work AND every original stage has successful
+host/quiescence and positive outer settlement, additive event@9/return@1 completes
+the original source and structural carrier in that SAME transaction. Their final
+summary/directory and note derive from the genuine manager result; source SID and
+all original results remain, and the carrier gets no SID/result. The independent
+reader derives every changed task field; rollback/full target validation uses the
+original aggregate allowance. Literal old complete/held histories are not adopted
+or rewritten. Returned metadata uses run@8, retaining old run@1–7 readers.
+
+Only a committed authenticated return may notify the ordinary parent and publish
+the existing terminal task history/thread tail. Runtime wiring rediscovers returned
+sources omitted from nonterminal scans, using complete readers and the native
+stored thread marker to avoid a second notification. A partial thread tail stays
+with its original owner. Coding leaves/carriers never enter legacy allocation.
+The existing root terminal-worktree tail remains separately attributable.
+After return, ordinary callers own their later state and later allocations;
+original complete captures and stable ancestry identity remain validated, while
+all coding-owned current task rows still compare exactly. Returned graphs no
+longer block drain; J and all retained new bytes still require a compatible reader.
+
+Native deferred recovery remains unavailable. Source/static delivery is not native
+or remote workflow acceptance. No deployment, host maintenance/restart, migration,
+import, role assignment, activation or historical settlement follows. Benze or the
+designated host operator owns existing guided deployment/setup; the human Founder
+owns original import/settings. First genuine scratch through four actual roles
+and actual merge remains required before ordinary routing. Revision/control,
+cross-team persistence, two-org/default/override/backup/rollback remain open until
+demonstrated. Python units RETIRED; integration INCLUDING callback/lifespan/
+SessionTracker SKIPPED24342; Swift UNEXECUTED/FOUNDER-EXEMPTED/NONBLOCKING32093.
+
+
 <!-- K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
 ## Result-owned coding start and queued ownership (K3a)
 

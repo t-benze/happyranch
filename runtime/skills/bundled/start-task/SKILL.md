@@ -147,19 +147,37 @@ callbacks remain unsigned; do not claim a receipt, joined approval or another
 principal's signature. Report unavailable dependencies honestly. In every lane,
 retain this skill's FINAL report-completion action and current session binding.
 
-## Disabled coding-start composition (ROOT10693 / K3a)
+## Explicit settings-pinned coding composition (ROOT13015)
 
-Only an independently authorized current decision-owning agent manager may
-compose the closed `{action:workflow_start,workflow:workflow-coding-start@1}`
-decision for its OWN genuine final callback. `happyranch workflows coding
-run-start --from-file ABS --emit-decision` validates canonical pins/work and
-prints that decision only; it allocates nothing. Preserve the original key/file.
-The actual result owner refuses unavailable downstream coding readiness before
-claim consumption/allocation; K3a remains disabled. A descriptor, mapping or
-printed decision supplies no repository access, execution, approval or merge
-permission. Queued carriers/attempts have no launcher or execution supplement in
-this slice; do not substitute legacy delegate/chain/F5 or invent a callback.
-The skill's final report-completion and exact current-session binding still apply.
+Only the configured current executable agent manager composes start@2 for its
+OWN genuine callback. `workflows coding run-start --from-file ABS --emit-decision`
+validates and prints only; keep the original file/key. New callbacks/start actions
+require current canonical Explicit settings and matching release/mapping/settings
+pins, complete J/import and actual mounted native queue/host/authority. Missing,
+malformed and Disabled settings refuse before writes/spend/allocation. Default
+Admission stays Disabled and ordinary routing stays legacy. Literal start@1 is
+historical/readable, not a fresh-start route. Later disable/default edits do not
+replace admitted pins or strand genuine callbacks/settlement.
+
+Follow only the actual consumed stage supplement, exact selected repository/B/H/
+PR and genuine task/agent/SID/INTEGER result. Four distinct actual eligible org
+principals retain current repository permissions and independence. Only the live
+selected final manager performs LOCAL coding finalize, expected-head/non-admin
+merge and independent remote MERGED/full-commit/aware-time observation before its
+own callback. No coding job, daemon PR executor, legacy chain alias, ended-SID
+reuse or fabricated callback is permitted. A descriptor grants no access.
+
+Positive original host/outer settlement precedes additive return event@9. It
+completes source/carrier and publishes existing caller bookkeeping after commit;
+no new source/carrier result or carrier session exists. Complete readers retain
+old histories without adopting old complete runs as returns. Source readiness is
+engine capability only, never admission, loaded identity or scratch acceptance.
+No host/config/DB/import/activation work is authorized by source delivery; human
+operator setup and Founder settings remain separate. First genuine four-role
+scratch through merge precedes ordinary use. Deferred native recovery remains
+unavailable. Historical disabled checkpoints later in this skill retain their
+original-head evidence; this paragraph governs current settings-pinned execution.
+Your genuine current-session report-completion remains the FINAL action.
 
 ## Steps
 
