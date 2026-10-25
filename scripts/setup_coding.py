@@ -8,20 +8,30 @@ or serving observations are actionable holds, never successful setup.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import importlib.util
+import io
 import json
+import marshal
 import os
 import re
 import secrets
 import shutil
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
+import sysconfig
+import tarfile
 import time
+import tomllib
+import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from urllib.parse import quote
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote, urlsplit
 
 _MARKERS = ('HAPPYRANCH_RUNTIME_SESSION_ID', 'HAPPYRANCH_ORG_SLUG',
             'HAPPYRANCH_TASK_TMP_ROOT', 'HAPPYRANCH_TASK_SCRATCH_MANIFEST')
@@ -263,6 +273,846 @@ def exclusive(path: Path, raw: bytes) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _metadata(info):
+    """Complete regular-object pin, including shared-inode change indicators."""
+    return [info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def _parents(path):
+    return {str(p): _metadata(p.lstat())[:5] for p in reversed(path.parents)}
+
+
+@contextmanager
+def _pinned_reader(path, pin, parents, *, private=False):
+    """Hold every literal parent while reading; never follow a path alias.
+
+    Bookends detect cooperative movement. They cannot fence a hostile same-user
+    writer, racing rename-away-and-back, or an uncooperative external link user.
+    """
+    descriptors = []
+    stream = None
+    try:
+        if (not stat.S_ISREG(pin[2]) or _metadata(path.lstat()) != pin
+                or private and (pin[3] != os.getuid() or pin[5] != 1 or stat.S_IMODE(pin[2]) != 0o600)):
+            raise Hold('regular read admission/custody unavailable before open', details={'path': str(path)})
+        for parent in reversed(path.parents):
+            fd = os.open(str(parent) if not descriptors else parent.name,
+                         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         **({'dir_fd': descriptors[-1]} if descriptors else {}))
+            descriptors.append(fd)
+            if (_metadata(os.fstat(fd))[:5] != parents[str(parent)]
+                    or _metadata(parent.lstat())[:5] != parents[str(parent)]):
+                raise Hold('literal read parent moved', details={'path': str(parent)})
+        if _metadata(os.stat(path.name, dir_fd=descriptors[-1], follow_symlinks=False)) != pin:
+            raise Hold('read object moved before descriptor open', details={'path': str(path)})
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptors[-1])
+        stream = os.fdopen(fd, 'rb')
+        opened = _metadata(os.fstat(stream.fileno()))
+        if (opened != pin or _metadata(path.lstat()) != pin or not stat.S_ISREG(pin[2])
+                or private and (pin[3] != os.getuid() or pin[5] != 1 or stat.S_IMODE(pin[2]) != 0o600)):
+            raise Hold('read object custody or identity moved', details={'path': str(path)})
+        yield stream
+        if _metadata(os.fstat(stream.fileno())) != pin or _metadata(path.lstat()) != pin:
+            raise Hold('read object moved during content access', details={'path': str(path)})
+        for parent, fd in zip(reversed(path.parents), descriptors):
+            if (_metadata(os.fstat(fd))[:5] != parents[str(parent)]
+                    or _metadata(parent.lstat())[:5] != parents[str(parent)]):
+                raise Hold('read parent moved during content access', details={'path': str(parent)})
+    finally:
+        if stream is not None:
+            stream.close()
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def _public_suspicion(path):
+    # Preserve the original suspicion classifier. A match is neither a
+    # credential finding nor permission to open a public-looking path.
+    return (any(word in path.name.lower() for word in ('token', 'credential', 'secret', '.env', 'feishu', 'password'))
+            or path.name in ('.npmrc', '.netrc', '.pypirc', 'auth.json') or path.suffix in ('.key', '.pem', '.p12'))
+
+
+@contextmanager
+def _literal_output(path):
+    """New independent destination, held no-follow parents, durable publication."""
+    parents = _parents(path)
+    descriptors = []
+    output = None
+    try:
+        for parent in reversed(path.parents):
+            fd = os.open(str(parent) if not descriptors else parent.name,
+                         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         **({'dir_fd': descriptors[-1]} if descriptors else {}))
+            descriptors.append(fd)
+            if _metadata(os.fstat(fd))[:5] != parents[str(parent)]:
+                raise Hold('copy destination parent moved')
+        fd = os.open(path.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     0o600, dir_fd=descriptors[-1])
+        output = os.fdopen(fd, 'wb')
+        yield output
+        output.flush()
+        os.fsync(output.fileno())
+        pin = _metadata(os.fstat(output.fileno()))
+        if (pin != _metadata(path.lstat()) or pin[3] != os.getuid() or pin[5] != 1
+                or stat.S_IMODE(pin[2]) != 0o600):
+            raise Hold('copy destination independent custody unavailable')
+        for parent, fd in zip(reversed(path.parents), descriptors):
+            if (_metadata(os.fstat(fd))[:5] != parents[str(parent)]
+                    or _metadata(parent.lstat())[:5] != parents[str(parent)]):
+                raise Hold('copy destination parent moved during publication')
+        os.fsync(descriptors[-1])
+    finally:
+        if output is not None:
+            output.close()
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def _custody_answers(coordinator, name, rows, root, *, ordinary_state=False):
+    """Finite current facts bound to machine membership, never a grant/ledger."""
+    membership = digest(canonical(rows))
+    print('   Recovery-role scope: ' + json.dumps({'category': name, 'root': str(root), 'objects': len(rows),
+          'membership_sha256': membership, 'suspicion_paths': [r['source'] for r in rows
+                                                            if _public_suspicion(Path(r['source']))]}, ensure_ascii=True))
+    if ordinary_state:
+        print('   This scope stays with the existing ordinary DB/config/state backup owner. Ordinary private business data may be retained there; deny exceptions identify credential/auth-secret material, unknown roles or disputed custody.')
+    answer = {'category': name, 'root': str(root), 'membership_sha256': membership,
+              'scope_kind': 'existing-state-backup-owner' if ordinary_state else 'public-program-or-generated',
+              'disposition': input('Current custodian facts for this EXACT scope: known / mixed / unknown: '),
+              'exceptions': [], 'facts': {}}
+    # Preserve a declined/partial answer in the existing private failure record.
+    coordinator._role_answers.append(answer)
+    if answer['disposition'] not in ('known', 'mixed'):
+        raise Hold('recovery role or complete writer control unknown; scope remains unopened', details={'path': str(root)})
+    if answer['disposition'] == 'mixed':
+        print('   Name private, unknown or disputed exceptions WITHOUT values: TYPE relative/path, one per line; blank ends. Exceptions only DENY.')
+        while True:
+            value = input('Exception: ')
+            if not value:
+                break
+            kind, separator, relative = value.partition(' ')
+            part = PurePosixPath(relative)
+            if (kind not in ('private', 'unknown', 'disputed') or not separator or not relative
+                    or part.is_absolute() or str(part) != relative or '..' in part.parts
+                    or any(ord(c) < 32 for c in relative)):
+                raise Hold('exception must be an exact contained path or subtree without values')
+            path = root / relative
+            members = [r['source'] for r in rows if Path(r['source']) == path or Path(r['source']).is_relative_to(path)]
+            if not members or any(set(members) & set(e['members']) for e in answer['exceptions']):
+                raise Hold('unmatched, ambiguous or overlapping deny exception', details={'path': str(path)})
+            answer['exceptions'].append({'path': str(path), 'role': kind, 'members': members})
+        if not answer['exceptions']:
+            raise Hold('mixed scope requires actual known deny exceptions')
+    material = ('Every remaining member is ordinary noncredential DB/config/state already covered by this existing backup owner. Ordinary private business data is permitted in that recovery custody; credentials, unknown or disputed material are not.'
+                if ordinary_state else 'Every remaining member is public program/package material or its specified generated output; no unknown/private/disputed member is included.')
+    separation = ('I know where credential/auth-secret material is separated or have named exact deny exceptions, including innocently named credentials.'
+                  if ordinary_state else 'I know how private material is kept outside this scope or in the exact deny exceptions just named, including innocently named private material.')
+    for key, question in (
+        ('custodian', 'I am the current installation/configuration custodian and actually know the roles of every remaining member of this exact scope.'),
+        ('material_role', material),
+        ('private_separation', separation),
+        ('writers_shared_inodes', 'I control ALL writers and shared-inode/cache users, including other hosts and external aliases, for the entire backup/preparation/migration/restart/import/return window. Unknown users mean decline.'),
+    ):
+        coordinator.confirm(question)
+        answer['facts'][key] = True
+    print('   Recorded current facts only: setup cannot prove human knowledge, historical installation or exclusion of a dishonest same-user writer.')
+    return answer
+
+
+class _OriginWork:
+    """One cooperative budget for discovery, references, streams and compilation."""
+    def __init__(self):
+        self.deadline = time.monotonic() + 600
+        self.entries = 0
+        self.archive_bytes = 0
+        self.expanded_bytes = 0
+
+    def check(self, *, entries=0, archive_bytes=0, expanded_bytes=0):
+        self.entries += entries
+        self.archive_bytes += archive_bytes
+        self.expanded_bytes += expanded_bytes
+        if (time.monotonic() > self.deadline or self.entries > 200000
+                or self.archive_bytes > 512 * _LIMIT or self.expanded_bytes > 1024 * _LIMIT):
+            raise Hold('complete origin/inventory work budget exhausted; no partial acceptance')
+
+
+def _private_input_directory(path):
+    literal(path)
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid())
+                or stat.S_IMODE(info.st_mode) & 0o022):
+            raise Hold('public input parents need literal independent nonwritable custody', details={'path': str(parent)})
+    if path.lstat().st_uid != os.getuid() or stat.S_IMODE(path.lstat().st_mode) != 0o700:
+        raise Hold('public input directory must be owned private 0700 custody', details={'path': str(path)})
+
+
+def _discovery_digest(graph):
+    # Original SQLite ownership includes RO SHM readmark writes. Preserve the
+    # observed metadata but do not misrepresent readmark timestamps as immutable
+    # source contents. Main/WAL membership and every object identity still bind.
+    rows = {}
+    for name, row in graph.items():
+        value = dict(row)
+        if name.endswith('-shm'):
+            value['metadata'] = row['metadata'][:-2] + [0, 0]
+            value['mtime_ns'] = value['ctime_ns'] = 0
+        rows[name] = value
+    return digest(canonical(rows))
+
+
+def _backup_link_closure(path, work):
+    """Metadata-only equivalent of strict resolution, retaining EVERY hop."""
+    pending = list(path.parts[1:])
+    current, links = Path('/'), []
+    while pending:
+        work.check()
+        part = pending.pop(0)
+        if part in ('', '.'):
+            continue
+        if part == '..':
+            current = current.parent
+            continue
+        candidate = current / part
+        info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            work.check(entries=1)
+            if len(links) >= 64:
+                raise Hold('allowed link closure cycle or hop limit', details={'path': str(path)})
+            target = os.readlink(candidate)
+            link = {'path': str(candidate), 'metadata': _metadata(info), 'parents': _parents(candidate), 'link': target}
+            if _metadata(candidate.lstat()) != link['metadata']:
+                raise Hold('allowed intermediate link moved', details={'path': str(candidate)})
+            links.append(link)
+            parts = PurePosixPath(target).parts
+            if target.startswith('/'):
+                current = Path('/')
+                parts = parts[1:]
+            pending = list(parts) + pending
+        else:
+            if pending and not stat.S_ISDIR(info.st_mode):
+                raise Hold('allowed link has a non-directory parent', details={'path': str(candidate)})
+            current = candidate
+    literal(current)
+    work.check()
+    return current, links
+
+
+class _PublicOrigins:
+    """Private producer for the existing backup, not a new adoption interface.
+
+    No candidates/RECORD/package manifests are opened to discover membership.
+    References are admitted before reading; suspects need independent expected
+    bytes before their descriptor is opened. Every accepted copy is ORIGINAL.
+    """
+    def __init__(self, coordinator, graph, inventory, work):
+        self.owner, self.graph, self.inventory, self.work = coordinator, graph, inventory, work
+        self.directory = coordinator.backup / 'origins'
+        self.directory.mkdir(mode=0o700)
+        self.references = inventory['references'] = []
+        self.expected = {}
+        self.archives = []
+        self.git_entries = {}
+        self.git_trees = {}
+        self.commit = coordinator.source_pin['head']
+        self.reference_count = 0
+        self.archive_input = None
+
+    def retain(self, raw, provenance):
+        self.work.check()
+        if len(raw) > 64 * _LIMIT:
+            raise Hold('selected public reference exceeds 64MiB')
+        self.reference_count += 1
+        path = self.directory / str(self.reference_count)
+        exclusive(path, raw)
+        row = {'path': str(path), 'metadata': _metadata(path.lstat()), 'parents': _parents(path),
+               'sha256': digest(raw), 'size': len(raw), 'origin': provenance}
+        self.references.append(row)
+        self.work.check()
+        return row
+
+    def git_tree(self):
+        if self.commit in self.git_trees:
+            self.git_entries = self.git_trees[self.commit]
+            return
+        if self.git_entries:
+            return
+        _, out, err = self.owner.command([self.owner.tools['git']['path'], 'ls-tree', '-r', '-z', '--full-tree', self.commit])
+        if err:
+            raise Hold('pinned Git membership unavailable')
+        for entry in out.split('\0'):
+            if not entry:
+                continue
+            self.work.check(entries=1)
+            header, name = entry.split('\t', 1)
+            mode, kind, oid = header.split(' ')
+            if (str(PurePosixPath(name)) != name or PurePosixPath(name).is_absolute() or '..' in PurePosixPath(name).parts
+                    or any(ord(c) < 32 for c in name) or name in self.git_entries
+                    or re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', oid) is None):
+                raise Hold('unsupported or ambiguous pinned Git path')
+            self.git_entries[name] = (mode, kind, oid)
+        self.git_trees[self.commit] = self.git_entries
+
+    def git_bytes(self, name):
+        self.git_tree()
+        entry = self.git_entries.get(name)
+        if entry is None or entry[0] not in ('100644', '100755') or entry[1] != 'blob':
+            raise Hold('no exact regular pinned Git reference', details={'path': str(self.owner.source / name)})
+        raw = self.owner._git_blob(entry[2], self.work)
+        reference = self.retain(raw, {'kind': 'git-blob', 'commit': self.commit, 'path': name, 'object': entry[2], 'mode': entry[0]})
+        return raw, reference
+
+    def admit_graph(self):
+        groups = {}
+        source = self.owner.source
+        for row in self.graph.values():
+            if row.get('excluded') or not stat.S_ISREG(row['metadata'][2]) and 'link' not in row:
+                continue
+            path = Path(row['source'])
+            if path == self.owner.home / 'daemon.token' and stat.S_ISREG(row['metadata'][2]):
+                # Existing credential owner: ensure_token returns an existing
+                # token without writing; setup's uv/npm/build/migration outputs
+                # cannot target this file. Never hash/copy it or generalize by
+                # a credential-looking basename.
+                self.owner.confirm('Existing daemon.token stays in its original usable custody, unopened/uncopied by backup. I control all its writers/shared aliases throughout maintenance; no operation may remove/replace it. The existing startup owner reads an existing token, never regenerates it.')
+                row.update(role='private-untouched', disposition='original credential custody; identity only; contents never read or copied',
+                           untouched_reason='exact daemon.token: existing ensure_token returns without write; selected preparation/migration outputs exclude this original file')
+                continue
+            if path.is_relative_to(source / '.venv'):
+                category, root = 'installed-python-and-generated-caches', source / '.venv'
+            elif path.is_relative_to(source / 'web/node_modules'):
+                category, root = 'installed-node-and-upstream-generated', source / 'web/node_modules'
+            elif path.is_relative_to(source / 'web/dist') or path.is_relative_to(source / 'web/.feature-flags'):
+                category, root = 'all-old-generated-ui', source / 'web'
+            elif path.is_relative_to(source):
+                category, root = 'checkout-and-old-build-outputs', source
+            else:
+                # Original DB/config copy owner remains in charge. Current
+                # exceptions apply even to an innocently named private file.
+                category, root = 'shared-daemon-runtime-org-recovery', Path(row['root'])
+            groups.setdefault((category, root), []).append(row)
+        for (category, root), rows in groups.items():
+            ordinary = category == 'shared-daemon-runtime-org-recovery'
+            answer = _custody_answers(self.owner, category, rows, root, ordinary_state=ordinary)
+            for row in rows:
+                row['role'] = ('ordinary-recovery-state' if ordinary else 'public-generated'
+                               if category in ('installed-python-and-generated-caches', 'all-old-generated-ui') else 'public-program')
+                row['role_scope'] = answer['membership_sha256']
+                for exception in answer['exceptions']:
+                    if row['source'] in exception['members']:
+                        row['role'] = exception['role']
+        # Check the entire alias graph before opening ANY candidate. nlink is
+        # not a census of out-of-scope aliases; shared-user control is required.
+        aliases = {}
+        for row in self.graph.values():
+            if stat.S_ISREG(row['metadata'][2]) and not row.get('excluded'):
+                aliases.setdefault(tuple(row['metadata'][:2]), []).append(row)
+        self.inventory['aliases'] = []
+        for row in self.graph.values():
+            if 'link' in row and row.get('role') not in ('public-program', 'public-generated'):
+                raise Hold('private/unknown/disputed allowed-link role; no referent access', details={'path': row['source']})
+            if row.get('role') == 'ordinary-recovery-state' and _public_suspicion(Path(row['source'])):
+                raise Hold('suspect state slot has no independent public origin; original custody retained unopened', details={'path': row['source']})
+        for key, rows in aliases.items():
+            roles = {r.get('role', 'unknown') for r in rows}
+            nlink = rows[0]['metadata'][5]
+            if nlink > 1:
+                self.inventory['aliases'].append({'inode': key, 'members': [r['source'] for r in rows],
+                                                  'nlink': nlink, 'unobserved_alias_count': nlink - len(rows),
+                                                  'limit': 'selected paths/content only; external hardlink topology is not restored'})
+            untouched = len(rows) == 1 and roles == {'private-untouched'}
+            allowed = {'public-program', 'public-generated', 'ordinary-recovery-state'}
+            conflict = 'ordinary-recovery-state' in roles and len(roles) > 1
+            if nlink < len(rows) or not untouched and (roles - allowed or conflict):
+                # Role differences include innocently named private aliases.
+                bad = next(r for r in rows if r.get('role') not in ('public-program', 'public-generated')) if roles - {'public-program', 'public-generated'} else rows[0]
+                raise Hold('private/unknown/disputed recovery role or alias conflict; no candidate access', details={
+                    'path': bad['source'], 'custodian': 'current source/environment or shared-store custodian',
+                    'proposed_operation': 'original recovery copy',
+                    'C07_remover': 'uv/npm/build for source scopes; original migration/start for stores',
+                    'required_action': 'return exact indispensable protected object to Engineering before access'})
+        self.close_links()
+
+    def close_links(self):
+        for row in self.graph.values():
+            if 'link' not in row:
+                continue
+            external_links = []
+            for link in row['link_closure']:
+                member = self.graph.get(link['path'])
+                if member is not None and not member.get('excluded'):
+                    if (member.get('role') not in ('public-program', 'public-generated')
+                            or member['metadata'] != link['metadata'] or member.get('link') != link['link']):
+                        raise Hold('intermediate allowed-link role/identity conflict', details={'path': link['path']})
+                elif any(Path(link['path']).is_relative_to(Path(root)) for root in (
+                        str(self.owner.home), str(self.owner.source), *self.owner.frozen['registry']['registered'])):
+                    raise Hold('uncovered intermediate affected link', details={'path': link['path']})
+                else:
+                    external_links.append(link)
+            target = self.graph.get(row['referent'])
+            if target is not None and not target.get('excluded'):
+                if external_links or target.get('role', 'public-program') not in ('public-program', 'public-generated'):
+                    raise Hold('allowed link has private/unknown referent', details={'path': row['source']})
+                row['referent_coverage'] = {'source': target['source'], 'kind': 'inventoried-original'}
+            else:
+                # The only preexisting external link family with a complete
+                # untouched effect proof here is the selected base interpreter.
+                # uv --python uses it, never writes it; npm/build/migrations
+                # write selected source/stores, not that external executable.
+                pin = self.owner.python_pin
+                if (row['source'] not in tuple(str(self.owner.source / '.venv/bin' / n) for n in ('python', 'python3', f'python{sys.version_info.major}.{sys.version_info.minor}'))
+                        or row['referent'] != pin['target'] or identity(Path(row['referent'])) != pin['identity']
+                        or any(Path(row['referent']).is_relative_to(Path(root)) for root in (str(self.owner.source), str(self.owner.home), *self.owner.frozen['registry']['registered']))):
+                    raise Hold('indispensable allowed referent has no covered or proven-untouched custody', details={'path': row['source']})
+                self.owner.confirm('The selected external base interpreter ' + json.dumps(pin['target']) + ' and its complete original link chain ' + json.dumps([p['path'] for p in external_links]) + ' remain usable in original custody throughout recovery. No uv/npm/build/migration/start or other host actor will replace them; I control all writers. This is the only external referent exception.')
+                row['referent_coverage'] = {'kind': 'untouched-selected-base-interpreter', 'identity': pin,
+                                          'external_links': external_links,
+                                          'effect_reason': 'all preparation/migration outputs remain in selected source/stores; base interpreter is input only'}
+
+    def prepare_inputs(self):
+        suspects = [r for r in self.graph.values() if r.get('role') in ('public-program', 'public-generated')
+                    and stat.S_ISREG(r['metadata'][2]) and _public_suspicion(Path(r['source']))]
+        installed = [r for r in suspects if Path(r['source']).is_relative_to(self.owner.source / '.venv')
+                     or Path(r['source']).is_relative_to(self.owner.source / 'web/node_modules')]
+        if not installed:
+            return
+        previous = input('Matched installed public slots need exact locks. If current locks do not describe the OLD installation, select its full previously reviewed source commit; blank uses current: ')
+        if previous:
+            if re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', previous) is None:
+                raise Hold('prior reviewed lock selection must be a full commit')
+            self.owner.confirm('I know the selected prior commit ' + previous + ' is reviewed public source/locks under current controlled Git reference custody; this is not a historical installation certificate.')
+            _, actual, err = self.owner.command([self.owner.tools['git']['path'], 'rev-parse', '--verify', previous + '^{commit}'])
+            if err or actual.strip() != previous:
+                raise Hold('prior exact reviewed commit unavailable')
+            self.commit = previous
+        uv_raw, _ = self.git_bytes('uv.lock')
+        npm_raw, _ = self.git_bytes('web/package-lock.json')
+        if len(uv_raw) > _LIMIT or len(npm_raw) > _LIMIT:
+            raise Hold('public lock input exceeds 1MiB')
+        uv = tomllib.loads(uv_raw.decode('utf8'))
+        npm = json.loads(npm_raw, object_pairs_hook=self.unique_pairs)
+        self.lock_artifacts = []
+        for package in uv.get('package', []):
+            for wheel in package.get('wheels', []):
+                self.work.check(entries=1)
+                if (not isinstance(wheel, dict) or re.fullmatch(r'sha256:[0-9a-f]{64}', wheel.get('hash', '')) is None
+                        or type(wheel.get('size')) is not int or wheel['size'] <= 0):
+                    raise Hold('unsupported exact wheel lock entry')
+                self.public_url(wheel.get('url'))
+                if not self.wheel_supported(wheel['url']):
+                    continue
+                self.lock_artifacts.append({'kind': 'wheel', 'package': package['name'], 'version': package['version'],
+                                            'source': package.get('source'), 'sha256': wheel['hash'][7:],
+                                            'size': wheel['size'], 'url': wheel['url']})
+        self.node_packages = npm.get('packages')
+        if type(self.node_packages) is not dict:
+            raise Hold('exact Node lock installation paths unavailable')
+        needed_node = set()
+        for row in installed:
+            path = Path(row['source'])
+            if path.is_relative_to(self.owner.source / 'web/node_modules'):
+                key, member = self.node_selector(path)
+                row['selector'] = {'lock_install_path': key, 'member': member}
+                needed_node.add(key)
+        for key in sorted(needed_node):
+            package = self.node_packages[key]
+            integrity = package.get('integrity', '')
+            match = re.fullmatch(r'(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})', integrity)
+            if not match:
+                raise Hold('unsupported exact Node lock integrity', details={'path': key})
+            try:
+                hash_bytes = base64.b64decode(match[2], validate=True)
+            except ValueError:
+                raise Hold('invalid Node lock integrity') from None
+            if len(hash_bytes) != hashlib.new(match[1]).digest_size:
+                raise Hold('invalid Node lock integrity length')
+            artifact = {'kind': 'node', 'lock_install_path': key, 'algorithm': match[1],
+                        'hash': hash_bytes.hex(), 'integrity': integrity, 'url': package.get('resolved')}
+            if isinstance(artifact['url'], str) and artifact['url'].startswith('file:'):
+                name = str(PurePosixPath('web') / artifact['url'][5:])
+                if '..' in PurePosixPath(name).parts:
+                    raise Hold('unsupported vendored archive path')
+                raw, reference = self.git_bytes(name)
+                if hashlib.new(artifact['algorithm'], raw).hexdigest() != artifact['hash']:
+                    raise Hold('vendored Git archive does not equal exact Node lock')
+                self.archives.append({'reference': reference, 'artifacts': [artifact], 'members': None})
+            else:
+                self.public_url(artifact['url'])
+                self.lock_artifacts.append(artifact)
+        self.inventory['public_archive_candidates'] = self.lock_artifacts
+        needed = self.owner.backup / 'public-inputs-needed.json'
+        exclusive(needed, canonical({'source_commit': self.commit, 'installed_suspicion_paths': [r['source'] for r in installed],
+                                    'exact_lock_artifacts': self.lock_artifacts,
+                                    'instruction': 'Human later supplies compatible anonymous exact-lock public archives in independent literal private custody; setup never downloads or reads auth config. No per-file ledger.'}))
+        self.inventory['public_input_instruction'] = self.owner._retained_pin(needed, self.work)
+        print('   Exact reviewed lock URLs/hashes and required installed slots: ' + json.dumps(str(needed)) + '. Missing inputs hold all preparation; human anonymous acquisition is separate.')
+        needs_external = any(Path(r['source']).is_relative_to(self.owner.source / '.venv') for r in installed) or any(
+            a['kind'] == 'node' for a in self.lock_artifacts)
+        if not needs_external:
+            return
+        default = self.owner.backup.parent / 'public-origin-inputs' / self.owner.source_pin['tree']
+        chosen = input('Literal private directory of retained anonymous public exact-lock archives (no inputs/roles/mapping JSON). Blank selects ' + json.dumps(str(default)) + ': ')
+        try:
+            directory = absolute_path(chosen) if chosen else default
+        except argparse.ArgumentTypeError:
+            raise Hold('public archive directory must be a literal absolute path') from None
+        if any(directory.is_relative_to(Path(root)) or Path(root).is_relative_to(directory)
+               for root in (str(self.owner.source), str(self.owner.backup), *self.owner.frozen['registry']['registered'])):
+            raise Hold('reference inputs overlap affected source/runtime/recovery')
+        self.owner.diagnostic.paths['selected_public_archive_directory'] = str(directory)
+        _private_input_directory(directory)
+        names = tuple(sorted(p.name for p in directory.iterdir()))
+        pins = []
+        for name in names:
+            self.work.check(entries=1)
+            path = directory / name
+            info = _metadata(path.lstat())
+            if (not stat.S_ISREG(info[2]) or info[3] != os.getuid() or info[5] != 1
+                    or stat.S_IMODE(info[2]) != 0o600):
+                raise Hold('reference archive must be an independent private regular 0600 file', details={'path': str(path)})
+            pins.append({'source': str(path), 'metadata': info, 'parents': _parents(path)})
+        if not pins:
+            raise Hold('missing exact-lock public archives; human may obtain the pinned anonymous public URLs later; setup never downloads')
+        _custody_answers(self.owner, 'independent-public-archive-references', pins, directory)
+        answer = self.owner._role_answers[-1]
+        if answer['exceptions']:
+            raise Hold('private/unknown reference input remains unopened; archive selection cannot include it')
+        self.archive_input = {'path': str(directory), 'metadata': _metadata(directory.lstat()),
+                              'parents': _parents(directory), 'members': names, 'files': pins}
+        self.inventory['archive_input'] = self.archive_input
+        for pin in pins:
+            path = Path(pin['source'])
+            self.work.check(archive_bytes=pin['metadata'][6])
+            with _pinned_reader(path, pin['metadata'], pin['parents'], private=True) as stream:
+                raw = self.read_bounded(stream, 512 * _LIMIT)
+            hashes = {a: hashlib.new(a, raw).hexdigest() for a in ('sha256', 'sha384', 'sha512')}
+            matches = [a for a in self.lock_artifacts if
+                       (a['kind'] == 'wheel' and a['sha256'] == hashes['sha256'] and a['size'] == len(raw)
+                        or a['kind'] == 'node' and a['hash'] == hashes[a['algorithm']])]
+            if not matches or len({a['kind'] for a in matches}) != 1:
+                raise Hold('unjoined or ambiguous whole public archive; filename/package spelling is insufficient', details={'path': str(path)})
+            pin['sha256'] = hashes['sha256']
+            # Whole archives may exceed selected-member 64MiB. Retain them as
+            # original admitted inputs, with independent byte-for-byte copies.
+            reference_path = self.directory / ('archive-' + str(len(self.archives)))
+            self.owner.copy_regular(path, reference_path, pin=pin['metadata'], parents=pin['parents'],
+                                    expected=raw, work=self.work)
+            reference = {'path': str(reference_path), 'metadata': _metadata(reference_path.lstat()),
+                         'parents': _parents(reference_path), 'sha256': hashes['sha256'], 'size': len(raw),
+                         'origin': {'kind': 'whole-lock-archive', 'matches': matches}}
+            self.references.append(reference)
+            self.archives.append({'reference': reference, 'artifacts': matches, 'members': None})
+        self.work.check()
+
+    @staticmethod
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Hold('duplicate public lock key')
+            result[key] = value
+        return result
+
+    @staticmethod
+    def public_url(value):
+        if not isinstance(value, str):
+            raise Hold('missing public archive URL')
+        parsed = urlsplit(value)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.query:
+            raise Hold('archive locator is not supported anonymous public HTTPS; no credential lookup')
+
+    @staticmethod
+    def wheel_supported(url):
+        # Finite wheel tags without importing installed packaging/candidates.
+        # Unsupported interpreters, ABI or libc/platform tags remain unavailable.
+        name = urlsplit(url).path.rsplit('/', 1)[-1]
+        parts = name[:-4].split('-') if name.endswith('.whl') else []
+        if len(parts) not in (5, 6):
+            return False
+        python, abi, platform = parts[-3:]
+        if abi == 'none' and platform == 'any' and 'py3' in python.split('.'):
+            return True
+        current = f'cp{sys.version_info.major}{sys.version_info.minor}'
+        exact = python == current and abi == current
+        older = re.fullmatch(r'cp3([0-9]+)', python)
+        stable = abi == 'abi3' and older is not None and 2 <= int(older[1]) <= sys.version_info.minor
+        if not (exact or stable):
+            return False
+        machine = os.uname().machine
+        libc = re.fullmatch(r'glibc ([0-9]+)\.([0-9]+)', os.confstr('CS_GNU_LIBC_VERSION') or '')
+        if libc is None:
+            return False
+        running = (int(libc[1]), int(libc[2]))
+        for tag in platform.split('.'):
+            match = re.fullmatch(r'manylinux_([0-9]+)_([0-9]+)_' + re.escape(machine), tag)
+            if match and (int(match[1]), int(match[2])) <= running:
+                return True
+            for legacy, minimum in (('manylinux1', (2, 5)), ('manylinux2010', (2, 12)), ('manylinux2014', (2, 17))):
+                if tag == legacy + '_' + machine and minimum <= running:
+                    return True
+        return False
+
+    def read_bounded(self, stream, maximum):
+        blocks, size = [], 0
+        while True:
+            self.work.check()
+            block = stream.read(min(_LIMIT, maximum + 1 - size))
+            if not block:
+                break
+            blocks.append(block)
+            size += len(block)
+            if size > maximum:
+                raise Hold('public member/source/recipe read size limit')
+        return b''.join(blocks)
+
+    def node_selector(self, path):
+        relative = path.relative_to(self.owner.source / 'web').as_posix()
+        keys = [key for key in self.node_packages if key and relative.startswith(key + '/')]
+        if not keys:
+            raise Hold('no exact Node lock installation path', details={'path': str(path)})
+        key = max(keys, key=len)
+        if (not key.startswith('node_modules/') or '..' in PurePosixPath(key).parts
+                or str(PurePosixPath(key)) != key or self.node_packages[key].get('link')):
+            raise Hold('unsupported Node lock installation path')
+        return key, 'package/' + relative[len(key) + 1:]
+
+    @staticmethod
+    def archive_name(name):
+        value = name[:-1] if name.endswith('/') else name
+        path = PurePosixPath(value)
+        if (not value or path.is_absolute() or str(path) != value or '..' in path.parts or '\\' in name
+                or any(ord(c) < 32 for c in name)):
+            raise Hold('unsafe public archive namespace')
+        return value
+
+    def archive_members(self, archive):
+        if archive['members'] is not None:
+            return archive['members']
+        ref = archive['reference']
+        with _pinned_reader(Path(ref['path']), ref['metadata'], ref['parents'], private=True) as stream:
+            raw = self.read_bounded(stream, 512 * _LIMIT)
+        if digest(raw) != ref['sha256']:
+            raise Hold('retained lock archive changed')
+        wheel = archive['artifacts'][0]['kind'] == 'wheel'
+        members = {}
+        container = zipfile.ZipFile(io.BytesIO(raw)) if wheel else tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz')
+        try:
+            iterator = container.infolist() if wheel else container
+            for info in iterator:
+                self.work.check(entries=1)
+                name = self.archive_name(info.filename if wheel else info.name)
+                if name in members:
+                    raise Hold('duplicate/ambiguous public archive member')
+                if wheel:
+                    mode = info.external_attr >> 16
+                    kind = 'directory' if info.is_dir() else 'file' if stat.S_IFMT(mode) in (0, stat.S_IFREG) else 'alias-or-special'
+                    size = info.file_size
+                    encrypted = bool(info.flag_bits & 1)
+                else:
+                    kind = 'directory' if info.isdir() else 'file' if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and not info.sparse else 'alias-or-special'
+                    size = info.size
+                    encrypted = False
+                    if info.issym() or info.islnk():
+                        target = self.archive_name(info.linkname)
+                        if target.startswith('/'):
+                            raise Hold('unsafe public archive alias')
+                if type(size) is not int or size < 0:
+                    raise Hold('invalid public archive member size')
+                self.work.check(expanded_bytes=size)
+                members[name] = {'kind': kind, 'info': info, 'size': size, 'encrypted': encrypted}
+            for name in members:
+                self.work.check()
+                for parent in PurePosixPath(name).parents:
+                    if str(parent) in members and members[str(parent)]['kind'] != 'directory':
+                        raise Hold('public archive contains aliased/file parent namespace')
+            # The container is retained only in memory, without extraction or
+            # execution. The original retained archive is separately sealed.
+            archive['container'] = container
+            archive['members'] = members
+            return members
+        except BaseException:
+            container.close()
+            raise
+
+    def package_bytes(self, path):
+        node = path.is_relative_to(self.owner.source / 'web/node_modules')
+        if node:
+            key, selector = self.node_selector(path)
+        else:
+            relative = path.relative_to(self.owner.source / '.venv').as_posix()
+            prefix = f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/'
+            if not relative.startswith(prefix):
+                raise Hold('unsupported installed Python origin slot', details={'path': str(path)})
+            selector = relative[len(prefix):]
+        choices = []
+        for archive in self.archives:
+            artifacts = archive['artifacts']
+            if node and not any(a['kind'] == 'node' and a['lock_install_path'] == key for a in artifacts):
+                continue
+            if not node and artifacts[0]['kind'] != 'wheel':
+                continue
+            members = self.archive_members(archive)
+            names = [selector] if node else [name for name in members if name == selector or
+                    re.fullmatch(r'[^/]+\.data/(purelib|platlib)/' + re.escape(selector), name)]
+            for name in names:
+                item = members.get(name)
+                if item is None:
+                    continue
+                if item['kind'] != 'file' or item['encrypted'] or item['size'] > 64 * _LIMIT:
+                    raise Hold('selected package member is not an ordinary bounded public file')
+                self.work.check(expanded_bytes=item['size'])
+                container = archive['container']
+                stream = container.open(item['info']) if not node else container.extractfile(item['info'])
+                if stream is None:
+                    raise Hold('ordinary public archive member unavailable')
+                with stream:
+                    raw = self.read_bounded(stream, 64 * _LIMIT)
+                if len(raw) != item['size']:
+                    raise Hold('public member size mismatch')
+                choices.append((raw, archive, name))
+        if len(choices) != 1:
+            raise Hold('missing or ambiguous exact locked public member; supply the exact OLD lock/archive, never rebuild recovery', details={'path': str(path)})
+        raw, archive, member = choices[0]
+        ref = self.retain(raw, {'kind': 'locked-member', 'commit': self.commit,
+                               'archive': archive['reference']['path'], 'member': member,
+                               'lock': 'web/package-lock.json' if node else 'uv.lock',
+                               'artifacts': archive['artifacts']})
+        return raw, ref
+
+    def expectation(self, row):
+        path = Path(row['source'])
+        if row['source'] in self.expected:
+            return self.expected[row['source']]
+        if row.get('role') not in ('public-program', 'public-generated'):
+            raise Hold('unadmitted candidate remains unopened', details={'path': str(path)})
+        if path.suffix == '.pyc' and path.parent.name == '__pycache__':
+            return self.pyc_expectations(row)
+        if path.is_relative_to(self.owner.source / '.venv') or path.is_relative_to(self.owner.source / 'web/node_modules'):
+            raw, ref = self.package_bytes(path)
+        else:
+            if not path.is_relative_to(self.owner.source):
+                raise Hold('suspicious non-source object lacks an admitted exact public origin', details={'path': str(path)})
+            # Candidate source is always compared with the CURRENT reviewed
+            # checkout, even if OLD installed dependencies selected prior locks.
+            selected, entries = self.commit, self.git_entries
+            self.commit, self.git_entries = self.owner.source_pin['head'], {}
+            try:
+                raw, ref = self.git_bytes(path.relative_to(self.owner.source).as_posix())
+            finally:
+                self.commit, self.git_entries = selected, entries
+        result = ([raw], ref)
+        self.expected[row['source']] = result
+        return result
+
+    def build_expectations(self):
+        # Finish all independent selectors, public bytes and generated recipe
+        # edges before the first candidate content read. Unknown/missing origin
+        # is not discovered by trying an installed header or local manifest.
+        for row in self.graph.values():
+            self.work.check()
+            if (row.get('role') in ('public-program', 'public-generated')
+                    and stat.S_ISREG(row['metadata'][2]) and _public_suspicion(Path(row['source']))):
+                variants, origin = self.expectation(row)
+                row['origin'] = origin
+                row['independent_expected_sha256'] = [digest(raw) for raw in variants]
+        for name, (variants, origin) in self.expected.items():
+            self.graph[name]['origin'] = origin
+            self.graph[name]['independent_expected_sha256'] = [digest(raw) for raw in variants]
+        self.work.check()
+
+    def pyc_expectations(self, row):
+        path = Path(row['source'])
+        tag = re.escape(sys.implementation.cache_tag or '')
+        match = re.fullmatch(r'(.+)\.' + tag + r'(?:\.opt-([12]))?\.pyc', path.name)
+        if (not match or sys.implementation.name != 'cpython' or sys.flags.debug
+                or sysconfig.get_config_var('Py_DEBUG') or sysconfig.get_config_var('Py_GIL_DISABLED')
+                or set(sys._xoptions) - {'no_debug_ranges'}
+                or marshal.version != (5 if sys.version_info[:2] == (3, 14) else 4)
+                or self.owner.python_pin['target'] != str(Path(sys.executable).resolve(strict=True))):
+            raise Hold('unsupported finite CPython cache/compiler configuration', details={'path': str(path)})
+        source = path.parent.parent / (match[1] + '.py')
+        paired = self.graph.get(str(source))
+        if paired is None or paired.get('role') not in ('public-program', 'public-generated'):
+            raise Hold('generated cache has no admitted paired public source', details={'path': str(path)})
+        # Derive exclusively from independent source bytes. copy_row enforces
+        # actual paired-source equality/copy before opening the generated file,
+        # including when __pycache__ precedes the source in lexical traversal.
+        if source.is_relative_to(self.owner.source / '.venv'):
+            raw, reference = self.package_bytes(source)
+        elif source.is_relative_to(self.owner.source) and not source.is_relative_to(self.owner.source / 'web/node_modules'):
+            selected, entries = self.commit, self.git_entries
+            self.commit, self.git_entries = self.owner.source_pin['head'], {}
+            try:
+                raw, reference = self.git_bytes(source.relative_to(self.owner.source).as_posix())
+            finally:
+                self.commit, self.git_entries = selected, entries
+        else:
+            raise Hold('unsupported generated-source origin')
+        if len(raw) > 8 * _LIMIT:
+            raise Hold('compiler source exceeds 8MiB')
+        self.expected[str(source)] = ([raw], reference)
+        row['dependencies'] = [str(source)]
+        self.work.check()
+        optimize = int(match[2] or '0')
+        code = compile(raw, str(source), 'exec', flags=0, dont_inherit=True, optimize=optimize)
+        payload = marshal.dumps(code, marshal.version)
+        self.work.check()
+        stamp = struct.pack('<II', (paired['metadata'][7] // 1000000000) & 0xffffffff, len(raw) & 0xffffffff)
+        source_hash = importlib.util.source_hash(raw)
+        alternatives = [importlib.util.MAGIC_NUMBER + struct.pack('<I', flags) + header + payload
+                        for flags, header in ((0, stamp), (1, source_hash), (3, source_hash))]
+        recipe = {'kind': 'finite-cpython-cache', 'source': str(source), 'source_reference': reference['path'],
+                  'source_metadata': paired['metadata'], 'cache_tag': sys.implementation.cache_tag,
+                  'compiler': self.owner.python_pin, 'marshal_version': marshal.version,
+                  'magic': importlib.util.MAGIC_NUMBER.hex(), 'flags': [0, 1, 3], 'optimize': optimize,
+                  'debug_ranges_disabled': bool(sys._xoptions.get('no_debug_ranges') or os.environ.get('PYTHONNODEBUGRANGES')),
+                  'filename': str(source), 'compile_flags': 0, 'dont_inherit': True}
+        refs = [self.retain(data, recipe | {'expected_flags': flags}) for flags, data in zip((0, 1, 3), alternatives)]
+        result = (alternatives, {'recipe': recipe, 'alternatives': [ref['path'] for ref in refs]})
+        self.expected[row['source']] = result
+        return result
+
+    def copy_row(self, row, *, force_expected=False):
+        if 'backup' in row:
+            # A dependency copied early still needs exact original bookends.
+            if _metadata(Path(row['source']).lstat()) != row['metadata']:
+                raise Hold('paired original source moved after copy', details={'path': row['source']})
+            if force_expected:
+                variants, origin = self.expectation(row)
+                with _pinned_reader(Path(row['source']), row['metadata'], row['parents']) as stream:
+                    raw = self.read_bounded(stream, 8 * _LIMIT)
+                if raw not in variants or digest(raw) != row['sha256']:
+                    raise Hold('paired original source/copy disagrees with independent source')
+                with _pinned_reader(Path(row['backup']), row['backup_metadata'], row['backup_parents'], private=True) as stream:
+                    if self.read_bounded(stream, 8 * _LIMIT) != raw:
+                        raise Hold('paired original copy differs from independent bytes')
+                row.update(origin=origin, expected_sha256=digest(raw))
+            return
+        self.work.check()
+        path = Path(row['source'])
+        expected, origin = (None, None)
+        if force_expected or _public_suspicion(path) or row['source'] in self.expected:
+            expected, origin = self.expectation(row)
+        for dependency in row.get('dependencies', []):
+            self.copy_row(self.graph[dependency], force_expected=True)
+        target = self.owner.backup / 'files' / row['slot']
+        self.owner.copy_regular(path, target, pin=row['metadata'], parents=row['parents'],
+                                expected=expected, work=self.work)
+        row.update(kind='file', backup=str(target), restore=str(path),
+                   sha256=self.owner.hash_file(target, private=True, work=self.work),
+                   backup_metadata=_metadata(target.lstat()), backup_parents=_parents(target))
+        if origin is not None:
+            row['origin'] = origin
+            row['expected_sha256'] = row['sha256']
+        self.work.check()
+
+    def close(self):
+        for archive in self.archives:
+            if archive.get('container') is not None:
+                archive['container'].close()
 
 
 class Coordinator:
@@ -520,13 +1370,34 @@ class Coordinator:
 
     def prepare_source(self):
         git = self.tools['git']['path']
+        reference_names = ('.git', 'uv.lock', 'pyproject.toml', 'web/package-lock.json', 'web/package.json',
+                           'scripts/setup_coding.py', 'scripts/_coding_setup_preflight.py', 'scripts/daemon.sh', 'scripts/build_web.sh')
+        rows = [{'source': str(self.source / name), 'metadata': _metadata((self.source / name).lstat()),
+                 'parents': _parents(self.source / name)} for name in reference_names]
+        if not hasattr(self, '_source_reference_answers'):
+            self._role_answers = []
+            answer = _custody_answers(self, 'reviewed-public-git-and-source-references', rows, self.source)
+            if answer['exceptions']:
+                raise Hold('private/unknown reference exception; no source reference content access')
+            self._source_reference_answers = {'answer': answer, 'objects': rows}
+        else:
+            old = self._source_reference_answers['objects']
+            # Git may update internal metadata through original commands, but
+            # the literal Git boundary and all selected public files stay pinned.
+            if any(a['source'] != b['source'] or a['parents'] != b['parents']
+                   or (a['metadata'][:5] if a['source'].endswith('/.git') else a['metadata'])
+                   != (b['metadata'][:5] if b['source'].endswith('/.git') else b['metadata'])
+                   for a, b in zip(old, rows)):
+                raise Hold('current admitted source reference custody changed')
         def get(*args):
-            code, out, err = self.command([git, *args])
+            code, out, err = self.command([git, '--no-optional-locks', *args])
             if err:
                 raise Hold('unexpected source inspection diagnostic')
             return out
         head = get('rev-parse', '--verify', 'HEAD').strip()
         tree = get('rev-parse', 'HEAD^{tree}').strip()
+        if not hasattr(self, 'source_pin'):
+            self.confirm('This exact selected public source is previously reviewed: HEAD=' + head + ', tree=' + tree + '. I know its current Git/source role; tracked membership alone is not credential admission.')
         self.command([git, 'merge-base', '--is-ancestor', _COMPATIBLE, head])
         # Exclude .codegraph before Git's untracked walk, rather than filtering
         # its output after Git has already traversed the unrelated subtree.
@@ -541,8 +1412,38 @@ class Coordinator:
             raise Hold('.codegraph is not the allowed unrelated directory')
         return {'head': head, 'tree': tree, 'status': status, 'root_identity': identity(self.source)[:4],
                 'codegraph': identity(codegraph) if codegraph.exists() else None,
-                'locks': {p: digest(read_file(self.source / p)) for p in ('uv.lock', 'pyproject.toml', 'web/package-lock.json', 'web/package.json',
-                          'scripts/setup_coding.py', 'scripts/_coding_setup_preflight.py', 'scripts/daemon.sh', 'scripts/build_web.sh')}}
+                'locks': {str(Path(r['source']).relative_to(self.source)): digest(self._source_reference_bytes(r))
+                          for r in rows if Path(r['source']).name != '.git'}}
+
+    @staticmethod
+    def _source_reference_bytes(row):
+        # Reference role/custody was answered before these bytes are used.
+        with _pinned_reader(Path(row['source']), row['metadata'], row['parents']) as stream:
+            raw = stream.read(_LIMIT + 1)
+        if len(raw) > _LIMIT:
+            raise Hold('selected source reference exceeds 1MiB')
+        return raw
+
+    def _git_blob(self, oid, work):
+        work.check()
+        git = self.tools['git']['path']
+        _, size_text, err = self.command([git, 'cat-file', '-s', oid])
+        if err or re.fullmatch(r'[0-9]+\n', size_text) is None:
+            raise Hold('pinned Git blob size unavailable')
+        size = int(size_text)
+        if size > 64 * _LIMIT:
+            raise Hold('pinned Git blob exceeds selected-member bound')
+        # cat-file reads raw immutable objects, without checkout/filter/smudge,
+        # candidate imports, network or any package-manager invocation.
+        result = subprocess.run([git, 'cat-file', 'blob', oid], cwd=self.source,
+                                capture_output=True, timeout=max(0.001, work.deadline - time.monotonic()))
+        raw = result.stdout
+        algorithm = 'sha1' if len(oid) == 40 else 'sha256'
+        if (result.returncode or result.stderr or len(raw) != size
+                or hashlib.new(algorithm, b'blob ' + str(size).encode('ascii') + b'\0' + raw).hexdigest() != oid):
+            raise Hold('pinned raw Git blob identity/size mismatch')
+        work.check()
+        return raw
 
     def revalidate(self, *, offline=None, accepted_target=None):
         if offline is None:
@@ -867,187 +1768,327 @@ class Coordinator:
         self.diagnostic.effect('stop', 'accepted-original-closure')
         self.diagnostic.accepted('stop')
 
+    def _discover_backup(self, roots, excluded, reserved, work):
+        """Metadata only, with exclusions applied before descent or alias use."""
+        graph = {}
+        def visit(path, root):
+            work.check(entries=1)
+            if path == self.backup or path == self.home / 'operator-backups':
+                return
+            if path != root and path in roots:
+                return
+            info = path.lstat()
+            row = {'source': str(path), 'root': str(root), 'metadata': _metadata(info),
+                   'parents': _parents(path), 'identity': list(identity_or_link(path)),
+                   'size': info.st_size, 'mtime_ns': info.st_mtime_ns, 'ctime_ns': info.st_ctime_ns}
+            graph[str(path)] = row
+            if path in reserved:
+                if identity(path) != reserved[path]:
+                    raise Hold('untouched reserved boundary moved; no traversal or copying')
+                row.update(excluded=True, disposition='untouched migration exclusion; boundary only; members not traversed or backed up')
+                return
+            if info.st_dev != root.lstat().st_dev or info.st_uid != os.getuid():
+                raise Hold('unaccounted affected mount or unavailable custody', details={'path': str(path)})
+            if path in excluded and stat.S_ISDIR(info.st_mode):
+                row.update(excluded=True, disposition='unaffected subtree; not traversed')
+                return
+            if stat.S_ISLNK(info.st_mode):
+                if (not path.is_relative_to(self.source / '.venv')
+                        and not path.is_relative_to(self.source / 'web/node_modules')
+                        and path != self.source / 'CLAUDE.md'):
+                    raise Hold('unaccounted backup alias', details={'path': str(path)})
+                row['link'] = os.readlink(path)
+                if path == self.source / 'CLAUDE.md' and row['link'] != 'AGENTS.md':
+                    raise Hold('only raw CLAUDE to AGENTS alias is supported')
+                resolved, links = _backup_link_closure(path, work)
+                # Metadata navigation is never content permission; all hops and
+                # the final literal referent are separately closed below.
+                row['link_closure'] = links
+                row.update(referent=str(resolved), referent_metadata=_metadata(resolved.lstat()), referent_parents=_parents(resolved),
+                           referent_identity=identity(resolved), restore=str(path), kind='symlink')
+            elif stat.S_ISDIR(info.st_mode):
+                row.update(kind='directory', restore=str(path))
+                before = sorted(p.name for p in path.iterdir())
+                row['members'] = before
+                for name in before:
+                    visit(path / name, root)
+                if sorted(p.name for p in path.iterdir()) != before:
+                    raise Hold('backup directory membership moved', details={'path': str(path)})
+            elif not stat.S_ISREG(info.st_mode):
+                raise Hold('unaccounted affected special file', details={'path': str(path)})
+            if _metadata(path.lstat()) != row['metadata']:
+                raise Hold('backup object moved during metadata discovery', details={'path': str(path)})
+        for root in roots:
+            visit(root, root)
+        work.check()
+        return graph
+
     def backup_inventory(self):
-        """Complete stopped-window copies, with SQLite backup rather than copydb."""
+        """Whole OLD recovery, from metadata admission through original copies."""
         self.diagnostic.enter('backup-preflight')
         self.revalidate(offline=True)
-        # Reuse the exclusive pre-stop receipt directory. It is not a backup
-        # until the full inventory and copies have closed below.
         if self.receipts != self.backup / 'receipts':
             raise Hold('pre-stop recovery evidence unavailable; no backup/preparation')
+        self._role_answers = []
         inventory = {'complete': False, 'source': self.source_pin, 'installation': self.frozen,
-                     'tools': self.tools, 'python': self.python_pin, 'commands_before_backup': self.commands[:], 'files': [],
-                     'restore': 'manual original-owner operation only; preserve credential custody; pre-J code must never boot J'}
-        self.diagnostic.enter('backup-inventory-copies')
+                     'tools': self.tools, 'python': self.python_pin, 'commands_before_backup': self.commands[:],
+                     'files': [], 'references': [], 'current_custody': self._role_answers,
+                     'source_reference_custody': self._source_reference_answers,
+                     'restore': 'manual original-owner recovery of selected paths/content using independent replacement inodes; never write through surviving shared links; no external topology promise; preserve credential custody; pre-J code must never boot J'}
+        self.diagnostic.enter('backup-metadata-discovery')
         self.diagnostic.effect('backup', 'attempted-incomplete')
         exclusive(self.backup / 'BACKUP-STARTED.json', canonical(inventory))
         dest = self.backup / 'files'
         dest.mkdir(mode=0o700)
-        count = 0
-        roots = [self.home, *(Path(r) for r in self.frozen['registry']['registered']), self.source]
-        # Exclude only known unaffected scratch/workspaces and our own backup.
-        # Every other durable or generated file is inventoried; aliases refuse.
+        roots = list(dict.fromkeys([self.home, *(Path(r) for r in self.frozen['registry']['registered']), self.source]))
         excluded = {self.source / '.codegraph', self.source / '.git', self.source / '.claude/worktrees'}
         for root in roots:
             excluded.update((root / 'task-tmp', root / 'scratch'))
         excluded.update(Path(o['path']).parent / 'workspaces' for o in self.frozen['orgs'])
         reserved = {Path(path): pin for path, pin in self.frozen['excluded']}
         excluded.update(reserved)
-        def visit(path, root):
-            nonlocal count
-            count += 1
-            if count > 200000:
-                raise Hold('complete backup inventory budget exhausted; no partial-completeness claim')
-            if path == self.backup or path == self.home / 'operator-backups':
-                return
-            if path != root and path in roots:
-                return  # independently inventoried under its own root
-            info = path.lstat()
-            if path in reserved:
-                if identity(path) != reserved[path]:
-                    raise Hold('untouched reserved boundary moved; no traversal or copying')
-                inventory['files'].append({'source': str(path), 'identity': reserved[path],
-                                           'disposition': 'untouched migration exclusion; boundary only; members not traversed or backed up'})
-                return
-            if info.st_dev != root.stat().st_dev:
-                raise Hold(f'unaccounted affected mount boundary: {path}')
-            row = {'source': str(path), 'identity': [info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink],
-                   'size': info.st_size, 'mtime_ns': info.st_mtime_ns}
-            if info.st_uid != os.getuid():
-                raise Hold(f'backup custody unavailable: {path}')
-            if path in excluded and path.is_dir() and not path.is_symlink():
-                row['disposition'] = 'unaffected subtree; not traversed'
-                inventory['files'].append(row)
-                return
-            if stat.S_ISLNK(info.st_mode):
-                if not path.is_relative_to(self.source / '.venv') and not path.is_relative_to(self.source / 'web/node_modules') and path != self.source / 'CLAUDE.md':
-                    raise Hold(f'unaccounted backup alias: {path}')
-                row['link'] = os.readlink(path)
-                resolved = path.resolve(strict=True)
-                row['referent'] = str(resolved)
-                row['referent_identity'] = identity(resolved)
-                row['restore'] = str(path)
-            elif stat.S_ISDIR(info.st_mode):
-                inventory['files'].append(row | {'kind': 'directory', 'restore': str(path)})
-                before = tuple(sorted(p.name for p in path.iterdir()))
-                for name in before:
-                    visit(path / name, root)
-                if tuple(sorted(p.name for p in path.iterdir())) != before:
-                    raise Hold(f'backup directory moved: {path}')
-                return
-            elif stat.S_ISREG(info.st_mode):
-                if (any(word in path.name.lower() for word in ('token', 'credential', 'secret', '.env', 'feishu', 'password'))
-                        or path.name in ('.npmrc', '.netrc', '.pypirc', 'auth.json') or path.suffix in ('.key', '.pem', '.p12')):
-                    row['disposition'] = 'credential custody retained; identity only, contents never read/copied'
-                    # Keep the existing custody classification. It can also
-                    # match source/package filenames; identity-only material
-                    # in required source/environment/UI recovery is not a copy.
-                    if path.is_relative_to(self.source):
-                        inventory['files'].append(row)
-                        raise Hold('affected source/environment/UI recovery material is uncopied under existing credential custody; source/environment and credential custodians must resolve recovery scope before preparation',
-                                   details={'path': str(path), 'required_action': 'resolve affected uncopied recovery material without reading/copying credentials or claiming complete backup'})
-                elif str(path).endswith(('-wal', '-shm', '-journal')):
-                    main = Path(re.sub(r'-(wal|shm|journal)$', '', str(path)))
-                    if not main.is_file() or main.suffix not in ('.db', '.sqlite3', '.sqlite'):
-                        raise Hold(f'unaccounted SQLite companion: {path}')
-                    row['disposition'] = 'SQLite companion retained in place; committed state in SQLite backup'
-                else:
-                    target = dest / f'{count:06d}'
-                    if path.suffix in ('.db', '.sqlite3', '.sqlite'):
-                        self.backup_database(path, target)
-                        row['kind'] = 'sqlite-backup-including-committed-WAL'
-                        row['integrity_check'] = 'ok'
-                        row['foreign_key_violations'] = 0
-                    else:
-                        self.copy_regular(path, target)
-                        row['kind'] = 'file'
-                    row.update(backup=str(target), restore=str(path), sha256=self.hash_file(target))
-            else:
-                raise Hold(f'unaccounted affected special file: {path}')
-            if (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink) != identity_or_link(path):
-                raise Hold(f'backup source identity changed: {path}')
-            inventory['files'].append(row)
+        work = _OriginWork()
+        origins = None
         try:
-            for root in roots:
-                visit(root, root)
+            graph = self._discover_backup(roots, excluded, reserved, work)
+            discovery = _discovery_digest(graph)
+            inventory['discovery_sha256'] = discovery
+            inventory['files'] = list(graph.values())
+            for index, row in enumerate(graph.values()):
+                row['slot'] = f'{index:06d}'
+            origins = _PublicOrigins(self, graph, inventory, work)
+            self.diagnostic.observe('backup-current-custodian-admission')
+            origins.admit_graph()
+            # No content read/copy occurs during discovery or role collection.
+            # This catches membership and alias movement after a genuine answer.
+            if _discovery_digest(self._discover_backup(roots, excluded, reserved, work)) != discovery:
+                raise Hold('complete metadata membership moved after custody answers; no new scope or retry')
+            self.diagnostic.observe('backup-independent-public-expectations')
+            origins.prepare_inputs()
+            origins.build_expectations()
+            exclusive(self.backup / 'recovery-plan.json', canonical(inventory))
+            inventory['plan'] = self._retained_pin(self.backup / 'recovery-plan.json', work)
+            self.diagnostic.observe('backup-admitted-original-copies')
+            for row in graph.values():
+                work.check()
+                if row.get('excluded') or row.get('kind') in ('directory', 'symlink') or row.get('role') == 'private-untouched':
+                    continue
+                path = Path(row['source'])
+                if str(path).endswith(('-wal', '-shm', '-journal')):
+                    main = Path(re.sub(r'-(wal|shm|journal)$', '', str(path)))
+                    parent = graph.get(str(main))
+                    if parent is None or main.suffix not in ('.db', '.sqlite3', '.sqlite') or parent.get('excluded'):
+                        raise Hold('unaccounted SQLite companion', details={'path': str(path)})
+                    row.update(disposition='SQLite companion retained in place; committed state in SQLite backup', sqlite_source=str(main))
+                elif path.suffix in ('.db', '.sqlite3', '.sqlite'):
+                    # The original WAL-consistent SQLite/integrity/FK owner is
+                    # unchanged; credentials are never disguised as a database.
+                    if _public_suspicion(path):
+                        raise Hold('suspect database has no public byte-origin admission', details={'path': str(path)})
+                    target = dest / row['slot']
+                    self.backup_database(path, target)
+                    row.update(kind='sqlite-backup-including-committed-WAL', integrity_check='ok', foreign_key_violations=0,
+                               backup=str(target), restore=str(path), sha256=self.hash_file(target, private=True, work=work),
+                               backup_metadata=_metadata(target.lstat()), backup_parents=_parents(target))
+                else:
+                    origins.copy_row(row)
             self.revalidate(offline=True)
-            # Verify EVERY copied object again before publishing completeness.
-            # An accepted manifest is not a claim that restore was exercised.
-            for row in inventory['files']:
-                if 'backup' in row:
-                    target = literal(Path(row['backup']))
-                    pin = identity(target)
-                    if (not stat.S_ISREG(pin[2]) or pin[3] != os.getuid() or pin[4] != 1
-                            or self.hash_file(target) != row['sha256']):
-                        raise Hold('backup verification/custody failed; no complete manifest')
-                    row['backup_identity'] = pin
-            fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            self.diagnostic.observe('backup-complete-manifest')
+            # Closing coverage is a full rediscovery, not only the rows copied.
+            if _discovery_digest(self._discover_backup(roots, excluded, reserved, work)) != discovery:
+                raise Hold('closing full original membership/metadata/alias/link coverage changed')
+            for row in graph.values():
+                if row.get('excluded') or row.get('kind') == 'directory' or row.get('role') == 'private-untouched':
+                    continue
+                if row.get('kind') == 'symlink':
+                    coverage = row.get('referent_coverage', {})
+                    if coverage.get('kind') == 'inventoried-original':
+                        target = graph[coverage['source']]
+                        if target.get('kind') != 'directory' and 'backup' not in target:
+                            raise Hold('allowed referent lacks original recovery copy', details={'path': row['source']})
+                elif row.get('sqlite_source'):
+                    if graph[row['sqlite_source']].get('kind') != 'sqlite-backup-including-committed-WAL':
+                        raise Hold('SQLite companion has no complete original backup')
+                elif 'backup' not in row:
+                    raise Hold('required affected original has no recovery copy', details={'path': row['source']})
             inventory['complete'] = True
+            inventory['coverage'] = {'required_members': len(graph), 'discovery_sha256': discovery,
+                                     'selected_content_paths_only': True, 'restore_exercised': False}
+            # All copies/reference inputs/plan and their exact directory
+            # membership are authenticated before exclusive manifest publication.
+            self._verify_recovery(inventory, work)
+            for directory in (dest, origins.directory):
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            self.diagnostic.observe('backup-complete-manifest')
             raw = canonical(inventory)
             manifest = self.backup / 'manifest.json'
             exclusive(manifest, raw)
-            accepted = {'manifest': identity(manifest), 'digest': digest(raw), 'size': len(raw),
-                        'backup': identity(self.backup)[:4], 'receipts': identity(self.receipts)[:4]}
-            if read_file(manifest, len(raw)) != raw:
-                raise Hold('complete manifest verification failed')
+            accepted = {'manifest': self._retained_pin(manifest, work), 'digest': digest(raw), 'size': len(raw),
+                        'backup': identity(self.backup)[:4], 'receipts': identity(self.receipts)[:4],
+                        'files': identity(dest)[:4], 'origins': identity(origins.directory)[:4],
+                        'inventory': inventory, 'work': work}
             self.revalidate(offline=True)
+            work.check()
             self.accepted_backup = accepted
             self.require_backup()
         except BaseException as original:
             self.accepted_backup = None
             inventory['complete'] = False
+            inventory['first_failure'] = {'stage': self.diagnostic.stage, 'observation': self.diagnostic.observation,
+                                          'type': self.diagnostic.token(type(original).__name__),
+                                          'hold_details': original.details if isinstance(original, Hold) else None}
             try:
                 exclusive(self.backup / 'FAILED.json', canonical(inventory))
             except BaseException as persistence:
                 self.diagnostic.secondary.append('backup_failure_persistence:' + self.diagnostic.token(type(persistence).__name__))
                 original.add_note('partial backup manifest publication also failed; retain INCOMPLETE.json and all original/copy files')
             raise
+        finally:
+            if origins is not None:
+                origins.close()
         self.diagnostic.references['manifest'] = str(self.backup / 'manifest.json')
         self.diagnostic.effect('backup', 'accepted-complete-manifest-restore-unverified')
         self.diagnostic.accepted('backup')
         print(f'3. Backup complete: {self.backup}/manifest.json (restore NOT RUN; no automatic rollback)')
 
+    def _retained_pin(self, path, work):
+        return {'path': str(path), 'metadata': _metadata(path.lstat()), 'parents': _parents(path),
+                'size': path.lstat().st_size, 'sha256': self.hash_file(path, private=True, work=work)}
+
+    def _verify_retained(self, row, work):
+        path = Path(row['path'])
+        if self.hash_file(path, pin=row['metadata'], parents=row['parents'], private=True, work=work) != row['sha256']:
+            raise Hold('retained old recovery material moved or changed', details={'path': str(path)})
+
+    def _verify_recovery(self, inventory, work):
+        """Authenticate retained OLD custody, never compare a replaced new env."""
+        work.check()
+        if inventory.get('complete') is not True or not inventory.get('coverage'):
+            raise Hold('incomplete original recovery coverage')
+        expected = set()
+        for row in inventory['files']:
+            work.check()
+            if row.get('role') == 'private-untouched':
+                path = Path(row['source'])
+                literal(path)
+                if _metadata(path.lstat()) != row['metadata'] or _parents(path) != row['parents']:
+                    raise Hold('original untouched credential custody moved; never regenerate or repair', details={'path': str(path)})
+            coverage = row.get('referent_coverage', {})
+            if coverage.get('kind') == 'untouched-selected-base-interpreter':
+                for link in coverage['external_links']:
+                    path = Path(link['path'])
+                    if (_metadata(path.lstat()) != link['metadata'] or _parents(path) != link['parents']
+                            or os.readlink(path) != link['link']):
+                        raise Hold('untouched indispensable external link chain moved', details={'path': str(path)})
+                path = Path(row['referent'])
+                if (self.hash_file(path, pin=row['referent_metadata'], parents=row['referent_parents'], work=work)
+                        != coverage['identity']['sha256']):
+                    raise Hold('untouched indispensable interpreter custody changed')
+            if 'backup' in row:
+                expected.add(Path(row['backup']).name)
+                self._verify_retained({'path': row['backup'], 'metadata': row['backup_metadata'],
+                                       'parents': row['backup_parents'], 'sha256': row['sha256']}, work)
+        if set(p.name for p in (self.backup / 'files').iterdir()) != expected:
+            raise Hold('retained OLD copy membership changed')
+        expected = set()
+        for row in inventory['references']:
+            expected.add(Path(row['path']).name)
+            self._verify_retained(row, work)
+        if set(p.name for p in (self.backup / 'origins').iterdir()) != expected:
+            raise Hold('retained reference membership changed')
+        self._verify_retained(inventory['plan'], work)
+        if 'public_input_instruction' in inventory:
+            self._verify_retained(inventory['public_input_instruction'], work)
+        inputs = inventory.get('archive_input')
+        if inputs:
+            directory = Path(inputs['path'])
+            _private_input_directory(directory)
+            if (_metadata(directory.lstat()) != inputs['metadata'] or _parents(directory) != inputs['parents']
+                    or tuple(sorted(p.name for p in directory.iterdir())) != tuple(inputs['members'])):
+                raise Hold('original independent archive input custody/membership changed')
+            for row in inputs['files']:
+                if self.hash_file(Path(row['source']), pin=row['metadata'], parents=row['parents'], private=True, work=work) != row['sha256']:
+                    raise Hold('original public archive reference changed')
+        work.check()
+
     def require_backup(self):
         accepted = self.accepted_backup
-        if accepted is None:
-            raise Hold('no verified complete backup accepted in this invocation')
-        manifest = self.backup / 'manifest.json'
-        if (identity(self.backup)[:4] != accepted['backup']
-                or identity(self.receipts)[:4] != accepted['receipts']
-                or any(stat.S_IMODE(path.lstat().st_mode) != 0o700 for path in (self.backup, self.receipts))
-                or identity(manifest) != accepted['manifest']
-                or digest(read_file(manifest, accepted['size'])) != accepted['digest']):
-            raise Hold('accepted backup manifest/custody changed; no next effect')
+        try:
+            if accepted is None:
+                raise Hold('no verified complete backup accepted in this invocation')
+            for directory, key in ((self.backup, 'backup'), (self.receipts, 'receipts'),
+                                   (self.backup / 'files', 'files'), (self.backup / 'origins', 'origins')):
+                literal(directory)
+                if identity(directory)[:4] != accepted[key] or stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+                    raise Hold('accepted recovery directory custody changed; no next effect')
+            self._verify_retained(accepted['manifest'], accepted['work'])
+            # Authenticate the exact in-memory owner rows as well as durable
+            # bytes. No caller-supplied flag or old-invocation manifest is used.
+            if digest(canonical(accepted['inventory'])) != accepted['digest']:
+                raise Hold('invocation-local accepted recovery rows changed')
+            self._verify_recovery(accepted['inventory'], accepted['work'])
+        except BaseException:
+            self.accepted_backup = None
+            raise
 
     @staticmethod
-    def hash_file(path):
+    def hash_file(path, *, pin=None, parents=None, private=False, work=None):
+        if pin is None and parents is None and not private and work is None:
+            # Preserve original trusted tool/proc-executable/UI callers. Only
+            # admitted recovery sources use the descriptor/custody contract.
+            h = hashlib.sha256()
+            with path.open('rb') as stream:
+                while chunk := stream.read(_LIMIT):
+                    h.update(chunk)
+            return h.hexdigest()
+        if pin is None:
+            pin = _metadata(path.lstat())
+        if parents is None:
+            parents = _parents(path)
         h = hashlib.sha256()
-        with path.open('rb') as f:
-            while chunk := f.read(_LIMIT):
+        with _pinned_reader(path, pin, parents, private=private) as stream:
+            while chunk := stream.read(_LIMIT):
+                if work is not None:
+                    work.check()
                 h.update(chunk)
+        if work is not None:
+            work.check()
         return h.hexdigest()
 
     @staticmethod
-    def copy_regular(path, target):
-        before = path.stat()
-        fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'wb') as output, path.open('rb') as source:
-            opened = os.fstat(source.fileno())
-            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise Hold(f'copy source changed: {path}')
-            shutil.copyfileobj(source, output, _LIMIT)
-            output.flush()
-            os.fsync(output.fileno())
-        after = path.stat()
-        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise Hold(f'copy source moving: {path}')
-        if Coordinator.hash_file(path) != Coordinator.hash_file(target):
-            raise Hold(f'copy hash mismatch: {path}')
+    def copy_regular(path, target, *, pin, parents, expected=None, work):
+        # All callers supply prior positive role admission, not just metadata.
+        # For a suspect slot independent expectations exist BEFORE this open.
+        variants = expected if isinstance(expected, list) else [expected] if expected is not None else None
+        with _pinned_reader(path, pin, parents) as source:
+            if variants is not None:
+                size = max(len(value) for value in variants)
+                raw = source.read(size + 1)
+                work.check()
+                if not any(raw == value for value in variants):
+                    raise Hold('actual ORIGINAL bytes disagree with independent public origin; no repair or reference substitution', details={'path': str(path)})
+                source.seek(0)
+            # Target parents are held literally, and readback proves private
+            # independent inode custody. No hardlink/reflink/source repair.
+            with _literal_output(target) as output:
+                original_hash = hashlib.sha256()
+                while chunk := source.read(_LIMIT):
+                    work.check()
+                    original_hash.update(chunk)
+                    if output.write(chunk) != len(chunk):
+                        raise Hold('original recovery short write', details={'path': str(target)})
+                output.flush()
+                os.fsync(output.fileno())
+                if _metadata(os.fstat(source.fileno())) != pin:
+                    raise Hold('original changed while copying', details={'path': str(path)})
+                if variants is not None and original_hash.hexdigest() != digest(raw):
+                    raise Hold('original changed between equality and copy', details={'path': str(path)})
+            if Coordinator.hash_file(target, private=True, work=work) != original_hash.hexdigest():
+                raise Hold('original copy readback mismatch', details={'path': str(target)})
+        work.check()
 
     @staticmethod
     def backup_database(path, target):
@@ -1081,6 +2122,12 @@ class Coordinator:
         self.diagnostic.effect('preparation-uv', 'command-accepted-environment-may-have-changed')
         self.diagnostic.accepted('preparation-uv-command')
         self.diagnostic.enter('preparation-python-origins')
+        prepared_python = self.python_identity()
+        if any(prepared_python[key] != self.python_pin[key] for key in ('target', 'sha256', 'version')):
+            raise Hold('uv changed the selected base compiler; preserve OLD recovery, no next effect')
+        # OLD .venv/pyvenv pins remain in accepted recovery. This separately
+        # records the actual legitimately prepared environment for later stages.
+        self.python_pin = prepared_python
         self.revalidate(offline=True)
         code, version, err = self.command([str(self.python), '--version'])
         if err or re.fullmatch(r'Python 3\.(12|13|14)\.[0-9]+\n', version) is None:
@@ -1096,11 +2143,13 @@ class Coordinator:
         if not re.fullmatch(r'v24\.[0-9]+\.[0-9]+\n', version) or err:
             raise Hold('Node 24 required; no alternate toolchain download')
         self.diagnostic.enter('preparation-npm')
+        self.require_backup()
         self.command([self.tools['npm']['path'], 'ci', '--cache', str(self.backup / 'preparation-npm-cache')], cwd=self.source / 'web', effect='preparation-npm')
         self.diagnostic.effect('preparation-npm', 'command-accepted-dependencies-may-have-changed')
         self.diagnostic.accepted('preparation-npm-command')
         self.revalidate(offline=True)
         self.diagnostic.enter('preparation-ui-build')
+        self.require_backup()
         self.command([self.tools['bash']['path'], 'scripts/build_web.sh', *(['--production'] if self.args.ui_profile == 'production' else [])], effect='preparation-ui')
         self.diagnostic.enter('preparation-ui-observation')
         from runtime.daemon.routes.web_static import _resolve_dist_dir
@@ -1476,6 +2525,7 @@ def absolute_path(value):
 
 def main(argv=None):
     diagnostic = DiagnosticContext()
+    coordinator = None
     try:
         require_human_host()
         diagnostic.accepted('host-entry')
@@ -1520,9 +2570,13 @@ def main(argv=None):
     except SystemExit as exc:
         if diagnostic.stage == 'arguments' and exc.code == 0:
             return 0  # argparse help, after the unchanged host-entry guard
+        if coordinator is not None:
+            coordinator.accepted_backup = None
         diagnostic.report(exc)
         return 2 if diagnostic.stage == 'arguments' else 1
     except (Exception, KeyboardInterrupt) as exc:
+        if coordinator is not None:
+            coordinator.accepted_backup = None
         diagnostic.report(exc)
         return 2 if isinstance(exc, ArgumentRefusal) else 1
 
