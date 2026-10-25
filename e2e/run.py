@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from typing import Any, Callable
 
 from owned import Owned, identity
+import completed
 
 
 # Existing baseline artifact presence contract; no content/projection oracle.
@@ -520,6 +521,9 @@ def main() -> int:
     ownership_frozen = False
     ownership_cleanup_returned = False
     ownership_budget = dict(clocks=0, stats=0, cycles=0, tokens=0)
+    retained_completed = None
+    completed_staged: dict[str, bytes] = {}
+    completed_exported = None
 
     def latch_launcher(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
         try:
@@ -661,6 +665,8 @@ def main() -> int:
                "HAPPYRANCH_WEB_DIST": str(source / "web" / "dist"),
                "UV_PROJECT_ENVIRONMENT": str(root / "venv"), "UV_PYTHON_DOWNLOADS": "never",
                "PLAYWRIGHT_BROWSERS_PATH": str(root / "browsers")}
+        env.update(E2E_SOURCE_TREE=receipt["source_tree"], E2E_RUN_ID=receipt["run_id"],
+                   E2E_RUN_ATTEMPT=receipt["run_attempt"], E2E_PYTHON=receipt["python"])
         # Production systemd selection may need the user's runtime socket.
         # These contain paths only, and never substitute/force a backend.
         for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
@@ -687,12 +693,11 @@ def main() -> int:
                 with log.open("w") as stream:
                     arm_deadline(end)
                     try:
-                        process = subprocess.Popen(launch_argv, cwd=cwd, env=env, stdout=stream,
+                        process = owner.popen(launch_argv, cwd=cwd, env=env, stdout=stream,
                                                    stderr=subprocess.STDOUT, **launch_options)
                     finally:
                         if diagnostic is not None:
-                            diagnostic.release_endpoint("sender")  # Before owner.add/wait, also on Popen failure.
-                    owner.add(process.pid)
+                            diagnostic.release_endpoint("sender")  # Before wait, also on Popen failure.
                     active_phase = dict(name=name, argv=launch_argv, pid=process.pid, exit=None,
                                         entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
                     receipt["phases"].append(active_phase)
@@ -847,15 +852,16 @@ def main() -> int:
                 return "value"  # No raw text/receipt is safe without established context.
             context_path = root / "coord/redaction-context.json"
             collection_window = "CONTEXT_PRESENT"
-            if context_path.exists():
-                collection_window = "CONTEXT_READ"
-                context_text = context_path.read_text()
-                collection_window = "CONTEXT_DECODE"
-                context = json.loads(context_text)
-                collection_window = "CONTEXT_VALIDATE"
-                if not isinstance(context, list) or not context or not all(isinstance(s, str) and s for s in context) or token not in context:
-                    raise ValueError("invalid retained redaction context")
-                redaction_context = context
+            if not context_path.exists():
+                raise ValueError("retained redaction context unavailable")
+            collection_window = "CONTEXT_READ"
+            context_text = context_path.read_text()
+            collection_window = "CONTEXT_DECODE"
+            context = json.loads(context_text)
+            collection_window = "CONTEXT_VALIDATE"
+            if not isinstance(context, list) or not context or not all(isinstance(s, str) and s for s in context) or token not in context:
+                raise ValueError("invalid retained redaction context")
+            redaction_context = context
             collection_window = "SCENARIO_PRESENT"
             if (root / "scenario.json").exists():
                 collection_window = "SCENARIO_READ"
@@ -962,6 +968,15 @@ def main() -> int:
 
         try:
             arm_deadline(cleanup["deadline"])
+            # Closed incremental evidence is independent of final raw-log
+            # redaction/export and must be retained before root teardown.
+            if root is not None:
+                try:
+                    retained_completed, completed_staged = completed.read_bundle(root / "coord", receipt)
+                except FileNotFoundError:
+                    pass  # No accepted ledger; cases remain UNKNOWN.
+                except (OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
+                    incomplete("collection", exc)
             operations["owner"]["attempted"] = True
             try:
                 if owner is not None and args.exercise == "baseline":
@@ -1428,7 +1443,7 @@ def main() -> int:
                 receipt["status"] = "FAIL"
                 receipt.setdefault("failure_phase", "cleanup")
                 # No new sample: preserve original observations, not absence.
-                if owner:
+                if owner and not owner.thread.is_alive():
                     receipt["cleanup"].setdefault("identities", owner.pids.copy())
                     receipt["cleanup"].setdefault("observed_units", sorted(owner.units.copy()))
                     receipt["cleanup"].setdefault("observed_groups", sorted(owner.groups.copy()))
@@ -1473,6 +1488,7 @@ def main() -> int:
                         cleanup=safe_cleanup, timing=safe_timing,
                         failure_phase=receipt.get("failure_phase", "export"),
                         failure="incomplete detailed evidence",
+                        completed_cases=completed_exported,
                         total_seconds=time.monotonic() - started,
                         **({"ownership_evidence": ownership_evidence} if ownership_evidence is not None else {}))
 
@@ -1484,6 +1500,17 @@ def main() -> int:
 
         try:
             arm_deadline(export["deadline"])
+            if retained_completed is not None:
+                # Publish validated references before any result can name them.
+                # This channel contains no early raw bodies or secret strings.
+                for name, data in completed_staged.items():
+                    export_time()
+                    completed.publish(output, name, data)
+                export_time()
+                copied, _ = completed.read_bundle(output, receipt)
+                if copied != retained_completed:
+                    raise ValueError("completed export identity moved")
+                completed_exported = copied
             publish(failure_receipt())
             initial_fail_published = True
             # Keep the final second of this SAME allowance for a failure receipt.
@@ -1527,9 +1554,13 @@ def main() -> int:
                 receipt["status"] = "FAIL"
             if receipt["status"] == "PASS":
                 validate_timing(receipt)
+                receipt["completed_cases"] = completed_exported
+                completed.join_results(completed_exported, receipt)
             receipt.update(failure_categories())
+            receipt["completed_cases"] = completed_exported
             export_time()
             detailed = json.loads(redact(json.dumps(receipt)))
+            detailed["completed_cases"] = completed_exported
             if ownership_evidence is not None:
                 detailed["ownership_evidence"] = ownership_evidence
             publish(detailed, final=True)

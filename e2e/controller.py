@@ -25,6 +25,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from oracles import Store, require
 from transport import Relay
+import completed
 
 
 def sha(path: Path) -> str:
@@ -197,6 +198,12 @@ class Controller:
         self.peer_connections: list[tuple] = []
         self.payloads: dict[str, dict] = {}
         self.results: dict[str, dict] = {}
+        self.completed_identity = dict(source_sha=self.revision,
+            source_tree=os.environ.get("E2E_SOURCE_TREE"), run_id=os.environ.get("E2E_RUN_ID"),
+            run_attempt=os.environ.get("E2E_RUN_ATTEMPT"), python=os.environ.get("E2E_PYTHON"),
+            exercise=args.exercise)
+        self.completed = dict(schema=1, identity=self.completed_identity, cases=[])
+        self.completed_files: dict[str, bytes] = {}
         self.commands: list[dict] = []
         self.http: list[dict] = []
         self.durable: list[dict] = []
@@ -896,7 +903,28 @@ class Controller:
 
     def mark(self, variant: str, evidence: dict | None = None) -> None:
         require(variant not in self.results, "duplicate variant result", variant)
-        self.results[variant] = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
+        result = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
+        # No raw result, bearer, token, log, body, path or exception string is
+        # copied into incremental evidence. Future secrets cannot invalidate
+        # these closed counts/identities. Full content proof remains separate.
+        sequence = len(self.completed["cases"]) + 1
+        index = completed.VARIANTS.index(variant)
+        observation = dict(schema=1, identity=self.completed_identity, variant=variant,
+            sequence=sequence, manifest_index=index, at=result["at"],
+            counts=dict(http=len(self.http), commands=len(self.commands), starts=len(self.starts),
+                        durable=len(self.durable), evidence_fields=len(result["evidence"])))
+        data = completed.encode(observation)
+        name = f"case-{sequence:02d}.json"
+        row = dict(variant=variant, sequence=sequence, manifest_index=index, at=result["at"],
+                   reported_status="PASS", evidence=dict(path=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+        candidate = dict(self.completed, cases=[*self.completed["cases"], row])
+        files = dict(self.completed_files, **{name: data})
+        completed.validate(candidate, self.completed_identity, files)
+        previous = completed.encode(self.completed) if self.completed["cases"] else None
+        completed.publish(self.root / "coord", name, data)
+        completed.publish(self.root / "coord", "completed-cases.json", completed.encode(candidate), previous=previous)
+        self.completed, self.completed_files = candidate, files
+        self.results[variant] = result
 
     def _latch_capture_failure(self, error: BaseException) -> None:
         try:
