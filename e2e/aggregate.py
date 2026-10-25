@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import signal
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 from cancellation import validate as validate_cancellation
 from run import BASELINE_ARTIFACTS, daily_admission, validate_admission, validate_timing
 from pathlib import Path
+import completed
 
 
 MANIFEST = json.loads(Path(__file__).with_name("manifest.json").read_text())
@@ -90,6 +92,121 @@ def controls() -> dict:
     validate(valid, MANIFEST["daily_python"], source, "success")
     results.update(cancellation_controls())
     results.update(admission_controls())
+    results.update(completed_controls())
+    return results
+
+
+def completed_controls() -> dict:
+    """Extend the existing reader controls; no Product/daemon execution."""
+    import tempfile
+    from controller import Controller
+    results = {}
+    with tempfile.TemporaryDirectory(prefix="e2e-completed-") as temporary:
+        root = Path(temporary)
+        (root / "coord").mkdir(mode=0o700)
+        controller = Controller.__new__(Controller)
+        controller.root = root
+        controller.results = {}
+        controller.completed_identity = dict(source_sha="1" * 40, source_tree="2" * 40,
+            run_id="123", run_attempt="1", python="3.12", exercise="baseline")
+        controller.completed = dict(schema=1, identity=controller.completed_identity, cases=[])
+        controller.completed_files = {}
+        controller.http, controller.commands, controller.starts, controller.durable = [], [], [], []
+        # Actual publisher accepts only closed fields, even if future-secret raw
+        # content is already present in the producer's original result evidence.
+        secret = "future-secret-body-must-never-be-published"
+        controller.mark(MANIFEST["variants"][0], dict(raw_body=secret))
+        original_result = copy.deepcopy(controller.results)
+        accepted, bundle = completed.read_bundle(root / "coord", controller.completed_identity)
+        assert len(accepted["cases"]) == 1 and all(secret.encode() not in data for data in bundle.values())
+        try:
+            controller.mark(MANIFEST["variants"][0])
+        except AssertionError:
+            results["completed-duplicate"] = "refused"
+        else:
+            raise AssertionError("duplicate completed case accepted")
+        # Later arbitrary evidence/export/cleanup failure does not touch the
+        # separately committed prefix. It also supplies no independent PASS.
+        controller.results.clear()
+        again, after = completed.read_bundle(root / "coord", controller.completed_identity)
+        assert again == accepted and after == bundle
+        for name, data in bundle.items():
+            completed.publish(root, name, data)
+        copied, _ = completed.read_bundle(root, controller.completed_identity)
+        assert copied == accepted
+        files = {name: data for name, data in bundle.items() if name != "completed-cases.json"}
+        for case in ("duplicate", "source_sha", "source_tree", "run_id", "run_attempt", "python", "exercise",
+                     "variant", "sequence", "manifest_index", "unsafe-path", "missing-evidence", "raw-field", "digest"):
+            value, evidence = copy.deepcopy(accepted), dict(files)
+            if case == "duplicate":
+                value["cases"].append(copy.deepcopy(value["cases"][0]))
+            elif case in completed.IDENTITY:
+                value["identity"][case] = dict(source_sha="3" * 40, source_tree="4" * 40,
+                    run_id="124", run_attempt="2", python="3.14", exercise="cancellation")[case]
+                # Coherently wrong artifact identity must still refuse the
+                # independently expected source/run/lane, not another guard.
+                body = completed.decode(evidence["case-01.json"])
+                body["identity"] = dict(value["identity"])
+                evidence["case-01.json"] = completed.encode(body)
+                value["cases"][0]["evidence"].update(bytes=len(evidence["case-01.json"]),
+                    sha256=hashlib.sha256(evidence["case-01.json"]).hexdigest())
+            elif case in ("variant", "sequence", "manifest_index"):
+                value["cases"][0][case] = MANIFEST["variants"][1] if case == "variant" else 2
+            elif case == "unsafe-path":
+                value["cases"][0]["evidence"]["path"] = "../raw/scenarios.txt"
+            elif case == "missing-evidence":
+                evidence.clear()
+            elif case == "digest":
+                value["cases"][0]["evidence"]["sha256"] = "0" * 64
+            else:
+                value["cases"][0]["raw_log"] = secret
+            try:
+                completed.validate(value, controller.completed_identity, evidence)
+            except (ValueError, KeyError, TypeError):
+                results["completed-" + case] = "refused"
+            else:
+                raise AssertionError("unsafe completed case accepted: " + case)
+        try:
+            completed.join_results(accepted, dict(controller.completed_identity,
+                completed_cases=accepted, variants=controller.results))
+        except ValueError:
+            results["completed-prefix-only"] = "UNKNOWN; no complete original result/content proof"
+        else:
+            raise AssertionError("completion marker alone accepted as full results")
+        # Continue the actual producer through all original manifest identities.
+        # This checks the ledger bound/join, never the Product case assertions.
+        controller.results = original_result
+        for variant in MANIFEST["variants"][1:]:
+            controller.mark(variant)
+        full, _ = completed.read_bundle(root / "coord", controller.completed_identity)
+        completed.join_results(full, dict(controller.completed_identity,
+            completed_cases=full, variants=controller.results))
+        assert len(full["cases"]) == 56
+        results["completed-all56-consistency"] = "accepted metadata only; full content oracles remain required"
+        try:
+            completed.publish(root / "coord", "case-01.json", b"{}")
+        except ValueError:
+            results["completed-conflicting-publication"] = "refused"
+        else:
+            raise AssertionError("conflicting completed evidence overwritten")
+        try:
+            completed.decode(b'{"schema":1,"schema":1}')
+        except ValueError:
+            results["completed-duplicate-json-field"] = "refused"
+        else:
+            raise AssertionError("duplicate completed JSON field accepted")
+        for name in ("case-02.json", "completed-cases.json"):
+            target = root / "coord" / name
+            if target.exists():
+                target.unlink()  # Disposable synthetic fixture only.
+            target.symlink_to(root / "outside")
+            try:
+                completed.publish(root / "coord", name, b"{}")
+            except (OSError, ValueError):
+                results["completed-symlink-" + name] = "refused"
+            else:
+                raise AssertionError("unsafe completed path accepted")
+        assert not (root / "outside").exists()
     return results
 
 
@@ -2424,19 +2541,27 @@ def main() -> int:
     names = ["e2e-" + version for version in expected] + ["e2e-cancel-TERM", "e2e-cancel-INT"]
     health = dict(status="FAIL", event=None, source_sha=None,
                   requested_event=args.event, requested_source_sha=args.source,
-                  cells=expected, artifacts=names, errors=[])
+                  cells=expected, artifacts=names, errors=[], completed_cases={})
     try:
         admission = daily_admission(Path(__file__).resolve().parents[1])
         health.update(admission)
         if admission["source_sha"] != args.source or admission["event"] != args.event:
             raise ValueError("requested aggregate event/source differs from admitted Actions identity")
         rows = []
+        content_accepted = set()
         required = ["result.json", *BASELINE_ARTIFACTS]
         phase_logs = [name + ".txt" for name in ("dependencies", "browser-dependencies", "browser-install",
                                                 "web-dependencies", "web-build", "scenarios")]
         # Missing/empty sanitized artifacts cannot be represented as healthy.
         for version in expected:
             directory = args.artifacts / ("e2e-" + version)
+            accepted = None
+            try:
+                accepted, _ = completed.read_bundle(directory, dict(admission, python=version, exercise="baseline"))
+                health["completed_cases"][version] = [dict(row, status="UNKNOWN") for row in accepted["cases"]]
+            except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+                health["completed_cases"][version] = []
+                health["errors"].append(f"e2e-{version}: completed case evidence unavailable")
             for name in required + phase_logs:
                 path = directory / name
                 if not path.is_file() or (name.endswith((".json", ".png")) and path.stat().st_size == 0):
@@ -2460,11 +2585,21 @@ def main() -> int:
                     rows.append(result)
                     if result.get("python") != version or result.get("exercise") != "baseline":
                         health["errors"].append(f"e2e-{version}: directory/interpreter/exercise mismatch")
+                    complete_join = False
+                    try:
+                        if accepted is None:
+                            raise ValueError("completed case evidence unavailable")
+                        completed.join_results(accepted, result)
+                        complete_join = True
+                    except (ValueError, KeyError, TypeError, IndexError):
+                        health["errors"].append(f"e2e-{version}: complete case/result join unavailable")
                     try:
                         validate_e04(result, json.loads((directory / "observations.json").read_text()),
                                      json.loads((directory / "browser-events.json").read_text()), directory)
                         validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
                         validate_e07(result, json.loads((directory / "observations.json").read_text()), directory)
+                        if complete_join:
+                            content_accepted.add(version)
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         health["errors"].append(f"e2e-{version}: {exc}")
         unexpected = set(path.name for path in args.artifacts.glob("e2e-*") if path.is_dir()) - set(names)
@@ -2474,6 +2609,9 @@ def main() -> int:
             validate(rows, expected, args.source, args.matrix_result)
             for row in rows:
                 validate_admission(row, admission)
+            for version in content_accepted:
+                for case in health["completed_cases"][version]:
+                    case["status"] = "PASS"  # Full original content gates above, never a marker alone.
         except (ValueError, KeyError, TypeError) as exc:
             health["errors"].append(str(exc))
         if args.cancellation_result != "success":
