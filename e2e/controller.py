@@ -865,7 +865,7 @@ class Controller:
         self.stores[start["org"]].result(self.payloads[wire["session_id"]])
 
     def release(self, start: dict) -> None:
-        connection, stream = self.holds.pop(start["session"])
+        connection, stream = self.holds[start["session"]]
         # The caller owns the existing finite I/O cap: E05 sets 5s; other
         # callers retain start/command's socket cap. Never replace it with 30s.
         cap = connection.gettimeout()
@@ -889,6 +889,10 @@ class Controller:
             stream.close()
             connection.close()
             self.remaining()
+        # Ownership ends only after the complete acknowledged release. A
+        # partial write/read/close retains both inventories for final teardown.
+        self.peer_connections.remove((connection, stream))
+        del self.holds[start["session"]]
 
     def finish(self, org: str, task: str) -> dict:
         begin = time.monotonic()
@@ -1252,10 +1256,10 @@ class Controller:
             self.record_error("provider-observer-incomplete", RuntimeError("observer error/live at cutoff"))
         if self.browser:
             self._attempt("browser-teardown", self.browser.close, blocking=False)
-        if self.browser_relay:
+        if self.browser_relay and not getattr(self, "browser_relay_closed", False):
             closure = self._attempt("thread-proxy-close", lambda: self.browser_relay.close(self.effective_end()))
             if closure is not None:
-                self.browser_relay_closed = True
+                self.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
                 self.durable.append(dict(thread_proxy_closure=closure))
                 if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
                     self.record_error("thread-proxy-closure", RuntimeError("proxy closure/transport failure"))
@@ -1265,18 +1269,26 @@ class Controller:
                 self.e07["transport_closure"] = closure
                 if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
                     self.record_error("late-transport-closure", RuntimeError("late transport closure failure"))
-        for connection, stream in self.peer_connections:
+        for connection, stream in list(self.peer_connections):
             if self.effective_end() <= time.monotonic():
                 self._attempt("peer-socket-shutdown", lambda connection=connection: connection.shutdown(socket.SHUT_RDWR), blocking=False)
+            closed = []
             def close_stream(connection: Any = connection, stream: Any = stream) -> None:
-                cap = connection.gettimeout()
-                require(cap is not None and cap > 0, "peer retains finite socket cap")
-                left = self.effective_end()-time.monotonic()
-                require(left > 0, "peer stream close has existing positive time")
-                connection.settimeout(min(cap, left))
+                if not stream.closed:
+                    cap = connection.gettimeout()
+                    require(cap is not None and cap > 0, "peer retains finite socket cap")
+                    left = self.effective_end()-time.monotonic()
+                    require(left > 0, "peer stream close has existing positive time")
+                    connection.settimeout(min(cap, left))
                 stream.close()
+                closed.append('stream')
+            def close_socket(connection: Any = connection) -> None:
+                connection.close()
+                closed.append('socket')
             self._attempt("peer-stream-close", close_stream)
-            self._attempt("peer-socket-close", connection.close, blocking=False)
+            self._attempt("peer-socket-close", close_socket, blocking=False)
+            if closed == ['stream', 'socket']:
+                self.peer_connections.remove((connection, stream))
         self._attempt("provider-server-close", self.server.close, blocking=False)
         self._attempt("provider-socket-unlink", lambda: self.socket_path.unlink(missing_ok=True), blocking=False)
         if self.relay:

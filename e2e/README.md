@@ -1741,8 +1741,9 @@ an independent commit, with one arm deadline at most5s. Ordinary content and
 SSE are forwarded as bytes, without bootstrap/auth substitution or manufactured
 responses. Partial evidence includes actual network/navigation/eligibility
 records. Disabled controls do not prove handler reentry or causal guard
-sensitivity. Owned context, listener, connections and workers close before daemon
-teardown; missing/unknown closure fails daily health.
+sensitivity. Owned context, listener, connections and workers close inside the
+existing E05 final4 allowance, before E07 and daemon teardown; error paths retain
+the original case/scenario end. Missing/unknown closure fails daily health.
 
 The forwarding loop checks actual HTTP response completion before touching the
 saved upstream socket again: `read1` can close that socket while returning the
@@ -1787,6 +1788,32 @@ assertion sensitivity remains **UNEXECUTED**.
 | Denials / `E05.consumed-token`, `E05.nonparticipant-task-send`; Relay E05 request capture | Exact original instruction/real409 or403/request/response/error stdout, same retained file/live owner and coherent unchanged frame | Another endpoint/status/body or detached denial cannot pass by retaining valid durable rows | Existing negative frame checks are retained; dedicated contradictory artifact controls remain unauthored | NO |
 | `thread_provider.redaction_context/command`; Controller sanitation/export closure | Validate private retained context before and after capture, including current/old bearer and invocation tokens; sanitize full binary streams before16384-byte clipping or JSON/socket output; original byte counts/flags, safe digest identities | Boundary-straddling credential, multibyte output, timeout suffix or missing/unsafe/lost context cannot take the old clip-before-redact path; unknown context raises fixed text and withholds output | Existing full-string exporter cannot repair a fragment already clipped by a producer; sanitation and timeout behavior remain unproved | NO |
 | `aggregate.validate_e05`, threads command/compose/settled producers, browser response/DOM producers | Reopen existing artifacts and recompute actual command, public response, full ledger and rendered content joins; PNG signature proves file format only | Metadata-only or valid durable rows cannot substitute for public outcome/content | Extends the existing actual-content consumer; no executed controls or full test-authoring PASS | NO |
+
+The run40206029791 owner/reader correction extends these SAME five cases:
+
+| Existing keeper | Observable contract | Credible regression | Nearest keeper and distinct gap | Test-only production seam |
+| --- | --- | --- | --- | --- |
+| BrowserRelay request lifetime and E05 raw browser ledger | Pair actual browser Request and proxy request only when both unmatched sets are unique; an actual GET `net::ERR_ABORTED` may close that SAME upstream read. Retain raw failure and abort witness. Original compose200 is never exempt. Timeout, framing, ambiguous/unmatched disconnect and unexpected SSE EOF refuse. | Guessing among identical requests, forgiving any socket error, releasing the held POST because another GET aborts, or accepting only empty worker counts. | Existing compose byte/commit/delivery checks remain; CLI loss relay has no browser/SSE owner. Native browser cancellation and timeout races are NOT RUN/PROOF NOT RUN. | NO |
+| Controller.release/close, all existing provider callers | Only complete acknowledged stream AND socket close removes the owned pair and hold. Partial release remains inventoried; teardown retains failures and attempts remaining owners. | Retiming already released sockets, dropping a failed release, or treating absent descriptors as settlement. | Existing peer registration, provider observer/host/process closure remain; Owned launcher cleanup cannot certify controller protocol release. Native normal/active/partial-close cases are NOT RUN/PROOF NOT RUN. | NO |
+| validate_e05 R1 provider/compose/show readers | Exact ordered current shipping preflights, bodies, statuses, response text, selected outcome, canonical argv/private payload and witnesses; denied full durable/file frames unchanged. | An extra/reordered preflight, wrong naming context/identity, dropped raw request or old name-only details line. | Existing eleven-command ledger, two founder composes and three JSON show reads remain. Archived R1 prefix rejects old source and accepts corrected reader on BOTH original lanes; full E05 still refuses original origin evidence. | NO |
+
+Mention-bearing C reply AND replay perform org discovery, exact
+`identities/resolve` lookup, selected thread GET and original reply POST. Plain
+reply/decline/dispatch/task-send perform org discovery then their exact action.
+Task-final sends only its completion POST. Task-read performs org discovery,
+details GET and identities GET and prints `case_manager · case_manager` for
+agent/result presentation. Founder N/D compose resolves its exact recipient
+between discovery and original POST; JSON show remains discovery then GET.
+The reader permits no arbitrary extras or prefix family.
+
+Original browser origin failures remain failures. Future origin-bypass records
+retain URL/method/resource type; historical records lacked these facts. Current
+HTML references external Google fonts, which is a concrete outside-radius owner
+dependency, not permission to relax the whole-origin predicate. New navigation records retain the pinned native new-document Request lineage.
+The reader permits at most one nondeparting same-URL initialization per actual
+document and still requires the exact automatic detail entry/four real revisits;
+extra documents or changed targets refuse. Historical repeated same-URL events
+lack that lineage and receive no inferred browser acceptance.
 
 The CLI relay captures request JSON/response text only after E05 starts; the
 original baseline/Pause/E04 wire receipts keep their prior shape. The controller
@@ -2367,7 +2394,7 @@ R1–R5 correction contracts (TASK10778):
 | --- | --- | --- | --- | --- |
 | E05 aggregate transport | Original daemon/CLI/browser D/L/P keys and registered ports only; independent E07 listener/upstream predicate stays in E07 | Valid E05 fails on nonexistent E07 keys | Misplaced predicate disagreed with unchanged E05 producer | `threads.exercise` serialized transport |
 | Browser cancel and independent aggregate | Full literal `{ok:true, task_id:P, cancelled:[P,W], killed:[{task_id:W,agent:case_worker}]}` with exact order and membership | Reject real successful200 or accept incomplete response | Prior literal omitted ok/task_id | Shipping `tasks.cancel_task` and actual dialog POST |
-| Both new stub witnesses | Closed seven-field records, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag or unknown-field corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch, original `fake_claude.sh` argv and unchanged executable guard |
+| Both new stub witnesses | Closed eight-field records including real Boolean `format_json:false`, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag, missing/extra field or false-as-zero corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch uses `--output-format`, while the unchanged guard's Boolean checks literal `--format json` |
 | E07 ownership updates | Atomic temporary/replace union retains all earlier PIDs; register before process observations/waits | Watcher reads truncated JSON or failure loses an observed ancestor | New direct overwrites differed from atomic `Controller.start` | Existing `Owned.sample/observe` with unchanged PID-start/cgroup/unit checks |
 | Private launch writer and final collector | mode0600 temporary creation/replace, initial PID record retained until full acknowledgement commits; each issued command requires a record; retain valid siblings and valid initial records with fixed missing/malformed/incomplete/unexpected diagnostics | Interrupted write destroys all later evidence or glob hides missing record | Unguarded comprehension and truncate/chmod publication | Genuine provider Popen and acknowledgement, `Controller.evidence`, existing run e07 whitelist/export, independent aggregate |
 
@@ -2380,6 +2407,19 @@ failure and independently requires both complete records in command order.
 Sanitation remains outside parse catches: unavailable retained context still
 refuses export, and incomplete records never fabricate an acknowledgement.
 These source corrections add no dedicated control or execution evidence.
+
+For the eight-key correction, existing archived-reader calls reject the old
+seven-key oracle on BOTH run40206029791 lanes and accept the corrected E07
+content prefix through the native-admission boundary, retaining original source
+pins. Full reader invocation still refuses missing native admission; no hosted
+identity/environment was fabricated. The exact existing stub predicate rejects
+integer0, true, string/null, missing/extra keys and wrong source/plan/argv/argc on
+in-memory copies, then accepts the unmodified original witness. This is scoped
+ARCHIVED-READER evidence, not full E07, native launch or test-authoring PASS.
+Whole original runs remain FAIL/zero accepted PASS/56 UNKNOWN EACH, HealthFAIL3.
+All BOTH50ms/full1s/full-content/host/witness/closure checks, original bounds,
+daily19UTC/full56 EACH3.12/3.14/TERM3.12/INT3.14 are unchanged. No worker Product,
+native lifecycle campaign, protected mutation or repetition was run.
 
 All dedicated sensitivity controls remain **UNAUTHORED**; behavior, assertion
 sensitivity, transport provenance, delivery/persistence, fit, process closure
