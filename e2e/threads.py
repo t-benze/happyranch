@@ -441,11 +441,30 @@ def exercise(c: Controller) -> None:
         require(sum(r["kind"] == "stub" for r in rows) == 36 and sum(r["kind"] == "callback" for r in rows)
                 == len(c.commands)+len(c.provider_commands)+len(c.thread_commands), "all E05 CLI/provider witnesses accounted")
         record.update(witnesses=rows, final_anchor=anchor(c,"E05:final",24,previous))
+        # This context owns long-lived SSE reads. Settle it and its proxy in
+        # the existing final4, before E07 can leave their original ends behind.
+        browser.close_threads_context()
+        closure = proxy.close(c.effective_end())
+        c.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
+        c.durable.append(dict(thread_proxy_closure=closure))
+        require(not closure['errors'] and not closure['workers_alive'] and not closure['listener_alive']
+                and not closure['connections'], 'E05 original-budget browser/proxy closure', closure)
         record["finished"] = time.monotonic()
         require(record["finished"] <= c.case_deadline, "E05 final evidence stays within shared allowance")
         for variant in VARIANTS:
             c.mark(variant, dict(threads=record))
     finally:
+        # Partial/error paths keep the SAME case/scenario end and retain all
+        # failed teardown observations. Controller.close remains the fallback.
+        if c.browser_relay and not getattr(c, 'browser_relay_closed', False):
+            c.browser_relay.release.set()
+            c._attempt('thread-context-close', c.browser.close_threads_context, blocking=False)
+            closure = c._attempt('thread-proxy-close', lambda: c.browser_relay.close(c.effective_end()))
+            if closure is not None:
+                c.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
+                c.durable.append(dict(thread_proxy_closure=closure))
+                if closure['errors'] or closure['workers_alive'] or closure['listener_alive'] or closure['connections']:
+                    c.record_error('thread-proxy-closure', RuntimeError('proxy closure/transport failure'))
         if hasattr(c, "case_deadline"):
             del c.case_deadline
         c.publish_end()

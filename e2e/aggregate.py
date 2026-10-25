@@ -1129,6 +1129,37 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         if not condition:
             raise ValueError("E05 content: " + message)
 
+    def identity(value: dict, name: str) -> None:
+        digest = value.get('canonical_definition_revision')
+        check(type(digest) is str and len(digest) == 64 and all(c in '0123456789abcdef' for c in digest),
+              'R1 canonical definition digest')
+        check(value == dict(canonical_id=name, kind='agent', lifecycle='active', addressable_name=name,
+                            name_revision=1, canonical_definition_revision=digest, naming_status='ready')
+              and type(value['name_revision']) is int, 'R1 complete current agent identity')
+
+    def resolution(wire: dict, name: str, context: str) -> None:
+        check(wire['request'] == dict(addresses=[name], context=context)
+              and set(wire['response']) == {'resolutions'} and len(wire['response']['resolutions']) == 1,
+              'R1 exact naming preflight request/response')
+        resolved = wire['response']['resolutions'][0]
+        identity(resolved['identity'], name)
+        check(resolved == dict(address=name, status='resolved', identity=resolved['identity'], eligible=True)
+              and resolved['eligible'] is True, 'R1 actual eligible current canonical resolution')
+
+    def wire_window(wires: list[dict], expected: list[tuple], entered: float, finished: float) -> None:
+        check([(w['method'], w['path']) for w in wires] == expected
+              and all(w in observations['relay'] and w['dropped'] is False
+                      and entered <= w['entered'] <= finished
+                      and json.loads(w['response_text']) == w['response'] for w in wires)
+              and all(a['entered'] <= b['entered'] for a, b in zip(wires, wires[1:])),
+              'R1 complete exact ordered shipping wire window')
+        for wire in wires:
+            if wire['path'] == '/api/v1/orgs':
+                manifest = next(d['executable_manifest'] for d in observations['durable'] if 'executable_manifest' in d)
+                check(wire['request'] is None and wire['status'] == 200
+                      and wire['response'] == dict(orgs=[dict(slug=org, root=str(Path(manifest['root']) / 'runtime/orgs' / org))
+                                                        for org in ('alpha', 'beta')], broken=[]), 'R1 exact org discovery')
+
     durable = observations["durable"]
     cases = [d["threads_cases"] for d in durable if "threads_cases" in d]
     check(len(cases) == 1, "one finite C/N/D record")
@@ -1412,10 +1443,44 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         wire = selected[0]
         check(wire['status'] == status and wire['request'] == request_body and wire['response'] == cmd['selected_response']
               and json.loads(wire['response_text']) == wire['response'], 'R1 request/status/selected actual response equality')
-        discovery = [w for w in cmd['wire'] if w != wire]
-        check(len(discovery) == (0 if action == 'thread-task-final' else 1)
-              and all(w['method'] == 'GET' and w['path'] == '/api/v1/orgs' and w['request'] is None and w['status'] == 200 for w in discovery)
-              and all(cmd['entered'] <= w['entered'] <= cmd['finished'] for w in cmd['wire']), 'R1 full command wire window; only shipping org discovery')
+        expected_window = [] if action == 'thread-task-final' else [('GET', '/api/v1/orgs')]
+        if action == 'thread-reply' and supplied['body_markdown'] == 'E05 reply\n@case_worker received':
+            expected_window += [('POST', '/api/v1/orgs/alpha/identities/resolve'),
+                                ('GET', f'/api/v1/orgs/alpha/threads/{tid}')]
+        expected_window.append((method, path))
+        if action == 'thread-task-read':
+            expected_window.append(('GET', '/api/v1/orgs/alpha/identities'))
+        wire_window(cmd['wire'], expected_window, cmd['entered'], cmd['finished'])
+        if action == 'thread-reply' and len(expected_window) == 4:
+            naming, preview = cmd['wire'][1:3]
+            check(naming['status'] == preview['status'] == 200 and preview['request'] is None,
+                  'R1 successful naming and roster preflight')
+            resolution(naming, 'case_worker', 'lookup')
+            check(preview['response']['thread_id'] == tid and preview['response']['subject'] == 'E05 compose race'
+                  and preview['response']['participants'] == ['case_manager', 'case_worker']
+                  and preview['response']['turns_used'] == (1 if status == 200 else 2)
+                  and [(m['seq'], m['speaker'], m['body_markdown']) for m in preview['response']['messages']]
+                  == [(seq, speaker, body) for seq, speaker, _, body in expected_messages[0]][:1 if status == 200 else 2],
+                  'R1 actual current thread roster and complete pre-action messages')
+        if action == 'thread-task-read':
+            naming = cmd['wire'][-1]
+            check(naming['status'] == 200 and naming['request'] is None
+                  and set(naming['response']) == {'identities', 'naming_diagnostic'}
+                  and naming['response']['naming_diagnostic'] is None,
+                  'R1 exact task-details presentation lookup')
+            identities = naming['response']['identities']
+            check([i['canonical_id'] for i in identities] == ['founder', 'case_manager', 'case_worker', 'code_reviewer'],
+                  'R1 complete current presentation roster')
+            check(identities[0] == dict(canonical_id='founder', kind='founder', lifecycle='founder', addressable_name='founder',
+                                       name_revision=1, canonical_definition_revision=None, naming_status='ready')
+                  and type(identities[0]['name_revision']) is int, 'R1 exact founder presentation')
+            for item in identities[1:]:
+                identity(item, item['canonical_id'])
+            for receipt in commands:
+                for prior in receipt['wire']:
+                    if prior['path'] == '/api/v1/orgs/alpha/identities/resolve':
+                        for resolved in prior['response']['resolutions']:
+                            check(resolved['identity'] in identities, 'R1 resolution agrees with independent presentation read')
         if status != 200:
             expected = {'detail': {'code':'invocation_token_consumed','status':'consumed'} if status == 409 else {'code':'not_a_participant','composer':'case_manager'}}
             stdout = f"Error ({status}): {wire['response_text']}\n"
@@ -1437,8 +1502,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                   status='completed', confidence_score=90, output_summary='E05 task complete').items()), 'R1 D2 actual dispatched completed task/result summary')
             lines = cmd['stdout'].splitlines()
             check(all(line in lines for line in (f'Task:       {T}', 'Team:       engineering', 'Status:     completed',
-                  'Agent:      case_manager', 'Brief:      E05 one owned task', 'Results (1):',
-                  '  - [case_manager] confidence=90  E05 task complete')), 'R1 D2 shipping literal details lines')
+                  'Agent:      case_manager · case_manager', 'Brief:      E05 one owned task', 'Results (1):',
+                  '  - [case_manager · case_manager] confidence=90  E05 task complete')), 'R1 D2 shipping literal details lines')
             expected, stdout = details, cmd['stdout']
         check(wire['response'] == expected and cmd['stdout'] == stdout, 'R1 literal selected outcome and shipping stdout')
 
@@ -1463,13 +1528,16 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               and cmd['exit'] == 0 and cmd['stderr'] == '' and wire['method'] == 'POST' and wire['path'] == '/api/v1/orgs/alpha/threads'
               and wire['status'] == 200 and wire['request'] == dict(subject=subject, recipients=[recipient], body_markdown=body)
               and wire['response'] == compose['response'], 'R1 N/D exact compose command/request/response')
-        check(observations['commands'][compose['command_index']] == cmd and len(compose['wire_records']) == 2
+        check(observations['commands'][compose['command_index']] == cmd and len(compose['wire_records']) == 3
               and compose['wire_records'][-1] == wire
-              and [(w['method'],w['path']) for w in compose['wire_records']] == [('GET','/api/v1/orgs'),('POST','/api/v1/orgs/alpha/threads')]
+              and [(w['method'],w['path']) for w in compose['wire_records']] == [('GET','/api/v1/orgs'),('POST','/api/v1/orgs/alpha/identities/resolve'),('POST','/api/v1/orgs/alpha/threads')]
               and compose['wire_records'][0]['request'] is None
               and all(w in observations['relay'] and w['status'] == 200 and w['dropped'] is False
                       and compose['entered'] <= w['entered'] <= compose['finished'] for w in compose['wire_records']),
               'R1 N/D complete canonical wire and command-index window')
+        wire_window(compose['wire_records'], [('GET', '/api/v1/orgs'), ('POST', '/api/v1/orgs/alpha/identities/resolve'),
+                                             ('POST', '/api/v1/orgs/alpha/threads')], compose['entered'], compose['finished'])
+        resolution(compose['wire_records'][1], recipient, 'thread_recipient')
         response = compose['response']
         stored = next(r for r in final['threads'] if r['id'] == group['thread'])
         check(response == dict(thread_id=group['thread'], started_at=stored['started_at'], pending_replies=[recipient]),
@@ -1522,15 +1590,43 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     inbox = origin + '/orgs/alpha/threads'
     # Classify EVERY navigation, including intentional revisits. An extra event
     # anywhere in the full ledger cannot be hidden by a case snapshot.
-    navigation = [(e['event'], e['url']) for e in events if e['event'] in {'navigation','deliberate-revisit'}]
-    expected_navigation = [('navigation',inbox), ('navigation',detail)]
+    navigation, entries = [], []
+    document_id, document_url, current_url, initialized = None, None, None, False
+    documents = set()
+    for event in events:
+        if event['event'] == 'deliberate-revisit':
+            navigation.append(('deliberate-revisit', event['url'], None))
+        elif event['event'] == 'navigation':
+            check(type(event['new_document']) is bool and type(event['document_request_id']) is int,
+                  'R2 typed native document lineage')
+            if event['new_document']:
+                document_id = event['document_request_id']
+                issued = [e for e in events if e['event'] == 'request' and e['request_id'] == document_id]
+                check(document_id not in documents and len(issued) == 1 and issued[0]['navigation'] is True
+                      and issued[0]['resource_type'] == 'document' and issued[0]['method'] == 'GET'
+                      and issued[0]['url'] == event['url'] and issued[0]['at'] <= event['at'],
+                      'R2 each new document has its own actual unredirected browser GET')
+                documents.add(document_id)
+                document_url, current_url, initialized = event['url'], event['url'], False
+            else:
+                check(document_id is not None and event['document_request_id'] == document_id,
+                      'R2 same-document event retains actual original Request')
+                if event['url'] == current_url:
+                    check(not initialized and current_url == document_url,
+                          'R2 at most one nondeparting initialization per actual document')
+                    initialized = True
+                    continue  # Raw event remains in the complete ledger.
+                current_url = event['url']
+            navigation.append(('navigation', event['url'], event['new_document']))
+            entries.append(event)
+    expected_navigation = [('navigation',inbox,True), ('navigation',detail,False)]
     for target in (inbox, detail, detail, origin + f"/orgs/alpha/threads/{D['thread']}"):
-        expected_navigation += [('deliberate-revisit',target), ('navigation',target)]
+        expected_navigation += [('deliberate-revisit',target,None), ('navigation',target,True)]
     check(navigation == expected_navigation, 'R2 one automatic detail entry and four explicitly paired later revisits; no extras')
     check(not any(e['at'] < wire['release_observed'] and (e['event'] == 'compose-response'
                   or (e['event'] == 'navigation' and e['url'] != inbox)) for e in events),
           'R2 zero held response/detail navigation recomputed from full ledger')
-    auto_entry = [e for e in events if e['event'] == 'navigation'][1]
+    auto_entry = entries[1]
     first_revisit = next(e for e in events if e['event'] == 'deliberate-revisit')
     check(response['at'] <= auto_entry['at'] <= C['released_events'][-1]['at'] <= first_revisit['at']
           and C['created']['url'] == detail and C['created']['list_url'] == inbox,
@@ -1595,6 +1691,42 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     closure = [d["thread_proxy_closure"] for d in durable if "thread_proxy_closure" in d]
     check(len(closure) == 1 and closure[0]["port"] == transport["browser_port"] and not closure[0]["errors"]
           and closure[0]["workers_alive"] == closure[0]["connections"] == 0 and closure[0]["listener_alive"] is False, "bounded proxy/socket/listener closure")
+    check(case['final_entered'] <= events[-1]['at'] <= closure[0]['entered'] <= closure[0]['finished'] <= case['finished'],
+          'R2 browser and proxy close within original E05 final allowance')
+    used_aborts = set()
+    paired_requests = set()
+    for proxied in observations['thread_proxy']:
+        check(proxied['entered'] <= proxied['closed'] <= closure[0]['finished'], 'R2 every actual browser request settled')
+        if 'browser_request_id' in proxied:
+            request_id = proxied['browser_request_id']
+            issued = [e for e in events if e['event'] == 'request' and e['request_id'] == request_id]
+            check(type(request_id) is int and request_id not in paired_requests and len(issued) == 1
+                  and issued[0]['url'] == origin + proxied['target'] and issued[0]['method'] == proxied['method'],
+                  'R2 one actual native Request per paired original proxy request')
+            paired_requests.add(request_id)
+        failure = proxied.get('error') or proxied.get('client_disconnected')
+        if not failure:
+            check('delivered' in proxied, 'R2 complete original response delivery')
+            continue
+        abort = proxied.get('browser_abort')
+        check(abort is not None and proxied['method'] == 'GET' and proxied['ordinal'] is None
+              and proxied.get('browser_request_id') == abort['request_id']
+              and abort == dict(next((e for e in events if e['event'] == 'request-failed'
+                                     and e['request_id'] == abort['request_id']), {}), target=proxied['target'])
+              and abort['failure'] == 'net::ERR_ABORTED' and abort['method'] == 'GET'
+              and abort['url'] == origin + proxied['target']
+              and proxied['entered'] <= abort['at'] <= closure[0]['entered']
+              and abort['request_id'] not in used_aborts, 'R2 unique independently observed actual browser cancellation')
+        issued = [e for e in events if e['event'] == 'request' and e['request_id'] == abort['request_id']]
+        check(len(issued) == 1 and issued[0]['url'] == abort['url'] and issued[0]['method'] == 'GET'
+              and issued[0]['at'] <= abort['at'] and 'abort_shutdown_error' not in proxied
+              and (failure in {'BrokenPipeError', 'ConnectionResetError'}
+                   and (proxied.get('failure_operation') == 'downstream' or 'abort_shutdown' in proxied)
+                   or failure == 'ConnectionAbortedError' and abort['at'] <= proxied.get('abort_observed', -1) <= proxied['closed']
+                   or failure == 'IncompleteRead' and proxied.get('streaming') is True
+                   and abort['at'] <= proxied.get('abort_shutdown', -1) <= proxied['closed']),
+              'R2 native abort joins original GET; timeout/framing/unexpected stream failures refuse')
+        used_aborts.add(abort['request_id'])
     final_orgs = [d for d in durable if "threads_final_org" in d]
     check(len(final_orgs) == 2 and {d["threads_final_org"] for d in final_orgs} == {"alpha","beta"}, "both final orgs")
     for d in final_orgs:
@@ -1805,10 +1937,10 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           "actual immutable source/stub/task-plan bindings")
     stubs = [w for w in suffix if w["kind"] == "stub"]
     for witness in stubs:
-        check(set(witness) == {"kind","provider","stub_sha256","source_sha","plan_sha256","argc","flags"}
-              and type(witness["argc"]) is int and witness == dict(
+        check(set(witness) == {"kind","provider","stub_sha256","source_sha","plan_sha256","argc","flags","format_json"}
+              and witness["format_json"] is False and type(witness["argc"]) is int and witness == dict(
                   kind="stub", provider="claude", stub_sha256=stub_sha, source_sha=row["source_sha"],
-                  plan_sha256=plan_sha, argc=7, flags=["-p","--output-format"]),
+                  plan_sha256=plan_sha, argc=7, flags=["-p","--output-format"], format_json=False),
               "complete new stub record and concrete fresh Claude launch contract")
     source_names = ["e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
         "e2e/thread_provider.py","e2e/pause_browser.py","runtime/daemon/__main__.py","runtime/daemon/paths.py","e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",

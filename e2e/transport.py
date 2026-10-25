@@ -24,11 +24,57 @@ class BrowserRelay:
         self.stopping = False
         self.workers: set[threading.Thread] = set()
         self.connections: set = set()
+        self.active_responses: dict[int, socket.socket] = {}
+        self.browser_requests: list[dict] = []
         self.arm_end: float | None = None
         self.proof = None
         self.matches = 0
         self.hold: dict = {}
         relay = self
+
+        def pair_request(method: str, target: str) -> None:
+            # Called under lock from either observation order. Never guess an
+            # order among concurrent identical requests, or reuse a failed one.
+            pending = [e for e in relay.browser_requests if e['method'] == method and e['target'] == target
+                       and not any(r.get('browser_request_id') == e['request_id'] for r in relay.records)]
+            records = [r for r in relay.records if r['method'] == method and r['target'] == target
+                       and 'browser_request_id' not in r]
+            if len(pending) == len(records) == 1 and 'failed' not in pending[0]:
+                records[0]['browser_request_id'] = pending[0]['request_id']
+
+        def browser_request(event: dict) -> None:
+            with relay.lock:
+                relay.browser_requests.append(dict(event))
+                pair_request(event['method'], event['target'])
+        self.browser_request = browser_request
+
+        def browser_abort(event: dict) -> None:
+            # Native Request failure is independent of the proxy's socket
+            # exception. Ambiguous/unmatched requests receive no exemption.
+            with relay.lock:
+                for issued in relay.browser_requests:
+                    if issued['request_id'] == event['request_id']:
+                        issued['failed'] = event['at']
+                if event['failure'] != 'net::ERR_ABORTED' or event['method'] != 'GET':
+                    return
+                matches = [r for r in relay.records if r['method'] == event['method']
+                           and r['target'] == event['target'] and r['ordinal'] is None
+                           and r.get('browser_request_id') == event['request_id']
+                           and 'delivered' not in r and 'browser_abort' not in r
+                           and r['entered'] <= event['at']]
+                if len(matches) != 1:
+                    return
+                record = matches[0]
+                record['browser_abort'] = dict(event)
+                sock = relay.active_responses.get(id(record))
+                if sock is not None:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                        record['abort_shutdown'] = time.monotonic()
+                    except OSError:
+                        record['abort_shutdown_error'] = True
+                        relay.errors.append('browser abort upstream shutdown failed')
+        self.browser_abort = browser_abort
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -49,6 +95,7 @@ class BrowserRelay:
                 connection = None
                 upstream_socket = None
                 response = None
+                operation = 'request'
                 with relay.lock:
                     selected = relay.arm_end is not None and self.command == "POST" and self.path == "/api/v1/orgs/alpha/threads"
                     if selected:
@@ -60,13 +107,21 @@ class BrowserRelay:
                     else:
                         ordinal = None
                 end = relay.arm_end if selected else relay.deadline
-                record = dict(method=self.command, path=self.path.split("?")[0], ordinal=ordinal, entered=time.monotonic())
-                relay.records.append(record)
+                record = dict(method=self.command, path=self.path.split("?")[0], target=self.path,
+                              ordinal=ordinal, entered=time.monotonic())
+                with relay.lock:
+                    relay.records.append(record)
+                    pair_request(self.command, self.path)
                 try:
                     def remaining() -> float:
                         value = (end if selected else relay.deadline) - time.monotonic()
-                        if value <= 0 or relay.stopping:
+                        if value <= 0:
                             raise TimeoutError("browser transport deadline")
+                        if record.get('browser_abort'):
+                            record['abort_observed'] = time.monotonic()
+                            raise ConnectionAbortedError('native browser request cancelled')
+                        if relay.stopping:
+                            raise ConnectionAbortedError('browser relay stopped')
                         return value
 
                     self.connection.settimeout(remaining())
@@ -95,7 +150,9 @@ class BrowserRelay:
                     upstream_socket = connection.sock
                     with relay.lock:
                         relay.connections.add(upstream_socket)
+                        relay.active_responses[id(record)] = upstream_socket
                     record["forwarded"] = time.monotonic()
+                    operation = 'upstream'
                     upstream_socket.settimeout(remaining())
                     response = connection.getresponse()
                     remaining()
@@ -141,6 +198,7 @@ class BrowserRelay:
                         else:
                             relay.errors.append("compose status/ordinal refused")
                             relay.release.set()
+                    operation = 'downstream'
                     self.connection.settimeout(remaining())
                     self.send_response_only(response.status, response.reason)
                     hops = relay.hop_headers(headers)
@@ -163,27 +221,35 @@ class BrowserRelay:
                             while not response.isclosed():
                                 self.connection.settimeout(remaining())
                                 upstream_socket.settimeout(remaining())
+                                operation = 'upstream'
                                 chunk = response.read1(65536)
                                 remaining()
                                 if not chunk:
                                     break
+                                operation = 'downstream'
                                 self.connection.settimeout(remaining())
                                 self.wfile.write(chunk)
                                 self.connection.settimeout(remaining())
                                 self.wfile.flush()
                                 remaining()
+                            if response.length not in (None, 0):
+                                raise http.client.IncompleteRead(b'')
+                            if streaming:
+                                raise ConnectionError('unexpected browser stream EOF')
                     record["delivered"] = time.monotonic()
                 except (BrokenPipeError, ConnectionResetError) as exc:
                     record["client_disconnected"] = type(exc).__name__
-                    if not record.get("streaming") and not relay.stopping:
-                        relay.errors.append("finite response disconnected")
-                    relay.release.set()
+                    record['failure_operation'] = operation
+                    if selected:
+                        relay.errors.append("original compose response disconnected")
+                        relay.release.set()
                 except Exception as exc:
                     # Never export headers/auth/bootstrap/stream bodies or raw exceptions.
                     record["error"] = type(exc).__name__
-                    if not relay.stopping:
+                    record['failure_operation'] = operation
+                    if selected:
                         relay.errors.append(type(exc).__name__ + ": browser transport failed")
-                    relay.release.set()
+                        relay.release.set()
                 finally:
                     self.close_connection = True
                     if response:
@@ -193,6 +259,7 @@ class BrowserRelay:
                     with relay.lock:
                         relay.connections.discard(connection)
                         relay.connections.discard(upstream_socket)
+                        relay.active_responses.pop(id(record), None)
                     record["closed"] = time.monotonic()
 
             do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = forward
@@ -270,11 +337,27 @@ class BrowserRelay:
         for worker in [*workers, self.thread]:
             worker.join(timeout=left())
         left()
+        errors = list(self.errors)
+        for record in self.records:
+            failure = record.get('error') or record.get('client_disconnected')
+            if not failure:
+                continue
+            abort = record.get('browser_abort')
+            expected = (abort is not None and record['method'] == 'GET' and record['ordinal'] is None
+                        and abort['failure'] == 'net::ERR_ABORTED' and abort['target'] == record['target']
+                        and record['entered'] <= abort['at'] <= entered
+                        and (failure in {'BrokenPipeError', 'ConnectionResetError'}
+                             and (record.get('failure_operation') == 'downstream' or 'abort_shutdown' in record)
+                             or failure == 'ConnectionAbortedError' and 'abort_observed' in record
+                             or failure == 'IncompleteRead' and record.get('streaming') is True
+                             and 'abort_shutdown' in record))
+            if not expected:
+                errors.append(failure + ': browser transport failed')
         result = dict(port=self.port, entered=entered, finished=time.monotonic(),
                       workers_alive=sum(w.is_alive() for w in workers), listener_alive=self.thread.is_alive(),
-                      connections=len(self.connections), errors=list(self.errors))
+                      connections=len(self.connections), errors=errors)
         if result["workers_alive"] or result["listener_alive"] or result["connections"]:
-            self.errors.append("browser proxy ownership did not close")
+            errors.append("browser proxy ownership did not close")
         return result
 
 

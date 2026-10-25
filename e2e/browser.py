@@ -1495,16 +1495,30 @@ class Browser:
         self.controller.remaining()
         page = self.thread_page
         page.set_default_timeout(self.controller.remaining(10) * 1000)
+        requests = {}
         def request(req):
+            observed = dict(event='request', request_id=len(requests), url=req.url, method=req.method,
+                            resource_type=req.resource_type, navigation=req.is_navigation_request(), at=time.monotonic())
+            requests[req] = observed
+            self.thread_events.append(observed)
             if req.url.startswith(self.thread_base + "/"):
                 path = req.url[len(self.thread_base):]
+                self.controller.browser_relay.browser_request(dict(observed, target=path))
                 if path.split("?")[0] == "/api/v1/orgs/alpha/threads" and req.method == "POST":
                     raw = req.post_data_buffer or b""
                     self.thread_events.append(dict(event="compose-request", url=req.url, method=req.method,
                                                    sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
                                                    payload=req.post_data_json, at=time.monotonic()))
             else:
-                self.thread_events.append(dict(event="origin-bypass", at=time.monotonic()))
+                self.thread_events.append(dict(event="origin-bypass", url=req.url, method=req.method,
+                                               resource_type=req.resource_type, at=time.monotonic()))
+        def failed(req):
+            observed = requests[req]
+            event = dict(event='request-failed', request_id=observed['request_id'], url=req.url,
+                         method=req.method, failure=req.failure, at=time.monotonic())
+            self.thread_events.append(event)
+            if req.url.startswith(self.thread_base + '/'):
+                self.controller.browser_relay.browser_abort(dict(event, target=req.url[len(self.thread_base):]))
         def response(res):
             if res.request.method == "POST" and res.url == self.thread_base + "/api/v1/orgs/alpha/threads":
                 record = dict(event="compose-response", url=res.url, status=res.status, at=time.monotonic())
@@ -1520,9 +1534,29 @@ class Browser:
                 record["body"] = res.json()
                 self.controller.remaining()
         page.on("request", request)
+        page.on("requestfailed", failed)
         page.on("response", response)
-        page.on("framenavigated", lambda frame: self.thread_events.append(dict(event="navigation", url=frame.url, at=time.monotonic()))
-                if frame == page.main_frame else None)
+        lineage = None
+        def navigated(payload):
+            nonlocal lineage
+            require(isinstance(payload, dict) and set(payload) <= {'url', 'name', 'newDocument', 'error'}
+                    and isinstance(payload.get('url'), str) and 'error' not in payload, 'E05 pinned native navigation payload')
+            new = 'newDocument' in payload
+            if new:
+                document = payload['newDocument']
+                require(isinstance(document, dict) and set(document) == {'request'}, 'E05 native document Request')
+                native = document['request']._object
+                issued = [r for req, r in requests.items() if req._impl_obj is native]
+                require(len(issued) == 1 and native.frame is page.main_frame._impl_obj
+                        and native.method == 'GET' and native.is_navigation_request()
+                        and native.url == payload['url'] and native.redirected_from is None and native.redirected_to is None,
+                        'E05 original unredirected main-frame document')
+                lineage = issued[0]['request_id']
+            require(lineage is not None, 'E05 navigation retains original document lineage')
+            self.thread_events.append(dict(event='navigation', url=payload['url'], new_document=new,
+                                           document_request_id=lineage, at=time.monotonic()))
+        self.thread_navigation_listener = page.main_frame._impl_obj._channel, 'navigated', navigated
+        self.thread_navigation_listener[0].on('navigated', navigated)
         page.on("pageerror", lambda _error: self.thread_events.append(dict(event="pageerror", at=time.monotonic())))
         page.goto(self.thread_base + "/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
         self.controller.remaining()
@@ -1647,7 +1681,10 @@ class Browser:
         if hasattr(self, "thread_context"):
             try:
                 self._healthy()
+                self.thread_events.append(dict(event='context-closing', at=time.monotonic()))
                 self._native(self.thread_context._impl_obj.close, self.controller.effective_end())
+                self._detach(*self.thread_navigation_listener)
+                del self.thread_navigation_listener
                 self.thread_events.append(dict(event="context-closed", at=time.monotonic()))
                 del self.thread_context
             finally:
