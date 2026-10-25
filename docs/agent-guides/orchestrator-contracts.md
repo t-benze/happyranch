@@ -3497,7 +3497,8 @@ original boundaries; BaseException invalidates and escapes immediately.
 Discovery affinity uses windows of at most 16 already-fetched chronological
 positions and 8 repeated-root (exact-string key, first, last) descriptors.
 Bounded pairwise raw-key scans do no future evidence work. A plan must fit with
-existing entries; nonfit discards it without evicting entries for planning.
+existing entries; nonfit discards it without evicting entries for planning,
+using ordinary LRU for the rest of that discovery call.
 Every projection and first-use full history read remains chronological. Protect
 only complete fitting histories reached/admitted, through last use in the window;
 evict LRU unprotected entries, rejecting an all-protected trial unchanged.

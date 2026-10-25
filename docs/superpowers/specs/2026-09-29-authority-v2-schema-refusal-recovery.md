@@ -132,7 +132,8 @@ first, last) descriptors in first-occurrence order. Bounded pairwise raw-key sca
 create no per-root position lists, slices, extra output array or future SQL/JSON/
 canonical/authentication work. Actual group/position storage counts in M throughout
 its across-projection lifetime. Admit a plan only if it fits existing entries;
-nonfit discards it without evicting useful entries merely for planning. Every
+nonfit discards it without evicting useful entries merely for planning and uses
+ordinary LRU for the rest of that discovery call. Every
 _project and first-use complete history read stays at its original position.
 Protect only complete fitting histories already reached/admitted through last
 use/window end; evict LRU unprotected entries. If all eligible victims are

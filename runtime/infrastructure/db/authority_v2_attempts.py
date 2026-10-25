@@ -175,7 +175,7 @@ class _V2StartupReads:
         self._epoch: tuple | None = None
         self._groups: tuple[tuple[str, int, int], ...] = ()
         self._position = -1
-        self._window_end = 0
+        self._window_end: int | None = 0
         self._closed = False
         self.unsafe: _V2StartupConnectionUnsafe | None = None
         with db._lock:
@@ -281,7 +281,7 @@ class _V2StartupReads:
 
     def _discovery_position(self, rows: list, position: int) -> None:
         """Bounded raw-key planning only; never prefetch fallible evidence."""
-        if self._epoch is None:
+        if self._epoch is None or self._window_end is None:
             return
         try:
             if position >= self._window_end:
@@ -312,7 +312,12 @@ class _V2StartupReads:
                 if not self._retention_fits(
                     groups=plan, position=position, window_end=end,
                 ):
-                    self._clear_groups()
+                    # Ordinary LRU for the rest of this discovery. None is
+                    # already charged at unsafe; replacing the uniquely owned
+                    # group tuple with () cannot grow storage. Keep the charged
+                    # position object. No entry is evicted merely for planning.
+                    self._groups = ()
+                    self._window_end = None
                     return
                 self._groups = plan
                 self._window_end = end
@@ -518,12 +523,13 @@ class _V2StartupReads:
             ).fetchall()
             result = []
             try:
-                for position, row in enumerate(rows):
-                    self._discovery_position(rows, position)
+                self._discovery_position(rows, 0)
+                for row in rows:
                     result.append(self._project(row))
                     # Release a group's protection immediately after last use,
-                    # while its fitting history may remain ordinary LRU.
-                    self._discovery_position(rows, position + 1)
+                    # while its fitting history may remain ordinary LRU. The
+                    # only across-projection index is the charged field itself.
+                    self._discovery_position(rows, self._position + 1)
             except BaseException:
                 # Release immediately without doing new accounting while an
                 # evidence failure/interruption is already escaping.
