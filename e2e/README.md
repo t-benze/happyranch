@@ -1793,10 +1793,106 @@ The run40206029791 owner/reader correction extends these SAME five cases:
 
 | Existing keeper | Observable contract | Credible regression | Nearest keeper and distinct gap | Test-only production seam |
 | --- | --- | --- | --- | --- |
-| BrowserRelay request lifetime and E05 raw browser ledger | Pair actual browser Request and proxy request only when both unmatched sets are unique; an actual GET `net::ERR_ABORTED` may cooperatively stop that SAME upstream owner only between successful calls. A request-local gate spans actual getresponse/read, indispensable status/header/framing/byte/EOF/remaining-length validation AND outcome publication; original safe response headers and finite as well as streaming read facts remain independently checkable. A returned call or validation Boolean alone is insufficient; shutdown tries it without waiting. Busy/failed/EOF outcomes retain refusal even when cleanup shuts the socket. Literal `RemoteDisconnected`, `IncompleteRead` and downstream I/O failures cannot be proved caused by a later abort and remain failures. Retain original error and witnesses. Original compose200 is never exempt. | Missing/wrong/duplicate Request or target, nonGET/selectedPOST, unobserved disconnect, timeout, framing or unexpected SSE EOF must refuse; adding an exception name alone cannot accept them. | Existing five E05 cases and independent validate_e05 own execution vs serialized false-evidence risks; CLI loss relay has no browser/SSE owner. Native browser cancellation and timeout races are NOT RUN/PROOF NOT RUN. | NO |
-| E05 final4 context owner, BrowserRelay owned SSE reads, validate_e05 | Before real native context.close, join native still-live stream response200 IDs to original proxy HTTPResponse/socket owners and record each exact shutdown initiation/outcome plus the completed successful operation/read identity. The full native Request response/terminal lifecycle must remain live through that stream’s own initiating boundary, not merely context-closing. No-first-read requires a returned getresponse with exact original supported status/framing/parser facts and absent read; between-read requires the exact positive-byte successful finite or streaming read with original remaining-length/EOF/closed facts. Complete finite EOF is distinct from an open between-read boundary; premature finite EOF with positive remaining length and streaming EOF refuse before any cancellation check. Validation exceptions stay sticky for both native abort and fixture shutdown. In-flight overlap is unproven and refuses, including delayed completion/error publication; timestamps alone cannot restore it. Then require native context-close event AND actual close return, original worker/socket/listener settlement and independent raw joins. No invented requestfailed. | Earlier EOF/read error, missing/failed/partial shutdown or context close, mismatched/detached/duplicate/forged/order-changed receipt, expired original end and unrelated timeout/framing failure refuse even with workers0 or producer success. Main browser remains separately owned. | Extends SAME E05 cases and reader; navigation-abort receipts cannot prove deliberate fixture shutdown. Native final-stream lifecycle and fail/restored proof NOT RUN/PROOF NOT RUN; old run40216929349 remains FAIL/56UNKNOWN EACH/HealthFAIL17. | NO |
+| BrowserRelay request lifetime and E05 raw browser ledger | Pair unique original GET Request/full target and positive owner generation. Callbacks enqueue/wake only; one worker owns nonblocking receive, the existing http.client parser, mandatory status/framing/finite EOF validation, publication and actual shutdown. Its operation gate spans that work. Cancel only at a byte-zero entire response (navigation only), a completed validated return, or an empty fresh size/payload/finite wait. Real returned bytes/EOF/errors precede intent handling; partial/buffered or unknown parser work refuses. Original same-connection duplicate and original descriptor share verified nonblocking mode; no later timeout call changes it. Unexpected parser methods refuse. Original compose200 remains unconditional. | Reintroducing cross-thread busy shutdown, accepting would-block as EOF, resetting buffered progress, null-ID laundering, invalid headers/short finite length or an earlier native failure must refuse. Literal exception names and timestamps alone cannot establish cancellation. | SAME five E05 cases and independent validate_e05; producer observes native I/O, reader rejects contradictory serialization. CLI loss relay has no browser/SSE owner. Native I/O/interleaving/restoration/repetition NOT RUN/PROOF NOT RUN. | NO |
+| E05 final4 context owner, BrowserRelay owned SSE reads, validate_e05 | Before native context.close, enqueue exact still-live native SSE200 Requests. Each worker rechecks original Request terminals at its OWN actual initiation. A local coroutine awaits complete owner acknowledgements through unchanged _native while native event delivery continues; it never blocks the browser loop or waits under relay.lock. Retain distinct previous/current operation and read IDs, numeric received/delivered/buffered/checkpoint/framing/remaining-length facts, native context-close event AND successful return, and independent closure of original/duplicate/response/raw/buffer/selector registrations/wake pair. Forced teardown is latched before cleanup and never proves cooperation. All original ends remain shared. | Missing/failed/late acknowledgements, terminal before per-worker initiation, stale/extra/retyped/reordered facts, earlier EOF/error, partial framing, failed handle close or live worker/listener refuse even with producer success or zero counts. Native close is still attempted after stop failure only within the SAME end; first/subsequent errors persist. Main browser remains separately owned. | Extends SAME E05 cases and independent raw reader; navigation does not prove final-context ownership. Native lifecycle/fail-restored/repetition NOT RUN/PROOF NOT RUN; historical failed runs remain failed. | NO |
 | Controller.release/close, all existing provider callers | Only complete acknowledged stream AND socket close removes the owned pair and hold. Partial release remains inventoried; teardown retains failures and attempts remaining owners. | Retiming already released sockets, dropping a failed release, or treating absent descriptors as settlement. | Existing peer registration, provider observer/host/process closure remain; Owned launcher cleanup cannot certify controller protocol release. Native normal/active/partial-close cases are NOT RUN/PROOF NOT RUN. | NO |
 | validate_e05 R1 provider/compose/show readers | Exact ordered current shipping preflights, bodies, statuses, response text, selected outcome, canonical argv/private payload and witnesses; denied full durable/file frames unchanged. | An extra/reordered preflight, wrong naming context/identity, dropped raw request or old name-only details line. | Existing eleven-command ledger, two founder composes and three JSON show reads remain. Archived R1 prefix rejects old source and accepts corrected reader on BOTH original lanes; full E05 still refuses original origin evidence. | NO |
+
+The sole-worker cancellation correction extends that SAME record and the SAME
+five E05 variants; it adds no manifest variant, suite, test-only seam or native
+execution venue. Acquired resource `closed` times acknowledge explicit successful
+close calls, not the first physical descriptor closure. Selector registrations
+are removed after the worker's last operation/checkpoint and before final
+descriptor closes; every final explicit close must also follow that work,
+including the actual shutdown acknowledgement. Initialization precedes the
+first checkpoint/call, while the response is acquired inside getresponse before
+parser I/O. Original-socket detach and automatic response-file close remain
+separate from those final explicit acknowledgements. Each returned operation
+establishes its own between checkpoint after completed validation and before
+the next operation. Size/payload/finite checkpoints belong to their exact body
+read and its validated framing/remaining length, retaining distinct prior/current
+IDs. A complete finite/bodyless outcome
+may be cancelled after completion; its returned bytes/length remain and it is
+never labeled downstream delivery.
+
+| Affected finite inputs in the existing five-case keeper | Expected independent boundary result | Level, isolation and available proof |
+| --- | --- | --- |
+| No first SSE body, repeated earlier data, fresh chunk-size after validated CRLF, fresh positive-size payload or known finite-body wait | Same-worker shutdown only with zero unread/accumulated progress, actual would-block and distinct prior/current IDs; preserve earlier returns | Native Product plus serialized raw-reader controls. Native requires original Requests, disposable hosted Ubuntu and BOTH3.12/3.14; native NOT RUN/PROOF NOT RUN. |
+| Zero entire response vs partial/interim/buffered status/headers; positive/partial/full/bodyless finite returns | Only genuine byte-zero navigation gets cancelled-before-response without invented response/status/read. Partial state refuses. Previously complete finite outcome remains distinct from delivery | Same owner/reader keeper. Serialized controls observe exported consistency only; no actual socket/EOF/parser execution proof. |
+| Returned-but-unpublished bytes, earlier exception/EOF, short finite length, invalid/duplicate/conflicting headers, partial/negative size/delimiter/trailer/zero chunk/SSE EOF, null prior/current read ID | Worker processes actual result and validation before stop; all prior errors/EOF and unvalidated progress remain failures | Earlier delayed-error/null-ID/unvalidated-return counterexamples remain keepers. Interleaving and native intended-fail/restored proof NOT RUN/PROOF NOT RUN. |
+| Live final SSE, first/later blocked read, terminal after context-closing but before per-worker start, terminal during/after real start | Earlier terminal refuses; later terminal alone supplies no acceptance. Every exact acknowledgement, actual context event AND return and full ownership closure must join | Existing final4/context owner, same original end and separate main browser. Native lifecycle/repetition NOT RUN/PROOF NOT RUN. |
+| Missing/duplicate/wrong Request, query target, method, owner/generation, original selected POST, ERR_FAILED or no native event | Refuse reassignment, nonGET/POST exemption, synthetic terminal and exception-name substitution | Existing five cases and independent raw ledger; no production flag/export/injection seam. |
+| Partial setup/registration, wake/ack/shutdown/close failure, late callback, forced teardown, expired original end or surviving worker/listener | Retain first/subsequent errors and unresolved inventory; attempt every acquired close. A late notification cannot resume an ended browser bridge | Same disposable owner. Static inspection is not actual closure; native proof NOT RUN/PROOF NOT RUN. |
+| Final explicit close of any of the ten resources or unregister of either selector interest before later read/validation/shutdown; late or reversed acquisition | Refuse at the independent lifetime/acquisition predicate. Preserve legitimate original-socket detach and automatic finite/bodyless/EOF file closure; final explicit close at the completed worker boundary remains admissible | Same serialized keeper, including navigation/context premature-close counterexamples and each handle/registration. Native use-after-close is NOT reproduced. |
+| Between checkpoint before its header/body validation or inside the next read; size/payload/finite checkpoint outside its own read | Refuse at the exact establishing-operation predicate. A between checkpoint at its own validation finish and existing valid framing waits remain admissible | Existing raw reader controls; no obsolete grammar or unrelated early refusal supplies new sensitivity proof. |
+| Native bridge exits before local acknowledgement coroutine cleanup resumes, or an already queued signal runs after exit | Synchronous finally deactivates the shared local latch and detaches only this exact notifier; coroutine finally is idempotent. Inactive notifications schedule nothing and queued signals cannot set the ended owner's event | Source failure-path assessment only. No shared bridge change, cancellation drain, additional wait or renewed deadline. Native cancellation/interleaving proof NOT RUN/PROOF NOT RUN. |
+| Missing/extra/retyped/reordered/stale/detached/forged counters, framing, identities, operations, native events or closure facts with producer success | Independent closed grammar reconstructs counts, finite lengths, chunk transitions, prior results and intent/ack/native/owner joins; historical failed full runs stay refused | Existing exact-source serialized-clause technique over isolated inputs. Scoped acceptance is NEVER whole-reader/native/Product PASS. |
+| Original one held compose POST200/body/hash/independent commit/release/delivery, automatic navigation/four revisits, public/raw-origin/durable C/N/D | All original assertions remain unconditional in all five original variants | Existing compose/content keeper; GET cancellation supplies no substitute. Native NOT RUN/PROOF NOT RUN. |
+
+Four authoring answers apply to every affected row above: (1) observe actual
+original native Request/terminal, full target, worker I/O/cancel/close and exported
+content/durable boundaries, or the independent serialized reader's refusal;
+(2) the credible regressions are the specific omissions/reorderings/state loss in
+each row; (3) extend the SAME five E05 cases/validate_e05 because old between-call
+controls do not observe blocked raw/parser/ack work, while the CLI relay and
+TERM/INT cover different ownership; (4) NO test-only production seam. Native
+I/O ownership and independently rejected contradictory exports are distinct
+risks, so neither layer replaces the other. For the added lifetime/checkpoint
+rows, the credible regression is omitting the final-use/acquisition or exact
+establishing-operation join. For notifier ownership it is relying solely on
+coroutine finally or clearing a different owner's notifier. The nearest existing
+keeper inspected final counts/times or successful coroutine teardown; it did not
+reject these contradictory lifetimes or cover a bridge exit without a resumed
+coroutine. Scoped serialized intended-fail and
+restored results, where available, belong to these rows only. Missing native
+proof is NOT RUN/PROOF NOT RUN, never behavioral acceptance. The four historical
+owned/navigation no-first-read/between-read positive semantic contracts and all
+41 named negative families remain keepers; obsolete-grammar rejection alone is
+not targeted sensitivity evidence. Python units remain RETIRED; general and
+actual CLI callback/lifespan/SessionTracker integration remain SKIPPED.
+
+The retained negative families are: unobserved, wrong-target, wrong-method,
+nonGET, selectedPOST, missing-request, wrong-request-id, late-shutdown,
+remote-downstream, wrong-error-field, native-timeout, wrong-native-failure,
+earlier-EOF, earlier-failure, missing-native-response, missing-context-close,
+partial-context, missing-shutdown, failed-shutdown, detached-receipt, wrong-read,
+framing, timeout, wrong-order, expired-end, unknown-event, unknown-receipt-field,
+unknown-proxy-field, unknown-read-field, prior-native-SSE-error,
+failed-shutdown-owner, false-read-identity, false-status, missing-read,
+wrong-live-context, idle-unexpected-error, idle-failure-before-shutdown,
+duplicate-request, duplicate-proxy, duplicate-failed, workers-zero-errors.
+
+The original maker at the rejected source observed 69 distinct current-protocol inputs:
+15 clause acceptances and 54 refusals, with four additional case-label aliases
+reusing the same keeper observations. The ten cancellation shapes, four finite
+completion/delivery shapes and selected-delivery clause do not execute I/O.
+The actual native-terminal predicate was deliberately removed once for an
+intended refusal-control failure, then restored byte-exactly and rechecked with
+its positive keeper. A further contradictory terminal-zero-chunk/further-read
+input exposed a missing reader latch; that input now refuses while completed
+finite chunked responses remain admissible. These are scoped serialized results,
+not native/whole-reader/test-authoring behavioral PASS. Full original failed
+archives still refuse before the changed grammar, so those whole-reader refusals
+supply no targeted sensitivity evidence. Actual CPython 3.12.14/3.14.4 method
+inspection and compile-only checks do not certify hosted parser execution.
+Native I/O/interleaving/lifecycle/fail-restored/repetition remain NOT RUN/PROOF
+NOT RUN; local/hosted lint and independent source review/QA are separate gates.
+
+The lifetime/checkpoint correction preserves all original 73 labels and their
+69 distinct inputs/15 scoped acceptances/54 refusals/four aliases as historical
+source observations. The extended same-record evaluation has 101 labels over
+96 distinct inputs: 18 scoped acceptances and 78 refusals, with five aliases.
+The original 73 label outcomes remain unchanged. Both independent premature-close
+inputs, the early-between observation, each final handle/registration control,
+acquisition-order controls and stale framing checkpoints now refuse at their
+owning predicates; the rejected-source clauses accepted those contradictions.
+Valid final-close and completed-validation boundaries remain admissible, along
+with the original pre-header, finite/bodyless/EOF completion and framing keepers.
+One exploratory delivered-owner-without-Request-pointer clause input remains
+accepted as in the review; it is not a positive whole-reader contract or native
+observation. No production source was temporarily mutated for this pre-fix/fixed
+comparison. Notifier cleanup has source assessment only; its native failure,
+restoration and repetition proof remain NOT RUN/PROOF NOT RUN.
 
 Mention-bearing C reply AND replay perform org discovery, exact
 `identities/resolve` lookup, selected thread GET and original reply POST. Plain

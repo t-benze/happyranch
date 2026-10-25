@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import io
 import json
+import os
+import selectors
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +31,8 @@ class BrowserRelay:
         self.active_responses: dict[int, socket.socket] = {}
         self.active_streams: dict[int, tuple] = {}
         self.operation_gates: dict[int, threading.Lock] = {}
+        self.io_owners: dict[int, object] = {}
+        self.context_notify = None
         self.context_closing: dict | None = None
         self.context_closed: dict | None = None
         self.browser_requests: list[dict] = []
@@ -35,6 +41,439 @@ class BrowserRelay:
         self.matches = 0
         self.hold: dict = {}
         relay = self
+
+        class Stopped(Exception):
+            """Only the request worker raises this after its own acknowledgement."""
+
+        class RequestOwner:
+            # All parser and descriptor methods run on ONE request worker.
+            # The browser callback can only enqueue/wake under relay.lock.
+            def __init__(self, record: dict, end: float) -> None:
+                self.record, self.end = record, end
+                self.handles = {}
+                self.registrations = []
+                self.response = None
+                self.intent = None
+                self.closing = False
+                self.wake_ready = False
+                self.received = self.delivered = self.checkpoint_bytes = 0
+                self.read_id = 0
+                self.checkpoint = None
+                self.terminal = None
+                self.parser_phase = 'initial'
+                self.state = record['io_owner'] = dict(
+                    runtime=dict(implementation=sys.implementation.name, version=list(sys.version_info[:3])),
+                    generation=record['owner_generation'], end=end, resources=[], registrations=[], trace=[], operations=[],
+                    received=0, delivered=0, forced=None, terminal=None, mode=None, errors=[])
+
+            def trace(self, event: str, **facts: object) -> None:
+                if len(self.state['trace']) >= 16384:
+                    raise ValueError('E05 response accounting limit')
+                self.state['trace'].append(dict(event=event, at=time.monotonic(), **facts))
+
+            def failure(self, stage: str, error: Exception) -> None:
+                # Preserve safe original/secondary exception types even if
+                # http.client's automatic close replaces the parser exception.
+                seen = set()
+                current = error
+                while current is not None and id(current) not in seen and len(seen) < 8:
+                    seen.add(id(current))
+                    self.state['errors'].append(dict(owner=stage, error=type(current).__name__))
+                    current = current.__cause__ or current.__context__
+                if current is not None:
+                    self.state['errors'].append(dict(owner=stage, error='exception_chain_unresolved'))
+
+            def acquire(self, name: str, handle: object) -> object:
+                # Register immediately after acquisition, BEFORE first use.
+                self.handles[name] = handle
+                self.state['resources'].append(dict(name=name, acquired=time.monotonic()))
+                return handle
+
+            def left(self) -> float:
+                value = min(self.end, self.intent['end'] if self.intent else self.end)-time.monotonic()
+                if value <= 0:
+                    raise TimeoutError('E05 original response deadline')
+                if self.state['forced'] is not None or relay.stopping:
+                    raise ConnectionAbortedError('E05 forced teardown')
+                return value
+
+            def initialize(self, sock: socket.socket) -> None:
+                if sys.implementation.name != 'cpython' or sys.version_info[:2] not in {(3, 12), (3, 14)}:
+                    raise ValueError('E05 unsupported private HTTP parser')
+                duplicate = self.acquire('duplicate', sock.dup())
+                duplicate.setblocking(False)
+                self.state['mode'] = dict(original_blocking=os.get_blocking(sock.fileno()),
+                                          duplicate_blocking=os.get_blocking(duplicate.fileno()), at=time.monotonic())
+                if self.state['mode']['original_blocking'] or self.state['mode']['duplicate_blocking']:
+                    raise ValueError('E05 shared response descriptor mode')
+                with relay.lock:
+                    relay.connections.add(duplicate)
+                wake_read, wake_write = socket.socketpair()
+                self.acquire('wake_read', wake_read)
+                self.acquire('wake_write', wake_write)
+                wake_read.setblocking(False)
+                wake_write.setblocking(False)
+                with relay.lock:
+                    self.wake_ready = True
+                selector = self.acquire('selector', selectors.DefaultSelector())
+                for name, handle in (('duplicate', duplicate), ('wake_read', wake_read)):
+                    selector.register(handle, selectors.EVENT_READ, name)
+                    registration = dict(name=name, registered=time.monotonic())
+                    self.state['registrations'].append(registration)
+                    self.registrations.append((name, handle, registration))
+                raw = self.acquire('raw', Raw(self))
+                buffered = self.acquire('buffer', io.BufferedReader(raw))
+                self.file = self.acquire('file', File(self, buffered))
+                self.mark('before-response')
+
+            def enqueue(self, kind: str, event: dict, end: float) -> dict:
+                # Caller holds only relay.lock, never an operation gate.
+                if self.intent is not None or self.closing:
+                    raise ValueError('E05 duplicate or closed stop owner')
+                self.intent = self.record['stop_intent'] = dict(
+                    kind=kind, request_id=event['request_id'] if kind == 'navigation' else self.record['browser_request_id'],
+                    method=self.record['method'], target=self.record['target'], generation=self.state['generation'],
+                    event=dict(event), operation_id=self.record.get('upstream_operation', {}).get('id'),
+                    enqueued=time.monotonic(), end=min(end, self.end))
+                self.wake()
+                return self.intent
+
+            def wake(self) -> None:
+                # Every caller holds relay.lock, as does the close latch.
+                if self.closing or not self.wake_ready:
+                    return
+                handle = self.handles.get('wake_write')
+                if handle is None:
+                    return  # A queued intent is inspected by the first read.
+                try:
+                    handle.send(b'!')
+                except BlockingIOError:
+                    pass  # An already queued wake is sufficient notification.
+                except OSError as exc:
+                    self.state['errors'].append(dict(owner='wake_write', error=type(exc).__name__))
+
+            def mark(self, kind: str, *, chunk_left: int | None = None, delimiter: str | None = None,
+                     remaining: int | None = None) -> None:
+                # A semantic checkpoint NEVER drops unread/read-ahead bytes.
+                # received-delivered also includes an in-progress file call.
+                self.checkpoint_bytes = self.delivered
+                self.checkpoint = dict(kind=kind, received=self.received, delivered=self.delivered,
+                                       chunk_left=chunk_left, delimiter=delimiter, remaining=remaining)
+                self.trace('checkpoint', **self.checkpoint)
+
+            def stop(self, would_block: bool) -> None:
+                if self.intent is None:
+                    return
+                self.left()
+                checkpoint = self.checkpoint
+                current = self.record['upstream_operation']
+                prior = self.state['operations'][-2] if len(self.state['operations']) > 1 else None
+                complete = (checkpoint is not None and checkpoint['kind'] == 'between'
+                            and prior is not None and prior.get('outcome') == 'returned'
+                            and (prior['kind'] == 'getresponse' and self.record['response_outcome']['length'] == 0
+                                 or prior['kind'] == 'read' and prior['result']['closed']))
+                terminal_complete = self.terminal == 'EOF' and complete and not self.record.get('streaming')
+                if (self.terminal is not None and not terminal_complete or self.state['errors'] or checkpoint is None
+                        or self.received != self.delivered or self.delivered != self.checkpoint_bytes):
+                    raise ValueError('E05 stop at unvalidated partial response')
+                # Before headers means zero ENTIRE response bytes, including
+                # discarded interim responses. No successful headers are invented.
+                if checkpoint['kind'] == 'before-response':
+                    if (self.intent['kind'] != 'navigation' or self.received != 0
+                            or current['kind'] != 'getresponse' or prior is not None
+                            or 'response_outcome' in self.record):
+                        raise ValueError('E05 nonempty response before headers')
+                elif (prior is None or prior.get('outcome') != 'returned'
+                      or not relay._response_facts(self.record.get('response_outcome', {}), 'GET')):
+                    raise ValueError('E05 prior response operation not validated')
+                with relay.lock:
+                    issued = [e for e in relay.browser_requests if e['request_id'] == self.intent['request_id']]
+                    if (relay.io_owners.get(id(self.record)) is not self or len(issued) != 1
+                            or issued[0]['method'] != 'GET' or issued[0]['target'] != self.record['target']
+                            or relay.active_responses.get(id(self.record)) is not self.handles.get('original')
+                            or self.state['forced'] is not None):
+                        raise ValueError('E05 stop owner detached')
+                    terminals = issued[0].get('terminals', [])
+                    if self.intent['kind'] == 'navigation':
+                        trigger = dict(self.intent['event'])
+                        trigger.pop('target')
+                        if terminals != [trigger] or trigger.get('failure') != 'net::ERR_ABORTED':
+                            raise ValueError('E05 stop lacks original native abort')
+                    elif (terminals or self.record.get('status') != 200 or not self.record.get('streaming')
+                          or relay.active_streams.get(id(self.record)) != (self.handles['original'], self.response)):
+                        raise ValueError('E05 original native stream no longer live')
+                    started = time.monotonic()
+                    self.left()
+                    ack = self.record['stop_ack'] = dict(
+                        generation=self.state['generation'], request_id=self.intent['request_id'],
+                        operation_id=current['id'], previous_operation_id=prior['id'] if prior else None,
+                        read_id=current['read_id'], previous_read_id=prior['read_id'] if prior else None,
+                        checkpoint=dict(checkpoint), received=self.received, delivered=self.delivered,
+                        buffered=self.received-self.delivered, since_checkpoint=self.delivered-self.checkpoint_bytes,
+                        would_block=would_block, started=started)
+                    # The worker alone shuts down; no other thread can race a
+                    # native result between receive, validation and publication.
+                    try:
+                        if not complete:
+                            self.handles['duplicate'].shutdown(socket.SHUT_RDWR)
+                        self.left()
+                        ack['outcome'] = 'already-complete' if complete else 'shutdown'
+                    except OSError as exc:
+                        ack['error'] = type(exc).__name__
+                        raise
+                    finally:
+                        ack['finished'] = time.monotonic()
+                raise Stopped()
+
+            def between(self) -> None:
+                if self.intent is None:
+                    return
+                # Preserve a completed return as a separate previous operation.
+                self.begin_operation('stop', None)
+                try:
+                    self.stop(False)
+                except Stopped:
+                    self.finish_stopped()
+                    raise
+                except Exception as exc:
+                    self.record['upstream_operation'].update(finished=time.monotonic(), error=type(exc).__name__)
+                    raise
+
+            def begin_operation(self, kind: str, read: dict | None) -> None:
+                if kind == 'read':
+                    self.read_id += 1
+                with relay.lock:
+                    operation = dict(id=len(self.state['operations'])+1, kind=kind,
+                                     read_id=self.read_id if kind == 'read' else None, started=time.monotonic())
+                    self.state['operations'].append(operation)
+                    self.record['upstream_operation'] = operation
+                if read is not None:
+                    read.update(id=operation['read_id'], started=operation['started'])
+                    self.record['stream_read'] = read
+
+            def finish_stopped(self) -> None:
+                operation = self.record['upstream_operation']
+                operation.update(finished=time.monotonic(), outcome='cancelled')
+                read = self.record.get('stream_read')
+                if read is not None and operation['read_id'] == read['id']:
+                    read.update(finished=operation['finished'], outcome='cancelled')
+
+            def receive(self, buffer: bytearray | memoryview) -> int:
+                if not 0 < len(buffer) <= 65536:
+                    raise ValueError('E05 unexpected raw receive buffer')
+                while True:
+                    self.left()
+                    try:
+                        if os.get_blocking(self.handles['duplicate'].fileno()):
+                            raise ValueError('E05 response descriptor became blocking')
+                        count = self.handles['duplicate'].recv_into(buffer)
+                    except BlockingIOError:
+                        # Always attempt real recv FIRST, also after a wake.
+                        # No would-block/None is returned to http.client.
+                        self.trace('would-block', received=self.received, delivered=self.delivered)
+                        self.stop(True)
+                    except OSError as exc:
+                        self.terminal = self.state['terminal'] = type(exc).__name__
+                        self.trace('raw-error', error=self.terminal)
+                        raise
+                    else:
+                        self.received += count
+                        self.state['received'] = self.received
+                        if count == 0:
+                            self.terminal = self.state['terminal'] = 'EOF'
+                        self.trace('receive', bytes=count, received=self.received)
+                        return count
+                    for key, _ in self.handles['selector'].select(self.left()):
+                        if key.data == 'wake_read':
+                            try:
+                                self.handles['wake_read'].recv(4096)
+                            except BlockingIOError:
+                                pass
+
+            def close(self) -> None:
+                # Exclude callback send from descriptor close/reuse. This short
+                # lock never spans parser/file/socket/selector close work.
+                with relay.lock:
+                    self.closing = True
+                # Unregister before closing any descriptor. Every acquired
+                # owner is attempted independently, including partial setup.
+                for name, handle, registration in self.registrations:
+                    try:
+                        self.handles['selector'].unregister(handle)
+                        registration['unregistered'] = time.monotonic()
+                    except Exception as exc:
+                        registration['error'] = type(exc).__name__
+                        self.state['errors'].append(dict(owner='registration:'+name, error=type(exc).__name__))
+                for resource in reversed(self.state['resources']):
+                    try:
+                        self.handles[resource['name']].close()
+                    except Exception as exc:
+                        resource['error'] = type(exc).__name__
+                        self.state['errors'].append(dict(owner=resource['name'], error=type(exc).__name__))
+                    else:
+                        resource['closed'] = time.monotonic()
+                self.state.update(received=self.received, delivered=self.delivered, finished=time.monotonic())
+
+        class Raw(io.RawIOBase):
+            def __init__(self, owner: RequestOwner) -> None:
+                super().__init__()
+                self.owner = owner
+
+            def readable(self) -> bool:
+                return True
+
+            def readinto(self, buffer: bytearray | memoryview) -> int:
+                return self.owner.receive(buffer)
+
+        class File:
+            def __init__(self, owner: RequestOwner, buffered: io.BufferedReader) -> None:
+                self.owner, self.buffered = owner, buffered
+                self.last_line = None
+
+            def returned(self, method: str, value: bytes) -> bytes:
+                self.owner.delivered += len(value)
+                self.owner.state['delivered'] = self.owner.delivered
+                self.owner.trace('file-return', method=method, bytes=len(value),
+                                 delivered=self.owner.delivered)
+                return value
+
+            def read(self, size: int = -1) -> bytes:
+                if self.owner.parser_phase != 'delimiter' or size != 2:
+                    raise ValueError('E05 unexpected parser read')
+                self.owner.left()
+                return self.returned('read', self.buffered.read(size))
+
+            def read1(self, size: int = -1) -> bytes:
+                if self.owner.parser_phase not in {'payload','finite','body'} or not 0 <= size <= 65536:
+                    raise ValueError('E05 unexpected parser read1')
+                self.owner.left()
+                return self.returned('read1', self.buffered.read1(size))
+
+            def readinto(self, buffer: bytearray | memoryview) -> int:
+                raise ValueError('E05 unexpected parser readinto')
+
+            def readline(self, size: int = -1) -> bytes:
+                if self.owner.parser_phase not in {'headers','chunk-size','trailer'}:
+                    raise ValueError('E05 unexpected parser readline')
+                self.owner.left()
+                value = self.returned('readline', self.buffered.readline(size))
+                self.last_line = value
+                if self.owner.parser_phase == 'trailer' and not value.endswith(b'\r\n'):
+                    raise ValueError('E05 incomplete chunk trailer')
+                return value
+
+            def flush(self) -> None:
+                try:
+                    self.buffered.flush()
+                except Exception as exc:
+                    self.owner.failure('file-flush', exc)
+                    raise
+
+            def close(self) -> None:
+                try:
+                    self.buffered.close()
+                except Exception as exc:
+                    self.owner.failure('file-close', exc)
+                    raise
+
+        class Response(http.client.HTTPResponse):
+            def __init__(self, owner: RequestOwner, sock: socket.socket, *args: object, **kwargs: object) -> None:
+                self.owner = owner
+                owner.response = self
+                owner.acquire('response', self)
+                class SocketFile:
+                    def makefile(_self, mode: str) -> File:
+                        if mode != 'rb':
+                            raise ValueError('E05 unexpected response file mode')
+                        return owner.file
+                super().__init__(SocketFile(), *args, **kwargs)
+
+            def begin(self) -> None:
+                self.owner.parser_phase = 'headers'
+                try:
+                    super().begin()
+                except Stopped:
+                    raise
+                except Exception as exc:
+                    self.owner.failure('parser-begin', exc)
+                    raise
+                finally:
+                    self.owner.parser_phase = 'unknown'
+
+            def read(self, amt: int | None = None) -> bytes:
+                raise ValueError('E05 GET owner supports only the existing read1 caller')
+
+            def readinto(self, buffer: bytearray | memoryview) -> int:
+                raise ValueError('E05 unexpected GET readinto caller')
+
+            def peek(self, size: int = -1) -> bytes:
+                raise ValueError('E05 unexpected GET peek caller')
+
+            def readline(self, limit: int = -1) -> bytes:
+                raise ValueError('E05 unexpected GET readline caller')
+
+            def read1(self, size: int = -1) -> bytes:
+                if size != 65536:
+                    raise ValueError('E05 unexpected GET read size')
+                self.owner.parser_phase = 'finite' if self.length is not None else 'body'
+                try:
+                    return super().read1(size)
+                except Stopped:
+                    raise
+                except Exception as exc:
+                    self.owner.failure('parser-read1', exc)
+                    raise
+                finally:
+                    self.owner.parser_phase = 'unknown'
+
+            def close(self) -> None:
+                try:
+                    super().close()
+                except Exception as exc:
+                    self.owner.failure('response-close', exc)
+                    raise
+
+            def _get_chunk_left(self) -> int | None:
+                # CPython3.12/3.14 read1 calls this BEFORE any payload read.
+                # Retain stdlib size/trailer parsing; validate its discarded CRLF.
+                left = self.chunk_left
+                if not left:
+                    delimiter = None
+                    if left is not None:
+                        self.owner.checkpoint = None
+                        self.owner.parser_phase = 'delimiter'
+                        delimiter = self._safe_read(2)
+                        if delimiter != b'\r\n':
+                            raise ValueError('E05 invalid chunk delimiter')
+                    self.owner.mark('chunk-size', delimiter='0d0a' if delimiter else None)
+                    self.owner.parser_phase = 'chunk-size'
+                    left = self._read_next_chunk_size()
+                    line = self.owner.file.last_line
+                    prefix = line.split(b';', 1)[0].removesuffix(b'\r\n') if line is not None else b''
+                    if (line is None or not line.endswith(b'\r\n') or not prefix
+                            or any(byte not in b'0123456789abcdefABCDEF' for byte in prefix)
+                            or not 0 <= left <= 2**63-1):
+                        raise ValueError('E05 invalid chunk size framing')
+                    if left == 0:
+                        # No checkpoint during zero chunk/trailer processing.
+                        self.owner.checkpoint = None
+                        self.owner.trace('chunk-terminal', size=0, received=self.owner.received, delivered=self.owner.delivered)
+                        self.owner.parser_phase = 'trailer'
+                        self._read_and_discard_trailer()
+                        if self.owner.file.last_line != b'\r\n':
+                            raise ValueError('E05 incomplete trailer terminator')
+                        self.owner.trace('trailer-end', delimiter='0d0a', received=self.owner.received, delivered=self.owner.delivered)
+                        self._close_conn()
+                        left = None
+                    else:
+                        self.owner.mark('payload', chunk_left=left)
+                    self.chunk_left = left
+                elif type(left) is not int or left < 0:
+                    raise ValueError('E05 unknown chunk parser state')
+                else:
+                    self.owner.mark('payload', chunk_left=left)
+                self.owner.parser_phase = 'payload'
+                return left
 
         def pair_request(method: str, target: str) -> None:
             # Called under lock from either observation order. Never guess an
@@ -59,40 +498,13 @@ class BrowserRelay:
                         issued.setdefault('terminals', []).append(dict(event))
         self.browser_terminal = browser_terminal
 
-        def shutdown_upstream(record: dict, sock: socket.socket, receipt: dict) -> None:
-            # Caller holds relay.lock. Never block behind an I/O owner here:
-            # its native call may already have failed before Python resumes.
-            # The gate spans the actual call AND outcome publication, so only
-            # acquisition with a successful prior outcome proves non-overlap.
-            gate = relay.operation_gates[id(record)]
-            acquired = gate.acquire(blocking=False)
-            try:
-                if not acquired:
-                    receipt['error'] = 'operation_in_flight'
-                else:
-                    prior = record.get('upstream_operation', {})
-                    read = record.get('stream_read')
-                    if (not relay._cooperative_boundary(record)
-                            or read is not None and ('error' in read or read.get('bytes', 0) <= 0)):
-                        receipt['error'] = 'prior_operation_not_successful'
-                    else:
-                        receipt['operation'] = dict(prior)
-                receipt['started'] = time.monotonic()
-                # Even an uncertain overlap needs the original cleanup attempt;
-                # that attempt never clears the refusal recorded above.
-                sock.shutdown(socket.SHUT_RDWR)
-                if 'error' not in receipt:
-                    receipt['outcome'] = 'shutdown'
-            except OSError as exc:
-                receipt['error'] = type(exc).__name__
-            finally:
-                receipt['finished'] = time.monotonic()
-                if acquired:
-                    gate.release()
+        def enqueue_stop(record: dict, kind: str, event: dict, end: float) -> dict:
+            owner = relay.io_owners.get(id(record))
+            if owner is None:
+                raise ValueError('E05 original response owner unavailable')
+            return owner.enqueue(kind, event, end)
 
         def browser_abort(event: dict) -> None:
-            # Native Request failure is independent of the proxy's socket
-            # exception. Ambiguous/unmatched requests receive no exemption.
             with relay.lock:
                 for issued in relay.browser_requests:
                     if issued['request_id'] == event['request_id']:
@@ -102,59 +514,40 @@ class BrowserRelay:
                 matches = [r for r in relay.records if r['method'] == event['method']
                            and r['target'] == event['target'] and r['ordinal'] is None
                            and r.get('browser_request_id') == event['request_id']
-                           and 'delivered' not in r and 'browser_abort' not in r and 'context_shutdown' not in r
-                           and r['entered'] <= event['at']]
+                           and 'delivered' not in r and 'closed' not in r
+                           and 'stop_intent' not in r and r['entered'] <= event['at']]
                 if len(matches) != 1:
                     return
                 record = matches[0]
                 record['browser_abort'] = dict(event)
-                sock = relay.active_responses.get(id(record))
-                if sock is not None:
-                    receipt = {}
-                    shutdown_upstream(record, sock, receipt)
-                    record['abort_shutdown_started'] = receipt['started']
-                    record['abort_shutdown'] = receipt['finished']
-                    if 'operation' in receipt:
-                        record['abort_shutdown_operation'] = receipt['operation']
-                    if 'error' in receipt:
-                        record['abort_shutdown_error'] = receipt['error']
-                        relay.errors.append('browser abort upstream shutdown unproven')
+                try:
+                    enqueue_stop(record, 'navigation', event, relay.deadline)
+                except Exception as exc:
+                    record['abort_shutdown_error'] = type(exc).__name__
+                    relay.errors.append('E05 native abort owner unavailable')
         self.browser_abort = browser_abort
 
         def close_context_streams(event: dict, end: float) -> list[dict]:
-            # The E05 context owner calls BEFORE native context.close. Only
-            # independently observed, still-owned response/socket pairs qualify.
-            receipts = []
+            # Enqueue only. The native browser loop remains live while its local
+            # coroutine awaits worker-finally notifications and real receipts.
             with relay.lock:
                 if relay.context_closing is not None:
                     raise RuntimeError('E05 context shutdown already attempted')
                 relay.context_closing = dict(event)
-                for record in relay.records:
-                    owned = relay.active_streams.get(id(record))
-                    if (owned is None or record.get('browser_request_id') not in event['request_ids']
-                            or record['method'] != 'GET' or record['ordinal'] is not None
-                            or record.get('status') != 200 or record.get('streaming') is not True
-                            or any(k in record for k in ('closed', 'error', 'client_disconnected', 'browser_abort'))):
-                        continue
-                    sock, response = owned
-                    if relay.active_responses.get(id(record)) is not sock or response.isclosed():
-                        continue
-                    if time.monotonic() >= min(end, relay.deadline):
-                        raise TimeoutError('E05 context stream shutdown deadline')
-                    issued = [r for r in relay.browser_requests
-                              if r['request_id'] == record['browser_request_id']]
-                    if len(issued) != 1 or issued[0].get('terminals'):
-                        relay.errors.append('E05 native Request ended before stream shutdown')
-                        continue
-                    read = record.get('stream_read')
-                    receipt = dict(request_id=record['browser_request_id'], target=record['target'],
-                                   context_closing=event['at'], read_id=read['id'] if read else None)
-                    record['context_shutdown'] = receipt
-                    shutdown_upstream(record, sock, receipt)
-                    if 'error' in receipt:
-                        relay.errors.append('E05 owned stream shutdown unproven')
-                    receipts.append(dict(receipt))
-            return receipts
+                records = []
+                for request_id in event['request_ids']:
+                    matches = [r for r in relay.records if r.get('browser_request_id') == request_id
+                               and r['method'] == 'GET' and r['ordinal'] is None]
+                    if len(matches) != 1:
+                        raise ValueError('E05 ambiguous original live stream owner')
+                    record = matches[0]
+                    if (id(record) not in relay.active_streams or record.get('status') != 200
+                            or record.get('streaming') is not True
+                            or any(k in record for k in ('closed', 'error', 'client_disconnected', 'stop_intent'))):
+                        raise ValueError('E05 live stream owner unavailable')
+                    enqueue_stop(record, 'context', event, end)
+                    records.append(record)
+                return records
         self.close_context_streams = close_context_streams
 
         class Handler(BaseHTTPRequestHandler):
@@ -176,6 +569,7 @@ class BrowserRelay:
                 connection = None
                 upstream_socket = None
                 response = None
+                io_owner = None
                 operation = 'request'
                 with relay.lock:
                     selected = relay.arm_end is not None and self.command == "POST" and self.path == "/api/v1/orgs/alpha/threads"
@@ -191,6 +585,8 @@ class BrowserRelay:
                 record = dict(method=self.command, path=self.path.split("?")[0], target=self.path,
                               ordinal=ordinal, entered=time.monotonic())
                 with relay.lock:
+                    if self.command == 'GET' and not selected:
+                        record['owner_generation'] = len(relay.records)+1
                     relay.records.append(record)
                     relay.operation_gates[id(record)] = threading.Lock()
                     pair_request(self.command, self.path)
@@ -199,12 +595,9 @@ class BrowserRelay:
                         value = (end if selected else relay.deadline) - time.monotonic()
                         if value <= 0:
                             raise TimeoutError("browser transport deadline")
-                        if record.get('browser_abort'):
-                            record['abort_observed'] = time.monotonic()
-                            raise ConnectionAbortedError('native browser request cancelled')
-                        if record.get('context_shutdown'):
-                            record['shutdown_observed'] = time.monotonic()
-                            raise ConnectionAbortedError('owned E05 stream shutdown')
+                        if io_owner is not None and io_owner.state['operations']:
+                            with relay.operation_gates[id(record)]:
+                                io_owner.between()
                         if relay.stopping:
                             raise ConnectionAbortedError('browser relay stopped')
                         return value
@@ -214,10 +607,20 @@ class BrowserRelay:
                         # The same gate protects the actual native HTTP call,
                         # including an exception whose publication is delayed.
                         with relay.operation_gates[id(record)]:
-                            remaining()
-                            outcome = dict(kind=kind, read_id=read['id'] if read else None,
-                                           started=time.monotonic())
-                            record['upstream_operation'] = outcome
+                            if io_owner is not None:
+                                io_owner.left()
+                                io_owner.begin_operation(kind, read)
+                                if kind == 'read' and not response.chunked:
+                                    if type(response.length) is int and response.length > 0:
+                                        io_owner.mark('finite', remaining=response.length)
+                                    else:
+                                        io_owner.checkpoint = None
+                                outcome = record['upstream_operation']
+                            else:
+                                remaining()
+                                outcome = dict(kind=kind, read_id=read['id'] if read else None,
+                                               started=time.monotonic())
+                                record['upstream_operation'] = outcome
                             if read is not None:
                                 read['started'] = outcome['started']
                                 record['stream_read'] = read
@@ -226,6 +629,9 @@ class BrowserRelay:
                                 # No cancellation check between native return,
                                 # indispensable validation and publication.
                                 validate(value, outcome)
+                            except Stopped:
+                                io_owner.finish_stopped()
+                                raise
                             except Exception as exc:
                                 outcome.update(finished=time.monotonic(), error=type(exc).__name__)
                                 if read is not None:
@@ -235,6 +641,8 @@ class BrowserRelay:
                                 outcome.update(finished=time.monotonic(), outcome='returned')
                                 if read is not None:
                                     read.update(finished=outcome['finished'], bytes=len(value))
+                                if io_owner is not None:
+                                    io_owner.mark('between')
                                 return value
 
                     def receive_response() -> http.client.HTTPResponse:
@@ -253,6 +661,8 @@ class BrowserRelay:
                         outcome['result'] = facts
                         if not relay._response_facts(facts, self.command):
                             raise ValueError('unsupported upstream response framing')
+                        if io_owner is not None and facts['length'] == 0 and io_owner.received != io_owner.delivered:
+                            raise ValueError('E05 buffered bytes after bodyless response')
                         record.update(response_outcome=facts, status=value.status,
                                       streaming=(facts['content_type'][0] if facts['content_type'] else '')
                                       .split(';')[0] == 'text/event-stream')
@@ -266,6 +676,8 @@ class BrowserRelay:
                             if not relay._read_facts(facts, record['response_outcome'], streaming,
                                                      whole=whole):
                                 raise http.client.IncompleteRead(b'')
+                            if io_owner is not None and facts['closed'] and io_owner.received != io_owner.delivered:
+                                raise ValueError('E05 buffered bytes after complete response')
                         # The gate in upstream_call spans both this native read
                         # and validation; no other owner changes response.length.
                         before = response.length
@@ -300,7 +712,16 @@ class BrowserRelay:
                         relay.active_responses[id(record)] = upstream_socket
                     record["forwarded"] = time.monotonic()
                     operation = 'upstream'
-                    upstream_socket.settimeout(remaining())
+                    if self.command == 'GET' and not selected:
+                        io_owner = RequestOwner(record, end)
+                        with relay.lock:
+                            relay.io_owners[id(record)] = io_owner
+                        io_owner.acquire('connection', connection)
+                        io_owner.acquire('original', upstream_socket)
+                        io_owner.initialize(upstream_socket)
+                        connection.response_class = lambda sock, *args, **kwargs: Response(io_owner, sock, *args, **kwargs)
+                    else:
+                        upstream_socket.settimeout(remaining())
                     response = upstream_call('getresponse', receive_response, validate_response)
                     remaining()
                     headers = response.getheaders()
@@ -363,13 +784,13 @@ class BrowserRelay:
                             # completion, without touching that socket again.
                             while not response.isclosed():
                                 self.connection.settimeout(remaining())
-                                upstream_socket.settimeout(remaining())
+                                if io_owner is None:
+                                    upstream_socket.settimeout(remaining())
                                 operation = 'upstream'
                                 if streaming:
-                                    with relay.lock:
-                                        remaining()
-                                        read = dict(id=record.get('stream_read', {}).get('id', 0)+1,
-                                                    started=time.monotonic())
+                                    remaining()
+                                    read = dict(id=record.get('stream_read', {}).get('id', 0)+1,
+                                                started=time.monotonic())
                                     chunk = read_response(lambda: response.read1(65536), read)
                                 else:
                                     chunk = read_response(lambda: response.read1(65536))
@@ -387,6 +808,8 @@ class BrowserRelay:
                             if streaming:
                                 raise ConnectionError('unexpected browser stream EOF')
                     record["delivered"] = time.monotonic()
+                except Stopped:
+                    record.update(failure_at=time.monotonic(), error='Stopped', failure_operation=operation)
                 except (BrokenPipeError, ConnectionResetError) as exc:
                     record['failure_at'] = time.monotonic()
                     record["client_disconnected"] = type(exc).__name__
@@ -405,22 +828,39 @@ class BrowserRelay:
                         relay.release.set()
                 finally:
                     self.close_connection = True
-                    # Retain failed ownership and still attempt the other close.
-                    for name, owner in (('response', response), ('connection', connection)):
-                        if owner is not None:
-                            try:
-                                owner.close()
-                            except Exception as exc:
-                                record[name+'_close_error'] = type(exc).__name__
-                                relay.errors.append('E05 '+name+' close failed')
+                    if io_owner is not None:
+                        # HTTPConnection may not return a partially parsed
+                        # response. Its constructor registered that owner first.
+                        io_owner.close()
+                    else:
+                        for name, owner in (('response', response), ('connection', connection)):
+                            if owner is not None:
+                                try:
+                                    owner.close()
+                                except Exception as exc:
+                                    record[name+'_close_error'] = type(exc).__name__
+                                    relay.errors.append('E05 '+name+' close failed')
                     with relay.lock:
-                        if 'connection_close_error' not in record and 'response_close_error' not in record:
+                        complete = (not io_owner.state['errors'] if io_owner is not None else
+                                    'connection_close_error' not in record and 'response_close_error' not in record)
+                        if complete:
                             relay.connections.discard(connection)
                             relay.connections.discard(upstream_socket)
+                            if io_owner is not None:
+                                relay.connections.discard(io_owner.handles.get('duplicate'))
                             relay.active_responses.pop(id(record), None)
                             relay.active_streams.pop(id(record), None)
+                            relay.io_owners.pop(id(record), None)
                             relay.operation_gates.pop(id(record), None)
-                        record["closed"] = time.monotonic()
+                        record['closed'] = time.monotonic()
+                        if io_owner is not None and io_owner.intent is not None:
+                            record['stop_settled'] = time.monotonic()
+                        notify = relay.context_notify
+                    if notify is not None:
+                        try:
+                            notify()
+                        except Exception as exc:
+                            relay.errors.append('E05 acknowledgement notification '+type(exc).__name__)
 
             do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = forward
 
@@ -445,7 +885,7 @@ class BrowserRelay:
                 finally:
                     with relay.lock:
                         relay.connections.discard(request)
-                        relay.workers.discard(worker)
+                        # Retain this actual worker until close observes/join its exit.
 
             def handle_error(self, request, address):
                 relay.errors.append("browser request worker failed")
@@ -497,25 +937,6 @@ class BrowserRelay:
             return False
         return True
 
-    @classmethod
-    def _cooperative_boundary(cls, record: dict) -> bool:
-        operation = record.get('upstream_operation', {})
-        response = record.get('response_outcome', {})
-        if (not cls._response_facts(response, record['method'])
-                or record.get('status') != response['status']
-                or record.get('streaming') is not ((response['content_type'][0] if response['content_type'] else '')
-                                                 .split(';')[0] == 'text/event-stream')
-                or operation.get('outcome') != 'returned'):
-            return False
-        if operation['kind'] == 'getresponse':
-            result = operation.get('result', {})
-            return (operation.get('read_id') is None and 'stream_read' not in record
-                    and cls._response_facts(result, record['method']) and result == response)
-        result = operation.get('result', {})
-        return (operation['kind'] == 'read'
-                and cls._read_facts(result, response, record['streaming'])
-                and result['bytes'] > 0 and not result['closed'])
-
     @staticmethod
     def hop_headers(headers) -> set[str]:
         result = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
@@ -546,14 +967,27 @@ class BrowserRelay:
         except Exception as exc:
             self.errors.append(type(exc).__name__ + ': browser listener shutdown failed')
         with self.lock:
+            owned_sockets = set()
+            for owner in self.io_owners.values():
+                owner.state['forced'] = time.monotonic()
+                owner.wake()
+                owned_sockets.update(owner.handles.get(name) for name in ('original','duplicate'))
+            owned_sockets.discard(None)
             connections, workers = list(self.connections), list(self.workers)
         for connection in connections:
             sock = connection.sock if isinstance(connection, http.client.HTTPConnection) else connection
             if sock:
                 try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+                    if sock.fileno() >= 0:
+                        sock.shutdown(socket.SHUT_RDWR)
+                except OSError as exc:
+                    if sock in owned_sockets:
+                        self.errors.append(type(exc).__name__ + ': browser cleanup shutdown failed')
+                # The request worker unregisters selector interests and closes
+                # its descriptors. Forced cleanup wakes it without permitting
+                # close/reuse of a descriptor still registered by that owner.
+                if sock in owned_sockets:
+                    continue
                 try:
                     sock.close()
                 except OSError as exc:
@@ -571,59 +1005,37 @@ class BrowserRelay:
             failure = record.get('error') or record.get('client_disconnected')
             if not failure:
                 continue
-            abort = record.get('browser_abort')
-            expected = (abort is not None and record['method'] == 'GET' and record['ordinal'] is None
-                        and abort['failure'] == 'net::ERR_ABORTED' and abort['method'] == 'GET'
-                        and abort['url'] == f'http://127.0.0.1:{self.port}'+record['target']
-                        and abort['target'] == record['target']
-                        and record.get('browser_request_id') == abort['request_id']
-                        and len([r for r in self.records if r.get('browser_request_id') == abort['request_id']]) == 1
-                        and len([r for r in self.browser_requests if r['request_id'] == abort['request_id']
-                                 and r['method'] == 'GET' and r['target'] == record['target'] and r['at'] <= abort['at']]) == 1
-                        and 'abort_shutdown_error' not in record
-                        and record['entered'] <= abort['at'] <= record.get('failure_at', -1) <= record['closed'] <= settled
-                        and failure == 'ConnectionAbortedError'
-                        and abort['at'] <= record.get('abort_shutdown_started', -1)
-                        <= record.get('abort_shutdown', -1) <= record.get('abort_observed', -1) <= record['failure_at']
-                        and record.get('abort_shutdown_operation') == record.get('upstream_operation')
-                        and self._cooperative_boundary(record)
-                        and record.get('upstream_operation', {}).get('outcome') == 'returned'
-                        and record['upstream_operation']['finished'] <= record['abort_shutdown_started']
-                        and ('stream_read' not in record and record['upstream_operation']['read_id'] is None
-                             and (record['upstream_operation']['kind'] == 'getresponse'
-                                  or record.get('streaming') is not True)
-                             or 'stream_read' in record and 'error' not in record['stream_read']
-                             and record['stream_read'].get('bytes', 0) > 0))
-            shutdown = record.get('context_shutdown')
-            read = record.get('stream_read', {})
-            if shutdown is not None:
-                expected = (self.context_closing is not None and self.context_closed is not None
-                            and record['method'] == 'GET' and record['ordinal'] is None
-                            and record.get('streaming') is True and record.get('status') == 200
-                            and record.get('browser_request_id') == shutdown['request_id']
-                            and shutdown['request_id'] in self.context_closing['request_ids']
-                            and shutdown['target'] == record['target'] and shutdown.get('outcome') == 'shutdown'
-                            and 'error' not in shutdown and abort is None
-                            and shutdown['context_closing'] == self.context_closing['at']
-                            <= shutdown['started'] <= shutdown['finished'] <= self.context_closed['at'] <= entered
-                            and shutdown['started'] <= record.get('failure_at', -1) <= record['closed'] <= settled
-                            and failure == 'ConnectionAbortedError'
-                            and shutdown['finished'] <= record.get('shutdown_observed', -1) <= record['failure_at']
-                            and shutdown.get('operation') == record.get('upstream_operation')
-                            and self._cooperative_boundary(record)
-                            and record.get('upstream_operation', {}).get('outcome') == 'returned'
-                            and record['upstream_operation']['finished'] <= shutdown['started']
-                            and (not read and shutdown['read_id'] is None
-                                 and record['upstream_operation']['kind'] == 'getresponse'
-                                 or read and shutdown['read_id'] == read.get('id')
-                                 and record['upstream_operation']['read_id'] == read['id']
-                                 and 'error' not in read and read.get('bytes', 0) > 0
-                                 and read['finished'] == record['upstream_operation']['finished']))
+            owner = record.get('io_owner')
+            intent, ack = record.get('stop_intent'), record.get('stop_ack')
+            expected = (failure == 'Stopped' and record['method'] == 'GET' and record['ordinal'] is None
+                        and owner is not None and intent is not None and ack is not None
+                        and owner['forced'] is None and not owner['errors']
+                        and ack.get('outcome') in {'shutdown', 'already-complete'} and 'error' not in ack
+                        and owner['operations'][-1].get('outcome') == 'cancelled'
+                        and intent['enqueued'] <= ack['started'] <= ack['finished'] <= record['failure_at']
+                        <= owner['finished'] <= record['closed'] <= settled
+                        and (intent['kind'] != 'context' or self.context_closed is not None
+                             and record['stop_settled'] <= self.context_closed['at']))
+            if expected:
+                issued = [e for e in self.browser_requests if e['request_id'] == intent['request_id']]
+                expected = len(issued) == 1
+                if expected and intent['kind'] == 'context':
+                    # A callback may have captured its native event before
+                    # waiting for relay.lock. Preserve that original observation
+                    # if its publication follows the worker's locked recheck.
+                    expected = not any(t['at'] <= ack['started'] for t in issued[0].get('terminals', []))
+                elif expected:
+                    trigger = dict(intent['event'])
+                    trigger.pop('target')
+                    expected = issued[0].get('terminals') == [trigger]
             if not expected:
                 errors.append(failure + ': browser transport failed')
-        result = dict(port=self.port, entered=entered, finished=time.monotonic(),
-                      workers_alive=sum(w.is_alive() for w in workers), listener_alive=self.thread.is_alive(),
-                      connections=len(self.connections), errors=errors)
+        with self.lock:
+            # Observe late-entering request owners and their pre-registered
+            # downstream sockets in ONE snapshot after listener admission ends.
+            result = dict(port=self.port, entered=entered, finished=time.monotonic(),
+                          workers_alive=sum(w.is_alive() for w in self.workers), listener_alive=self.thread.is_alive(),
+                          connections=len(self.connections), errors=errors)
         if result["workers_alive"] or result["listener_alive"] or result["connections"]:
             errors.append("browser proxy ownership did not close")
         return result

@@ -5,6 +5,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import signal
 from datetime import datetime, timedelta
@@ -1555,6 +1556,16 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         check(len([w for w in calls if w['argv_sha256'] == digest and w['source_sha'] == row['source_sha']]) == 1,
               'R1 N/D independent executable source/argv witness')
 
+    def number(value: object) -> bool:
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def natural(value: object) -> bool:
+        return type(value) is int and value >= 0
+
+    def same(left: object, right: object) -> bool:
+        # JSON equality must preserve bool/int/float distinctions in snapshots.
+        return json.dumps(left,sort_keys=True,allow_nan=False) == json.dumps(right,sort_keys=True,allow_nan=False)
+
     events = json.loads((directory / "e05-browser-events.json").read_text())
     event_fields = {
         'request': 'request_id url method resource_type navigation',
@@ -1570,6 +1581,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     }
     check(all(e.get('event') in event_fields and set(e) == {'event', 'at', *event_fields[e['event']].split()}
               for e in events), 'R2 closed original browser event grammar')
+    check(all(type(e['at']) in (int,float) and math.isfinite(e['at']) for e in events)
+          and [e['at'] for e in events] == sorted(e['at'] for e in events),
+          'R2 complete chronological native browser ledger')
     native_requests = [e for e in events if e['event'] == 'request']
     check([e['request_id'] for e in native_requests] == list(range(len(native_requests)))
           and all(type(e['request_id']) is int for e in native_requests), 'R2 unique native Request ledger')
@@ -1721,6 +1735,11 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     closure = [d["thread_proxy_closure"] for d in durable if "thread_proxy_closure" in d]
     check(len(closure) == 1 and closure[0]["port"] == transport["browser_port"] and not closure[0]["errors"]
           and closure[0]["workers_alive"] == closure[0]["connections"] == 0 and closure[0]["listener_alive"] is False, "bounded proxy/socket/listener closure")
+    check(set(closure[0]) == {'port','entered','finished','workers_alive','listener_alive','connections','errors'}
+          and type(closure[0]['port']) is int and type(closure[0]['workers_alive']) is int
+          and type(closure[0]['connections']) is int and closure[0]['errors'] == []
+          and number(closure[0]['entered']) and number(closure[0]['finished']),
+          'R2 closed typed original proxy closure')
     check(case['final_entered'] <= events[-1]['at'] <= closure[0]['entered'] <= closure[0]['finished'] <= case['finished'],
           'R2 browser and proxy close within original E05 final allowance')
     lifecycle = [e for e in events if e['event'] in {'context-closing', 'proxy-streams-shutdown', 'context-close', 'context-closed'}]
@@ -1738,36 +1757,421 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(closing['request_ids'] == live and all(type(i) is int for i in closing['request_ids'])
           and not any(e['at'] > closing['at'] for e in streams), 'R2 exact still-live native SSE set before owner shutdown')
     shutdowns = shutdown_event['streams']
-    check(isinstance(shutdowns, list) and len({s['request_id'] for s in shutdowns}) == len(shutdowns)
-          and sorted(s['request_id'] for s in shutdowns) == live, 'R2 every original live native stream shutdown accounted')
+    check(isinstance(shutdowns, list) and len({s['intent']['request_id'] for s in shutdowns}) == len(shutdowns)
+          and sorted(s['intent']['request_id'] for s in shutdowns) == live, 'R2 every original live native stream shutdown accounted')
     for shutdown in shutdowns:
-        check(set(shutdown) == {'request_id','target','context_closing','read_id','started','finished','outcome','operation'}
-              and type(shutdown['request_id']) is int and shutdown['outcome'] == 'shutdown'
-              and all(type(shutdown[k]) in (int, float) for k in ('context_closing','started','finished'))
-              and shutdown['context_closing'] == closing['at'] <= shutdown['started'] <= shutdown['finished'] <= shutdown_event['at']
-              and (shutdown['read_id'] is None or type(shutdown['read_id']) is int and shutdown['read_id'] > 0),
-              'R2 closed successful original stream shutdown receipt grammar/order')
-        owners = [p for p in observations['thread_proxy'] if p.get('context_shutdown') == shutdown]
-        native = [s for s in streams if s['request_id'] == shutdown['request_id']]
-        check(len(owners) == len(native) == 1 and owners[0].get('browser_request_id') == shutdown['request_id']
-              and owners[0]['target'] == shutdown['target'] and native[0]['url'] == origin+shutdown['target']
-              and native[0]['at'] <= shutdown['started'], 'R2 exact native response, original proxy response/socket shutdown join')
-        check(not any(t['event'] in {'request-failed', 'request-finished'}
-                      and t['request_id'] == shutdown['request_id'] and t['at'] <= shutdown['started']
-                      for t in events), 'R2 exact native Request remains live until its own shutdown starts')
+        check(type(shutdown) is dict and set(shutdown) == {'intent','ack','settled'},
+              'R2 closed worker stream acknowledgement')
+        owners = [p for p in observations['thread_proxy']
+                  if same(p.get('stop_intent'), shutdown['intent']) and same(p.get('stop_ack'), shutdown['ack'])
+                  and same(p.get('stop_settled'), shutdown['settled'])]
+        check(len(owners) == 1 and shutdown['intent']['kind'] == 'context'
+              and same(shutdown['intent']['event'], closing) and shutdown['ack']['outcome'] == 'shutdown'
+              and shutdown['settled'] <= shutdown_event['at'], 'R2 exact complete stream worker acknowledgement join')
+    def validate_io_owner(proxied: dict) -> None:
+        owner = proxied['io_owner']
+        generation = proxied['owner_generation']
+        check(type(generation) is int and generation > 0 and generation not in owner_generations
+              and type(owner) is dict
+              and set(owner) == {'runtime','generation','end','resources','registrations','trace','operations','received','delivered','forced','terminal','mode','errors','finished'}
+              and type(owner['generation']) is int and owner['generation'] == generation and owner['forced'] is None and owner['errors'] == []
+              and number(owner['end']) and number(owner['finished'])
+              and proxied['entered'] <= owner['finished'] <= proxied['closed'] <= owner['end']
+              and proxied['method'] == 'GET' and proxied['ordinal'] is None,
+              'R2 original positive GET owner generation, deadline and sticky closure')
+        check(all(number(proxied[k]) for k in ('entered','forwarded','closed')),
+              'R2 original owner times have strict finite numeric types')
+        owner_generations.add(generation)
+        runtime = owner['runtime']
+        check(type(runtime) is dict and set(runtime) == {'implementation','version'}
+              and runtime['implementation'] == 'cpython' and type(runtime['version']) is list
+              and len(runtime['version']) == 3 and all(natural(v) for v in runtime['version'])
+              and runtime['version'][:2] in ([3,12],[3,14]),
+              'R2 supported exact-minor private parser owner')
+        mode = owner['mode']
+        check(type(mode) is dict and set(mode) == {'original_blocking','duplicate_blocking','at'}
+              and mode['original_blocking'] is False and mode['duplicate_blocking'] is False
+              and number(mode['at']) and proxied['forwarded'] <= mode['at'] <= owner['finished'],
+              'R2 actual shared original/duplicate nonblocking descriptor modes')
+        resources = owner['resources']
+        check(type(resources) is list and len(resources) == 10
+              and {r.get('name') for r in resources}
+              == {'connection','original','duplicate','wake_read','wake_write','selector','raw','buffer','file','response'},
+              'R2 every original/duplicate/parser/buffer/selector/wake owner inventoried')
+        check(all(set(r) == {'name','acquired','closed'} and number(r['acquired']) and number(r['closed'])
+                  and proxied['entered'] <= r['acquired'] <= r['closed'] <= owner['finished'] for r in resources)
+              and [r['acquired'] for r in resources] == sorted(r['acquired'] for r in resources),
+              'R2 complete actual per-handle closure, never workers-zero inference')
+        by_name = {r['name']:r for r in resources}
+        check(by_name['connection']['acquired'] <= by_name['original']['acquired']
+              <= by_name['duplicate']['acquired'] <= mode['at']
+              and by_name['raw']['acquired'] <= by_name['buffer']['acquired']
+              <= by_name['file']['acquired'] <= by_name['response']['acquired'],
+              'R2 mode and parser wrappers belong to their already-acquired underlying handles')
+        registrations = owner['registrations']
+        check(type(registrations) is list and len(registrations) == 2
+              and {r.get('name') for r in registrations} == {'duplicate','wake_read'}
+              and all(set(r) == {'name','registered','unregistered'} and number(r['registered'])
+                      and number(r['unregistered'])
+                      and max(by_name['selector']['acquired'],by_name[r['name']]['acquired'],mode['at'])
+                      <= r['registered'] <= by_name['file']['acquired']
+                      and r['registered'] <= r['unregistered']
+                      <= min(h['closed'] for h in resources) for r in registrations),
+              'R2 actual selector registrations removed before any acquired handle close')
+        trace = owner['trace']
+        check(type(trace) is list and 0 < len(trace) <= 16384
+              and all(type(t) is dict and number(t.get('at')) for t in trace)
+              and [t['at'] for t in trace] == sorted(t['at'] for t in trace)
+              and proxied['forwarded'] <= trace[0]['at'] <= trace[-1]['at'] <= owner['finished'],
+              'R2 chronological raw original reader accounting')
+        received = delivered = 0
+        checkpoints = []
+        last_file = None
+        chunk_remaining = None
+        size_pending = False
+        eof_seen = False
+        chunk_terminal_seen = False
+        trailer_ended = False
+        for fact in trace:
+            if fact['event'] == 'receive':
+                check(set(fact) == {'event','at','bytes','received'} and natural(fact['bytes']) and fact['bytes'] <= 65536, 'R2 original socket receive including actual EOF')
+                check(not eof_seen and not trailer_ended, 'R2 no receive after native EOF or complete chunk terminal')
+                eof_seen = fact['bytes'] == 0
+                received += fact['bytes']
+                check(fact['received'] == received and type(fact['received']) is int,
+                      'R2 actual cumulative socket receive count')
+            elif fact['event'] == 'would-block':
+                check(set(fact) == {'event','at','received','delivered'}
+                      and natural(fact['received']) and natural(fact['delivered'])
+                      and fact['received'] == received and fact['delivered'] == delivered,
+                      'R2 actual would-block observation preserves buffered progress')
+            elif fact['event'] in {'chunk-terminal','trailer-end'}:
+                extra = 'size' if fact['event'] == 'chunk-terminal' else 'delimiter'
+                check(set(fact) == {'event','at','received','delivered',extra}
+                      and natural(fact['received']) and natural(fact['delivered'])
+                      and fact['received'] == received and fact['delivered'] == delivered
+                      and last_file is not None and last_file['method'] == 'readline',
+                      'R2 original terminal chunk/trailer counters')
+                if fact['event'] == 'chunk-terminal':
+                    check(not chunk_terminal_seen and type(fact['size']) is int and fact['size'] == 0 and size_pending
+                          and last_file['bytes'] >= 3, 'R2 actual parsed terminal zero chunk')
+                    chunk_terminal_seen = True
+                    size_pending = False
+                    chunk_remaining = 0
+                else:
+                    check(chunk_terminal_seen and not trailer_ended and fact['delimiter'] == '0d0a'
+                          and chunk_remaining == 0 and last_file['bytes'] == 2,
+                          'R2 actual complete trailer terminator')
+                    trailer_ended = True
+            elif fact['event'] == 'file-return':
+                check(not trailer_ended and (not chunk_terminal_seen or fact['method'] == 'readline'),
+                      'R2 terminal chunk permits only its original trailer reads')
+                check(set(fact) == {'event','at','method','bytes','delivered'}
+                      and fact['method'] in {'read','read1','readline'} and natural(fact['bytes']),
+                      'R2 closed parser file-return counters')
+                delivered += fact['bytes']
+                check(type(fact['delivered']) is int and fact['delivered'] == delivered <= received,
+                      'R2 buffered and pending file bytes never vanish')
+                if fact['method'] == 'read':
+                    check(fact['bytes'] == 2, 'R2 original parser consumes exactly the chunk CRLF')
+                if fact['method'] == 'read1' and proxied.get('response_outcome', {}).get('chunked') is True:
+                    check(type(chunk_remaining) is int and 0 < fact['bytes'] <= chunk_remaining,
+                          'R2 body return consumes only known current chunk payload')
+                    chunk_remaining -= fact['bytes']
+                last_file = fact
+            elif fact['event'] == 'checkpoint':
+                check(set(fact) == {'event','at','kind','received','delivered','chunk_left','delimiter','remaining'}
+                      and fact['kind'] in {'before-response','between','chunk-size','payload','finite'}
+                      and natural(fact['received']) and natural(fact['delivered'])
+                      and fact['received'] == received and fact['delivered'] == delivered,
+                      'R2 raw semantic checkpoint counters and closed grammar')
+                kind = fact['kind']
+                check(not chunk_terminal_seen or trailer_ended and kind == 'between',
+                      'R2 terminal chunk cannot reopen a cancellable parser checkpoint')
+                check((fact['chunk_left'] is None or type(fact['chunk_left']) is int and fact['chunk_left'] > 0)
+                      and (fact['remaining'] is None or type(fact['remaining']) is int and fact['remaining'] > 0)
+                      and (kind == 'payload') == (fact['chunk_left'] is not None)
+                      and (kind == 'finite') == (fact['remaining'] is not None)
+                      and (kind == 'chunk-size' or fact['delimiter'] is None),
+                      'R2 checkpoint-specific framing/finite shape')
+                if kind == 'before-response':
+                    check(not checkpoints and received == delivered == 0, 'R2 entire-response byte-zero checkpoint')
+                if kind == 'chunk-size':
+                    check(fact['delimiter'] is None and chunk_remaining is None
+                          or fact['delimiter'] == '0d0a' and chunk_remaining == 0 and last_file is not None
+                          and last_file['method'] == 'read' and last_file['bytes'] == 2,
+                          'R2 fresh chunk-size waits follow actual validated CRLF')
+                    size_pending = True
+                if kind == 'payload':
+                    check((size_pending and last_file is not None and last_file['method'] == 'readline'
+                           and last_file['bytes'] >= 3)
+                          or (not size_pending and chunk_remaining is not None
+                              and fact['chunk_left'] == chunk_remaining),
+                          'R2 fresh parsed positive size or exact retained chunk remainder')
+                    chunk_remaining = fact['chunk_left']
+                    size_pending = False
+                checkpoints.append(fact)
+            else:
+                check(False, 'R2 unknown or sticky failed raw reader event')
+        check(natural(owner['received']) and natural(owner['delivered'])
+              and owner['received'] == received and owner['delivered'] == delivered,
+              'R2 full raw/buffer accounting retained through closure')
+        operations = owner['operations']
+        check(type(operations) is list and operations
+              and [o.get('id') for o in operations] == list(range(1,len(operations)+1))
+              and same(proxied.get('upstream_operation'), operations[-1]),
+              'R2 complete unique current/prior operation identities')
+        reads = []
+        previous = None
+        for op in operations:
+            check(type(op['id']) is int and set(op) in (
+                      {'id','kind','read_id','started','finished','outcome','result'},
+                      {'id','kind','read_id','started','finished','outcome'})
+                  and op['kind'] in {'getresponse','read','stop'}
+                  and number(op['started']) and number(op['finished'])
+                  and proxied['forwarded'] <= op['started'] <= op['finished'] <= owner['finished']
+                  and (previous is None or previous['finished'] <= op['started'])
+                  and op.get('outcome') in {'returned','cancelled'},
+                  'R2 complete chronological operations; earlier error is never laundered')
+            if op['kind'] == 'read':
+                check(type(op['read_id']) is int and op['read_id'] == len(reads)+1,
+                      'R2 positive distinct actual read identity')
+                reads.append(op)
+            else:
+                check(op['read_id'] is None, 'R2 only actual body read owns a read ID')
+            if op['outcome'] == 'cancelled':
+                check(op is operations[-1] and set(op) == {'id','kind','read_id','started','finished','outcome'},
+                      'R2 explicit current cancellation never invents returned bytes')
+            elif op['kind'] == 'getresponse':
+                check(op is operations[0] and same(op['result'], proxied.get('response_outcome')),
+                      'R2 original returned headers retained verbatim')
+            else:
+                check(op['kind'] == 'read' and previous is not None and previous['outcome'] == 'returned',
+                      'R2 returned body follows complete validated headers')
+                result = op['result']
+                check(set(result) == {'bytes','remaining_before','remaining_after','closed','eof'}
+                      and natural(result['bytes']) and result['bytes'] <= 65536 and type(result['closed']) is bool and type(result['eof']) is bool
+                      and result['eof'] == (result['bytes'] == 0)
+                      and all(v is None or natural(v) for v in (result['remaining_before'],result['remaining_after'])),
+                      'R2 original returned bytes/EOF/length facts')
+                before, after = result['remaining_before'], result['remaining_after']
+                expected = (proxied['response_outcome']['length'] if previous['kind'] == 'getresponse'
+                            else previous['result']['remaining_after'])
+                check(before == expected and (before is None and after is None or before is not None
+                      and after == before-result['bytes'])
+                      and (not (result['closed'] or result['eof']) or after in (None,0))
+                      and (after != 0 or result['closed']) and (not result['eof'] or result['closed'])
+                      and (not proxied['streaming'] or not result['closed'] and not result['eof'])
+                      and (previous['kind'] != 'read' or not previous['result']['closed']),
+                      'R2 every prior finite/stream outcome validates before any stop')
+            body_returns = [t for t in trace if t['event'] == 'file-return' and t['method'] == 'read1'
+                            and op['started'] <= t['at'] <= op['finished']]
+            if op['outcome'] == 'cancelled':
+                check(not body_returns and not any(t['event'] in {'chunk-terminal','trailer-end'}
+                      and op['started'] <= t['at'] <= op['finished'] for t in trace),
+                      'R2 no returned body or terminal chunk outcome is discarded by cancellation')
+            elif op['kind'] == 'read':
+                terminal_facts = [t for t in trace if op['started'] <= t['at'] <= op['finished']
+                                  and t['event'] in {'chunk-terminal','trailer-end'}]
+                check((len(body_returns) == 1 and body_returns[0]['bytes'] == op['result']['bytes'])
+                      or (not body_returns and op['result']['bytes'] == 0 and op['result']['closed'] is True
+                          and op['result']['eof'] is True and not proxied['streaming']
+                          and proxied['response_outcome']['chunked'] is True
+                          and [t['event'] for t in terminal_facts] == ['chunk-terminal','trailer-end']),
+                      'R2 actual parser body return equals retained operation bytes')
+            else:
+                check(not body_returns, 'R2 header operation cannot consume body payload')
+            previous = op
+        # These are final explicit successful close acknowledgements, rather
+        # than HTTPConnection detach or HTTPResponse's automatic file close.
+        # Every inventoried owner and registration is retained until finally,
+        # after the last operation (including any shutdown ack) and checkpoint.
+        last_use = max(operations[-1]['finished'], trace[-1]['at'])
+        check(all(last_use <= r['closed'] for r in resources)
+              and all(last_use <= r['unregistered'] for r in registrations),
+              'R2 final handle closure and unregister follow all worker I/O, validation and shutdown')
+        first = operations[0]
+        check(first['kind'] == 'getresponse' and trace[0]['event'] == 'checkpoint'
+              and trace[0]['kind'] == 'before-response'
+              and all(r['acquired'] <= trace[0]['at'] for r in resources if r['name'] != 'response')
+              and trace[0]['at'] <= first['started'] <= by_name['response']['acquired'] <= first['finished']
+              and all(by_name['response']['acquired'] <= op['started'] for op in operations[1:]),
+              'R2 initialized reader precedes first call and response is acquired inside getresponse before later uses')
+        for index, op in enumerate(operations):
+            completed = [c for c in checkpoints if c['kind'] == 'between'
+                         and op['finished'] <= c['at']
+                         and (index+1 == len(operations) or c['at'] <= operations[index+1]['started'])]
+            check(len(completed) == (1 if op['outcome'] == 'returned' else 0),
+                  'R2 each validated return establishes its own between checkpoint before the next operation')
+        if proxied.get('streaming') and reads:
+            read = proxied.get('stream_read')
+            last = reads[-1]
+            check(type(read) is dict and read['id'] == last['read_id']
+                  and type(read['id']) is int and number(read['started']) and number(read['finished'])
+                  and read['started'] == last['started'] and read['finished'] == last['finished']
+                  and (set(read) == {'id','started','finished','bytes'} and last['outcome'] == 'returned'
+                       and natural(read['bytes']) and read['bytes'] == last['result']['bytes']
+                       or set(read) == {'id','started','finished','outcome'} and read['outcome'] == last['outcome'] == 'cancelled'),
+                  'R2 current/prior stream read remains validated even with null stop read ID')
+        else:
+            check('stream_read' not in proxied, 'R2 genuine no-prior-stream-read state')
+        for index, fact in enumerate(trace):
+            if fact['event'] != 'checkpoint':
+                check(len([op for op in operations if op['kind'] != 'stop'
+                           and op['started'] <= fact['at'] <= op['finished']]) == 1
+                      and by_name['response']['acquired'] <= fact['at'],
+                      'R2 raw I/O belongs to exactly one actual parser operation')
+            elif fact['kind'] == 'between':
+                establishing = [op for i, op in enumerate(operations) if op['outcome'] == 'returned'
+                                and op['finished'] <= fact['at']
+                                and (i+1 == len(operations) or fact['at'] <= operations[i+1]['started'])]
+                check(len(establishing) == 1,
+                      'R2 between checkpoint follows its exact completed validation, outside later operations')
+            elif fact['kind'] != 'before-response':
+                establishing = [op for op in reads if op['started'] <= fact['at'] <= op['finished']]
+                check(len(establishing) == 1 and establishing[0]['id'] > 1,
+                      'R2 framing checkpoint belongs to one actual body read after headers')
+                current_read = establishing[0]
+                preceding = operations[current_read['id']-2]
+                check(preceding['outcome'] == 'returned' and preceding['finished'] <= current_read['started'],
+                      'R2 framing checkpoint preserves the distinct prior validated operation')
+                raw_before = [t for t in trace[:index] if t['event'] != 'checkpoint'
+                              and current_read['started'] <= t['at']]
+                files_before = [t for t in raw_before if t['event'] == 'file-return']
+                if fact['kind'] == 'finite':
+                    remaining = (preceding['result']['remaining_after'] if preceding['kind'] == 'read'
+                                 else proxied['response_outcome']['length'])
+                    check(proxied['response_outcome']['chunked'] is False and not raw_before
+                          and type(remaining) is int and remaining > 0 and fact['remaining'] == remaining,
+                          'R2 finite checkpoint precedes raw work in its exact remaining-length read')
+                else:
+                    check(proxied['response_outcome']['chunked'] is True,
+                          'R2 chunk framing checkpoints require actual chunked headers')
+                    if fact['kind'] == 'chunk-size':
+                        check(not raw_before if fact['delimiter'] is None else
+                              bool(files_before) and files_before[-1]['method'] == 'read'
+                              and files_before[-1]['bytes'] == 2,
+                              'R2 size checkpoint follows its own read delimiter validation or first chunk entry')
+                    else:
+                        check(not raw_before or bool(files_before) and files_before[-1]['method'] == 'readline',
+                              'R2 payload checkpoint follows its own parsed size or retained chunk entry')
+        eof_facts = [t for t in trace if t['event'] == 'receive' and t['bytes'] == 0]
+        last_return = next((o for o in reversed(operations) if o.get('outcome') == 'returned'),None)
+        check((owner['terminal'] is None and not eof_facts)
+              or (owner['terminal'] == 'EOF' and len(eof_facts) == 1
+                  and last_return is not None and last_return['kind'] == 'read'
+                  and last_return['result']['eof'] is True and not proxied['streaming']
+                  and proxied['response_outcome']['length'] is None
+                  and (operations[-1] is last_return or operations[-1]['kind'] == 'stop')),
+              'R2 native EOF/error stays sticky; only real complete finite EOF can settle')
+        intent, ack = proxied.get('stop_intent'), proxied.get('stop_ack')
+        if intent is None:
+            check(ack is None and 'stop_settled' not in proxied and 'browser_abort' not in proxied
+                  and operations[-1]['outcome'] == 'returned' and received == delivered, 'R2 no detached stop facts or discarded buffer')
+            return
+        check(type(intent) is dict and set(intent) == {'kind','request_id','method','target','generation','event','operation_id','enqueued','end'}
+              and intent['kind'] in {'navigation','context'} and intent['method'] == 'GET'
+              and type(intent['request_id']) is int and intent['request_id'] == proxied.get('browser_request_id')
+              and intent['target'] == proxied['target'] and type(intent['generation']) is int
+              and intent['generation'] == generation and number(intent['enqueued']) and number(intent['end'])
+              and proxied['entered'] <= intent['enqueued'] <= intent['end'] <= owner['end']
+              and intent['event']['at'] <= intent['enqueued'],
+              'R2 exact original Request/target/generation stop intent')
+        observed_operations = [op for op in operations if op['started'] <= intent['enqueued']]
+        check(intent['operation_id'] == (observed_operations[-1]['id'] if observed_operations else None)
+              and (intent['operation_id'] is None or type(intent['operation_id']) is int),
+              'R2 original operation identity at intent enqueue, distinct from later stop')
+        check(type(ack) is dict and set(ack) == {'generation','request_id','operation_id','previous_operation_id','read_id',
+              'previous_read_id','checkpoint','received','delivered','buffered','since_checkpoint','would_block','started','finished','outcome'}
+              and type(ack['generation']) is int and ack['generation'] == generation
+              and type(ack['request_id']) is int and ack['request_id'] == intent['request_id']
+              and number(ack['started']) and number(ack['finished'])
+              and intent['enqueued'] <= ack['started'] <= ack['finished'] <= operations[-1]['finished']
+              <= proxied.get('failure_at',-1) <= owner['finished'] <= proxied['closed'] <= proxied.get('stop_settled',-1)
+              <= intent['end'] and proxied.get('error') == 'Stopped' and 'delivered' not in proxied
+              and proxied.get('failure_operation') in {'upstream','downstream'}
+              and (operations[-1]['kind'] == 'stop' or proxied['failure_operation'] == 'upstream'),
+              'R2 actual original worker stop and complete owner acknowledgement under original end')
+        current = operations[-1]
+        prior = operations[-2] if len(operations) > 1 else None
+        check(type(ack['operation_id']) is int and ack['operation_id'] == current['id'] and current['outcome'] == 'cancelled'
+              and ack['previous_operation_id'] == (prior['id'] if prior else None)
+              and ack['read_id'] == current['read_id'] and ack['previous_read_id'] == (prior['read_id'] if prior else None)
+              and all(v is None or type(v) is int and v > 0 for v in
+                      (ack['previous_operation_id'],ack['read_id'],ack['previous_read_id']))
+              and all(natural(ack[k]) for k in ('received','delivered','buffered','since_checkpoint'))
+              and ack['received'] == received == ack['delivered'] == delivered
+              and ack['buffered'] == ack['since_checkpoint'] == 0 and type(ack['would_block']) is bool,
+              'R2 distinct real current/prior IDs and empty entire buffered checkpoint')
+        candidates = [c for c in checkpoints if c['at'] <= ack['started']]
+        check(candidates and same(ack['checkpoint'], {k:v for k,v in candidates[-1].items() if k not in {'event','at'}})
+              and candidates[-1]['received'] == received and candidates[-1]['delivered'] == delivered
+              and not any(t['at'] > ack['started'] for t in trace),
+              'R2 acknowledgement matches actual last validated checkpoint, with no hidden progress')
+        cp = ack['checkpoint']
+        check(ack['outcome'] in {'shutdown','already-complete'}
+              and (cp['kind'] == 'between') == (current['kind'] == 'stop' and ack['would_block'] is False),
+              'R2 wait boundary requires actual would-block; completed boundary stays separate')
+        if cp['kind'] != 'between':
+            check(ack['would_block'] is True and trace[-1]['event'] == 'would-block'
+                  and current['started'] <= trace[-1]['at'] <= ack['started']
+                  and (cp['kind'] == 'before-response' or current['started'] <= candidates[-1]['at']), 'R2 actual nonblocking wait observation')
+        if cp['kind'] == 'before-response':
+            check(len(operations) == 1 and current['kind'] == 'getresponse' and received == delivered == 0
+                  and intent['kind'] == 'navigation' and 'response_outcome' not in proxied
+                  and not any(k in proxied for k in ('status','streaming','stream_read')),
+                  'R2 genuine cancelled-before-response, no fabricated status/read/header outcome')
+        else:
+            check(prior is not None and prior['outcome'] == 'returned' and 'response_outcome' in proxied,
+                  'R2 actual prior validated outcome survives cancellation')
+            if cp['kind'] in {'chunk-size','payload'}:
+                check(current['kind'] == 'read' and proxied['response_outcome']['chunked'] is True,
+                      'R2 fresh chunk boundary belongs to actual chunked read')
+            if cp['kind'] == 'finite':
+                expected = (prior['result']['remaining_after'] if prior['kind'] == 'read'
+                            else proxied['response_outcome']['length'])
+                check(current['kind'] == 'read' and proxied['response_outcome']['chunked'] is False
+                      and type(expected) is int and expected > 0 and cp['remaining'] == expected,
+                      'R2 fresh finite-body wait preserves known remaining length')
+        complete = (prior is not None and cp['kind'] == 'between'
+                    and (prior['kind'] == 'getresponse' and proxied['response_outcome']['length'] == 0
+                         or prior['kind'] == 'read' and prior['result']['closed']))
+        check((ack['outcome'] == 'already-complete') == complete,
+              'R2 complete finite/bodyless outcome survives separately from delivery')
+        issued = [r for r in native_requests if r['request_id'] == intent['request_id']]
+        terminals = [t for t in events if t['event'] in {'request-failed','request-finished'}
+                     and t['request_id'] == intent['request_id']]
+        check(len(issued) == 1 and issued[0]['method'] == 'GET' and issued[0]['url'] == origin+proxied['target']
+              and issued[0]['at'] <= intent['enqueued'], 'R2 original native owner still joins its full target')
+        if intent['kind'] == 'context':
+            check(same(intent['event'], closing) and intent['request_id'] in live
+                  and not any(t['at'] <= ack['started'] for t in terminals)
+                  and proxied.get('status') == 200 and proxied.get('streaming') is True
+                  and ack['outcome'] == 'shutdown' and proxied['stop_settled'] <= shutdown_event['at']
+                  and any(same(dict(intent=intent,ack=ack,settled=proxied['stop_settled']),s) for s in shutdowns)
+                  and 'browser_abort' not in proxied, 'R2 native stream stays live until its OWN worker initiation')
+        else:
+            abort = proxied.get('browser_abort')
+            check(len(terminals) == 1 and same(abort,dict(terminals[0],target=proxied['target'])) and same(abort,intent['event'])
+                  and abort['failure'] == 'net::ERR_ABORTED' and abort['method'] == 'GET'
+                  and proxied['entered'] <= abort['at'] <= intent['enqueued']
+                  and intent['request_id'] not in used_aborts, 'R2 one genuine native navigation abort, never timeout/error retagging')
+            used_aborts.add(intent['request_id'])
+
     used_aborts = set()
     paired_requests = set()
+    owner_generations = set()
     for proxied in observations['thread_proxy']:
         check(set(proxied) <= set(('method path target ordinal entered browser_request_id forwarded status streaming delivered closed '
                                   'request_sha256 request_bytes upstream_complete response_sha256 response_bytes content_type request '
                                   'invalid_request_json response commit committed held release_observed error client_disconnected failure_operation '
-                                  'failure_at browser_abort abort_shutdown_started abort_shutdown abort_shutdown_error abort_observed '
-                                  'context_shutdown shutdown_observed stream_read upstream_operation abort_shutdown_operation response_outcome '
-                                  'response_close_error connection_close_error').split())
+                                  'failure_at browser_abort abort_shutdown_error '
+                                  'stream_read upstream_operation response_outcome '
+                                  'response_close_error connection_close_error owner_generation io_owner stop_intent stop_ack stop_settled').split())
               and not any(k in proxied for k in ('response_close_error','connection_close_error','abort_shutdown_error')),
               'R2 closed proxy evidence grammar; failed ownership never exempt')
         check(proxied['entered'] <= proxied['closed'] <= closure[0]['finished'], 'R2 every actual browser request settled')
-        if 'stream_read' in proxied:
+        if 'stream_read' in proxied and 'io_owner' not in proxied:
             read = proxied['stream_read']
             check(type(read.get('id')) is int and read['id'] > 0
                   and set(read) in ({'id','started','finished','error'}, {'id','started','finished','bytes'})
@@ -1800,7 +2204,7 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                                                  .split(';')[0] == 'text/event-stream'),
                   'R2 native response parser and retained status/content/length agree')
         boundary = False
-        if operation is not None:
+        if operation is not None and 'io_owner' not in proxied:
             check(set(operation) in ({'kind','read_id','started','finished','outcome','result'},
                                      {'kind','read_id','started','finished','error'},
                                      {'kind','read_id','started','finished','error','result'})
@@ -1856,9 +2260,15 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                   and issued[0]['url'] == origin + proxied['target'] and issued[0]['method'] == proxied['method'],
                   'R2 one actual native Request per paired original proxy request')
             paired_requests.add(request_id)
+        if 'io_owner' in proxied:
+            validate_io_owner(proxied)
+        else:
+            check(proxied['method'] != 'GET'
+                  and not any(k in proxied for k in ('owner_generation','stop_intent','stop_ack','stop_settled')),
+                  'R2 only GET owns the nonblocking reader and stop protocol')
         failure = proxied.get('error') or proxied.get('client_disconnected')
         if not failure:
-            check('delivered' in proxied and 'context_shutdown' not in proxied and 'browser_abort' not in proxied,
+            check('delivered' in proxied and 'stop_intent' not in proxied and 'browser_abort' not in proxied,
                   'R2 complete original response delivery without contradictory cancellation')
             check(response is not None and not proxied['streaming'] and operation is not None
                   and operation.get('outcome') == 'returned'
@@ -1877,54 +2287,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               and type(proxied.get('failure_at')) in (int, float)
               and proxied['entered'] <= proxied.get('failure_at', -1) <= proxied['closed'],
               'R2 literal original failure/time, never a later cleanup timestamp')
-        shutdown = proxied.get('context_shutdown')
-        if shutdown is not None:
-            check(shutdown in shutdowns and proxied['method'] == 'GET' and proxied['ordinal'] is None
-                  and proxied.get('streaming') is True and type(proxied.get('status')) is int and proxied['status'] == 200
-                  and 'browser_abort' not in proxied and shutdown['started'] <= proxied['failure_at']
-                  and proxied['closed'] >= shutdown['finished'], 'R2 original intentional SSE shutdown precedes exact failure')
-            read = proxied.get('stream_read', {})
-            if read:
-                check(type(read.get('id')) is int and read['id'] > 0
-                      and set(read) in ({'id','started','finished','error'}, {'id','started','finished','bytes'})
-                      and all(type(read[k]) in (int, float) for k in ('started','finished'))
-                      and proxied['forwarded'] <= read['started'] <= read['finished'] <= proxied['failure_at'],
-                      'R2 settled original upstream read grammar/order')
-            check(failure == 'ConnectionAbortedError' and boundary and operation is not None
-                  and json.dumps(shutdown['operation'], sort_keys=True, allow_nan=False)
-                  == json.dumps(operation, sort_keys=True, allow_nan=False) and operation.get('outcome') == 'returned'
-                  and operation['finished'] <= shutdown['started'] <= shutdown['finished']
-                  <= proxied.get('shutdown_observed', -1) <= proxied['failure_at']
-                  and (not read and shutdown['read_id'] is None and operation['kind'] == 'getresponse'
-                       or read and shutdown['read_id'] == read['id'] == operation['read_id']
-                       and 'error' not in read and type(read.get('bytes')) is int and read['bytes'] > 0
-                       and read['finished'] == operation['finished']),
-                  'R2 cooperative owner stop after successful call; overlap/error/EOF never proves causality')
-            continue
-        abort = proxied.get('browser_abort')
-        check(abort is not None and proxied['method'] == 'GET' and proxied['ordinal'] is None
-              and proxied.get('browser_request_id') == abort['request_id']
-              and abort == dict(next((e for e in events if e['event'] == 'request-failed'
-                                     and e['request_id'] == abort['request_id']), {}), target=proxied['target'])
-              and abort['failure'] == 'net::ERR_ABORTED' and abort['method'] == 'GET'
-              and abort['url'] == origin + proxied['target']
-              and proxied['entered'] <= abort['at'] <= proxied['failure_at']
-              and abort['request_id'] not in used_aborts, 'R2 unique independently observed actual browser cancellation')
-        issued = [e for e in events if e['event'] == 'request' and e['request_id'] == abort['request_id']]
-        check(len(issued) == 1 and issued[0]['url'] == abort['url'] and issued[0]['method'] == 'GET'
-              and issued[0]['at'] <= abort['at'] and 'abort_shutdown_error' not in proxied
-              and failure == 'ConnectionAbortedError' and boundary and operation is not None
-              and json.dumps(proxied.get('abort_shutdown_operation'), sort_keys=True, allow_nan=False)
-              == json.dumps(operation, sort_keys=True, allow_nan=False) and operation.get('outcome') == 'returned'
-              and operation['finished'] <= proxied.get('abort_shutdown_started', -1)
-              and abort['at'] <= proxied['abort_shutdown_started'] <= proxied.get('abort_shutdown', -1)
-              <= proxied.get('abort_observed', -1) <= proxied['failure_at']
-              and ('stream_read' not in proxied and operation['read_id'] is None
-                   and (operation['kind'] == 'getresponse' or proxied.get('streaming') is not True)
-                   or 'stream_read' in proxied and 'error' not in proxied['stream_read']
-                   and proxied['stream_read'].get('bytes', 0) > 0),
-              'R2 native abort cooperatively observed after nonoverlapping successful upstream call')
-        used_aborts.add(abort['request_id'])
+        check('io_owner' in proxied and failure == 'Stopped' and 'stop_intent' in proxied,
+              'R2 only original worker-acknowledged controlled stop is exempt')
     final_orgs = [d for d in durable if "threads_final_org" in d]
     check(len(final_orgs) == 2 and {d["threads_final_org"] for d in final_orgs} == {"alpha","beta"}, "both final orgs")
     for d in final_orgs:

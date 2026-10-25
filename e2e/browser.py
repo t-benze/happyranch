@@ -1700,32 +1700,114 @@ class Browser:
 
     def close_threads_context(self) -> None:
         if hasattr(self, "thread_context"):
+            relay = self.controller.browser_relay
+            end = self.controller.effective_end()
+            active = True
+            notify = None
+            def detach_notify() -> None:
+                nonlocal active
+                with relay.lock:
+                    active = False
+                    if notify is not None and relay.context_notify is notify:
+                        relay.context_notify = None
+            async def close_owned() -> None:
+                nonlocal notify
+                # This coroutine runs through the unchanged native bridge.
+                # The original loop continues processing Request terminals.
+                loop = asyncio.get_running_loop()
+                changed = asyncio.Event()
+                errors = []
+                def signal() -> None:
+                    if active:
+                        changed.set()
+                def notify() -> None:
+                    with relay.lock:
+                        if active:
+                            loop.call_soon_threadsafe(signal)
+                with relay.lock:
+                    if not active:
+                        return
+                    relay.context_notify = notify
+                try:
+                    closing = dict(event='context-closing', request_ids=sorted(self.thread_streams), at=time.monotonic())
+                    self.thread_events.append(closing)
+                    try:
+                        records = relay.close_context_streams(closing, end)
+                        while True:
+                            changed.clear()
+                            with relay.lock:
+                                for record in records:
+                                    if ('stop_settled' in record and
+                                            (record.get('error') != 'Stopped' or record['io_owner']['errors']
+                                             or record.get('stop_ack', {}).get('outcome') != 'shutdown')):
+                                        raise ValueError('E05 stream acknowledgement failed')
+                                settled = all('stop_settled' in r for r in records)
+                            if settled:
+                                break
+                            left = end-time.monotonic()
+                            if left <= 0:
+                                raise TimeoutError('E05 original acknowledgement deadline')
+                            await asyncio.wait_for(changed.wait(), timeout=left)
+                        streams = []
+                        for record in records:
+                            ack = record.get('stop_ack')
+                            owner = record['io_owner']
+                            if (ack is None or ack.get('outcome') != 'shutdown' or 'error' in ack
+                                    or owner['errors'] or owner['forced'] is not None
+                                    or record.get('error') != 'Stopped'):
+                                raise ValueError('E05 stream acknowledgement failed')
+                            streams.append(dict(intent=dict(record['stop_intent']), ack=dict(ack),
+                                                settled=record['stop_settled']))
+                        self.thread_events.append(dict(event='proxy-streams-shutdown', streams=streams, at=time.monotonic()))
+                    except Exception as exc:
+                        errors.append(exc)
+                        self.thread_events.append(dict(event='context-shutdown-error', error=type(exc).__name__, at=time.monotonic()))
+                    # Stop failure is sticky; still attempt the original native
+                    # close if there is time left in this SAME absolute end.
+                    try:
+                        if time.monotonic() >= end:
+                            raise TimeoutError('E05 original native close deadline')
+                        await self.thread_context._impl_obj.close()
+                    except Exception as exc:
+                        errors.append(exc)
+                        self.thread_events.append(dict(event='context-native-close-error', error=type(exc).__name__, at=time.monotonic()))
+                    else:
+                        closed = dict(event='context-closed', at=time.monotonic())
+                        self.thread_events.append(closed)
+                        relay.context_closed = dict(closed)
+                        del self.thread_context
+                    if errors:
+                        raise errors[0]
+                finally:
+                    detach_notify()
+            primary = None
             try:
                 self._healthy()
-                closing = dict(event='context-closing', request_ids=sorted(self.thread_streams), at=time.monotonic())
-                self.thread_events.append(closing)
-                relay = self.controller.browser_relay
-                shutdown_error = None
+                self._native(close_owned, end)
+            except BaseException as exc:
+                primary = exc
+            finally:
+                # The native bridge can return without draining cancellation.
+                # Retire this owner even if close_owned never resumes its finally.
+                detach_notify()
                 try:
-                    streams = relay.close_context_streams(closing, self.controller.effective_end())
-                    self.thread_events.append(dict(event='proxy-streams-shutdown', streams=streams, at=time.monotonic()))
-                except Exception as exc:
-                    shutdown_error = exc
-                    self.thread_events.append(dict(event='context-shutdown-error', error=type(exc).__name__, at=time.monotonic()))
-                try:
-                    self._native(self.thread_context._impl_obj.close, self.controller.effective_end())
-                finally:
                     if hasattr(self, 'thread_navigation_listener'):
                         self._detach(*self.thread_navigation_listener)
                         del self.thread_navigation_listener
-                closed = dict(event="context-closed", at=time.monotonic())
-                self.thread_events.append(closed)
-                relay.context_closed = dict(closed)
-                del self.thread_context
-                if shutdown_error is not None:
-                    raise shutdown_error
-            finally:
-                self.controller._atomic_json(self.controller.root / "raw/e05-browser-events.json", list(self.thread_events))
+                except Exception as exc:
+                    self.thread_events.append(dict(event='context-detach-error', error=type(exc).__name__, at=time.monotonic()))
+                    if primary is None:
+                        primary = exc
+                try:
+                    self.controller._atomic_json(self.controller.root / "raw/e05-browser-events.json", list(self.thread_events))
+                except Exception as exc:
+                    if primary is None:
+                        primary = exc
+                    else:
+                        self.thread_events.append(dict(event='context-export-error', error=type(exc).__name__, at=time.monotonic()))
+            if primary is not None:
+                raise primary
+
 
 
     def e07_detail(self, task: str, status: str, shot: str | None = None, *, expected: dict) -> dict:
