@@ -1229,8 +1229,9 @@ async def _run_invocation_owned(
     # Await the joined offload BEFORE executor launch, inside the SAME native
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
-    with move_owner.preparation_effects():
-        repo_refresh_results = await refresh_workspace_repos_async(workspace)
+    repo_refresh_results = await refresh_workspace_repos_async(workspace,
+        preparation=move_owner, host_supervisor=host_supervisor,
+        materialization=(settings, expected_specs))
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 

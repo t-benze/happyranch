@@ -33,6 +33,41 @@ export const verifyRetryLink = (
   return request(`/orgs/${slug}/tasks/${taskId}/retry-verification`, { params: input });
 };
 
+export interface PreparationRecovery {
+  version: number;
+  task_id: string;
+  invocation_id: string | null;
+  attempt_id: string | null;
+  owner: Record<string, unknown> | null;
+  state_digest: string;
+  eligible: boolean;
+  missing_predicates: string[];
+  first_cause: Record<string, unknown> | null;
+  committed: boolean;
+  code?: string | null;
+}
+
+export interface ReconcilePreparationCommand {
+  version: 1;
+  operation_key: string;
+  expected_state_digest: string;
+  invocation_id: string;
+  attempt_id: string;
+}
+
+export const getPreparationRecovery = (
+  slug: string, taskId: string, operationKey?: string,
+): Promise<PreparationRecovery> => request(`/orgs/${slug}/tasks/${taskId}/preparation-recovery`, {
+  params: operationKey === undefined ? {} : { operation_key: operationKey },
+});
+
+/** Existing human bearer authority applies; no browser UI action is added. */
+export const reconcilePreparation = (
+  slug: string, taskId: string, body: ReconcilePreparationCommand,
+): Promise<PreparationRecovery> => request(`/orgs/${slug}/tasks/${taskId}/reconcile-preparation`, {
+  method: 'POST', body,
+});
+
 export const submitTask = (
   slug: string,
   body: {

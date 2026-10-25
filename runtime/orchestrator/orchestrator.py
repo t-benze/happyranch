@@ -1136,7 +1136,9 @@ class Orchestrator:
         # fresh code regardless of executor (claude/codex/opencode/pi).
         # Must run BEFORE the executor subprocess starts. Failure is non-
         # blocking: offline / dirty / non-ff / timeout are swallowed.
-        repo_refresh_results = refresh_workspace_repos(workspace)
+        repo_refresh_results = refresh_workspace_repos(workspace,
+            preparation=pause_invocation, host_supervisor=self._host_supervisor,
+            materialization=(self._settings, expected_specs))
 
         # Repository refresh observations remain independent of skill guidance.
         repo_refresh_note = format_repo_refresh_note(repo_refresh_results)

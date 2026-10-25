@@ -11,7 +11,7 @@ import re
 import sqlite3
 import threading
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from runtime.infrastructure.team_move_store import MoveRequest, Phase, TeamMoveError, TeamMoveStore, validate_team_move_schema, _decode
@@ -83,6 +83,8 @@ class TaskPreparation:
     possible_launch: bool = False
     quiescent: bool = False
     cleanup_failed: bool = False
+    repository_obligations: dict[str, bool] = field(default_factory=dict, repr=False)
+    repository_evidence: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def before_fifo(self) -> None:
         # No host/controller/tracker lock is held here. Do not launch using a
@@ -484,7 +486,7 @@ class TeamMoveCoordinator:
         with self.store.db._lock:
             reservation.owner_live = False
             reservation.cleanup_failed |= failed
-            if (not reservation.cleanup_failed and not invocation.unsettled
+            if (not reservation.cleanup_failed and all(reservation.repository_obligations.values()) and not invocation.unsettled
                     and (not reservation.possible_launch or reservation.quiescent)):
                 self._reservations.pop(reservation.owner_id, None)
 

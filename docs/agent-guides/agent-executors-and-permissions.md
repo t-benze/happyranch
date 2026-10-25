@@ -78,16 +78,109 @@ Restart treats unclosed task `prepared` entries as unknown, including terminal
 rows and prepared recovery/retry owners; absence of first launch is no proof of
 preparation cleanup. Unknown deferred entries cannot authorize a fresh launch.
 Native pre-effect source/artifact validation, repo-scan and missing launch-seam refusals
-retain their no-effect disposition. Repository refresh also refuses before pull
-on detached HEAD or missing/unusable/unreadable upstream; skipped repos stay false
-and warn of stale source. Every executed pull failure/timeout/exception retains
-uncertainty, including dirty/non-fast-forward and recursive partial effects;
-equal HEAD/branch/porcelain summaries never prove no effects. Read-only upstream
-lookup is admission only, not a remote-state lock. All observations/pulls share
-one 30-second batch deadline; exhausted/unattempted siblings stay false. Thread/dream/
-wake/Todo await off-loop refresh under the SAME native preparation-effects scope,
-joining its worker before cancellation propagates and settlement runs. Timeout
-never certifies process-tree quiescence; existing unknown owners remain sticky.
+retain their no-effect disposition.
+
+Repository preparation now has a cooperative common-Git-directory descriptor
+lease. Literal path/device/inode and stable no-follow lock metadata are pinned;
+release closes the descriptor without unlinking or deleting stale locks. Aliases
+must converge on the pinned physical directory or refuse. Each batch discovers
+physical identities before acquiring leases, refuses duplicate physical entries
+with a separate false result for that name, and acquires distinct resources in
+(device,inode) order, also used by operator admission. Expected identities are
+revalidated inside each lease; aliases never receive a new timeout. The lease lasts through
+admission, final validation, actual worker return and evidence completion. All
+siblings, queue/lease/host admission, probes and Git commands share the original
+30-second batch. Current path/config/transport are revalidated between phases.
+Manual Git, hooks, other hosts and arbitrary same-UID writers do not cooperate;
+last-window/ABA, OS cleanup and persistence timing limits remain.
+
+Every Git child, including admission/control probes, uses the existing configured
+healthy HostSessionSupervisor and opaque backend lifecycle. Missing guaranteed
+containment is a pre-child stale refusal. There is no uncontained fallback,
+synthetic executor session or TaskInvocation.started observation for Git. The
+original Popen consumes its status; actual status and a genuine Boolean-quiescent
+host receipt with no survivors/cleanup error are separate facts. Capture stays
+private/bounded4096B with draining and at most two exit-tail reads. An admitted
+unsettled probe cannot become a harmless unsupported-configuration skip. Async
+cancellation stops admission and joins the real worker under its original OrgState
+lifetime before evidence completion and lease release. Completion runs in the
+same joined off-loop executor mechanism after the actual batch worker returns.
+Repository custody precedes binding, root/Pause, move and short DB arbitration.
+Worker and completion acquisition, including native owner rechecks, binding/root
+gate-map lookups and failure attribution, uses the original remaining deadline;
+expired finishing tails acquire only immediately available gates. Closure digest
+construction and revalidation share the admitted writer's coherent transaction
+and finite SQL/work allowance, without a fresh lock-wait budget. After successful
+COMMIT, the original gates still protect receipt/sequence and selected-obligation
+publication; clock expiry cannot turn committed closure into a no-write claim.
+Failure latches local uncertainty before bounded persistence admission; unavailable
+attribution retains UNKNOWN without claiming a persisted update. Human reconcile refuses
+known active workers/completion before resource admission and uses immediate
+resource/application-lease refusal on the serving loop, including tracker/root
+registry mutexes before lookup in their SAME persistent maps. Registry mutexes
+release before the returned gates; the already-owned short transaction never
+reenters ordinary registry/writer admission. It revalidates the live owner,
+binding, root/Pause row, evidence set and physical pins under the acquired gates.
+Only already-closed original obligations use the settlement predicate branch.
+Successful reconciliation COMMIT retains its actual committed value even if
+later context/publication fails; uncertainty requires original-key readback.
+
+Version1 repository_preparation events append to existing audit rows with the
+original org/task/agent/reserved SID/invocation/refusal attempt/boot/repository
+binding; threads retain their actual INTEGER invocation and other producers their
+native occurrence/preparation identity. Contiguous bounded phases distinguish
+intent, attempted creation, actual start, consumed status, host finish, worker
+return and outer closure. Only finite command kinds/probe codes, PID/start-pin and
+opaque receipt references, safe cause and retained-effect dispositions persist.
+Closure concerns owned native preparation only: it proves neither absence of
+remote/external Git effects nor replay safety. No argv, remote URLs, stderr,
+exception text/chains, config/environment or backend
+token is public or persisted. Oversized, duplicate, missing or mismatched evidence
+refuses rather than truncating into positive proof. Each phase enforces its own
+required/forbidden facts; command/probe/request identity remains bound to original
+intent and any later supplied handle/PID/start pin must equal the original start.
+Historical omitted consumed/finished pins remain supported. Status, capture and
+receipt facts cannot contradict the original consumed result. Valid opened/intent/
+attempted/started/consumed prefixes and truthful no-start or uncertain finishes
+remain appendable and incomplete, without a fabricated closed suffix. Saved
+successful reconciliation requires the original explicit closed event as well as
+the complete coherent proof. Earlier materialized/scratch
+paths remain retained effects; closed original write intervals, native receipts,
+worker/outer closure and current ownership must all agree. A retained directory
+alone proves neither a live writer nor successful cleanup.
+
+A complete already-persisted proof can close only its selected NEW obligation
+before the ordinary Git failure handler. Current original owner, loaded/source/boot
+agreement, root/Pause/move/task/session eligibility, cooperative resource exclusion
+and the exact state digest are rechecked under the existing writer. Missing proof,
+escaping preparation interval, lost owner or persistence failure keeps sticky
+failed_cleanup/UNKNOWN before fallible attribution. No Boolean reset, retry-policy
+relaxation, historical overlay, journal rewrite or foreign reservation release is
+provided. Existing historical optional cause forms remain supported. In particular,
+TASK12738/QA12724 remain unresolved without their unavailable original proof.
+
+The permitted read is `happyranch tasks preparation-recovery TASK --org ORG --json`
+(GET /api/v1/orgs/{slug}/tasks/{task_id}/preparation-recovery). Human-only
+`happyranch tasks reconcile-preparation TASK --org ORG --from-file ABS --json`
+uses POST at the corresponding /reconcile-preparation path and the unchanged
+_require_human/bearer/native trust boundary. The closed <=16KiB version1 body has
+only operation_key, expected_state_digest, invocation_id and attempt_id. Duplicate
+or unknown keys refuse; callers provide no PID, proof, force, retry, successor or
+exception. The server derives the original tuple. Missing proof returns a retained
+first cause, missing predicates and committed=false; absent original owners are
+never reconstructed. Refusal audit persistence is distinct from settlement.
+
+Expected refusals are existing401/403, unknown-task404, invalid-request422,
+409 stale_state/active_owner/held/conflicting_history/original_owner_unavailable/
+unresolved_preparation and503 storage/control/capability/evidence unavailable.
+One key binds one exact body. After transport/COMMIT ambiguity, inspect with
+`--operation-key ORIGINAL_KEY` for strict saved readback; do not automatically
+reapply or choose a new key. Native process/receipt evidence remains private.
+Source delivery grants no live inspect/apply against historical ownership,
+deployment/restart, historical clearance, retry allocation or E2E acceptance.
+Behavioral/native/proof results are NOT RUN unless separately attributed; Python
+units remain RETIRED and general integration INCLUDING callback SKIPPED24342.
+
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active
 runners and fences detached instances against late starts. Runtime registration
@@ -100,8 +193,9 @@ and attachment admission, then joins cancelled workers and native finish before
 DB close; repeated cancellation during that join cannot skip it. No timeout
 establishes quiescence, and failed persistence retains native uncertainty.
 Existing retry/recovery IDs, frozen budgets,
-INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal, history
-backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
+INTEGER callbacks and authority-v2 are preserved. Existing lifecycle schemas/journals,
+historical bytes and retry policy stay unchanged; the bounded repository audit
+append above supplies no generic clearance writer. Behavior UNEXECUTED.
 
 Preview resolves native current names/IDs, rejects former/unknown names, uses
 only D's pure native planner and returns exact founder-only diff/digests,

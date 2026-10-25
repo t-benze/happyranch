@@ -150,6 +150,42 @@ class TaskInvocation:
     refusal_attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     launch_observed: bool = False
     preparation_cause: dict | None = None
+    _repository_preparations: dict = field(default_factory=dict, repr=False)
+    _repository_effect_intervals: list = field(default_factory=list, repr=False)
+    _repository_retained_effects: list = field(default_factory=list, repr=False)
+    _repository_worker_active: bool = False
+
+    def repository_preparation_binding(self):
+        from runtime.orchestrator.workspace_adapters import _repo_owner_binding
+        return _repo_owner_binding(self)
+
+    def repository_preparation_revalidate(self, evidence):
+        from runtime.orchestrator.launch_refusals import _current
+        from runtime.orchestrator.workspace_adapters import _repo_preparation_writer
+        with _repo_preparation_writer(self, evidence):
+            self.store.held_uncommitted(self.task.id)
+            self.orch._team_moves.revalidate_uncommitted(self.move_reservation)
+            if self.store._live.get(self.identity) is not self or not _current(self) or self.launch_observed:
+                raise RuntimeError("repository_preparation_owner_changed")
+
+    def record_repository_preparation(self, evidence, body):
+        from runtime.orchestrator.workspace_adapters import _repo_native_record
+        return _repo_native_record(self, evidence, body)
+
+    def settle_repository_preparation(self, evidence):
+        if evidence.closed:
+            return (evidence.owner is self and self._repository_preparations.get(evidence.obligation) is evidence
+                and self.move_reservation.repository_obligations.get(evidence.obligation) is True)
+        if (evidence.owner is not self or not evidence.worker_returned or evidence.uncertain
+                or evidence.pending or self.move_reservation.cleanup_failed):
+            return False
+        from runtime.orchestrator.workspace_adapters import _repo_effect_inventory
+        inventory = _repo_effect_inventory(self)
+        evidence.emit("outer_closed", complete=True, inventory=inventory)
+        from runtime.orchestrator.workspace_adapters import _repo_close_preparation
+        # The original writer owns digest/append and post-COMMIT publication;
+        # closing only this obligation needs no later DB reacquisition.
+        return _repo_close_preparation(self, evidence)
 
     @property
     def store(self) -> TaskPauseStore:
@@ -201,7 +237,20 @@ class TaskInvocation:
             from runtime.orchestrator.launch_refusals import safe_cause
             self.preparation_cause = safe_cause(stage, exc, **facts)
 
-    def failed_cleanup(self) -> None:
+    def failed_cleanup(self, *, repository_deadline: float | None = None) -> None:
+        if repository_deadline is not None:
+            # Latch BEFORE even bounded admission. A refused attribution keeps
+            # the original active reservation and cannot look clean locally.
+            self.move_reservation.cleanup_failed = True
+            from runtime.orchestrator.workspace_adapters import _repo_preparation_cleanup
+            with _repo_preparation_cleanup(self, repository_deadline):
+                row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
+                entry = self._entry(row)
+                entry["context"]["execution_unknown"] = True
+                entry["phase"] = "unknown"
+                entry["started_at"] = entry["captured_generation"] = None
+                self.store.save_journal_uncommitted(row)
+            return
         # Sticky local ownership precedes any fallible journal/COMMIT. A caught
         # save failure or rollback must never permit clean terminal release.
         self.move_reservation.failed_cleanup()
@@ -228,17 +277,19 @@ class TaskInvocation:
             if entry["phase"] in {"retry_deferred", "recovery_deferred"}:
                 entry["phase"] = "prepared"
                 self.store.save_journal_uncommitted(row)
+        from runtime.orchestrator.workspace_adapters import _repo_effect_interval
         try:
-            yield
+            with _repo_effect_interval(self):
+                yield
         except BaseException as exc:
-            self.record_preparation_cause("native_preparation", exc)
             try:
                 self.failed_cleanup()
-            except BaseException as evidence:
-                exc.add_note(f"task preparation evidence failed: {evidence!r}")
-                logging.getLogger(__name__).exception(
-                    "task %s session %s owner %s preparation evidence failed; original error preserved",
-                    self.task.id, self.session_id, self.identity)
+            except BaseException:
+                exc.add_note("task preparation evidence persistence unavailable; original error retained")
+            try:
+                self.record_preparation_cause("native_preparation", exc)
+            except BaseException:
+                exc.add_note("task preparation cause unavailable; original error retained")
             raise
 
     def _business_uncommitted(self, entry: dict) -> float | None:
@@ -598,7 +649,8 @@ class TaskInvocation:
             reservation = self.move_reservation
             move_unknown = reservation is not None and (reservation.cleanup_failed
                 or (reservation.possible_launch and not reservation.quiescent))
-            unknown = entry["context"].get("execution_unknown", False) or entry["phase"] == "unknown" or move_unknown
+            unknown = (entry["context"].get("execution_unknown", False) or entry["phase"] == "unknown" or move_unknown
+                or reservation is not None and not all(reservation.repository_obligations.values()))
             if self.unsettled or unknown:
                 if move_unknown:
                     entry["context"]["execution_unknown"] = True

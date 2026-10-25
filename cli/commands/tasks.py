@@ -31,6 +31,34 @@ def _lineage_local_error() -> None:
     raise SystemExit(2)
 
 
+def cmd_preparation_recovery(args: argparse.Namespace) -> None:
+    from runtime.infrastructure.db.tasks import repository_preparation_command, RepositoryPreparationError
+    try:
+        identifier(args.task_id)
+        body = None
+        if args.action == "reconcile-preparation":
+            path = Path(args.from_file)
+            require(path.is_absolute(), "invalid_request", 422)
+            with path.open("rb") as stream:
+                raw = stream.read(16385)
+            body = repository_preparation_command(raw)
+        client = OpcClient.from_env()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        url = f"/api/v1/orgs/{quote(slug, safe='')}/tasks/{quote(args.task_id, safe='')}/{args.action}"
+        if body is None:
+            params = {"operation_key": args.operation_key} if args.operation_key is not None else {}
+            _lineage_response(client.get(url, params=params))
+        else:
+            # One send only. Transport/COMMIT ambiguity requires inspect with
+            # this SAME operation key; never automatically reapply/new-key.
+            _lineage_response(client.post(url, json=body))
+    except (OSError, ReconciliationError, RepositoryPreparationError):
+        _lineage_local_error()
+    except (DaemonNotRunning, DaemonStateInconsistent, httpx.HTTPError):
+        print(json.dumps({"detail": {"code": "transport_unavailable", "committed": None, "readback_required": True}}))
+        raise SystemExit(1) from None
+
+
 def cmd_reconcile_failed_continuation(args: argparse.Namespace) -> None:
     try:
         path = Path(args.from_file)
@@ -1259,6 +1287,17 @@ def cmd_revisit(args: argparse.Namespace) -> None:
 
 
 def register(sub) -> None:
+    for action in ("preparation-recovery", "reconcile-preparation"):
+        command = sub.add_parser(action, help="Original-owner repository preparation evidence; no retry allocation")
+        command.add_argument("task_id")
+        command.add_argument("--org", default=None)
+        command.add_argument("--json", action="store_true", help="Responses are always JSON")
+        if action == "reconcile-preparation":
+            command.add_argument("--from-file", required=True)
+        else:
+            command.add_argument("--operation-key", default=None, help="Read back SAME original operation after transport ambiguity")
+        command.set_defaults(func=cmd_preparation_recovery, action=action)
+
     reconcile = sub.add_parser("reconcile-failed-continuation", help="Exact THR299 ordinary-owner receipt; no task allocation")
     reconcile.add_argument("task_id")
     reconcile.add_argument("--org", default=None)
