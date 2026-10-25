@@ -1150,6 +1150,19 @@ complete bytes after a failed save proceed only after this boundary succeeds;
 partial/changed bytes remain preserved and refuse without overwrite/new key.
 The CLI prints the key and retains it on uncertainty. Same-UID races remain a
 cooperative-storage limitation, not an OS isolation guarantee.
+Preview failures after key output add bounded stderr phase/category attribution
+for client construction/entry, request/response acquisition, JSON decode,
+envelope output, normalized request validation, digest/inventory/consent
+validation, exact apply-request save, final guidance output or client close.
+Categories are fixed: timeout, http_error, runtime, io, validation_value,
+key, type, exit (existing CLI SystemExit) or unknown. No exception text, dynamic
+class name, traceback, payload, credential or private path is added. A body
+failure is attributed before close; a replacing close failure is reported
+separately, while unchanged body propagation is not labeled close. Existing
+HTTP envelopes, caught families, exits, preservation guidance, successful
+preview output and other move subcommands are unchanged. A request timeout
+does not identify a server/native cause; these observations neither diagnose
+the historical failure nor prove request/effect absence or loaded source.
 Apply transport loss performs one same-key GET, never a second POST/new key.
 HTTP202/CLI3 means accepted/in-flight; only saved COMPLETE/readback/release yields
 apply HTTP200/CLI0. Refusal/repair is CLI1; local argument validation is2.
