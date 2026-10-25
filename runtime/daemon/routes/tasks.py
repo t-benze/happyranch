@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sqlite3
+import threading
 import uuid
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -142,6 +143,40 @@ def _preparation_error(exc):
     return HTTPException(503, detail={"code": "evidence_unavailable", "committed": False})
 
 
+def _preparation_registry_gate(mutex, registry, key, factory, acquire):
+    """Immediate SAME-map lookup; never retain a registry mutex for gate work."""
+    acquire(mutex)
+    try:
+        gate = registry.get(key)
+        if gate is None:
+            gate = factory()
+            registry[key] = gate
+        return gate
+    finally:
+        mutex.release()
+
+
+@contextmanager
+def _preparation_owned_transaction(db, store, task_id, root_id, before_commit, committed):
+    """Preparation only: caller owns binding/root/move/DB, with no lookup reentry."""
+    from runtime.infrastructure.db.tasks import _repository_require
+    _repository_require(not db._conn.in_transaction, "control_unavailable", 503)
+    db._conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Equivalent native writer root/row validation under the already-owned
+        # stable gate. Ordinary store.writer and registry semantics stay intact.
+        _repository_require(store.root_uncommitted(task_id)["id"] == root_id, "stale_state")
+        store.row_uncommitted(root_id)
+        yield
+        before_commit()
+        db._conn.commit()
+    except BaseException:
+        db._conn.rollback()
+        raise
+    # Publish successful COMMIT before any budget/context restoration can fail.
+    committed()
+
+
 @router.get("/tasks/{task_id}/preparation-recovery", response_model=PreparationRecoveryResponse,
     responses={code: {"description": "Bounded preparation refusal"} for code in (401, 404, 409, 422, 503)})
 async def preparation_recovery(task_id: str, request: Request, org: OrgDep,
@@ -187,6 +222,11 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
     )
     from runtime.orchestrator.workspace_adapters import _repo_refresh_lease
     import time
+    durable_response = None
+    commit_attempted = False
+    def committed():
+        nonlocal durable_response
+        durable_response = response
     try:
         _repository_require(0 < len(task_id) <= 256 and task_id.isprintable(), "invalid_request", 422)
         raw = bytearray()
@@ -202,6 +242,12 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
             # occupy this event loop or create a binding -> repository cycle.
             _repository_require(time.monotonic() < deadline and lock.acquire(blocking=False),
                 "control_unavailable", 503)
+        def before_commit():
+            nonlocal commit_attempted
+            _repository_require(time.monotonic() < deadline, "control_unavailable", 503)
+            if time.monotonic() > org.db._collection_read_deadline:
+                raise CensusReadUnavailable("census_database_deadline")
+            commit_attempted = True
         with ExitStack() as reading:
             acquire(org.db._lock)
             reading.callback(org.db._lock.release)
@@ -209,6 +255,7 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
             reading.enter_context(org.db.coherent_read_view())
             replay = org.db.repository_preparation_operation_uncommitted(task_id, body)
             if replay is not None:
+                durable_response = replay
                 return replay if replay["committed"] else JSONResponse(status_code=409, content=replay)
             view = org.db.repository_preparation_snapshot_uncommitted(task_id, body["invocation_id"], body["attempt_id"])
             store = getattr(org.db, "_task_pause_store", None)
@@ -223,7 +270,8 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
                 or getattr(live, "_repository_completion_active", False)), "active_owner")
         # An absent old owner cannot be recreated. Persist that refusal under
         # the original task, preserving every journal/result/reservation byte.
-        _repository_require(org.sessions is not None and store is not None, "control_unavailable", 503)
+        _repository_require(org.sessions is not None and store is not None
+            and store.db is org.db and store.org_slug == org.slug, "control_unavailable", 503)
         sessions = org.sessions
         native_binding = None if live is None else live.repository_preparation_binding()[0]
         with ExitStack() as stack:
@@ -245,7 +293,11 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
                         raise RepositoryPreparationError("active_owner") from None
                     lease[1]()
                     validations.append(lease[1])
-                binding = sessions.binding_lease(task_id, live.agent)
+                # The native tracker mutex can be held by the off-loop thread
+                # release worker through COMMIT. Its lookup must also refuse
+                # immediately, before taking the persistent binding gate.
+                binding = _preparation_registry_gate(sessions._lock, sessions._binding_leases,
+                    (task_id, live.agent), threading.Lock, acquire)
                 acquire(binding)
                 stack.callback(binding.release)
                 # Loaded/source and filesystem observations stay outside the
@@ -254,14 +306,17 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
                 _repository_require(current_binding == native_binding and current_db is org.db, "stale_state")
                 for validate in validations:
                     validate()
-            for lock in (store.gate(root_id), org.orchestrator._team_moves.gate, org.db._lock):
+            root_gate = _preparation_registry_gate(store._gates_lock, store._gates,
+                root_id, threading.RLock, acquire)
+            for lock in (root_gate, org.orchestrator._team_moves.gate, org.db._lock):
                 acquire(lock)
                 stack.callback(lock.release)
             _repository_require(time.monotonic() < deadline, "control_unavailable", 503)
             with org.db._memory_collection_read_budget(publication=True):
-                with store.writer(task_id, admission=True):
+                with _preparation_owned_transaction(org.db, store, task_id, root_id, before_commit, committed):
                     replay = org.db.repository_preparation_operation_uncommitted(task_id, body)
                     if replay is not None:
+                        response = replay
                         return replay if replay["committed"] else JSONResponse(status_code=409, content=replay)
                     _repository_require(store.root_uncommitted(task_id)["id"] == root_id, "stale_state")
                     _repository_require(org.sessions is sessions and org.db._task_pause_store is store, "stale_state")
@@ -302,6 +357,9 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
                             store.held_uncommitted(task_id)
                             live.orch._team_moves.revalidate_uncommitted(live.move_reservation)
                             selected = list(live._repository_preparations.values())
+                            # Only the already-closed predicate branch is legal
+                            # here; no nested writer/plain binding acquisition
+                            # or local obligation mutation before durable proof.
                             if (not selected or any(not e.closed for e in selected)
                                     or not all(live.settle_repository_preparation(e) for e in selected)):
                                 code = "unresolved_preparation"
@@ -314,6 +372,12 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
             return response
     except (RepositoryPreparationError, PauseControlError, sqlite3.Error, CensusReadUnavailable,
             OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        if durable_response is not None:
+            raise HTTPException(503, detail={"code": "evidence_unavailable",
+                "committed": durable_response["committed"], "readback_required": True}) from None
+        if commit_attempted:
+            raise HTTPException(503, detail={"code": "storage_unavailable",
+                "committed": None, "readback_required": True}) from None
         raise _preparation_error(exc) from None
 
 

@@ -748,8 +748,14 @@ publication; clock expiry cannot turn committed closure into a no-write claim.
 Failure latches local uncertainty before bounded persistence admission; unavailable
 attribution retains UNKNOWN without claiming a persisted update. Human reconcile refuses
 known active workers/completion before resource admission and uses immediate
-resource/application-lease refusal on the serving loop, then rechecks the live
-owner, binding, root, evidence set and physical pins under the acquired gates.
+resource/application-lease refusal on the serving loop, including tracker/root
+registry mutexes before lookup in their SAME persistent maps. Registry mutexes
+release before the returned gates; the already-owned short transaction never
+reenters ordinary registry/writer admission. It revalidates the live owner,
+binding, root/Pause row, evidence set and physical pins under the acquired gates.
+Only already-closed original obligations use the settlement predicate branch.
+Successful reconciliation COMMIT retains its actual committed value even if
+later context/publication fails; uncertainty requires original-key readback.
 
 Version1 repository_preparation events append to existing audit rows with the
 original org/task/agent/reserved SID/invocation/refusal attempt/boot/repository

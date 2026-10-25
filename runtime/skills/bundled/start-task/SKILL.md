@@ -689,7 +689,13 @@ obligation under the same gates without a later acquisition or deadline refusal.
 Local uncertainty latches before fallible bounded attribution; unavailable
 persistence remains UNKNOWN, never claimed persisted. Async completion stays
 off-loop and joined after actual worker return. Human reconcile refuses active completion and
-busy leases immediately, then revalidates the original owner/root/binding/evidence.
+busy leases and tracker/root registry mutexes immediately, using the SAME native
+persistent maps. It releases registry mutexes before the returned gates, then
+revalidates the original owner/root/Pause row/binding/evidence in one already-owned
+short transaction without ordinary writer/registry reentry or nested binding
+acquisition. Only already-closed obligations take the settlement predicate branch.
+Actual successful COMMIT keeps its committed value through later publication
+failure; resolve uncertainty by the original operation key.
 Each evidence phase must agree with original intent/start/consumed identity and
 facts. Historical omitted later pins and truthful incomplete prefixes/no-start/
 uncertain finishes remain supported without authorizing positive closure.
