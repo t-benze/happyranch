@@ -31,19 +31,20 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 
 ## Self-hosted typography
 
-The three `@font-face` rules in `tokens.css` load unmodified full upstream
-variable TTFs from `public/fonts/`: Hanken Grotesk normal 400–700 and
-Newsreader normal 400–600 / italic 400. Family names, weight ranges,
+The four `@font-face` rules in `tokens.css` load unmodified full upstream
+variable TTFs from `public/fonts/`: Hanken Grotesk normal 400–700,
+Newsreader normal 400–600 / italic 400, and the Sidebar brand wordmark's
+Baloo 2 normal 800 (`/fonts/Baloo2-wght.ttf`). Family names, weight ranges,
 `font-display: swap`, fallbacks and automatic optical sizing stay in the
-existing type system. These three faces use local URLs. The existing Baloo 2
-brand stylesheet in `web/index.html` still uses Google Fonts and is outside
-this replacement.
+existing type system. All four faces use local URLs; `web/index.html` loads
+no external font stylesheet.
 
-The font payload is 1,080,240 bytes before transport compression, replacing
-229,724 bytes of WOFF2 subsets (+850,516 bytes). The full original
-`HankenGrotesk-OFL.txt` and `Newsreader-OFL.txt` add 8,796 bytes alongside the
-fonts. Vite's existing public-copy step carries all five files unchanged
-into `dist/fonts/`. Immutable upstream revisions, true Git trees, blobs and
+The Hanken Grotesk and Newsreader payload is 1,080,240 bytes before transport
+compression, replacing 229,724 bytes of WOFF2 subsets (+850,516 bytes). The
+Baloo 2 variable TTF adds 683,200 bytes, for 1,763,440 font bytes in total.
+The full original `HankenGrotesk-OFL.txt`, `Newsreader-OFL.txt` and
+`Baloo2-OFL.txt` add 13,180 bytes alongside the fonts. Vite's existing
+public-copy step carries all seven files unchanged into `dist/fonts/`. Immutable upstream revisions, true Git trees, blobs and
 notice relations are factual metadata in
 [`font-assets.json`](../packaging/notice-data/font-assets.json); that record
 does not establish complete emitted or native package attribution.
