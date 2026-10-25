@@ -867,7 +867,11 @@ last-window/ABA, OS cleanup and persistence timing limits remain.
 Every Git child, including admission/control probes, uses the existing configured
 healthy HostSessionSupervisor and opaque backend lifecycle. Missing guaranteed
 containment is a pre-child stale refusal. There is no uncontained fallback,
-synthetic executor session or TaskInvocation.started observation for Git. The
+synthetic executor session or TaskInvocation.started observation for Git. Each
+child launches behind a stdin gate (`/bin/sh` reads one byte, then execs Git with
+the same PID and /dev/null stdin) so a sub-second Git exit cannot precede the
+backend's scope/limit verification; the body releases it only after `started`
+and capture setup, and EOF without the byte exits125 without running Git. The
 original Popen consumes its status; actual status and a genuine Boolean-quiescent
 host receipt with no survivors/cleanup error are separate facts. Capture stays
 private/bounded4096B with draining and at most two exit-tail reads. An admitted
