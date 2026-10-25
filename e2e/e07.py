@@ -301,6 +301,44 @@ def sql_datetime(value: str | None) -> str | None:
     return stamp[:-6]+"Z" if stamp.endswith("+00:00") else stamp
 
 
+def cancellation_transition(live: dict, frozen: dict, parent: str, worker: str) -> None:
+    """Validate the actual cancellation writes, then retain full frozen equality."""
+    def utc(value: str) -> datetime:
+        require(type(value) is str and "T" in value, "E07 lifecycle timestamp string")
+        parsed = datetime.fromisoformat(value)
+        require(parsed.tzinfo is not None and parsed.utcoffset() == timedelta(0),
+                "E07 lifecycle timestamp aware UTC")
+        return parsed
+
+    old_tasks = {t["id"]: t for t in live["sql"]["alpha"]["tables"]["tasks"]}
+    tasks = {t["id"]: t for t in frozen["sql"]["alpha"]["tables"]["tasks"]}
+    audits = [a for a in frozen["sql"]["alpha"]["tables"]["audit_log"]
+              if a["action"] == "task_cancelled" and a["task_id"] in (parent, worker)]
+    require([a["task_id"] for a in audits] == [parent, worker], "E07 lifecycle ordered cancellation audits")
+    stamp = tasks[parent]["cancelled_at"]
+    previous_audit = None
+    for task, audit in zip((parent, worker), audits):
+        old, new = old_tasks[task], tasks[task]
+        expected = dict(old, status="cancelled", block_kind=None,
+                        note="cancelled by founder: E07_CANCEL_TREE", cancelled_at=stamp,
+                        completed_at=stamp, updated_at=new["updated_at"])
+        require(set(old) == set(new) and old["status"] == "in_progress"
+                and old["cancelled_at"] is None and old["completed_at"] is None
+                and json.dumps(new, sort_keys=True) == json.dumps(expected, sort_keys=True),
+                "E07 exact cancellation field delta and key set")
+        updated, audited = utc(new["updated_at"]), utc(audit["timestamp"])
+        require(utc(old["created_at"]) <= utc(old["updated_at"]) < utc(stamp) <= updated <= audited
+                and (previous_audit is None or previous_audit <= updated),
+                "E07 positive cancellation update/audit lifecycle order")
+        previous_audit = audited
+        for sample, row in ((live, old), (frozen, new)):
+            listed = [t for t in sample["public"]["alpha"]["tasks"] if t["task_id"] == task]
+            require(len(listed) == 1, "E07 lifecycle unique public task")
+            for public in (listed[0], sample["public"][task][""]["task"]):
+                require(public["updated_at"] == sql_datetime(row["updated_at"]),
+                        "E07 lifecycle public/SQL update coherence")
+
+
 def pause_content(value: dict) -> dict:
     """Comparison copy only. Every raw response keeps its observation metadata."""
     require(isinstance(value, dict), "E07 Pause projection object")
@@ -351,8 +389,12 @@ def authenticate_public(record: dict, http: list[dict]) -> None:
         for index, path, response in entries:
             require(type(index) is int and 0 <= index < len(http), "E07 actual HTTP observation index")
             observed = http[index]
+            # Controller.api retains and returns this SAME newly parsed response.
+            # Identity proves the full join without encoding it twice; detached
+            # evidence still compares every JSON field/type/order as before.
             require((observed["method"], observed["path"], observed["status"]) == ("GET", path, 200)
-                    and json.dumps(observed["response"], sort_keys=True) == json.dumps(response, sort_keys=True),
+                    and (observed["response"] is response
+                         or json.dumps(observed["response"], sort_keys=True) == json.dumps(response, sort_keys=True)),
                     "E07 exact same-observation raw response join")
 
 
@@ -547,6 +589,7 @@ def exercise(c: Controller) -> None:
             freeze, freeze_content = frame(c,P,W)
             freeze2, freeze2_content = frame(c,P,W)
             cancelled(c,freeze,parent,worker,result)
+            cancellation_transition(second,freeze,P,W)
             require(freeze_content == freeze2_content
                     and host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"])
                     == host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
@@ -614,12 +657,7 @@ def exercise(c: Controller) -> None:
             final, final_content = frame(c,P,W)
             c.e07["final"] = final
             c.e07["anchors"].append(dict(name="final-B26",samples=[final]))
-            live_tasks = {t["id"]:t for t in second["sql"]["alpha"]["tables"]["tasks"]}
-            final_tasks = {t["id"]:t for t in final["sql"]["alpha"]["tables"]["tasks"]}
-            changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
-            for task in (P,W):
-                require({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
-                        == {k:v for k,v in final_tasks[task].items() if k not in changed_fields}, "E07 exact cancellation field delta")
+            cancellation_transition(second,final,P,W)
             cancelled(c,final,parent,worker,result)
             require(final_content == freeze_content and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
             raw, rows = witnesses(c)
