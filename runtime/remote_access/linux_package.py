@@ -161,6 +161,10 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
 
     Expiry refuses; it never unlocks a borrowed flock. A surviving package
     writer retains its own inherited descriptor even if this gate is killed.
+    Spawn-action duplicates belong only to the parent until spawn returns;
+    close them before waiting for output, without closing borrowed originals.
+    Relinquish ownership before close: Linux may release the FD even when
+    close raises, so retrying could close a reused descriptor.
     """
     if (executable not in {_MANAGED_EXECUTABLE, "/proc/self/fd/5", "/proc/self/fd/6"}
             or executable == "/proc/self/fd/5" and operation != "managed-package"
@@ -191,12 +195,14 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
         if time.monotonic_ns() >= deadline:
             raise PackageError("managed_lifecycle_deadline")
         child = os.posix_spawn(executable, [executable, operation], environment, file_actions=actions)
-        os.close(output_write)
-        output_write = -1
+        while duplicates:
+            os.close(duplicates.pop())
+        descriptor, output_write = output_write, -1
+        os.close(descriptor)
         if time.monotonic_ns() >= deadline or os.write(source_write, raw) != len(raw):
             raise PackageError("managed_lifecycle_refused")
-        os.close(source_write)
-        source_write = -1
+        descriptor, source_write = source_write, -1
+        os.close(descriptor)
         os.set_blocking(output_read, False)
         result = bytearray()
         with selectors.DefaultSelector() as selector:
@@ -224,18 +230,32 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 raise PackageError("managed_lifecycle_deadline")
             time.sleep(max(0, min(0.01, (deadline - time.monotonic_ns()) / 1_000_000_000)))
     finally:
-        if child is not None:
-            # This is our unreaped child, not a rediscovered service PID.
-            try:
-                os.kill(child, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            # No detached success or timed unlock. If kernel exit lags, the
-            # caller remains the original owner until this actual reap.
-            os.waitpid(child, 0)
-        for descriptor in (source_read, source_write, output_read, output_write, null, *duplicates):
-            if descriptor >= 0:
-                os.close(descriptor)
+        try:
+            if child is not None:
+                # This is our unreaped child, not a rediscovered service PID.
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                # No detached success or timed unlock. If kernel exit lags, the
+                # caller remains the original owner until this actual reap.
+                os.waitpid(child, 0)
+        finally:
+            remaining = [source_read, source_write, output_read, output_write, null, *duplicates]
+            duplicates.clear()
+            close_error: OSError | None = None
+            while remaining:
+                descriptor = remaining.pop()
+                if descriptor >= 0:
+                    try:
+                        os.close(descriptor)
+                    except OSError as exc:
+                        # Never retry a possibly released FD; still attempt all
+                        # other owned closes, including after kill/reap errors.
+                        if close_error is None:
+                            close_error = exc
+            if close_error is not None:
+                raise PackageError("managed_lifecycle_refused") from close_error
 
 
 def _managed_guard_probe(kind: str, descriptor: int, deadline: int) -> None:

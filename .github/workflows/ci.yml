@@ -51,11 +51,12 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed N3 PARTIAL installer + same-boot diagnostic (Ubuntu 24.04)
-    # THR228seq641 / ROOT12916: ONE publication + ONE automatic PARTIAL
+    # THR228seq648 / ROOT12936: ONE publication + ONE automatic PARTIAL
     # installer + same-boot diagnostic attempt1; allocation0/1 before publication.
-    # Seq621's publication/run1/1 FAILED40056485462; all older grants exhausted.
+    # Seq641's publication/run1/1 FAILED40153837361 at7b1038df is exhausted.
+    # Seq621 FAILED40056485462 and all older grants remain exhausted.
     # Manager owns publication/collection: report before repair/publication/rerun;
-    # no retry. Exactly ONE PR800 synchronization from public c8fdc845 after
+    # no retry. Exactly ONE PR800 synchronization from public 7b1038df after
     # fresh FULL final-head review and same-head SOURCE/STATIC QA.
     # Preserve incomplete failure/full-N3 obligations; reboot/venue DEFERRED
     # until a working flow is demonstrated, not waived. Static is no runtime proof.
@@ -69,7 +70,7 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.head.ref == 'task/TASK-6475' &&
           github.event.pull_request.base.ref == 'main' &&
-          github.event.before == 'c8fdc845a50fc7c6f2740d87480b3dec0a47548f' &&
+          github.event.before == '7b1038df750245b25018b7af0be41dceebbfc94c' &&
           github.event.after != '' &&
           github.event.after != github.event.before &&
           github.event.after == github.event.pull_request.head.sha &&
@@ -102,7 +103,7 @@ jobs:
               and head.get("ref") == "task/TASK-6475"
               and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
               and base.get("ref") == "main"
-              and event.get("before") == "c8fdc845a50fc7c6f2740d87480b3dec0a47548f"
+              and event.get("before") == "7b1038df750245b25018b7af0be41dceebbfc94c"
               and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
               and after != event["before"] and after == head.get("sha")
           )

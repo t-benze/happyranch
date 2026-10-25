@@ -1,9 +1,18 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**Current PR800 allocation — THR228seq641 / sole ROOT TASK-12916.**
-Founder seq641 authorizes **ONE publication and ONE automatic attempt1** of a
-**PARTIAL installer + same-boot diagnostic** campaign, as proposed in seq638.
-The new allocation starts **publication0/1 and automatic attempt0/1**; seq621's
+**Current PR800 allocation — THR228seq648 / sole ROOT TASK-12936.**
+Founder seq648 authorizes the local spawn-helper duplicate repair, fresh review
+and static checks, then **ONE publication and ONE automatic attempt1** of a
+**PARTIAL installer + same-boot diagnostic** campaign, retaining seq641's PARTIAL ceiling.
+The new seq648 allocation starts **publication0/1 and automatic attempt0/1**.
+Seq641's publication1/1 and automatic attempt1/1 are exhausted by actual FAILED
+run40153837361/attempt1 at `7b1038df750245b25018b7af0be41dceebbfc94c`:
+`managed_lifecycle_deadline` during helper-output waiting. Installation, installed
+AND loaded authority, startup/READY, working flow and recovery were unproved;
+zero assertion records/terminalnull, separate observer log-read loss and teardown
+gaps remain. Outer seal-call progress is a control-flow inference, not child seal
+readback. Consultant647's reproduction is their evidence, not independent proof
+here or an established sole historical cause. Seq621's
 publication1/1 and run1/1 are spent by actual FAILED run40056485462 at
 `c8fdc845a50fc7c6f2740d87480b3dec0a47548f`. Every older grant remains exhausted;
 that failure, its original AttributeError, empty records/diagnostics, terminalnull
@@ -11,10 +20,10 @@ and cleanupUNPROVED remain unchanged. The manager alone owns publication and
 collection, and must report the actual result before any further repair,
 publication or rerun. No retry or consultant three-run allowance is granted.
 The one update must synchronize same-repository PR800 `task/TASK-6475` to `main`
-from verified public before `c8fdc845a50fc7c6f2740d87480b3dec0a47548f` to a
+from verified public before `7b1038df750245b25018b7af0be41dceebbfc94c` to a
 distinct valid40hex event after equal to the actual PR head, checkout and proof
 subject, on attempt1 only. Manual, reopen, main, rerun and later-update events
-cannot renew this grant. TASK-12919 performs LOCAL source/static preparation;
+cannot renew this grant. TASK-12938 performs LOCAL source/static preparation;
 FULL independent final-head review and same-head SOURCE/STATIC QA precede the
 manager's publication. The automatic run must build that corrected subject's
 actual wheel, frozen connector and package; old package bytes are not its proof.
@@ -31,7 +40,7 @@ are expressly **DEFERRED until a working flow is demonstrated**, not waived.
 Selected614's BOTH-positive-absence-only trust default leaves all other admission
 gates intact, including actual installed AND loaded authority. Source/static
 approval proves no sealing, installer, self-heal, complete N3, N6 or release
-acceptance. Earlier allocation/hold passages retain historical scope; seq641
+acceptance. Earlier allocation/hold passages retain historical scope; seq648
 supersedes only the one publication/automatic-attempt hold stated here. No merge
 or deployment is authorized. Required lint/static gates and separate Product E2E
 policy remain unchanged. These banners describe the grant, not runtime success.
@@ -4247,6 +4256,19 @@ schema2 byte/mode identities, whole-tree OLD retain/restore and commit classifie
 are unchanged. OLD symlinks remain link objects for inventory/unlink, never file
 content sources. Actual private/public OLD images retain exact bytes AND modes;
 unknown cleanup custody retains residue without broadening permissions.
+
+The fixed lifecycle spawn owner closes every parent-only action duplicate
+immediately after successful `posix_spawn`, before request/output waiting:
+stdin, stdout, null stderr and all borrowed descriptor mappings. Each duplicate
+and early-closed pipe endpoint leaves parent ownership before close; Linux close
+errors/interruption never retry a possibly released/reused FD. Partial duplication
+or failed spawn still closes the remaining owned endpoints; request-write,
+read/selector/wait and kill/reap errors retain final descriptor cleanup, attempting
+all remaining closes on close errors and refusing by category. Child remapped
+endpoints and caller-borrowed sealed images/SAME-OFD flock originals remain owned
+by their respective child/caller. No explicit unlock, new allowance or IPC is
+introduced; the original absolute deadline,4096-byte cap plus sentinel and actual
+child kill/reap remain. This is source ownership, not observed cleanup or startup.
 
 Admitted managed package preparation, mutation/recovery/restore/rollback/uninstall
 and final validation share continuous SAME-OFD B through actual child quiescence. Bootstrap
