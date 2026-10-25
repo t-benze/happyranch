@@ -1034,8 +1034,10 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
 
     Adapters exhaust existing filtered reads or refuse. Every historical task
     has a consumer: current activity attribution, ancestry/revisit or an exact
-    structured delegation/acceptance/job key. All results/history of each such
-    owner and all direct revisits remain visible, including later candidates.
+    structured delegation/acceptance/job key. Current scratch reports stay raw;
+    their outer owners need only graph facts unless independently reached by a
+    full-history reference. Every other audit action retains full owner history,
+    results and direct revisits, including later candidates.
     Closing/atomic callers run this selection again rather than reread IDs.
     """
     intents = audit({"action": "memory_runtime_intent"}, boot=view["boot_id"])
@@ -1059,7 +1061,7 @@ def _scoped_collection_evidence(view: dict, audit: Any, task: Any, job: Any, can
         budget.record(row)
         tables[name][key] = row
         if name == "audit_log":
-            references(row["task_id"])
+            references(row["task_id"], history=row["action"] != "task_scratch_report")
             body = row["payload"]
             if isinstance(body, dict):
                 # Attribution is a dependency; arbitrary historical prose,
@@ -1579,6 +1581,60 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
               "cache_tag": sys.implementation.cache_tag}
     executable_hash(Path(python["executable"]))
     source_root = Path(__file__).resolve(strict=True).parents[2]
+    # Observe the serving objects, never import/reload replacement workflow
+    # code or construct a store merely to make coverage appear available.
+    from types import FunctionType, MethodType, ModuleType
+    selected = []
+    selected_bindings = []
+    for module_name, names in (
+            ("runtime.infrastructure.workflow_schema", (
+                "validate_workflow_schema", "_read_workflow_schema", "_read_installed",
+                "_validate_source_data", "_validate_release_database")),
+            ("runtime.infrastructure.workflow_coding_schema", (
+                "validate_coding_data", "_read_coding_data", "_validate_coding_data"))):
+        module = sys.modules.get(module_name)
+        if (not isinstance(module, ModuleType) or module.__spec__ is None
+                or not isinstance(getattr(module.__spec__, "origin", None), str)):
+            raise IdentityUnavailable("identity_workflow_module_unavailable")
+        for name in names:
+            function = vars(module).get(name)
+            if (type(function) is not FunctionType or function.__module__ != module_name
+                    or function.__qualname__ != name or function.__code__.co_qualname != name
+                    or function.__globals__ is not vars(module) or hasattr(function, "__wrapped__")):
+                raise IdentityUnavailable("identity_workflow_binding_unavailable")
+            selected.append(function)
+            selected_bindings.append((module, name, function))
+    org_module = sys.modules.get("runtime.daemon.org_state")
+    if (not isinstance(org_module, ModuleType)
+            or type(org) is not vars(org_module).get("OrgState")
+            or vars(org_module).get("validate_workflow_schema") is not selected[0]):
+        raise IdentityUnavailable("identity_workflow_validator_alias")
+    selected_bindings.append((org_module, "validate_workflow_schema", selected[0]))
+    import_module = sys.modules.get("runtime.workflows.coding_release_import")
+    if (not isinstance(import_module, ModuleType) or import_module.__spec__ is None
+            or not isinstance(getattr(import_module.__spec__, "origin", None), str)):
+        raise IdentityUnavailable("identity_workflow_module_unavailable")
+    store_class = vars(import_module).get("CodingReleaseImportStore")
+    store = getattr(org, "workflow_coding_release_import", None)
+    if (not isinstance(store_class, type) or store_class.__module__ != import_module.__name__
+            or store_class.__qualname__ != "CodingReleaseImportStore" or type(store) is not store_class
+            or getattr(store, "org", None) is not org):
+        raise IdentityUnavailable("identity_workflow_store_unavailable")
+    selected_bindings.append((import_module, "CodingReleaseImportStore", store_class))
+    for name in ("get", "import_release", "_current", "_receipt"):
+        bound = getattr(store, name, None)
+        function = vars(store_class).get(name)
+        qualname = "CodingReleaseImportStore." + name
+        if (type(bound) is not MethodType or bound.__self__ is not store
+                or bound.__func__ is not function or type(function) is not FunctionType
+                or function.__module__ != import_module.__name__
+                or function.__qualname__ != qualname or function.__code__.co_qualname != qualname
+                or function.__globals__ is not vars(import_module) or hasattr(function, "__wrapped__")):
+            raise IdentityUnavailable("identity_workflow_store_binding")
+        selected.append(bound)
+        selected_bindings.append((store_class, name, function))
+    selected_codes = [(getattr(function, "__func__", function),
+                       getattr(function, "__func__", function).__code__) for function in selected]
     functions = [org.orchestrator._run_agent, org.orchestrator._run_agent_impl,
                  org.orchestrator._launch_agent_with_scratch,
                  org.orchestrator._run_agent_launch_contained,
@@ -1589,6 +1645,7 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
                  CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
                  _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
                  _serving_revision, _check_serving_snapshot, _retain_failed_pair, _now, serving_observation, loaded_identity]
+    functions.extend(selected)
     from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report, _session_diagnostics, aware_utc
     from runtime.orchestrator.run_step import _run_step_body
     from runtime.orchestrator.run_step import run_step_impl
@@ -1774,6 +1831,21 @@ def loaded_identity(org: Any, *, budget: list[int] | None = None) -> dict:
     package_version = package_versions[0]
     root = org.root.resolve(strict=True)
     runtime_root = root.parent.parent if root.parent.name == "orgs" else root
+    if (getattr(org, "workflow_coding_release_import", None) is not store
+            or getattr(store, "org", None) is not org
+            or any(function.__code__ is not original for function, original in selected_codes)
+            or any(vars(owner).get(name) is not original for owner, name, original in selected_bindings)
+            or any(sys.modules.get(module.__name__) is not module
+                   for module in (org_module, import_module,
+                                  *(owner for owner, _, _ in selected_bindings if isinstance(owner, ModuleType))))
+            or any(type(getattr(store, name, None)) is not MethodType
+                   or getattr(store, name).__self__ is not store
+                   or getattr(store, name).__func__ is not vars(store_class)[name]
+                   for name in ("get", "import_release", "_current", "_receipt"))):
+        raise IdentityUnavailable("identity_workflow_binding_moved")
+    keys = [(row["module"], row["qualname"]) for row in code_rows]
+    if len(keys) != len(set(keys)) or len(keys) > 256:
+        raise IdentityUnavailable("identity_workflow_coverage_invalid")
     return {"source_root": str(source_root), "runtime_root": str(runtime_root), "org_root": str(root),
             "package_version": package_version, "python": python,
             "loaded_code": sorted(code_rows, key=lambda row: (row["module"], row["qualname"])),

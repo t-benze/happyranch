@@ -3369,20 +3369,50 @@ refuses; it never returns legacy. Arbitrary document content is not a family
 discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
 readers before any coding producer, including setup/import/mappings.
 
-Independent whole reference selection retains all six layouts F–J, all four
-fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
-the five-component cache key and whole historical preimages. No candidate SQL
-baseline or object filter is permitted. Failed reference construction remains
-unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
-remain workflow-free. The proven-empty J initializer primitive serves reference
-construction, validating the two completed native remote-schema marker rows and
-requiring every operational table empty; no schema object is excluded from
-comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+Workflow whole-reference selection retains F–J and adds workflow-only fifth
+history `v2-chronological-20260530` (THR320seq150, accepted ROOT12848 composite
+TASK12862/addendum, independent DESIGN-ONLY PASS12866). Its fixed whole seed is
+56585 UTF8 bytes/SHA256
+`9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7`:
+195 objects independently constructed through complete historical Database
+constructors bda5d062→1be72fe7 and the authentic thread sweep. Original S2 marker
+and `sqlite_sequence(session_token_usage,0)` remain intact; observed/live schema
+is comparison only, never constructor input. Both old preimages remain literal.
+
+Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
+name before shared cache lookup even after workflow cache fill. Workflow and
+coding-import support use the same workflow helper; six indirect coding
+consumers retain their central reader/snapshot/admission contracts. Cache identity
+remains `(layout,history,naming,Pause,team_move)`; ANY unavailable reference refuses
+even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
+name participates, without normalization or object filtering. Authority-v2 stays
+observed-only; generic Database/runtime-audit remain workflow-free.
+
+Only fifth-history J uses whole seed → current Database → unchanged complete-I
+initializer → shipped canonical coding DDL in workflow_schema_transaction →
+require full validator J → unchanged Pause/team-move/naming order → raw digest.
+Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
+retain their F/E/G/H/I paths; old families keep their construction and digests.
+The strict fresh-J initializer still requires empty native operational storage
+and valid remote markers; it correctly refuses this retained sequence row.
+Neither that guard nor any real migration changes; calling the real coding
+migration here would recurse through reference validation. Actual create-org
+still explicitly initializes I. Startup/reopen/
 enable validate, never install J; I remains usable for document work and gives
 actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
+
+Conditional operations remain on hold: separately accepted F/E→G→H→I→J
+transitions each require target inspection; submission/coding check3 differ from
+exact handoff/revision migration-required1, and refused1 stops. The first three
+writers remove only --check; coding requires --confirm-cooperative-offline.
+Exact import absence is HTTP404 coding_release_import_not_found/CLI1, never
+empty success or clearance of uncertain original file/key/body/effects/new-key
+retry. Founder save remains Admission Disabled; operational acceptance stays
+NOT RUN/open. See the ordered-coding-workflow spec's historical compatibility
+operator guidance for the host/offline/backup/owner prerequisites.
 
 The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
 /absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements
@@ -4028,9 +4058,9 @@ Task details/list/roots and thread linked-task summaries carry nullable
 `originating_thread_id`/`originating_task_id`; literal `dispatched_from_thread_id`
 keeps its creation meaning. Task grouping/column/detail use origin with literal
 fallback for older servers. The task detail rail cites the original task with a
-revisit arrow; a thread linked-task chip keeps its full status and current task ID
-on the primary line and shows a distinct origin as a labelled, linked secondary
-`Origin task: TASK-…` line (chain origin, not the immediate predecessor). CLI
+revisit arrow; a thread linked-task chip is one compact `status - TASK-…` pill
+showing only its full status and current task ID (linked to that task), with no
+secondary origin line or link (founder THR-324). CLI
 details separates `Thread`/`Origin task` from literal `Dispatched`. Summary fields are additive; the existing dict responses
 have no property schema in the path/method/parameter/status OpenAPI snapshot.
 See [the complete lineage/read contract](features-and-invariants.md#root-retry-source-thread-association).
@@ -4319,3 +4349,88 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+## Guided coding host command and Settings handoff
+
+The published human-terminal command is
+`python3 scripts/setup_coding.py --org happyranch`, followed by Settings → Coding.
+Use the actual reviewed pinned source update supplied by root; the runtime guide
+specifies bootstrap, strict flags, all-runtime maintenance and private recovery
+material. No agent may run host setup effects. Managed/unknown attribution and
+active/UNKNOWN original ownership refuse before stop/preparation; no environment
+marker stripping, credential copy or new grant is permitted.
+
+The coordinator reuses existing human `workflows coding release-import-show`
+and `release-import --from-file ABS --json`. There is no browser import button or
+startup import, and existing human server checks/CLI-only/browser/native remote
+exclusions remain. Only CLI1 with empty stdout and the exact stderr line
+`error (404): coding_release_import_not_found` means absence. Other404/409/auth/
+transport/history/receipt errors hold. A valid currently admitted saved receipt
+skips POST and is compared with any original default/explicit operation files.
+
+Fresh absence requires human confirmation of no earlier/uncertain effect,
+exclusive canonical original operation bytes, readback/fsync and the adjacent
+`.effect.json` send intent before one byte-preserving POST. Default original is
+`<daemon-home>/coding-ORG-v1-import.json`, preserving the historical
+`~/.happyranch/coding-happyranch-v1-import.json`. A saved file is not proof of no
+send. Lost output/send, crash, mismatch, existing original or later absence retains
+that original owner/key/body/digest and permits GET readback/original-owner
+reconciliation only, never automatic POST replay/new key. Private command receipts
+and backup manifest give exact commands/exits and recovery locations; uncertainty
+is not rewritten as success. After positive maintenance clearance/confirmation/
+revalidation, durable command intent precedes stop; failure/interruption retains
+observed result or unresolved intent, exact argv, actual/null exit and bounded
+stream digests at the printed existing receipt path. Lifecycle log bodies remain
+in original custody. Receipt-only INCOMPLETE.json and BACKUP-STARTED.json are not
+complete backup; only manifest.json establishes that. Failed persistence prevents
+later effects. The start-reported uv wrapper and daemon.pid Python child have
+separate authenticated start/executable/source/home/ancestry identities; status
+and serving checks use the actual daemon PID/port with repeated pair validation.
+Missing/reused/moving identity holds, independently of loaded-source coverage.
+
+Import stays held when existing serving observations cannot establish required
+loaded workflow owners or actual UI facts. Selected memory identity now observes
+twelve real already-loaded workflow objects, with OrgState alias and actual org import-store binding agreement, closed
+rows/hashes, unchanged budgets/bookends and recursive nested-code comparison.
+Missing/malformed/moving coverage or independent observation errors still hold;
+finite identity proves neither startup invocation nor transitive workflow behavior.
+Disk HEAD/health200/SPA fallback cannot fill an observation gap. No new verifier
+or attestation endpoint is supplied.
+
+After verified host/import preparation, open the actual printed
+`/orgs/ORG/settings/coding` URL, adopt current metadata, select repositories and
+sha1/sha256 formats and four distinct eligible org agents across teams, including
+an eligible final manager. Leave Admission Disabled, save and reopen; an uncertain
+save uses Check original save. The command chooses/saves/enables nothing. Real
+workflow/Founder persistence/scratch/rejection/revision/control/cross-team/two-org/
+backup/restore/reopen/rollback acceptance remains NOT RUN/open before ordinary use.
+
+Each script-originated refusal gives one instruction:
+`Send this output to engineering_manager`, with incident/stage, last completed/accepted layout and
+attempted/uncertain effects. Main-owned stdlib context survives constructor/
+argument/exec/helper/tool failures and interruption after the unchanged entry guard.
+Early detail is output-only, never a claimed saved file. Only permitted private
+receipt custody allows a bounded exclusive diagnostic, called saved after
+write/readback/fsync. Arbitrary exception/argv/environment/transport/log/file/
+credential bodies are not printed. Persistence/reporting failure retains original
+cause/effects and attempts one fallback; all sinks/kill/pre-main delivery is not
+guaranteed. No-change claims need positive pre-effect proof, not a missing
+Coordinator or RO SQLite/constructor inspection.
+
+The complete five-field preparation reference LIST is validated before use.
+Only valid empty permits the next original check; valid nonempty holds exact
+private references, with independent error/pending/null-cutoff facts retained.
+Missing/wrong containers and any malformed row refuse, without coercion/filtering.
+Closed identity validation precedes set/dict projection; all boot/source/runtime/
+org/cutoff/error checks remain. Separate memory qualification may be required;
+no epoch reset/collection acceptance occurs.
+
+Reserved relocation _pending (all four original inboxes) and historical native
+started/failed preparations remain Engineering/original-owner holds pending
+authenticated positive disposition/outer closure. Loader omission, empty storage,
+terminal labels, absent Pause/PID and completed commands cannot release them.
+No general historical ordinary-start-to-positive-outer-close reader is supplied.
+Stage evidence distinguishes custody, stop, backup, preparation subcommands/UI,
+each migration/last accepted layout, start/pair/serving and original import file/
+intent/send/receipt/readback. Failed commands never become successful from a later
+effect observation; uncertainty permits no next effect or replay/new key.

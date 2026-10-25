@@ -1504,6 +1504,10 @@ class Database(
                     budget.record(row)
                     result.append(row)
                 return result
+            # Only this invocation's coherent SQLite snapshot owns these rows.
+            # Completed global reads can overlap later action/owner queries.
+            audit_rows, covered = {}, []
+            audit_columns = [column[0] for column in conn.execute("SELECT * FROM audit_log LIMIT 0").description]
             def audit(filters, *, boot=None):
                 clauses, values = [], []
                 for key, value in filters.items():
@@ -1517,10 +1521,33 @@ class Database(
                     clauses.extend(("json_valid(payload)", "json_extract(payload, '$.boot_id') = ?",
                                     "json_extract(payload, '$.ordinal') = 1"))
                     values.append(boot)
-                rows = read("SELECT * FROM audit_log WHERE " + " AND ".join(clauses)
-                            + " ORDER BY id LIMIT ?", (*values, MAX_CENSUS_READ_ROWS + 1))
-                for row in rows:
-                    row["payload"] = _strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+                projection, reused_values = "*", []
+                if covered:
+                    # Keep the original WHERE/order/limit. SQLite evaluates the
+                    # SAME completed predicates, including NULL/type semantics;
+                    # CASE's unknown branch still fetches and decodes payload.
+                    reuse = " OR ".join("(" + clause + ")" for clause, _ in covered)
+                    reused_values = [value for _, parameters in covered for value in parameters]
+                    projection = ", ".join(
+                        "CASE WHEN " + reuse + " THEN NULL ELSE payload END AS payload" if name == "payload"
+                        else '"' + name.replace('"', '""') + '"' for name in audit_columns)
+                rows = read("SELECT " + projection + " FROM audit_log WHERE " + " AND ".join(clauses)
+                            + " ORDER BY id LIMIT ?", (*reused_values, *values, MAX_CENSUS_READ_ROWS + 1))
+                for index, row in enumerate(rows):
+                    previous = audit_rows.get(row["id"])
+                    if previous is not None:
+                        # Payload reuse saves allocation, not computation: every
+                        # reused delivery is serialized under the SAME budget.
+                        budget.record(previous)
+                        rows[index] = previous
+                    else:
+                        # Even consumer-free historical rows are decoded before
+                        # the selector may exclude them. Malformed data refuses.
+                        row["payload"] = (_strict_json(row["payload"])
+                                          if isinstance(row["payload"], str) else row["payload"])
+                        audit_rows[row["id"]] = row
+                if boot is None and "task_id" not in filters and "agent" not in filters:
+                    covered.append((" AND ".join(clauses), tuple(values)))
                 return rows
             def task(tid, *, history, children):
                 columns = "*" if history else "id, parent_task_id, revisit_of_task_id"

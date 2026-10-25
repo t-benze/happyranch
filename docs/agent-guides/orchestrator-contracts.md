@@ -3411,6 +3411,80 @@ final `continued` attempts are not pre-final work and stay with the existing
 settlement/publication reconciliation. This seam never evaluates policy,
 remints evidence, falls back to ordinary/v1 enqueue, or creates a successor.
 
+The THR308seq133/127 startup composition is private and Database-owned, with
+thin store forwarding and an explicit invocation lifetime. Discovery and exact
+getters share complete ordered root histories only across accepted coherent
+epochs on the exact Database/connection. Strict decoding of every truthy payload
+precedes general ValueError-to-None or swallowed-obligation conversions.
+General callers retain those contracts, including escaping TypeError/storage
+cases. Optional frozen scalar anchors authenticate canonical/admission/result/session/binding/reference/
+owner/boot identity and any candidate linkage; they grant exclusion only. An
+earlier sibling never authenticates another attempt. Missing admission proof
+alone neither relabels inert residue nor blocks the independent refusal writer.
+The actual completion reconstruction and `_parse_next_step`, including legacy
+fallback, still classify readable admitted blocked/non-escalate results as inert,
+with zero writes or fence. Finalized rechecks never replay a stale pre-final target.
+
+An anchored exact/read/refusal failure adds the root to both downstream fencing
+and failed-root quarantine before bounded server-category logging. Every later
+same-root exact/refusal/tail operation is skipped. A bounded pending disposition
+also excludes later same-root work without a new audit/exception category. A
+successful non-inert sibling need not quarantine later legitimate siblings;
+earlier authentic commits/tails are never retroactively rolled back. Only fresh
+committed `refused` owns the existing postcommit tails; replay/owner_lost/pending
+do not surface again. R1 OMIT adds no startup capture_failure/diagnostic writer;
+local sets/logs cannot establish durable fencing or replace existing residue.
+
+Private startup observation records the real refusal writer's BEGIN, COMMIT and
+every existing rollback outcome without changing ordinary-call authentication,
+SQL/audit ordering or cleanup. Clean pre-COMMIT failure permits unrelated roots
+only after successful owned rollback and same usable connection checks. Failed
+early cleanup stays unsafe even after later cleanup succeeds. Raised unresolved
+COMMIT, unknown/replaced/unusable connection or unexpected transaction is sticky
+unsafe. The private read composition separately retains body and view-exit
+failures, publishes no result on failed cleanup, and adds no cleanup attempt.
+Caller-owned reads join without transaction control; the refusal still returns
+transaction_owned. The full daemon sweep rejects caller-owned/unknown entry
+before Pause/workflow effects. Unsafe signaling escapes authority catches, skips
+the ENTIRE finally worktree batch and propagates through `_build_state` before
+publication/app/listener/serving. Only in-memory context reset and bounded logging
+are attempted; cleanup remains incomplete. Normal clean ordering/batching and
+BaseException propagation remain. No generic coherent_read_view/run_step change
+or live operation follows.
+
+Under the existing RLock, outside autocommit connection identity,
+main.data_version, total_changes and main.schema_version bookends enclose each
+owned coherent_read_view and a real main-table snapshot pin. Only matching clean
+closure releases hits/targets/absence/anchors or admits speculative entries.
+Within discovery, repeated roots can reuse pending complete history; every exact
+getter opens its own current closure. Moved/missing/failed tokens, local DML
+(including rollback), concurrent commits (including results-only), attachment/
+isolation/schema drift or changed ownership invalidate the entire memo. Only
+affirmative clean exit permits one uncached coherent fallback; no retry loop or
+fallback after sticky unsafe cleanup/COMMIT. Caller-owned helpers clear/bypass
+sharing and join their existing transaction without transaction control.
+
+Canonical/admission/result/session/binding/owner checks and the actual shipping
+completion/parser decisions stay fresh. No target, absence or authentication
+verdict is cached. Before real refusal and subsequent tails/effects, on failure
+and at invocation exit, all accepted/pending references are dropped. The writer
+independently authenticates inside its own transaction. Complete raw scalar row
+tuples and private decoded graphs are retained only for the closed read-only
+obligation and admitted-stage validators (through the scalar anchor builder).
+No parser/callback/formatter/writer/public consumer receives their containers;
+public audit graphs remain independently allocated.
+
+Ordinary private caps are 8 roots, 4096 retained rows/root and 8 MiB aggregate
+recursive actual object sizes, once per identity, including containers/entry/
+key/bookend metadata. LRU evicts complete entries; oversize/unsupported or failed
+accounting evaluates complete evidence uncached, never a prefix or false absence.
+Eviction and exit drop pending references too. These are retention bounds,
+excluding transient fetch/parse/traversal and SQLite native memory; no hard
+RSS/time/whole-startup bound or speedup is promised.
+S1–S3/Q1–Q5 behavior, separate discovery/exact query counts and sensitivity remain
+NOT RUN/PROOF NOT RUN without the accepted producer/barrier/downstream observer;
+ROOT12801 owns that explicit limitation.
+
 For a persisted result, the zombie reaper first invokes the real guarded
 `_consume_completion_report`. A v2 session then clears `zombie_flagged_at` only
 through `Database.consume_v2_fingerprint_and_clear_zombie`: one
@@ -4557,20 +4631,50 @@ refuses; it never returns legacy. Arbitrary document content is not a family
 discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
 readers before any coding producer, including setup/import/mappings.
 
-Independent whole reference selection retains all six layouts F–J, all four
-fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
-the five-component cache key and whole historical preimages. No candidate SQL
-baseline or object filter is permitted. Failed reference construction remains
-unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
-remain workflow-free. The proven-empty J initializer primitive serves reference
-construction, validating the two completed native remote-schema marker rows and
-requiring every operational table empty; no schema object is excluded from
-comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+Workflow whole-reference selection retains F–J and adds workflow-only fifth
+history `v2-chronological-20260530` (THR320seq150, accepted ROOT12848 composite
+TASK12862/addendum, independent DESIGN-ONLY PASS12866). Its fixed whole seed is
+56585 UTF8 bytes/SHA256
+`9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7`:
+195 objects independently constructed through complete historical Database
+constructors bda5d062→1be72fe7 and the authentic thread sweep. Original S2 marker
+and `sqlite_sequence(session_token_usage,0)` remain intact; observed/live schema
+is comparison only, never constructor input. Both old preimages remain literal.
+
+Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
+name before shared cache lookup even after workflow cache fill. Workflow and
+coding-import support use the same workflow helper; six indirect coding
+consumers retain their central reader/snapshot/admission contracts. Cache identity
+remains `(layout,history,naming,Pause,team_move)`; ANY unavailable reference refuses
+even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
+name participates, without normalization or object filtering. Authority-v2 stays
+observed-only; generic Database/runtime-audit remain workflow-free.
+
+Only fifth-history J uses whole seed → current Database → unchanged complete-I
+initializer → shipped canonical coding DDL in workflow_schema_transaction →
+require full validator J → unchanged Pause/team-move/naming order → raw digest.
+Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
+retain their F/E/G/H/I paths; old families keep their construction and digests.
+The strict fresh-J initializer still requires empty native operational storage
+and valid remote markers; it correctly refuses this retained sequence row.
+Neither that guard nor any real migration changes; calling the real coding
+migration here would recurse through reference validation. Actual create-org
+still explicitly initializes I. Startup/reopen/
 enable validate, never install J; I remains usable for document work and gives
 actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
+
+Conditional operations remain on hold: separately accepted F/E→G→H→I→J
+transitions each require target inspection; submission/coding check3 differ from
+exact handoff/revision migration-required1, and refused1 stops. The first three
+writers remove only --check; coding requires --confirm-cooperative-offline.
+Exact import absence is HTTP404 coding_release_import_not_found/CLI1, never
+empty success or clearance of uncertain original file/key/body/effects/new-key
+retry. Founder save remains Admission Disabled; operational acceptance stays
+NOT RUN/open. See the ordered-coding-workflow spec's historical compatibility
+operator guidance for the host/offline/backup/owner prerequisites.
 
 The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
 /absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements

@@ -2403,3 +2403,92 @@ prerequisite. Real workflow/Founder persistence/across-team/two-org/backup/reope
 rollback acceptance remains NOT RUN/open, required before ordinary work/activation.
 Historical checkpoints and failed roots are not rewritten or revived. Readiness
 and require_ready remain unconditionally disabled; no E2E/build/live run follows.
+
+
+## Bounded launcher ownership diagnostics — TASK12803 / ROOT12738
+
+Manager step39 accepts exact TASK12796 consolidated54165B/SHA256
+`7959be74101b32b2b54c616e1d280f8e94746cd37e4a4cc457fcaa902ce9969b`
+after independent12799 DESIGN ONLY PASS15083B/SHA256
+`d7fada62c8f09ead0795ac27af00ada7bacd2288e92fb5d8fdcbeaacf7b43724`.
+Founder THR291seq362/current DEV-G03 brief authorizes exactly run.main/command/
+cleanup/failure/export preparations, Owned initializer/sample/cleanup diagnostic
+additions and nearest README/local-ci parity. The original observe watcher is
+unchanged; no helper, observer/channel/traversal/poll/consumer/venue is added.
+See [the existing keeper/four-answer record](../e2e/README.md#launcher-ownership-evidence-task12803--root12738).
+
+Baseline-only ownership_evidence separates historical immutable successful
+allocation plus ORIGINAL complete terminal outcome from current liveness. Main's
+ORIGINAL pre-TERM entry sample may join bound_terminal_absent; interrupted/partial
+absence remains unknown, current joins require independent generation brackets.
+The watcher owns at most one active slot; whole original immediate-child harvest
+refuses partial/18th/unknown rather than clipping or sampling again. Original
+Popen numeric PID is permanently excluded from all optional wait probes, even
+unbound/reused/absent; unknown numeric identity refuses. Registered nonphase
+observations use ONE pidfd_open, ONE P_PIDFD/WEXITED|WNOHANG|WNOWAIT waitid and ONE
+close opportunity; uncertain acquisition/close disarms later opens. None/ECHILD/
+eligible exit stay distinct and establish no adoption/exclusive custody/reaping.
+Only original actual positive returns and ORIGINAL decode supply raw W/decoded E;
+conservative generation joins never transfer status to the phase.
+
+TASK12814 corrects independent FULL reviewer12810's HIGH active-slot race in
+Owned.sample only, within manager step40's existing qualified radius. In the exact
+schedule, watcher passes the old checks, main closes the phase during formatting
+(and may replace its reference), then watcher installs a candidate within time.
+The candidate is now the failure-cleanup target BEFORE store, and a post-store
+gate checks the original claim, binding/phase references and monotone active
+window. Invalidated attempts permanently refuse with null targets/stat fields;
+an interruption scrubs the installed candidate, not just the displaced claim.
+There is no later positive store/check-store gap, new lock/wait/clock or window
+reopen. Stopped-watcher-only freeze prevents provisional content escaping.
+
+The SAME R2-08/R3-05/R3-06 case/four-answer record covers closure before/during/
+after formatting through installation and post-check, phase/reference replacement,
+claim reentry, and interruption before handoff/between handoff-store/after store
+before admission. Independent FINAL bytes after stopped/ended freeze require
+refused/unbound for closure alone, refused/reentry for changed reference/claim,
+or incomplete/interrupted with null targets/stat fields (an unfinished displaced
+claim projects incomplete/incomplete). The unaffected completion before closure
+remains complete/none/bound_live with a subsequently terminal phase. Closure after
+the successful post-check follows that earlier valid store; global unavailable
+freeze remains data=null/omission. C exceptions, H actual ordering and J reopened
+FINAL bytes have separate risks; existing hosted Ubuntu EACH3.12/3.14/private-root/
+public boundaries and four answers remain. No executable test, fixture, verifier,
+seam or proof is added; this schedule is source-supported, not historically proved.
+
+Only a usable original cleanup return positively reporting watcher_stopped=true,
+ended main writes and SAME positive cleanup deadline permit ONE detached closed
+freeze. Active/unknown watcher/missing return means no live-slot inspection/copy.
+Claims precede work, complete is last, interrupted/refused/unavailable is permanent.
+SAME admitted member/absence reaches initial FAIL, eligible detailed and fallback;
+attach after ORIGINAL detailed redaction/reparse/full-context gates. No private
+salvage, late fill or export upgrade. Preparation is not persistence; actual
+replace alone supplies the effect and final COMMIT remains terminal.
+
+Ceilings: TWO<=17-total-target slots<=8192formattedB EACH, rest<=16384B and whole
+actual addition<=32768B including wrappers/indent/separators;80 stat acquisitions/
+327760B;34 pidfd/waitid/single-close opportunities;one target fd;512 aggregate
+clock checks;34 actual positive annotations/1156 comparisons;24000 cycles/432000
+token steps. All optional work charges ORIGINAL action/scenarios/cleanup ends,
+without refill/borrow/reserve/new timer/lock wait/extra join. Refusal is valid;
+cooperative accounting is not hard timing/RSS/syscall/serialization/100MiB-fit proof.
+
+All original controller/E07/closure/oracles/Health/wrappers/Popen status, raw W/P/
+object/savedTB/creator/selected/H0/saved adapter/raising interrupts/THREE controller
+publishers/capture B->[]->B vs failed[]->C/full frozen context/withholding/sticky
+failure and terminal assertions remain. Original30/SAME13/ordered56 EACH3.12/3.14/
+L1–L7/16sites/fullmaps/genuine20E05–24E07 joins/prior EACH25 gaps are retained.
+Candidate NOT RUN; PROOF NOT RUN; sensitivity/cost/serialization/100MiBfit UNPROVED.
+Actual failed venue is no capability exemption. Units RETIRED (never import/run/
+collect/restore/add); integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342/211270–271. No behavioral/test-authoring/Product/native closure PASS.
+Required clean committed-head local scripts/local_ci.sh all runs through a durable
+job, with actual command/script/cwd/runtime versions/full streams/exit/bookends;
+normal hooks/nonforce publication and OPEN non-draft PR precede exact-head TWO
+lint/static Source Boundary Lint + Web Lint(Node24). Every push renews independent
+FULL review/same-H scoped SOURCE QA/CI. Manager alone owns later guarded merge,
+exact-main TWOstatic and separate reviewed-main Product admission. No E2E/build/
+test/protected proof/dispatch or deployment is allocated to this source chain.
+Failed12753/12755/BLOCK22272/12793 REVISE and latest40047851140 FAILED/HealthFAIL11/
+EACH56UNKNOWN-null-zeroPASS/skipped0 persist; old12724 custody/effects/retirement
+stay separate OPEN/UNKNOWN. Consumed ONE362/12741 is never reused.

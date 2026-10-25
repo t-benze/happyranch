@@ -57,6 +57,117 @@ explicitly. Replays must preserve the exact result and attempt identity and
 produce no additional step audit, escalation, notification, thread follow-up,
 candidate, evaluation, child or enqueue.
 
+## Startup safety prerequisite (THR308seq133/127; ROOT12801)
+
+Private Database-owned startup composition shares complete ordered root history
+in BOTH discovery and exact getters within one explicit exact Database/connection/
+invocation lifetime. Every truthy payload uses the original strict JSON behavior.
+There is no action/stage prefilter, shortened sibling history or obligation-only
+reader. General ValueError-to-None, escaping TypeError/storage and swallowed
+obligation-read behavior remain unchanged; private strict failures are
+distinguishable before those conversions.
+
+Under the RLock, outside autocommit bookends (connection identity,
+main.data_version, total_changes, main.schema_version) enclose the existing
+owned coherent_read_view and a real main-table snapshot pin. Matching clean exit
+is required before returning a hit/target/absence/anchor or accepting retained
+entries. Discovery can share speculative complete histories among repeated roots
+within that view; those pending entries are distinct from cross-read admission.
+Each exact getter obtains a new current coherent closure, never discovery's
+snapshot. No discovery target/absence, current canonical/admission/result/session/
+binding/owner verdict or completion/parser decision is cached.
+
+Local DML including rolled-back writes, independent commits including results-only
+changes, schema/attachment/isolation drift, changed connection/ownership and
+moved/missing/failed tokens invalidate the entire memo. After affirmative clean
+owned exit and usable-connection checks, at most ONE fresh uncached coherent
+fallback may run. Failed/unresolved owned cleanup or COMMIT retains the sticky
+unsafe abort below; fallback/global None cannot sanitize it. Caller-owned helpers
+clear/bypass retention and join their transaction without BEGIN/COMMIT/ROLLBACK.
+An unexpected mid-session transaction never becomes safe caller ownership.
+Invalidate before real refusal and any subsequent tail/effect, on failures,
+uncertainty and invocation exit. Writers still independently authenticate current
+authority in their own transaction.
+
+The retained graph is complete raw immutable scalar row tuples plus private
+decoded list/dict data. Only the closed read-only obligation validator and
+admitted result-stage validator, through the scalar anchor builder, consume it
+inside locked reads. Neither mutates, retains or returns containers. Targets,
+anchors and codes contain scalars; no callback/parser/formatter/writer/public
+consumer receives aliases. Generic get_audit_logs remains uncached and allocates
+independent graphs, preserving JSON types, Unicode and empty payload behavior.
+
+Private constants bound retention to 8 root entries, 4096 rows/root and 8 MiB
+aggregate recursive actual object sizes once per identity, including raw and
+decoded containers/scalars and entry/key/bookend metadata. Admit only complete
+strict parses with supported accounting; LRU evicts complete entries to fit.
+Empty/error/partial histories are never retained. Oversize or unsupported/failed
+accounting still evaluates all evidence uncached without truncation or coercion.
+Eviction/scope exit drop accepted and pending references. Bounds exclude transient
+fetch/parse/traversal allocations and SQLite native memory, hard RSS/time or
+whole-startup work. No setting/dependency/production inspection export is added.
+
+An optional frozen scalar anchor authenticates the complete canonical admitted
+attempt, original admission audit, actual INTEGER result/task/agent/SID, sealed
+binding/release/activation/selector and owner/boot tuple, including optional
+candidate linkage. Canonical agreement, deterministic IDs and stored UUIDs alone
+are insufficient. An anchor grants exclusion only, never live-owner proof,
+refusal or owner-death authority. Absent admission evidence does not impose a
+new normal eligibility gate. Shipping `completion_report_from_result_row` plus
+`_parse_next_step`, including legacy fallback, still determines inert blocked/
+non-escalate admission with zero writes and no fence. The refusal writer keeps
+its independent current authentication and existing ownership/outcome meanings.
+Finalized/continued rechecks cannot replay discovery's stale pre-final projection.
+
+Any anchored exact/read/conversion/refusal failure installs downstream fencing
+AND failed-root quarantine before bounded logging, then skips every later
+same-root exact/refusal/tail operation. Pending also excludes later same-root
+work using its existing category. Ambiguous attribution fails task recovery
+globally when the connection is affirmatively clean. Successful non-inert
+housekeeping need not quarantine legitimate siblings. Earlier inert siblings
+cannot conceal the later fence, and earlier genuine commits/tails remain intact.
+Only the freshly committed refused outcome owns existing postcommit tails;
+already_refused/owner_lost/pending never duplicate notification/parent/thread/queue
+effects. A tail exception with unknown transaction disposition aborts startup.
+
+R1 OMIT is literal: no early `_record_hook_outcome`/capture_failure append,
+replacement diagnostic writer or extra diagnostic transaction is introduced.
+Exclusion precedes logging fixed server categories with no raw exception, history,
+prose or traceback. Logging failure cannot undo quarantine. Local sets/logs are
+not durable fencing; only existing authentic residue/commits retain durability.
+Zero new diagnostic attempts is a source requirement, not three executed faults.
+
+Startup-only observation is threaded through the real refusal writer's actual
+BEGIN/COMMIT/every rollback boundary, preserving independent authentication,
+SQL/audit ordering, cleanup and ordinary callers. Successful pre-COMMIT rollback
+plus locked same usable connection checks permits root-local recovery. Failed
+early cleanup stays unsafe even after a later successful cleanup. A raised
+unresolved COMMIT is unsafe even if later autocommit is observed. Unknown,
+replaced/unusable connection or unexpected remaining transaction is sticky unsafe.
+No authority/daemon rollback retry, reconnect or repair is added.
+
+The private read composition retains a body failure while exiting the existing
+owned coherent_read_view normally, observes cleanup separately and retains both
+causes on failure. Failed exit publishes no target/anchor. Generic read-view
+behavior is unchanged. Caller-owned helpers join the exact snapshot without
+BEGIN/COMMIT/ROLLBACK; the real refusal retains transaction_owned. Full daemon
+sweep entry rejects caller-owned/unknown connections before Pause/workflow work.
+Unsafe signaling escapes broad catches; the direct consumer rethrows before
+later effects and skips the ENTIRE finally root-worktree batch, even though
+teardown_incomplete alone would still permit DB work. It resets only in-memory
+context and retains the unsafe cause if reset/logging fails. `_build_state` and
+main propagation prevent publication/app/listener/serving after this abort.
+Normal clean ordering/batching and BaseException propagation remain intact;
+earlier genuine commits are not undone and cleanup remains explicitly incomplete.
+
+Source/static delivery is separate from operational proof. S1–S3/Q1–Q5,
+including corruption/ownership/cleanup/caller/downstream/bounds assertions and
+separate discovery/exact SELECT/fetch/strict-parse count reductions, are NOT RUN;
+sensitivity is PROOF NOT RUN without the accepted full v2 producer, deterministic
+barriers and actual downstream observer. ROOT12801 owns that limitation.
+General integration is SKIPPED24342; Python units RETIRED. No executed query
+savings, benchmark, speedup/under30s or activation claim follows from source.
+
 ## Non-goals
 
 This correction adds no DDL or migration, changes no existing column meaning,

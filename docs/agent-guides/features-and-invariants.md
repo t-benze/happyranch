@@ -2474,14 +2474,30 @@ corrective memory spec for exact values and prepared-output custody limits.
 Backend and canonical CLI JSON/text share the report core and seq480 selector:
 current boot/epoch activity, including unknown attribution and current calls on
 preboot retired SIDs, plus genuine referenced lifecycle/ancestry/retry, QA/job and
-epoch/invalidation evidence. Ancestry-only reads retain graph facts; proof and
-interval owners retain original results/history and direct revisits. Unrelated
-global same-SID records are outside admission under PR1084's supplied-liveSID
-trust limit. Related contradictions and missing required evidence still refuse.
+epoch/invalidation evidence. Ancestry-only reads retain graph facts. Selected
+current `task_scratch_report` rows stay raw and unchanged; their outer task_id
+uses graph-only ownership. Every other audit action retains full-history
+ownership. An independent lifecycle/read, QA/job/retry/probe or acceptance/control
+reference promotes the same owner to full in either discovery order, checking
+the earlier graph facts and retaining original results/history and direct
+revisits. Unrelated global same-SID records are outside admission under PR1084's
+supplied-liveSID trust limit. Related contradictions and missing required evidence still refuse.
 Historical memory_read closure uses payload.task_id while preserving outer AGENT
 scope: one complete bounded action read per capture, selecting only required
 full-history owners. Closing/atomic discovery includes late preboot reads;
 exhausted scan/transport budgets refuse rather than certify absence.
+Native audit materialization reuses payloads only inside one invocation's
+coherent SQLite snapshot. Completed window/action predicates suppress redundant
+payload fetches in later overlapping queries; the original SQL filters, complete
+columns, ordering and limits still select every matching row. SQLite NULL/type
+and JSON filter semantics stay unchanged. Every new payload is strictly decoded
+before selector exclusions, including consumer-free historical evidence; reused
+records retain their exact values and consume existing serialization/work budgets.
+SQL metadata rows/bytes/VM/time and the original shared deadline still count;
+there is no second allowance or cross-call cache. Closing, pair-attempt and
+atomic rereads start fresh. Unique evidence can still exhaust a bound and refuse;
+lower duplicate bytes alone prove neither complete acquisition nor durable health.
+
 Both report front doors remove their former all-history/task preflight. Empty or
 short no-epoch diagnostics remain CLOSED. Closing and locked publication rereads
 recompute membership and compare controls as well as records; no prepared-ID
@@ -3267,20 +3283,50 @@ refuses; it never returns legacy. Arbitrary document content is not a family
 discriminator; formats/kinds are checked in owned metadata. K2a2 must supply complete populated saved-data
 readers before any coding producer, including setup/import/mappings.
 
-Independent whole reference selection retains all six layouts F–J, all four
-fresh/v0/v2/v2-organic histories, naming0/1, Pause and team-move combinations,
-the five-component cache key and whole historical preimages. No candidate SQL
-baseline or object filter is permitted. Failed reference construction remains
-unavailable. Authority-v2 remains observed-only; generic Database/runtime-audit
-remain workflow-free. The proven-empty J initializer primitive serves reference
-construction, validating the two completed native remote-schema marker rows and
-requiring every operational table empty; no schema object is excluded from
-comparison. Actual create-org still explicitly initializes I. Startup/reopen/
+Workflow whole-reference selection retains F–J and adds workflow-only fifth
+history `v2-chronological-20260530` (THR320seq150, accepted ROOT12848 composite
+TASK12862/addendum, independent DESIGN-ONLY PASS12866). Its fixed whole seed is
+56585 UTF8 bytes/SHA256
+`9ac9a2034d63ecc502d4038b6d50f811692b8062c921c3d04115567f61ecaad7`:
+195 objects independently constructed through complete historical Database
+constructors bda5d062→1be72fe7 and the authentic thread sweep. Original S2 marker
+and `sqlite_sequence(session_token_usage,0)` remain intact; observed/live schema
+is comparison only, never constructor input. Both old preimages remain literal.
+
+Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
+name before shared cache lookup even after workflow cache fill. Workflow and
+coding-import support use the same workflow helper; six indirect coding
+consumers retain their central reader/snapshot/admission contracts. Cache identity
+remains `(layout,history,naming,Pause,team_move)`; ANY unavailable reference refuses
+even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
+name participates, without normalization or object filtering. Authority-v2 stays
+observed-only; generic Database/runtime-audit remain workflow-free.
+
+Only fifth-history J uses whole seed → current Database → unchanged complete-I
+initializer → shipped canonical coding DDL in workflow_schema_transaction →
+require full validator J → unchanged Pause/team-move/naming order → raw digest.
+Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
+retain their F/E/G/H/I paths; old families keep their construction and digests.
+The strict fresh-J initializer still requires empty native operational storage
+and valid remote markers; it correctly refuses this retained sequence row.
+Neither that guard nor any real migration changes; calling the real coding
+migration here would recurse through reference validation. Actual create-org
+still explicitly initializes I. Startup/reopen/
 enable validate, never install J; I remains usable for document work and gives
 actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
+
+Conditional operations remain on hold: separately accepted F/E→G→H→I→J
+transitions each require target inspection; submission/coding check3 differ from
+exact handoff/revision migration-required1, and refused1 stops. The first three
+writers remove only --check; coding requires --confirm-cooperative-offline.
+Exact import absence is HTTP404 coding_release_import_not_found/CLI1, never
+empty success or clearance of uncertain original file/key/body/effects/new-key
+retry. Founder save remains Admission Disabled; operational acceptance stays
+NOT RUN/open. See the ordered-coding-workflow spec's historical compatibility
+operator guidance for the host/offline/backup/owner prerequisites.
 
 The operator source `scripts/migrate_workflow_coding_schema.py --runtime-root
 /absolute/runtime --org ORG [--check] [--confirm-cooperative-offline]` implements
@@ -3883,9 +3929,9 @@ created-at ties). Summary rows also include literal dispatch and derived origin
 fields. Ordinary delegated children are not discovered through revisit traversal.
 Task UI thread grouping/column/detail use the derived origin with literal fallback
 for older servers; the task detail rail cites the original task with a revisit
-arrow, and thread linked-task retry chips keep full status plus the current task ID
-on the primary line with a labelled, linked secondary `Origin task` line for a
-distinct chain origin (never the immediate predecessor). CLI details distinguishes
+arrow, and thread linked-task chips (including retries) show only a compact
+`status - current task ID` pill with no secondary origin line or link (founder
+THR-324). CLI details distinguishes
 `Thread`/`Origin task` from literal `Dispatched`. Existing terminal follow-up routing remains unchanged: it
 uses the original root's real `thread_dispatch` audit/dispatcher, not these fields.
 

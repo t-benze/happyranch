@@ -1841,6 +1841,181 @@ cannot satisfy the case. The original retained POST is then forwarded once to
 boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
 upstream response are distinct; no killed CLI response/exit is fabricated.
 
+### Launcher ownership evidence (TASK12803 / ROOT12738)
+
+Manager step39 accepts TASK12796's consolidated54165B design/SHA256
+`7959be74101b32b2b54c616e1d280f8e94746cd37e4a4cc457fcaa902ce9969b`
+after independent TASK12799 **DESIGN ONLY PASS** (15083B/SHA256
+`d7fada62c8f09ead0795ac27af00ada7bacd2288e92fb5d8fdcbeaacf7b43724`).
+Founder THR291seq362 authorizes this ordinary bounded recovery, with HIGH/DEV-G03
+satisfied by the current manager brief. Failed12753/12755/BLOCK22272 and12793
+REVISE remain history; consumed ONE362 native retry12741 is never reused.
+
+Only baseline `run.main`/its existing `command`, `Owned.__init__/sample/cleanup`
+and existing result preparations change. `Owned.observe` remains the same one
+watcher. identity/add/register_provider/signal, all original Popen polls/consuming
+waits/signals and controller/E07/oracle/aggregate/Health/product/runtime/workflow/
+wrappers remain dependencies. No helper/method/class, new import dependency,
+observer/channel/traversal/poll/consumer/venue or executable scenario is added.
+Cancellation is unarmed. This is diagnostic source, not a reaper/custody fix.
+
+Successful immutable initial admission/root/launcher binding and actual scenarios
+allocation precede observations. Original exit/finished/seconds/interrupted
+assignments alone supply phase outcome; a complete terminal allocation survives
+normal controller absence at the ORIGINAL cleanup entry as
+`bound_terminal_absent`. Interrupted/partial absence is `bound_outcome_unknown`;
+unbound/reused/malformed never mint a terminal join. Live joins require their
+own same-generation brackets. Main alone consumes its first original cleanup
+sample before TERM; watcher can claim at most one earlier active census. The
+whole original immediate-child traversal is harvested (including the direct
+phase child), never descendants/cgroups as substitutes or first17. Partial or
+18th/unknown membership consumes/refuses the slot, without a replacement sample.
+
+The original direct-Popen numeric PID is excluded from ALL optional wait probes,
+even failed binding/reuse/absence; unknown numeric identity refuses probes. Each
+admitted registered nonphase target has at most ONE pidfd_open, ONE
+`waitid(P_PIDFD, WEXITED|WNOHANG|WNOWAIT)` and ONE close opportunity between valid
+stat brackets. None means no requested exit state, ECHILD means ineligible, and
+eligible_exit means only observed waitability at that instant. No consuming
+fallback/adoption/exclusive-custody claim follows. Uncertain acquisition/close
+disarms later opens. Actual raising TimeoutError precedes OSError. Original
+positive waitpid returns alone supply raw W; the original later decode alone
+supplies E (including negative signal exit). Generation attribution requires a
+unique eligible precleanup pin and fully accounted consuming sequence; otherwise
+unknown, with no phase-status transfer. Original interrupted custody risk remains.
+
+Before any acquisition main selects an independent unavailable disposition.
+Only its usable ORIGINAL cleanup return with watcher_stopped=true, ended main
+writes and the SAME positive original cleanup deadline admit ONE detached freeze.
+Active/unknown watcher/missing return permits no mutable-slot inspection/copy.
+Claim precedes work; complete is last; interruption/refusal/exhaustion/format
+failure is permanent, with no export retry/upgrade/late fill. The same admitted
+member/absence feeds initial FAIL, eligible detailed and fallback preparations.
+Detailed ORIGINAL redaction/reparse/full-context gates precede safe member attach;
+redact/publish remain unchanged. Preparation is not persistence. Actual replace
+supplies that effect, and final COMMIT remains terminal.
+
+Closed local member `ownership_evidence` has exactly `availability,reason,data`.
+Unavailable has data=null and a closed freeze reason; available has reason=none
+and exactly binding/phase/active/precleanup/returns/freeze. U is exact int0..2^64-1,
+P exact int1..2^64-1; D is the ORIGINAL ASCII [1-9][0-9]{0,19} string (run IDs,
+attempts/start ticks), H lowercase40-hex, T exact finite int/float0..2^53-1,
+E signed32-bit decoded exit, W unsigned32-bit raw wait status. Bool never counts
+as a number; original Booleans remain exact bool. Null is literal null. No raw
+exception/stat/comm/argv/env/path/context/credential text is admitted.
+
+| Record | EXACT keys and domains/null rules |
+| --- | --- |
+| binding | `state,reason,source_sha,source_tree,event,run_id,run_attempt,exercise,root,launcher,subreaper`. state=`unbound|bound|refused`; reason=`none|unreached|incomplete|interrupted|mismatch|malformed|budget`. A bound record requires reason none, H source_sha/source_tree, event=`schedule|workflow_dispatch`, D run_id/run_attempt byte/type-equal to ORIGINAL admission, exercise=`baseline`, root and launcher below, subreaper=`initialized`. Non-bound record has all nine identity/setup fields null, reason non-none; no later reconstruction. Full admission still independently checks repository/workflow/ref/cron; no new permissive admission. |
+| root | EXACT `device,inode`, both U with inode>0, from ORIGINAL root_info/root_identity, not pathname or a new stat. |
+| pin | EXACT `pid,start`: P and D. Launcher pin comes from same-buffer independent launcher bracket; controller pin from actual original Popen PID, owner.add generation and initial controller bracket. |
+| phase | `name,allocation_state,reason,controller,entered,deadline,outcome,exit,finished,seconds,interrupted`. name=`scenarios`; allocation_state=`unbound|bound|refused`; reason uses binding reasons. Bound requires controller pin, T entered/deadline with entered<=deadline, exact original cap/min relation; unbound/refused has these three null. outcome=`unreached|partial|terminal|interrupted|malformed`. exit=E/null; finished/seconds=T/null; interrupted=exact bool/null, only from ORIGINAL assigned fields. terminal requires bound, E exit, finished>=entered, seconds=finished-entered, interrupted=false and fully completed original finalization. interrupted requires bound, exit=null, complete valid finished/seconds and interrupted=true. partial copies only valid actually assigned exit/finished/seconds/interrupted, leaving missing fields null; it supplies no terminal join even if exit82 was assigned. Unreached has those four null. Malformed nulls those four and supplies no outcome claim; no coercion. A valid original null exit with interrupted=false is partial, not successful terminal. |
+| census slot (active and precleanup have same shape) | `state,reason,owner,entered,finished,deadline,join,launcher_a,launcher_b,controller_a,controller_b,targets`. state=`unattempted|claimed|incomplete|refused|complete`; owner=null or `watcher|main`; times T/null. join=`unknown|bound_live|bound_interrupted_live|bound_terminal_absent|bound_terminal_observed|bound_outcome_unknown|never_bound|reused|mismatch|malformed`. A complete slot has reason none, full times with entered<=finished<=deadline, valid launcher brackets and whole finite targets array. Unattempted has reason unreached, owner/times null, join unknown, four stat fields null and targets=null. Claimed/incomplete/refused have non-none reason, targets=null and no admitted positive stat fields; owner and only valid reached times may survive. At freeze an unfinished claimed slot projects as incomplete, never promotes itself. Refused join may retain only its closed classification; no partial census rows. |
+| stat (four context fields and target a/b) | EXACT `outcome,at,start,state,ppid`. outcome=`observed|absent|unreadable|interrupted|empty|partial|oversized|malformed|unattempted`; at=T for actually reached read, otherwise null. Observed requires D start, P or0 ppid, state one of `R,S,D,Z,T,t,W,X,x,K,P,I`. All other outcomes have start/state/ppid=null. One complete LF-terminated<=4096B stat buffer, leading requested PID, final comm-closing delimiter and sufficient tail fields; start/state/ppid come from SAME tail19/0/1. Acquisition max4097B detects overflow; no raw text copied. Only ENOENT/ESRCH means absent at that read. |
+| target | `pid,start,kind,registration,a,b,wait,close`. pid=P; start=D original registered generation or null; kind=`direct_phase|phase_number_excluded|nonphase`; registration=`matched|unregistered|reused`; a/b are stat/null. Deduplicated in original launcher-child encounter order, at most17 TOTAL immediate children including direct phase. direct_phase means original bound PID/generation; phase_number_excluded means same original direct Popen numeric PID but unavailable/different generation. BOTH are excluded from all optional wait probes. Nonphase requires not that numeric PID and a current matching registered pin before probing. No descendant-only or cgroup-only membership substitutes for launcher-immediate-child census. |
+| wait | EXACT `state,reason,outcome,at,code,status`. state=`unattempted|claimed|incomplete|refused|complete`; outcome=`unknown|no_exit_state|ineligible|eligible_exit`. at=T only for reached optional call; otherwise null. code=null or `CLD_EXITED|CLD_KILLED|CLD_DUMPED`; status=null or exact nonnegative signed32-bit int. Positive CLD_EXITED status0..255; KILLED/DUMPED status>0. Only complete eligible_exit has code/status non-null; it requires matching si_pid, SIGCHLD, valid brackets and successful single close. Complete no_exit_state has reason none, code/status null (Python None). Complete ineligible has reason echild, code/status null (ChildProcessError/ECHILD). Unattempted reason excluded/not_registered/unreached/close_unknown; claimed/incomplete/refused outcome unknown and code/status null. No `None` as live/absent/adopted and no ECHILD as another named owner. |
+| close | `not_opened|closed|unknown`. Exactly one close attempt for each successfully obtained descriptor; unknown never becomes a qualified positive. No descriptor number exported, transfer, fallback or retry. |
+| returns | `state,reason,outcome,rows,coverage`. state=`unattempted|claimed|incomplete|refused|complete`; outcome=`unreached|returned|interrupted|unknown`; coverage=`none|all_reached|partial`. Unattempted is reason unreached/outcome unreached/coverage none/rows=null. Claimed or refused has outcome unknown, non-none reason, coverage none and rows=null. Complete requires reason none/coverage all_reached/outcome returned and array<=34 of records below; [] is valid ONLY for a completely annotated original path with no positive returns. Incomplete requires non-none reason, coverage partial, outcome interrupted if known else unknown, and actual earlier rows or null if none recorded. Missing work is never represented by complete/[]. Original reaped list/behavior unchanged. |
+| return row | `index,pid,wait_status,exit,generation,join,slot,target`. index=int1..34 original positive-return order; pid=P actual waitpid return; wait_status=W actual raw return; exit=E/null ORIGINAL existing decoded value, null if assignment not reached. generation=D/null; join=`qualified|unknown`; slot=null or `precleanup`; target=null or index0..16. Qualified requires a unique preceding precleanup complete eligible_exit pin and fully accounted uninterrupted consuming sequence with no intervening same-PID consumption/reallocation; generation/slot/target identify that pin. Otherwise generation/slot/target=null and join unknown. Never qualify solely by PID/status equality, registry history, later absence or a matching decoded exit. |
+| freeze | EXACT `state,watcher,writes`; fixed `frozen,stopped,ended` only. These assert original watcher termination positively observed and optional main writes ended BEFORE projection. They do not assert owner cleanup.ok, product closure or persistence. |
+
+Closed reason selection: binding/phase reasons are as above. Census and wait reasons are ONLY `none,unreached,incomplete,interrupted,excluded,not_registered,unbound,mismatch,reused,malformed,absent,unsupported,io_error,no_budget,overflow,reentry,off_owner,echild,close_unknown,cycle_limit`. Return reasons are ONLY `none,unreached,incomplete,interrupted,malformed,annotation_limit,no_budget`. Freeze/unavailable reasons are ONLY `not_frozen,watcher_active,watcher_unknown,main_writes_open,interrupted,no_budget,malformed,overflow,format_refused`. None is the enum spelling `none`, never JSON null for a reason. Applicable reason/state joins above are closed: no positive payload with a refusal reason. An impossible joined shape rejects the whole optional member into unavailable/malformed or omission, never repairs one field. Unknown means no supported claim, not an unlisted enum.
+
+Cross-record admission: available requires bound binding; phase controller pin and original times are the same immutable allocation used by both slots. Active/precleanup complete owners are watcher/main respectively; their deadlines equal ORIGINAL scenarios/cleanup ends. Every admitted stat/wait time lies in its slot interval; launcher_a<=target work<=launcher_b, and target a<=wait<=b when wait actually ran. Launcher A/B starts equal binding.launcher.start; target matched brackets equal its original start and both PPIDs equal binding.launcher.pid for a measured current immediate-parent claim. Bracket change yields unknown/refused target wait, not positive eligibility. Complete active requires original phase still active through its commit, and entered>=phase.entered. A subsequently terminal phase can coexist with that earlier bound_live active slot; it is not a current-live claim at freeze. Precleanup starts at original cleanup entry and follows any reached original phase finished time. Controller current-live joins require same-generation nonterminal A/B; terminal-absent is the explicit exception requiring complete original terminal assignment, with absence but no live bracket. Unbound phase has outcome unreached/partial/malformed only and cannot yield complete slots. All noncomplete slot stat fields are null; claimed state is internal and becomes incomplete at frozen projection. Within a complete census, unattempted target wait is unknown/null-code/null-status; target calls interrupted mid-work cannot masquerade as complete. PID order, distinctness, source/root/run/attempt/instance and immutable-reference equality are mandatory, without new syscalls.
+
+
+TWO <=17-total-target slots <=8192 formatted UTF8 bytes EACH; rest<=16384B;
+whole actual optional addition<=32768B including key/wrappers/indent/separators.
+Admission uses indent=2 at attachment depth and refuses rather than clipping.
+At most80 stat acquisitions<=327760B,34 pidfd/waitid/single-close opportunities,
+one optional target fd live,512 aggregate clock checks,34 actual positive-return
+annotations/1156 bounded pin comparisons,24000 existing-cycle checks/432000
+bounded token steps. All work charges ORIGINAL action/scenarios/cleanup ends;
+no refill/borrow/new timer/lock wait/extra join. These cooperative bounds are NOT
+hard timing/RSS/syscall/serialization or100MiB-fit proof.
+
+#### Affected finite cases and four answers
+
+Environment for ALL rows is the EXISTING authorized disposable hosted Ubuntu baseline launcher/controller, synthetic org/private root, genuine public CLI/browser/provider boundaries, EACH Python3.12/3.14; no new fixture/venue/seam/executable test. C=actual raw exception/object/savedTB/creator/selected/raising; H=actual same-invocation generation/status/custody/timing/file effect; J=independent reopening of ACTUAL FINAL safe bytes. J cannot prove private C or unrecorded H. Each row extends the named existing keeper, not a new parallel test.
+
+| Keeper / finite input and ORIGINAL action | Exact independent FINAL expectation / distinct risk |
+| --- | --- |
+| R1-07/R1-08/R2-08, R3-05/R3-06: complete allocation -> ORIGINAL terminal assignments -> controller normally absent at original entry | If stopped/admitted, phase terminal with actual exit (e.g.82), precleanup complete/none/bound_terminal_absent, controller absent, independent target waits eligible/no_exit_state/ineligible as actually observed; no current-live or product PASS. H real original poll/reap vs J historical join. |
+| SAME binding/return keepers: bound interrupted controller still live; bound interrupted/partial outcome absent; never-bound before/after Popen/add; terminal assignment interrupted after exit/before finished/interrupted | Live bracket gives bound_interrupted_live with exit=null; absent interrupted/partial gives bound_outcome_unknown, never terminal. Never-bound gives refused/unbound/never_bound, targets=null; internal original direct numeric PID always excluded. Partial retains only actual typed assignments. Global active/unknown watcher still yields data=null/omission. C original interruption differs from H custody and J null joins. |
+| R1-07/R1-08/R2-08: reused controller/launcher, foreign source/run/attempt/root/Owned, malformed Boolean PID/start/run/time/exit, changed immutable allocation | refused/reused/mismatch/malformed as applicable; launcher failure cannot admit target census. No string conversion or later binding. Exact original admitted D strings survive valid projection. J rejects impossible joined shape; H original generation observation is separate. |
+| R3-05/R3-06/R2-08: watcher enters sample before main entry, during main entry marker, after refused original entry; later cleanup samples; active closure/replacement/reentry across formatting and slot installation, including interruptions | Watcher can own only one active slot; precleanup owner=main only. Original main entry interruption/refusal consumes precleanup; no later complete replacement, no watcher stealing. After a stopped-watcher freeze, an invalidated active attempt has refused/unbound (closure alone), refused/reentry (changed immutable reference or revoked claim), or incomplete/interrupted, with targets and all four stat fields null; an unfinished displaced claim projects incomplete/incomplete. A valid completion entirely before closure remains complete/none/bound_live even with a subsequently terminal phase. H actual pre-first-signal/closure/store ordering differs from J final slot fields; C original raising/exception handling remains separate. |
+| E07.cancel-cascade-browser/R3-05: registered immediate child vs descendant-only/nonchild; Python None; ECHILD; eligible EXITED/KILLED/DUMPED; unregistered/absent/reused/unsupported/I/O/mismatched result; phase PID in EVERY branch | Wait complete/no_exit_state/null-null vs complete/echild/ineligible/null-null vs complete/none/eligible_exit/actual code-status; unknown/refused otherwise. Phase wait always unattempted/excluded, even reused numeric PID or terminal absence. Same-generation Z still blocks original E07 closure. H non-consumption/current eligibility is distinct from J enums and from adoption/exclusive custody. |
+| R1-11/R2-01/R2-03/R2-04/R2-08/R3-06: claimed/partial traversal, missed task,18th distinct child, reentry, off-owner, cycle exhaustion; deadline during read/parse/commit | incomplete/interrupted or refused precise reason, targets=null, one attempt consumed; no first17/late nicer sample. Earlier other completed slot may survive ONLY stopped-watcher freeze. C original raw winner/TB/selected and raising TimeoutError precedence persist; H bounded work; J incomplete is not empty-success. |
+| R3-05/R3-06: original zero/ECHILD,1..34 positive raw returns, negative decoded signal exit, interruption before/after existing decode/annotation,35th return, stale/no eligible pin or unaccounted sequence | Only actual positive rows, original W distinct from E (e.g. signal status vs -15). Null decoded exit if assignment unreached; coverage incomplete/partial on gaps/limit, never success by empty rows. Qualified generation only unique precleanup eligible pin+accounted sequence, otherwise unknown/null joins. No phase exit filled from cleanup reaped rows. H actual consumption vs J provenance; preexisting custody risk retained. |
+| R1-11/R2-08/R3-06/X-01: original watcher stopped/active/unknown, errors but stopped, main writes open; real interruption/exhaustion/malformed/overflow during freeze | Stopped+ended may give available even cleanup false; active/unknown/open writes -> exact unavailable reason/data=null without mutable inspection. Interrupted freeze permanently unavailable/interrupted or omission; no late completion/export upgrade. Original watcher errors continue. C propagation/H thread lifetime/J detached consistency differ. |
+| R3-01/R3-09/X-01: stopped watcher and admitted data -> REQUIRED:U, failed capture/failed[], invalid/missing full context, later root loss/export ValueError; counterpart with unavailable freeze | ACTUAL safe final FAIL may contain SAME available member or fixed unavailable/absence. variants={}, skipped0, false flags, sticky incomplete; all private detail remains withheld. No context repair/partial PASS or universal delivery. C capture[]/selection, H root/publication, J safe noncredit are distinct. |
+| R3-07/X-02: slot8192/rest16384/whole32768 boundary and one byte over after actual wrappers/indentation; unavailable form not admitted; original serialization/write/replace interruption at each of three paths | Format overflow -> permanent unavailable/format_refused or whole omission, never clipped/retried. Every actually committed initial/detailed/fallback contains equal ownership member/absence. If first publication never commits, result may be absent; later failure can leave initial bytes. Final COMMIT terminal, no postcommit check/rescue. H actual replace vs J final bytes; no persistence inferred from a prepared object. |
+| E07.cancelled-late-cli / E07.cancel-terminal-unchanged | Original full1s/<=50ms negative window, delayed409/dead downstream, genuine PID/groups/pending, public/SQL/task/result/audit/lineage and final screenshots unchanged. Phase-active interval is not E07 gate interval; compare genuine safe retained E07 pins/times before any interval claim, otherwise UNKNOWN. No diagnostic buys time or replaces content. |
+
+TASK12814 extends that SAME R2-08/R3-05/R3-06 concurrency case, following
+independent FULL reviewer12810's HIGH finding. Exact schedule: watcher passes
+active/reference/claim checks; formatting yields; main closes active_open before
+original finalization and may replace evidence_phase at cleanup; watcher resumes
+within the original deadline and installs its candidate. Installation alone is
+provisional: the post-install gate detects the monotone closure/replacement and
+permanently refuses the installed candidate with null targets/stat fields.
+This gate performs no later positive store, so it leaves no check/store gap.
+The failure target is rebound to the candidate BEFORE installation: interruption
+after that handoff/store cannot scrub only the displaced claim and leave a
+complete candidate. Before handoff, the consumed original claim remains null;
+freeze projects any unfinished claim as incomplete/incomplete. Before successful
+admission, a propagated interruption clears the current failure target to
+incomplete/interrupted. No later sample retries or upgrades either disposition.
+
+Review the finite boundary orderings within these existing cases: closure before
+formatting, during formatting, after formatting/last old checks but before store,
+and after store but before the post-install gate; phase/reference replacement or
+claim reentry before/during that interval; interruption before candidate handoff,
+between handoff/store, and after store before admission; and the unaffected
+success with unchanged claim/references and open phase through admission, followed
+by later closure. Closure after a successful post-install check necessarily
+follows an already valid installation; it does not erase that historical success.
+No window reopen/reference restoration/claim revival exists in this invocation.
+An active/unknown watcher still forbids live inspection altogether. J independently
+reopens actual FINAL result bytes after original stopped/ended freeze and expects
+the exact refusal/incomplete/nulls above or the unaffected earlier bound_live
+completion; all three existing preparations use that SAME frozen disposition.
+If global freeze is unavailable/omitted, J expects data=null/the same absence,
+not fabricated slot detail. H ordering and C interruption evidence cannot be
+inferred from J alone. These are unexecuted finite cases, not a historical
+occurrence claim or a new executable concurrency harness.
+
+Four authoring answers for EACH affected existing keeper and ALL its finite subinputs above (F1 and F2 jointly):
+
+| Existing keepers | 1 Observable contract | 2 Credible regression | 3 Nearest keeper / nonduplication / distinct risk | 4 Test-only production seam |
+| --- | --- | --- | --- | --- |
+| R1-07/R1-08/R2-08 binding, terminal-absent/interrupted/unbound/reuse/partial/type inputs | Final phase allocation/outcome/current observation joins have the exact selected nulls/states; normal reap preserves historical terminal join. | Require live stat after genuine poll, infer unbound phase from registry, coerce Boolean/string IDs, fill partial finalizer or swap invocation. | Existing admission/stat pins own source and parentage, not baseline allocation plus original-terminal absence. Extend their table; H genuine pin/poll differs from J selected joined fields. | NO; existing qualified owners only. |
+| E07.cancel-cascade-browser/R3-05 immediate census/eligibility and direct exclusion | Final distinctions unattempted/None/ECHILD/eligible; unchanged original generation closure and real Popen exit. | Drop WNOWAIT, probe direct PID on unbound/reused/absent branch, accept None as live/closed, treat nonphase as adopted. | Existing stat keeper lacks wait-state meaning; direct Popen keeper owns its exit, not another child's eligibility. H non-consumption differs from J representation; no duplicate reaper case. | NO. |
+| R3-05/R3-06 original-return/terminal/interrupted/partial/limit inputs | Authentic W/E and conservative generation join; incomplete coverage never empty-success, no phase-status transfer. | Decode raw W as exit, use PID equality as generation, reuse reap exit for phase null, annotate unseen return or reset limit. | Original cleanup keeper owns consuming wait, failure receipt omits detailed attribution; extend its projection. H actual consumption cannot be proven by J numeric equality. | NO. |
+| R1-11/R2-01/R2-03/R2-04/R2-08/R3-05/R3-06 claims/original-entry/reentry/budgets/freeze-interruption inputs, including TASK12814 formatting/store/closure orderings | Original C exception/TB/creator/selected/ends unchanged; main-only entry, consumed incomplete/refused claims and one permanent freeze disposition in FINAL bytes. R2-08/R3-05/R3-06 J expects invalidated active attempts refused/unbound or reentry, interrupted attempts incomplete, all with null targets/stat fields; an unchanged earlier completion survives later closure. | Let watcher steal entry, refill >17/partial slot, reset claim/end, catch TimeoutError as ordinary OSError or upgrade interrupted freeze; move the final gate before store or clear only the displaced claim on a post-store interruption. | EACH25 existing R2-01 inputs own precedence, R2-06/07 own capture[]; R2-08 phase binding and R3-05/06 entry/freeze own this new ordering gap, so extend them together. C propagation, H actual phase/store/thread ordering and J final refusal are distinct; no duplicated wait/reaper test. Same existing hosted Ubuntu/private-root/genuine public boundaries on EACH3.12/3.14; timing/scheduling remains an unexecuted environment risk. | NO; no new export, flag, fixture, callback, verifier or injection seam. |
+| R3-01/R3-09/X-01 watcher stopped/active/unknown, withheld-context/root-loss/REQUIRED:U/three-path inputs | Safe detached SAME member only under stopped+ended; otherwise fixed unavailable/omission. Existing FAIL/withholding/capture[] persist. | Shallow-copy live slots, infer stopped from join timeout, hide behind COMPLETE reader, copy private text/context, reset sticky fail. | Existing collection/context keepers own withholding, X-01 owns same-invocation composition; current fallback omits ownership detail. C[]/H watcher-root/J sanitization differ; do not duplicate precedence tests. | NO. |
+| R3-07/X-02 format/three-publication/late-write/terminal-commit inputs | Whole formatted ceilings and equal admitted member in actual initial/detailed/fallback; only real replace establishes persistence. | Measure compact payload only, clip first17, rebuild at export, let late writes alter fallback, rewrite after COMMIT. | Existing12649 publisher keeper owns terminal commit; extend additive-content survival/format refusal there, no new publisher. H file effects differ from J bytes. | NO. |
+
+Original30/SAME13/ordered56 EACH3.12/3.14/L1–L7/16 browser sites/full maps and
+genuine20E05–24E07 joins/prior EACH25 R2-01/X-01 gaps remain. Raw W/P/object/
+savedTB/creator/selected/H0/saved adapter, raising interruptions, THREE controller
+publishers, capture B->[]->B versus failed[]->C, frozen full context/withholding/
+sticky failure, Z-blocking/groups/pending/full1s/<=50ms/late409/dead downstream/
+public-SQL-task-result-audit/screenshots assertions are unchanged.
+
+**Candidate NOT RUN; PROOF NOT RUN; sensitivity/cost/serialization/100MiB-fit
+UNPROVED for EACH affected input.** The actual failed venue is not a capability
+exemption. No new verifier/harness/fixture/venue/protected campaign is added.
+Python units RETIRED; integration INCLUDING callback/lifespan/SessionTracker
+SKIPPED24342/211270–271. Static checks prove no behavior or test-authoring PASS.
+Latest assessed40047851140 stays FAILED/HealthFAIL11/EACH56UNKNOWN-null-zeroPASS/
+skipped0;972 prior stat samples are PARTIALLY EXECUTED, COMPLETE reader unreached.
+Old12724 custody/effects/retirement stay separate OPEN/UNKNOWN; consultant stand-in
+unallocated and PR1180 cause/adoption/wait/reap/exclusive custody UNPROVED.
+Independent FULL review/same-final-H scoped SOURCE QA, normal hooks/nonforce,
+exact-head TWOstatic and later manager guarded merge/exact-main TWOstatic remain.
+No Product run/dispatch/merge/deploy/restart or historical reconciliation follows.
+
 ### E07 process-state observations (TASK12784 / ROOT12738)
 
 Manager step31 accepts TASK12782's exact50050B design/SHA256

@@ -513,6 +513,13 @@ def main() -> int:
     staging_incomplete = closure_incomplete = cleanup_incomplete = export_incomplete = False
     detail_complete = False
     final_result_committed = False
+    # Detached fallback is selected before any optional acquisition. It never
+    # references watcher memory; cancellation receives no diagnostic member.
+    ownership_evidence = (dict(availability="unavailable", reason="not_frozen", data=None)
+                          if args.exercise == "baseline" else None)
+    ownership_frozen = False
+    ownership_cleanup_returned = False
+    ownership_budget = dict(clocks=0, stats=0, cycles=0, tokens=0)
 
     def latch_launcher(name: str, error: BaseException | None = None, *, category: str = "other") -> None:
         try:
@@ -595,7 +602,56 @@ def main() -> int:
         root_identity = (root_info.st_dev, root_info.st_ino)
         for name in ("home", "config", "cache", "data", "tmp", "daemon", "client", "coord", "bin", "witness", "raw"):
             (root / name).mkdir(mode=0o700)
-        owner = Owned(root)
+        # Independent same-buffer launcher reads bracket ORIGINAL Owned setup.
+        # The original initializer/signal capability check is unchanged.
+        launcher_reads = []
+        for bracket in (0, 1):
+            if args.exercise == "baseline":
+                ownership_budget["clocks"] += 1
+                at = time.monotonic()
+                observation = None
+                if at < action_end:
+                    ownership_budget["stats"] += 1
+                    try:
+                        with open(f"/proc/{os.getpid()}/stat", "rb", buffering=0) as stream:
+                            raw = stream.read(4097)
+                    except TimeoutError:
+                        raise
+                    except OSError:
+                        pass
+                    else:
+                        if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
+                                and raw.startswith(str(os.getpid()).encode("ascii") + b" (") and b") " in raw):
+                            tail = raw.rsplit(b") ", 1)[1].split()
+                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
+                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
+                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
+                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
+                                observation = tail[19].decode("ascii")
+                launcher_reads.append(observation)
+            if bracket == 0:
+                owner = Owned(root)
+        if args.exercise == "baseline":
+            owner.evidence_budget = ownership_budget
+            ownership_budget["clocks"] += 1
+            binding_at = time.monotonic()
+            if (type(os.getpid()) is int and 0 < os.getpid() < 2**64
+                    and launcher_reads[0] is not None and launcher_reads[0] == launcher_reads[1]
+                    and binding_at < action_end
+                    and all(type(receipt.get(key)) is str and len(receipt[key]) == 40
+                            and all(c in "0123456789abcdef" for c in receipt[key])
+                            for key in ("source_sha", "source_tree"))
+                    and receipt["event"] in ("schedule", "workflow_dispatch")
+                    and all(type(receipt.get(key)) is str and 1 <= len(receipt[key]) <= 20
+                            and receipt[key][0] in "123456789" and all(c in "0123456789" for c in receipt[key])
+                            for key in ("run_id", "run_attempt"))
+                    and all(type(value) is int and 0 <= value < 2**64 for value in root_identity)
+                    and root_identity[1] > 0):
+                owner.evidence_binding = dict(
+                    state="bound", reason="none", source_sha=receipt["source_sha"], source_tree=receipt["source_tree"],
+                    event=receipt["event"], run_id=receipt["run_id"], run_attempt=receipt["run_attempt"], exercise="baseline",
+                    root=dict(device=root_identity[0], inode=root_identity[1]),
+                    launcher=dict(pid=os.getpid(), start=launcher_reads[0]), subreaper="initialized")
         env = {"HOME": str(root / "home"), "XDG_CONFIG_HOME": str(root / "config"),
                "XDG_CACHE_HOME": str(root / "cache"), "XDG_DATA_HOME": str(root / "data"),
                "TMPDIR": str(root / "tmp"), "TMP": str(root / "tmp"), "TEMP": str(root / "tmp"),
@@ -641,6 +697,48 @@ def main() -> int:
                                         entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
                     receipt["phases"].append(active_phase)
                     try:
+                        if name == "scenarios" and args.exercise == "baseline":
+                            # Numeric exclusion is recorded even if generation binding
+                            # fails. Unknown numeric identity can never enable probes.
+                            owner.evidence_phase_pid = process.pid if type(process.pid) is int and 0 < process.pid < 2**64 else None
+                            owner.evidence_original_phase = active_phase
+                            phase_reads = []
+                            for bracket in (0, 1):
+                                ownership_budget["clocks"] += 1
+                                at = time.monotonic()
+                                observation = None
+                                if at < end and owner.evidence_phase_pid is not None:
+                                    ownership_budget["stats"] += 1
+                                    try:
+                                        with open(f"/proc/{process.pid}/stat", "rb", buffering=0) as stream:
+                                            raw = stream.read(4097)
+                                    except TimeoutError:
+                                        raise
+                                    except OSError:
+                                        pass
+                                    else:
+                                        if (0 < len(raw) <= 4096 and raw.endswith(b"\n")
+                                                and raw.startswith(str(process.pid).encode("ascii") + b" (") and b") " in raw):
+                                            tail = raw.rsplit(b") ", 1)[1].split()
+                                            if (len(tail) >= 20 and tail[0] in (b"R", b"S", b"D", b"Z", b"T", b"t", b"W", b"X", b"x", b"K", b"P", b"I")
+                                                    and 1 <= len(tail[1]) <= 20 and all(48 <= c <= 57 for c in tail[1]) and int(tail[1]) < 2**64
+                                                    and 1 <= len(tail[19]) <= 20 and 49 <= tail[19][0] <= 57
+                                                    and all(48 <= c <= 57 for c in tail[19]) and int(tail[19]) < 2**64):
+                                                observation = (tail[19].decode("ascii"), int(tail[1]))
+                                phase_reads.append(observation)
+                            ownership_budget["clocks"] += 1
+                            binding_at = time.monotonic()
+                            if (owner.evidence_binding is not None and phase_reads[0] is not None
+                                    and phase_reads[0] == phase_reads[1]
+                                    and phase_reads[0] == (owner.pids.get(process.pid), owner.evidence_binding["launcher"]["pid"])
+                                    and type(begin) in (int, float) and type(end) in (int, float)
+                                    and 0 <= begin <= binding_at < end <= 9007199254740991
+                                    and cap == 480 and end == min(begin + 480, action_end)):
+                                owner.evidence_phase = dict(
+                                    name="scenarios", allocation_state="bound", reason="none",
+                                    controller=dict(pid=process.pid, start=phase_reads[0][0]), entered=begin, deadline=end,
+                                    outcome="partial", exit=None, finished=None, seconds=None, interrupted=None)
+                                owner.evidence_active_open = True  # Immutable allocation complete LAST.
                         while process.poll() is None:
                             if time.monotonic() >= end:
                                 raise TimeoutError(f"{name} action deadline")
@@ -661,9 +759,15 @@ def main() -> int:
                         code = process.returncode
                         active_phase["exit"] = code
                     finally:
+                        if name == "scenarios" and args.exercise == "baseline":
+                            owner.evidence_active_open = False
                         active_phase["finished"] = time.monotonic()
                         active_phase["seconds"] = active_phase["finished"] - begin
                         active_phase["interrupted"] = process.poll() is None
+                        if name == "scenarios" and args.exercise == "baseline":
+                            # This marker is reached only after ALL original phase
+                            # assignments. No extra poll, decode or status transfer.
+                            owner.evidence_terminal = True
                 if diagnostic is not None:
                     diagnostic.receive()  # SAME command end/alarm, after actual exit/finalization.
             finally:
@@ -860,7 +964,44 @@ def main() -> int:
             arm_deadline(cleanup["deadline"])
             operations["owner"]["attempted"] = True
             try:
+                if owner is not None and args.exercise == "baseline":
+                    owner.evidence_active_open = False
+                    original_phase = owner.evidence_original_phase
+                    phase = owner.evidence_phase
+                    if phase is None:
+                        phase = dict(name="scenarios", allocation_state="unbound", reason="unreached",
+                                     controller=None, entered=None, deadline=None, outcome="unreached",
+                                     exit=None, finished=None, seconds=None, interrupted=None)
+                    if original_phase is not None:
+                        # Main copies only already-assigned ORIGINAL fields. A
+                        # partial finalizer never becomes terminal from its exit.
+                        phase = dict(phase)
+                        malformed = False
+                        for key in ("exit", "finished", "seconds", "interrupted"):
+                            value = original_phase.get(key)
+                            valid = (value is None or (type(value) is int and -(2**31) <= value < 2**31)) if key == "exit" else (value is None or type(value) is bool) if key == "interrupted" else (value is None or type(value) in (int, float) and 0 <= value <= 9007199254740991)
+                            if not valid:
+                                malformed = True
+                            phase[key] = value if valid else None
+                        if (phase["finished"] is not None and phase["seconds"] is not None
+                                and phase["entered"] is not None
+                                and (phase["finished"] < phase["entered"] or phase["seconds"] != phase["finished"] - phase["entered"])):
+                            malformed = True
+                        if malformed:
+                            phase.update(outcome="malformed", exit=None, finished=None, seconds=None, interrupted=None)
+                        elif (phase["allocation_state"] == "bound" and owner.evidence_terminal and phase["finished"] is not None and phase["seconds"] is not None
+                              and phase["interrupted"] is False and phase["exit"] is not None):
+                            phase["outcome"] = "terminal"
+                        elif (phase["allocation_state"] == "bound" and owner.evidence_terminal and phase["finished"] is not None and phase["seconds"] is not None
+                              and phase["interrupted"] is True and phase["exit"] is None):
+                            phase["outcome"] = "interrupted"
+                        else:
+                            phase["outcome"] = "partial"
+                    owner.evidence_phase = phase
+                    # This marker is consumed by main's ORIGINAL first sample.
+                    owner.evidence_entry = (cleanup["entered"], cleanup["deadline"])
                 receipt["cleanup"] = owner.cleanup() if owner else {"ok": False, "reason": "setup did not admit containment"}
+                ownership_cleanup_returned = owner is not None
                 owner_ok = receipt["cleanup"]["ok"] is True
                 operations["owner"]["complete"] = owner_ok
                 if not owner_ok:
@@ -870,6 +1011,269 @@ def main() -> int:
                 raise
             except BaseException as exc:
                 incomplete("owner", exc)
+            finally:
+                # ONE freeze decision under the SAME original cleanup end,
+                # before collection/root loss. Unknown/live watcher => no slot
+                # inspection at all. Claim precedes work; completion is last.
+                if args.exercise == "baseline" and not ownership_frozen:
+                    ownership_frozen = True
+                    ownership_evidence = dict(availability="unavailable", reason="interrupted", data=None)
+                    if owner is not None:
+                        owner.evidence_writes_ended = True
+                    freeze_reason = "watcher_unknown"
+                    try:
+                        original_cleanup = receipt["cleanup"]
+                        if (ownership_cleanup_returned and type(original_cleanup) is dict and original_cleanup.get("watcher_stopped") is False):
+                            freeze_reason = "watcher_active"
+                        elif (ownership_cleanup_returned and owner is not None and type(original_cleanup) is dict
+                              and original_cleanup.get("watcher_stopped") is True):
+                            if not owner.evidence_writes_ended:
+                                freeze_reason = "main_writes_open"
+                            elif ownership_budget["clocks"] >= 512:
+                                freeze_reason = "no_budget"
+                            else:
+                                ownership_budget["clocks"] += 1
+                                freeze_at = time.monotonic()
+                                if not cleanup["entered"] <= freeze_at < cleanup["deadline"]:
+                                    freeze_reason = "no_budget"
+                                elif owner.evidence_binding is None:
+                                    freeze_reason = "malformed"
+                                else:
+                                    freeze_reason = "malformed"
+                                    binding = owner.evidence_binding
+                                    phase = owner.evidence_phase
+                                    slots = {}
+                                    for name in ("active", "precleanup"):
+                                        slot = dict(owner.evidence_slots[name])
+                                        if slot["state"] == "claimed":
+                                            slot.update(state="incomplete", reason="incomplete", targets=None,
+                                                        launcher_a=None, launcher_b=None, controller_a=None, controller_b=None)
+                                        slots[name] = slot
+                                    returns = dict(owner.evidence_returns)
+                                    if returns["state"] == "claimed":
+                                        returns.update(state="incomplete", reason="interrupted", outcome="interrupted", coverage="partial")
+                                    candidate = dict(availability="available", reason="none", data=dict(
+                                        binding=binding, phase=phase, active=slots["active"], precleanup=slots["precleanup"],
+                                        returns=returns, freeze=dict(state="frozen", watcher="stopped", writes="ended")))
+                                    # Closed finite grammar, independently checked before
+                                    # any serialization. No raw/private string is admitted.
+                                    reasons = ("none", "unreached", "incomplete", "interrupted", "excluded", "not_registered", "unbound", "mismatch", "reused", "malformed", "absent", "unsupported", "io_error", "no_budget", "overflow", "reentry", "off_owner", "echild", "close_unknown", "cycle_limit")
+                                    binding_reasons = ("none", "unreached", "incomplete", "interrupted", "mismatch", "malformed", "budget")
+                                    states = ("unattempted", "claimed", "incomplete", "refused", "complete")
+                                    grammar = {
+                                        "member": dict(availability=("available",), reason=("none",), data="data"),
+                                        "data": dict(binding="binding", phase="phase", active="slot", precleanup="slot", returns="returns", freeze="freeze"),
+                                        "binding": dict(state=("bound",), reason=("none",), source_sha="H", source_tree="H", event=("schedule", "workflow_dispatch"), run_id="D", run_attempt="D", exercise=("baseline",), root="root", launcher="pin", subreaper=("initialized",)),
+                                        "root": dict(device="U", inode="P"),
+                                        "pin": dict(pid="P", start="D"),
+                                        "phase": dict(name=("scenarios",), allocation_state=("unbound", "bound", "refused"), reason=binding_reasons, controller="?pin", entered="?T", deadline="?T", outcome=("unreached", "partial", "terminal", "interrupted", "malformed"), exit="?E", finished="?T", seconds="?T", interrupted="?B"),
+                                        "slot": dict(state=states, reason=reasons, owner=(None, "watcher", "main"), entered="?T", finished="?T", deadline="?T", join=("unknown", "bound_live", "bound_interrupted_live", "bound_terminal_absent", "bound_terminal_observed", "bound_outcome_unknown", "never_bound", "reused", "mismatch", "malformed"), launcher_a="?stat", launcher_b="?stat", controller_a="?stat", controller_b="?stat", targets="?targets"),
+                                        "stat": dict(outcome=("observed", "absent", "unreadable", "interrupted", "empty", "partial", "oversized", "malformed", "unattempted"), at="?T", start="?D", state=(None, "R", "S", "D", "Z", "T", "t", "W", "X", "x", "K", "P", "I"), ppid="?U"),
+                                        "target": dict(pid="P", start="?D", kind=("direct_phase", "phase_number_excluded", "nonphase"), registration=("matched", "unregistered", "reused"), a="?stat", b="?stat", wait="wait", close=("not_opened", "closed", "unknown")),
+                                        "wait": dict(state=states, reason=reasons, outcome=("unknown", "no_exit_state", "ineligible", "eligible_exit"), at="?T", code=(None, "CLD_EXITED", "CLD_KILLED", "CLD_DUMPED"), status="?N"),
+                                        "returns": dict(state=states, reason=("none", "unreached", "incomplete", "interrupted", "malformed", "annotation_limit", "no_budget"), outcome=("unreached", "returned", "interrupted", "unknown"), rows="?rows", coverage=("none", "all_reached", "partial")),
+                                        "return": dict(index="index", pid="P", wait_status="W", exit="?E", generation="?D", join=("qualified", "unknown"), slot=(None, "precleanup"), target="?index0"),
+                                        "freeze": dict(state=("frozen",), watcher=("stopped",), writes=("ended",)),
+                                    }
+                                    pending_fields = [(candidate, "member")]
+                                    valid = True
+                                    visits = 0
+                                    while pending_fields:
+                                        value, domain = pending_fields.pop()
+                                        visits += 1
+                                        if visits > 4096:
+                                            valid = False
+                                            break
+                                        if type(domain) is tuple:
+                                            if not any(type(value) is type(option) and value == option for option in domain):
+                                                valid = False
+                                                break
+                                            continue
+                                        if domain.startswith("?"):
+                                            if value is None:
+                                                continue
+                                            domain = domain[1:]
+                                        if domain in grammar:
+                                            shape = grammar[domain]
+                                            if type(value) is not dict or value.keys() != shape.keys():
+                                                valid = False
+                                                break
+                                            pending_fields.extend((value[key], field) for key, field in shape.items())
+                                        elif domain in ("targets", "rows"):
+                                            limit = 17 if domain == "targets" else 34
+                                            if type(value) is not list or len(value) > limit:
+                                                valid = False
+                                                break
+                                            pending_fields.extend((item, "target" if domain == "targets" else "return") for item in value)
+                                        else:
+                                            if domain in ("U", "P", "E", "W", "N", "index", "index0"):
+                                                lower, upper = {"U": (0, 2**64-1), "P": (1, 2**64-1), "E": (-(2**31), 2**31-1), "W": (0, 2**32-1), "N": (0, 2**31-1), "index": (1, 34), "index0": (0, 16)}[domain]
+                                                good = type(value) is int and lower <= value <= upper
+                                            elif domain == "T":
+                                                good = type(value) in (int, float) and 0 <= value <= 9007199254740991
+                                            elif domain == "B":
+                                                good = type(value) is bool
+                                            elif domain == "D":
+                                                good = (type(value) is str and 1 <= len(value) <= 20 and value[0] in "123456789"
+                                                        and all(c in "0123456789" for c in value))
+                                            elif domain == "H":
+                                                good = type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+                                            else:
+                                                good = False
+                                            if not good:
+                                                valid = False
+                                                break
+                                    if not valid:
+                                        raise ValueError("ownership shape refused")
+                                    if (binding is not owner.evidence_binding or phase is not owner.evidence_phase
+                                            or binding["root"] != dict(device=root_identity[0], inode=root_identity[1])
+                                            or any(binding[key] != receipt[key] for key in ("source_sha", "source_tree", "event", "run_id", "run_attempt"))):
+                                        raise ValueError("ownership binding refused")
+                                    if phase["allocation_state"] == "bound":
+                                        if (phase["reason"] != "none" or phase["controller"] is None
+                                                or phase["controller"]["pid"] != owner.evidence_phase_pid
+                                                or phase["entered"] is None or phase["deadline"] is None
+                                                or not phase["entered"] <= phase["deadline"] == min(phase["entered"] + 480, action_end)):
+                                            raise ValueError("ownership phase refused")
+                                    elif (phase["reason"] == "none" or any(phase[key] is not None for key in ("controller", "entered", "deadline"))
+                                          or phase["outcome"] not in ("unreached", "partial", "malformed")):
+                                        raise ValueError("ownership unbound phase refused")
+                                    if phase["outcome"] in ("terminal", "interrupted"):
+                                        if (phase["allocation_state"] != "bound" or not owner.evidence_terminal
+                                                or phase["finished"] is None or phase["seconds"] is None
+                                                or phase["finished"] < phase["entered"] or phase["seconds"] != phase["finished"] - phase["entered"]
+                                                or (phase["outcome"] == "terminal" and (phase["exit"] is None or phase["interrupted"] is not False))
+                                                or (phase["outcome"] == "interrupted" and (phase["exit"] is not None or phase["interrupted"] is not True))):
+                                            raise ValueError("ownership outcome refused")
+                                    elif phase["outcome"] in ("unreached", "malformed") and any(phase[key] is not None for key in ("exit", "finished", "seconds", "interrupted")):
+                                        raise ValueError("ownership null outcome refused")
+                                    for name, slot in slots.items():
+                                        if slot["state"] != "complete":
+                                            if slot["reason"] == "none" or any(slot[key] is not None for key in ("launcher_a", "launcher_b", "controller_a", "controller_b", "targets")):
+                                                raise ValueError("ownership incomplete slot refused")
+                                            if slot["state"] == "unattempted" and (slot["reason"] != "unreached" or slot["join"] != "unknown" or any(slot[key] is not None for key in ("owner", "entered", "finished", "deadline"))):
+                                                raise ValueError("ownership unattempted slot refused")
+                                            continue
+                                        if (slot["reason"] != "none" or slot["owner"] != ("watcher" if name == "active" else "main")
+                                                or phase["allocation_state"] != "bound"
+                                                or any(slot[key] is None for key in ("entered", "finished", "deadline", "launcher_a", "launcher_b", "controller_a", "controller_b", "targets"))
+                                                or not slot["entered"] <= slot["finished"] <= slot["deadline"]
+                                                or slot["deadline"] != (phase["deadline"] if name == "active" else cleanup["deadline"])
+                                                or slot["entered"] < (phase["entered"] if name == "active" else cleanup["entered"])
+                                                or (name == "precleanup" and phase["finished"] is not None and slot["entered"] < phase["finished"])):
+                                            raise ValueError("ownership slot interval refused")
+                                        if not slot["launcher_a"]["at"] <= slot["controller_a"]["at"] <= slot["controller_b"]["at"] <= slot["launcher_b"]["at"]:
+                                            raise ValueError("ownership context order refused")
+                                        for key in ("launcher_a", "launcher_b"):
+                                            row = slot[key]
+                                            if row["outcome"] != "observed" or row["start"] != binding["launcher"]["start"]:
+                                                raise ValueError("ownership launcher bracket refused")
+                                        a, b = slot["controller_a"], slot["controller_b"]
+                                        live = all(row["outcome"] == "observed" and row["start"] == phase["controller"]["start"] and row["state"] not in ("Z", "X", "x") for row in (a, b))
+                                        if any(row["outcome"] == "observed" and row["start"] != phase["controller"]["start"] for row in (a, b)):
+                                            raise ValueError("ownership reused controller refused")
+                                        join = slot["join"]
+                                        if ((join == "bound_live" and (name != "active" or not live))
+                                                or (join == "bound_interrupted_live" and (phase["outcome"] != "interrupted" or not live))
+                                                or (join == "bound_terminal_absent" and (phase["outcome"] != "terminal" or any(row["outcome"] != "absent" for row in (a, b))))
+                                                or (join == "bound_terminal_observed" and (phase["outcome"] != "terminal" or any(row["outcome"] != "observed" or row["state"] not in ("Z", "X", "x") for row in (a, b))))
+                                                or join not in ("bound_live", "bound_interrupted_live", "bound_terminal_absent", "bound_terminal_observed", "bound_outcome_unknown")
+                                                or (join == "bound_outcome_unknown" and phase["outcome"] == "terminal")):
+                                            raise ValueError("ownership phase join refused")
+                                        seen_pids = set()
+                                        stats = [slot[key] for key in ("launcher_a", "launcher_b", "controller_a", "controller_b")]
+                                        for target in slot["targets"]:
+                                            if target["pid"] in seen_pids:
+                                                raise ValueError("ownership duplicate target refused")
+                                            seen_pids.add(target["pid"])
+                                            a, b, wait = target["a"], target["b"], target["wait"]
+                                            if a is None or b is None or not slot["controller_a"]["at"] <= a["at"] <= b["at"] <= slot["controller_b"]["at"]:
+                                                raise ValueError("ownership target interval refused")
+                                            stats.extend((a, b))
+                                            excluded = target["pid"] == owner.evidence_phase_pid
+                                            if excluded != (target["kind"] != "nonphase") or (excluded and (wait["state"] != "unattempted" or wait["reason"] != "excluded" or target["close"] != "not_opened")):
+                                                raise ValueError("ownership direct exclusion refused")
+                                            if (target["kind"] == "direct_phase" and target["start"] != phase["controller"]["start"]
+                                                    or target["registration"] == "unregistered" and target["start"] is not None):
+                                                raise ValueError("ownership registration refused")
+                                            if wait["at"] is not None and not a["at"] <= wait["at"] <= b["at"]:
+                                                raise ValueError("ownership wait interval refused")
+                                            if wait["state"] == "complete":
+                                                if (excluded or target["start"] is None or target["registration"] != "matched" or target["close"] != "closed"
+                                                        or wait["at"] is None or any(row["outcome"] != "observed" or row["start"] != target["start"] or row["ppid"] != binding["launcher"]["pid"] for row in (a, b))):
+                                                    raise ValueError("ownership wait bracket refused")
+                                                if wait["outcome"] == "eligible_exit":
+                                                    if (wait["reason"] != "none" or wait["code"] is None or wait["status"] is None
+                                                            or (wait["code"] == "CLD_EXITED" and wait["status"] > 255)
+                                                            or (wait["code"] != "CLD_EXITED" and wait["status"] == 0)):
+                                                        raise ValueError("ownership eligible exit refused")
+                                                elif (wait["outcome"], wait["reason"], wait["code"], wait["status"]) not in (("no_exit_state", "none", None, None), ("ineligible", "echild", None, None)):
+                                                    raise ValueError("ownership empty wait refused")
+                                            elif wait["reason"] == "none" or wait["outcome"] != "unknown" or wait["code"] is not None or wait["status"] is not None:
+                                                raise ValueError("ownership unqualified wait refused")
+                                        for row in stats:
+                                            if row["at"] is None or not slot["entered"] <= row["at"] <= slot["finished"]:
+                                                raise ValueError("ownership stat time refused")
+                                            if row["outcome"] == "observed":
+                                                if row["start"] is None or row["state"] is None or row["ppid"] is None:
+                                                    raise ValueError("ownership stat fields refused")
+                                            elif any(row[key] is not None for key in ("start", "state", "ppid")):
+                                                raise ValueError("ownership stat nulls refused")
+                                    if returns["state"] == "complete":
+                                        if (returns["reason"], returns["outcome"], returns["coverage"]) != ("none", "returned", "all_reached") or returns["rows"] is None:
+                                            raise ValueError("ownership return coverage refused")
+                                    elif returns["state"] == "unattempted":
+                                        if (returns["reason"], returns["outcome"], returns["coverage"], returns["rows"]) != ("unreached", "unreached", "none", None):
+                                            raise ValueError("ownership unreached returns refused")
+                                    elif returns["state"] == "incomplete":
+                                        if returns["reason"] == "none" or returns["coverage"] != "partial" or returns["outcome"] not in ("interrupted", "unknown"):
+                                            raise ValueError("ownership partial returns refused")
+                                    else:
+                                        raise ValueError("ownership returns refused")
+                                    for index, row in enumerate(returns["rows"] or []):
+                                        if row["index"] != index + 1:
+                                            raise ValueError("ownership return order refused")
+                                        if row["join"] == "qualified":
+                                            slot = slots["precleanup"]
+                                            if returns["state"] != "complete" or slot["state"] != "complete" or row["slot"] != "precleanup" or row["target"] is None or row["target"] >= len(slot["targets"]):
+                                                raise ValueError("ownership return pin refused")
+                                            target = slot["targets"][row["target"]]
+                                            if (row["pid"] != target["pid"] or row["generation"] != target["start"] or target["wait"]["outcome"] != "eligible_exit"
+                                                    or row["pid"] == owner.evidence_phase_pid or row["generation"] is None):
+                                                raise ValueError("ownership return generation refused")
+                                        elif any(row[key] is not None for key in ("generation", "slot", "target")):
+                                            raise ValueError("ownership unknown return refused")
+                                    # Grammar and joins are checked before this bounded
+                                    # fresh-container detach. No watcher/main writer remains.
+                                    detached = json.loads(json.dumps(candidate, allow_nan=False))
+                                    formatted = json.dumps({"ownership_evidence": detached}, indent=2, allow_nan=False).encode("utf-8")
+                                    parts = [len(json.dumps({"ownership_evidence": {"data": {name: detached["data"][name]}}}, indent=2).encode("utf-8")) for name in ("active", "precleanup")]
+                                    rest = {key: value for key, value in detached["data"].items() if key not in ("active", "precleanup")}
+                                    rest_size = len(json.dumps({"ownership_evidence": dict(detached, data=rest)}, indent=2).encode("utf-8"))
+                                    freeze_reason = "format_refused"
+                                    # Wrapper includes both braces/newlines; +2 covers
+                                    # the actual comma/separator when other members exist.
+                                    if len(formatted) + 2 <= 32768 and max(parts) <= 8192 and rest_size <= 16384:
+                                        if ownership_budget["clocks"] >= 512:
+                                            freeze_reason = "no_budget"
+                                        else:
+                                            ownership_budget["clocks"] += 1
+                                            if time.monotonic() >= cleanup["deadline"]:
+                                                freeze_reason = "no_budget"
+                                            else:
+                                                ownership_evidence = detached  # Complete LAST; no later upgrade.
+                                                freeze_reason = "none"
+                    except TimeoutError:
+                        freeze_reason = "interrupted"
+                        raise
+                    except (ValueError, TypeError, KeyError, OverflowError):
+                        freeze_reason = "malformed"
+                    except BaseException:
+                        freeze_reason = "interrupted"
+                        raise
+                    finally:
+                        if freeze_reason != "none":
+                            ownership_evidence = dict(availability="unavailable", reason=freeze_reason, data=None)
             cleanup_time()  # Even a caught ordinary error may have exhausted C.
 
             current_attempt = "diagnostic_read"
@@ -1069,7 +1473,8 @@ def main() -> int:
                         cleanup=safe_cleanup, timing=safe_timing,
                         failure_phase=receipt.get("failure_phase", "export"),
                         failure="incomplete detailed evidence",
-                        total_seconds=time.monotonic() - started)
+                        total_seconds=time.monotonic() - started,
+                        **({"ownership_evidence": ownership_evidence} if ownership_evidence is not None else {}))
 
         initial_fail_published = False
 
@@ -1124,7 +1529,10 @@ def main() -> int:
                 validate_timing(receipt)
             receipt.update(failure_categories())
             export_time()
-            publish(json.loads(redact(json.dumps(receipt))), final=True)
+            detailed = json.loads(redact(json.dumps(receipt)))
+            if ownership_evidence is not None:
+                detailed["ownership_evidence"] = ownership_evidence
+            publish(detailed, final=True)
         except BaseException as exc:
             if not final_result_committed:
                 receipt["status"] = "FAIL"

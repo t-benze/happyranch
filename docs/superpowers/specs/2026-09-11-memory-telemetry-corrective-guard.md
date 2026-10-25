@@ -367,11 +367,15 @@ Founder THR-091 seq480 narrows the census to current boot/epoch activity plus
 its referenced lifecycle, retry, delegation, QA/job and epoch/invalidation
 records. All activity in that window is selected before attribution filtering;
 a read/search now using an old retired SID retains the old task and interval.
-Ancestry-only dependencies retain their parent/revisit graph facts; owners used
-for lifecycle/proof retain original results, lifecycle and control history plus
-direct revisits. Historical seals and SID-less intent/expectation/binding rows
-from other boots have no current-census consumer. No prose/command ID scraping
-or unrelated global same-SID audit/result search supplies an admission gate;
+Ancestry-only dependencies retain their parent/revisit graph facts. Selected
+current `task_scratch_report` rows stay raw and unchanged; their outer task_id
+uses graph-only ownership. Every other audit action retains full-history
+ownership. An independent lifecycle/read, QA/job/retry/probe or acceptance/control
+reference promotes the same owner to full in either discovery order, checking
+the earlier graph facts and retaining original results, lifecycle and control
+history plus direct revisits. Historical seals and SID-less
+intent/expectation/binding rows from other boots have no current-census consumer.
+No prose/command ID scraping or unrelated global same-SID audit/result search supplies an admission gate;
 PR1084's supplied-liveSID trust limit remains. Same-owner contradictions still
 refuse the strict failed-before-exposure class. Historical `memory_read` rows
 retain their AGENT-scoped outer task_id; the owner is payload.task_id. Each
@@ -382,6 +386,18 @@ not. The complete scan consumes the existing row/byte/SQL/deadline/transport
 budgets, including unrelated returned reads, and exhaustion refuses rather than
 asserting absence. Closing and locked atomic rereads repeat this discovery, so
 late preboot payload-owned membership cannot hide behind prepared IDs.
+Native audit materialization reuses payloads only inside one invocation's
+coherent SQLite snapshot. Completed window/action predicates suppress redundant
+payload fetches in later overlapping queries; the original SQL filters, complete
+columns, ordering and limits still select every matching row. SQLite NULL/type
+and JSON filter semantics stay unchanged. Every new payload is strictly decoded
+before selector exclusions, including consumer-free historical evidence; reused
+records retain their exact values and consume existing serialization/work budgets.
+SQL metadata rows/bytes/VM/time and the original shared deadline still count;
+there is no second allowance or cross-call cache. Closing, pair-attempt and
+atomic rereads start fresh. Unique evidence can still exhaust a bound and refuse;
+lower duplicate bytes alone prove neither complete acquisition nor durable health.
+
 Every required missing task,
 result, job, lifecycle, control or genuine callback remains a refusal.
 

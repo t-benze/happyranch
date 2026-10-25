@@ -1662,7 +1662,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
 
 def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expected_org_slug: str) -> None:
     """Bind naming ownership and compare whole SQL to an independent release DB."""
-    from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
+    from runtime.orchestrator.authority import _workflow_release_schema_digest, _WORKFLOW_RELEASE_REFERENCE_HISTORIES
     rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name').fetchall()
     actual = hashlib.sha256('\n'.join(str(r[0]) for r in rows).encode()).hexdigest()
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
@@ -1671,8 +1671,8 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expecte
     names = validate_names(conn, org_slug=expected_org_slug)
     from runtime.infrastructure.team_move_store import validate_team_move_schema
     team_move_layout = validate_team_move_schema(conn, org_slug=expected_org_slug)
-    expected = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout)
-                     for history in _RELEASE_REFERENCE_HISTORIES)
+    expected = tuple(_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout)
+                     for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')
 
