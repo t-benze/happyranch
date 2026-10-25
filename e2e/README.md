@@ -1929,6 +1929,21 @@ content checks cannot substitute for those admissions. Complete valid evidence
 retains the original promotion path through all existing row/admission gates;
 Health errors remain independently fatal.
 
+The aggregate CLI prepends its actual working directory to a relative
+`--artifacts` path before reading lane bundles; absolute paths retain their
+spelling. It does not resolve symlinks or parent traversal: the existing
+descriptor-relative, no-follow directory/file custody checks still refuse
+unsafe paths. Accepted closed metadata remains UNKNOWN until every original
+promotion gate succeeds.
+
+E07's forward-and-observe loop counts fresh frame, closure and assertion work
+toward its optional 10ms pacing interval, sleeping only for time left in that
+interval or the observation window. It retains real timestamps, every fresh
+observation, both <=50ms interval/frame assertions and the full1s window.
+This removes additive idle time; hosted scheduler latency can still cause a
+real overrun and failure. Native verification remains pending until the
+manager's changed-reviewed-main Product run.
+
 Four answers / finite acceptance map (extends the existing R3-05/R3-06,
 Controller.mark/export and aggregate.controls keepers):
 
