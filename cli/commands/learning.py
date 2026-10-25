@@ -301,34 +301,44 @@ def _fetch_agent_roles(client: OpcClient, org: str) -> dict[str, str] | None:
 
 def cmd_memory_report(args: argparse.Namespace) -> None:
     """Observe complete bounded task/lifecycle evidence at one aware UTC cutoff."""
+    from contextlib import redirect_stdout
     from datetime import datetime, timezone
+    from io import StringIO
     from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable, reduce_collection_report
-    from runtime.infrastructure.memory_collection import acquire_http_collection_report
+    from runtime.infrastructure.memory_collection import acquire_http_collection_report, _census_budget
 
-    cutoff = datetime.now(timezone.utc)
-    try:
-        client = OpcClient.from_env()
-        org = args.org
-        if not org:
-            response = client.get("/api/v1/orgs")
-            if response.status_code != 200:
+    with _census_budget(captures=2) as budget:
+        cutoff = datetime.now(timezone.utc)
+        try:
+            client = OpcClient.from_env()
+            org = args.org
+            if not org:
+                response = client.get("/api/v1/orgs")
+                if response.status_code != 200:
+                    raise ReportAcquisitionUnavailable()
+                body = response.json()
+                org = resolve_org_slug(args_org=None, available=[o["slug"] for o in body["orgs"]])
+            budget.check()
+            roles = _fetch_agent_roles(client, org)
+            tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
+            if roles != _fetch_agent_roles(client, org):
                 raise ReportAcquisitionUnavailable()
-            body = response.json()
-            org = resolve_org_slug(args_org=None, available=[o["slug"] for o in body["orgs"]])
-        roles = _fetch_agent_roles(client, org)
-        tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
-        if roles != _fetch_agent_roles(client, org):
-            raise ReportAcquisitionUnavailable()
-        report = reduce_collection_report(tables, view, outputs, roles, cutoff)
-        rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) if args.json else None
-    except Exception as exc:
-        # Never leak a partial report or provider/decoder exception text.
-        print(ReportAcquisitionUnavailable.category, file=sys.stderr)
-        raise SystemExit(1) from exc
-    if args.json:
-        print(rendered)
-    else:
-        _print_report(report)
+            budget.check()
+            report = reduce_collection_report(tables, view, outputs, roles, cutoff)
+            if args.json:
+                rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
+            else:
+                stream = StringIO()
+                with redirect_stdout(stream):
+                    _print_report(report)
+                rendered = stream.getvalue()
+            budget.check()
+            print(rendered, end="")
+            budget.check()
+        except Exception as exc:
+            # Never leak a partial report or provider/decoder exception text.
+            print(ReportAcquisitionUnavailable.category, file=sys.stderr)
+            raise SystemExit(1) from exc
 
 
 def _compute_report(

@@ -2724,10 +2724,16 @@ admission, activation, or dispatch consumer; those remain later units.
 **Memory reporting core (THR-091).** Backend and CLI use one pure observation-only
 reducer and consume only persisted version1 exposure metadata. Before empty or
 short returns, backend reads a coherent bounded multi-table evidence snapshot;
-CLI exhausts task pages and all relevant memory/lifecycle/control audit action
-pages in two stable sweeps, comparing tasks, audit content and roles at a fixed
-UTC cutoff. Task pagination uses `(created_at, id)` descending, with the last ID
-as the server-resolved cursor; audit pages retain their own keyset ordering.
+CLI consumes one authenticated parameter-free
+`GET /api/v1/orgs/{slug}/audit/memory-collection` with closed
+`tables`/`view`/`outputs`/`cutoff` envelope. The server owns the original budget,
+full current internal snapshots and complete native selected pair, including
+all attempts and synchronous charged raw failed-pair acknowledgement. No client
+fallback to multipage acquisition exists. Both original identity/file allowances
+and all original caps remain; caller cutoffs affect reporting only. CLI role
+bracketing, reduction and buffered JSON/text rendering retain one original
+client deadline through successful return. Cooperative checks are not hard
+OS-I/O/stdout timing. Existing auth and remote/native policy remain authoritative.
 Accepted epochs additionally require complete original results/jobs/outputs and
 stable serving bookends. Acquisition
 failures refuse as `acquisition_unavailable`, with no partial CLI stdout. Tagged
