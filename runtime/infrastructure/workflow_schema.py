@@ -1882,7 +1882,10 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
         ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
         ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
         ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
-        ('schedules', "active=1 OR session_id IS NOT NULL OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
+        # schedule_store.list_due consumes armed rows. Terminal occurrences
+        # retain their runtime SID; current native execution is separately
+        # excluded by the complete preparation/process/cooperative window.
+        ('schedules', "active=1 OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
         ('remote_job_attempts', "state!='terminal'"),
         ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
     ):
