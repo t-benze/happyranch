@@ -601,7 +601,10 @@ def exercise(c: Controller) -> None:
                 c.remaining()
                 if sample["entered"] >= window["end"]:
                     break
-                time.sleep(min(.01,max(0,window["end"]-time.monotonic())))
+                # Fresh observations and assertions consume the pacing interval.
+                delay = min(sample["entered"]+.01,window["end"])-time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
             window["finished"] = time.monotonic()
 
             phase("archive",50)

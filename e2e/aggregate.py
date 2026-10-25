@@ -2537,6 +2537,8 @@ def main() -> int:
         return 0
     if not all((args.artifacts, args.source, args.event, args.matrix_result, args.cancellation_result)):
         parser.error("artifacts, source, event, matrix-result and cancellation-result are required")
+    # Keep literal ancestors for completed.directory's no-follow validation.
+    args.artifacts = Path.cwd() / args.artifacts
     expected = MANIFEST["daily_python"]
     names = ["e2e-" + version for version in expected] + ["e2e-cancel-TERM", "e2e-cancel-INT"]
     health = dict(status="FAIL", event=None, source_sha=None,
