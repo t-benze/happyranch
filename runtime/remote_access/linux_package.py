@@ -422,6 +422,7 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             raise PackageError("package_input_invalid") from exc
         return descriptor
 
+    unwinding = False
     try:
         if package is not None:
             # Authenticate ONE immutable incoming image before using its two
@@ -451,9 +452,22 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
         if not isinstance(result, dict):
             raise PackageError("managed_lifecycle_response_invalid")
         return result
+    except BaseException:
+        unwinding = True
+        raise
     finally:
-        for descriptor in descriptors:
-            os.close(descriptor)
+        close_error: OSError | None = None
+        while descriptors:
+            # These originals belong to this caller, not the spawn helper.
+            # Relinquish before close; never retry a possibly reused number.
+            descriptor = descriptors.pop()
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                if close_error is None:
+                    close_error = exc
+        if close_error is not None and not unwinding:
+            raise PackageError("managed_lifecycle_refused") from close_error
 
 
 def _nonmanaged_owner_destination(path: Path) -> Path:

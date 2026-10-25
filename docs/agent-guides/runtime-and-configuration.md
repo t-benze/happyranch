@@ -3804,6 +3804,16 @@ by their respective child/caller. No explicit unlock, new allowance or IPC is
 introduced; the original absolute deadline,4096-byte cap plus sentinel and actual
 child kill/reap remain. This is source ownership, not observed cleanup or startup.
 
+The package caller separately owns the original sealed archive, connector and
+executable images borrowed by the helper. On every exit it relinquishes each
+owned number before one close attempt and attempts all remaining closes despite
+OSError. Its invocation-local unwind flag preserves a propagating body/helper
+failure, including the helper's actual kill/reap precedence. Only initiating
+cleanup failure cancels success with category-only `managed_lifecycle_refused`
+chained from the first actual close OSError. An unrelated exception handled by
+its caller does not mark this invocation as unwinding. This adds no child owner,
+retry, unlock or cleanup proof.
+
 Admitted managed package preparation, mutation/recovery/restore/rollback/uninstall
 and final validation share continuous SAME-OFD B through actual child quiescence. Bootstrap
 holds the future stable inode before publication. Fixed retained executable

@@ -781,12 +781,16 @@ Affected existing lifecycle-ownership case record (THR228seq648):
    Final close OSError cannot replace an already propagating body or kill/reap
    failure; when cleanup is the first failure, category-only refusal chains the
    actual close OSError after every remaining owned close is attempted.
+   Caller-owned originals separately require every acquired image close attempt
+   and preservation of the initiating body/helper error.
 2. Credible regression: retain any parent output-writer duplicate through the
    read loop, leave a closed duplicate/pipe FD pending in final cleanup, or
-   unconditionally raise a final-close refusal over the initiating error.
+   unconditionally raise a final-close refusal over the initiating error, or stop
+   the caller-owned original-image cleanup on its first close OSError.
 3. Nearest keeper: the existing fixed-helper/SAME-OFD lifecycle contract here
    and the allocated PARTIAL install boundary in `real_systemd_n3.sh`; neither
-   establishes isolated parent-FD or close-error assertions. No executable keeper
+   establishes isolated parent-FD or close-error assertions for helper-owned
+   copies or caller-owned originals. No executable keeper
    claim, new test/harness or replacement proof. FAILED40153837361 is historical
    timeout evidence, not this correction's fail/pass pair; consultant647 owns
    their reproduction. Broader N3 physical-close gaps below remain outstanding.
@@ -794,6 +798,26 @@ Affected existing lifecycle-ownership case record (THR228seq648):
    RED/GREEN, mutation, repetition and executable QA **NOT RUN / PROOF NOT RUN
    SUSPENDED**; this local grant permits source/static inspection only. General
    integration INCLUDING product callback SKIPPED24342; Python units RETIRED.
+
+Required caller-original cleanup SOURCE assessment (TASK12952; no execution):
+
+- Body/helper success and all closes succeed: return the identical result object;
+  each caller-owned image leaves the list before its single close attempt.
+- Body success and one or several close OSErrors: attempt every remaining owned
+  close without retry, then cancel success with category-only refusal chained
+  from the first actual close error. A caller merely handling an unrelated
+  exception cannot suppress this refusal; only this invocation sets its flag.
+- Body deadline/invalid-response/parse/helper/actual kill-reap failure plus close
+  error: mark local unwind and bare-reraise, attempt all remaining owned closes
+  and preserve that initiating error and the unchanged helper precedence.
+  No successful install or settled-child inference follows.
+- Partial acquisition/sealing/write/source-read/spawn failure: attempt one close
+  for every already appended descriptor, skip nonexistent acquisitions and
+  preserve the initiating failure. Helper copies and borrowed flock are separate.
+
+These four cases extend the existing ownership record above at SOURCE level
+only. No behavioral, red/green, mutation, repetition or executable-QA proof was
+run; NOT RUN / PROOF NOT RUN SUSPENDED is not a test-authoring PASS.
 
 Required final-close SOURCE branch assessment (TASK12946; no execution):
 
@@ -839,6 +863,16 @@ endpoints and caller-borrowed sealed images/SAME-OFD flock originals remain owne
 by their respective child/caller. No explicit unlock, new allowance or IPC is
 introduced; the original absolute deadline,4096-byte cap plus sentinel and actual
 child kill/reap remain. This is source ownership, not observed cleanup or startup.
+
+The package caller separately owns the original sealed archive, connector and
+executable images borrowed by the helper. On every exit it relinquishes each
+owned number before one close attempt and attempts all remaining closes despite
+OSError. Its invocation-local unwind flag preserves a propagating body/helper
+failure, including the helper's actual kill/reap precedence. Only initiating
+cleanup failure cancels success with category-only `managed_lifecycle_refused`
+chained from the first actual close OSError. An unrelated exception handled by
+its caller does not mark this invocation as unwinding. This adds no child owner,
+retry, unlock or cleanup proof.
 
 Admitted managed package preparation, mutation/recovery/restore/rollback/uninstall
 and final validation share continuous SAME-OFD B through actual child quiescence. Bootstrap
