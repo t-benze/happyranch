@@ -1613,6 +1613,47 @@ def e07_sql_date(value: str | None) -> str | None:
     return encoded
 
 
+def e07_cancellation_transition(live: dict, frozen: dict, parent: str, worker: str) -> None:
+    """Reconstruct lifecycle bounds from raw rows/public responses/audits only."""
+    def instant(value: str) -> datetime:
+        if type(value) is not str or "T" not in value:
+            raise ValueError("E07 serialized lifecycle timestamp string")
+        result = datetime.fromisoformat(value)
+        if result.tzinfo is None or result.utcoffset() != timedelta(0):
+            raise ValueError("E07 serialized lifecycle timestamp aware UTC")
+        return result
+
+    before = {row["id"]: row for row in live["sql"]["alpha"]["tables"]["tasks"]}
+    after = {row["id"]: row for row in frozen["sql"]["alpha"]["tables"]["tasks"]}
+    events = [row for row in frozen["sql"]["alpha"]["tables"]["audit_log"]
+              if row["task_id"] in (parent, worker) and row["action"] == "task_cancelled"]
+    if [row["task_id"] for row in events] != [parent, worker]:
+        raise ValueError("E07 serialized lifecycle cancellation audit order")
+    cancelled = after[parent]["cancelled_at"]
+    allowed = {"status", "block_kind", "note", "cancelled_at", "completed_at", "updated_at"}
+    for index, task in enumerate((parent, worker)):
+        old, new = before[task], after[task]
+        if (set(old) != set(new) or old["status"] != "in_progress"
+                or old["cancelled_at"] is not None or old["completed_at"] is not None
+                or json.dumps({k:v for k,v in old.items() if k not in allowed}, sort_keys=True)
+                != json.dumps({k:v for k,v in new.items() if k not in allowed}, sort_keys=True)
+                or new["status"] != "cancelled" or new["block_kind"] is not None
+                or new["note"] != "cancelled by founder: E07_CANCEL_TREE"
+                or new["cancelled_at"] != cancelled or new["completed_at"] != cancelled):
+            raise ValueError("E07 serialized exact cancellation field/key delta")
+        updated = instant(new["updated_at"])
+        if not (instant(old["created_at"]) <= instant(old["updated_at"]) < instant(cancelled)
+                <= updated <= instant(events[index]["timestamp"])):
+            raise ValueError("E07 serialized positive cancellation update/audit bounds")
+        if index and instant(events[index-1]["timestamp"]) > updated:
+            raise ValueError("E07 serialized parent audit before worker update")
+        for sample, row in ((live, old), (frozen, new)):
+            listed = [t for t in sample["public"]["alpha"]["tasks"] if t["task_id"] == task]
+            if (len(listed) != 1 or listed[0]["updated_at"] != e07_sql_date(row["updated_at"])
+                    or sample["public"][task][""]["task"]["updated_at"] != e07_sql_date(row["updated_at"])):
+                raise ValueError("E07 serialized public/SQL lifecycle update mismatch")
+
+
 def e07_pause_state(raw: dict) -> dict:
     """Independent serialized validator; never consume a producer verdict/copy."""
     if not isinstance(raw, dict) or not isinstance(raw["observed_at"], str):
@@ -1902,10 +1943,8 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
         check(freeze["public"][task][""]["task"]["task_id"] == task
               and all(freeze["public"][task][""]["task"][k] == (e07_sql_date(t[k]) if k in ("cancelled_at","completed_at") else t[k])
                       for k in ("status","block_kind","note","cancelled_at","completed_at","current_session_id")), "actual detail fields agree with coherent frame")
-    changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
+    e07_cancellation_transition(live[1],freeze,P,W)
     for task in (P,W):
-        check({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
-              == {k:v for k,v in tasks[task].items() if k not in changed_fields}, "coherent literal cancellation field deltas")
         recall = freeze["public"][task]["/recall"]
         check(recall["task_id"] == task and recall["status"] == "cancelled", "literal public terminal recall")
         for suffix,body in freeze["public"][task].items():
