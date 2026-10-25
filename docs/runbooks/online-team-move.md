@@ -113,6 +113,21 @@ reprovision, active-task transfer or Engineering routing change is supported.
 
 ## Preview and blocker resolution
 
+Preview failures after key output add only fixed stderr phase/category
+attribution: client construction/entry, request/response acquisition, JSON
+decode, envelope output, normalized request validation, digest/inventory/consent
+validation, exact apply-request save, final guidance output or client close.
+Categories are timeout, http_error, runtime, io, validation_value, key, type,
+exit (existing CLI SystemExit) or unknown. Existing HTTP envelopes, caught
+families, exits and preservation guidance remain; successful preview and other
+move subcommands keep their output. Body attribution precedes close; a replacing
+close failure gets separate attribution, and unchanged body propagation is not
+labeled close. No exception prose, dynamic class names, traceback, payload,
+credentials or private paths are added. A request-phase timeout identifies no
+server/native cause. Historical phase/cause and loaded daemon source remain
+unknown; diagnostics grant no retry, live operation or clearance of earlier
+effects. Preserve the SAME key and exact saved bytes under existing ownership.
+
 Engineering prepares/reviews the admitted exact preview: canonical diff and
 before/after digests; current names; native instruction/settings/permission/skill
 and launch-input deltas; authority/profile/dependency/policy inputs; generated
