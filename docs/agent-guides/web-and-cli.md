@@ -3437,11 +3437,23 @@ extension/dependency/VFS/raw-pointer/ctypes change is supplied or needed under
 this model. Direct same-user file/DB swapping between observations remains a
 disclosed cooperative limit; source-only delivery cannot certify its behavior.
 
-Writes additionally require documented daemon stop, reconciled hosts/outer tails
-and exclusion of cooperative restarts/publication/profile/move until return.
-Neither confirmation nor PID absence, TTL, terminal labels or producer_settled
-uncertainty releases ownership. Complete source-idle checks retain publication/
-profile, F5/draft/recovery/source claims, Pause release and team-move reservations.
+Writes require positive current stopped state and complete current writer,
+preparation and process exclusion throughout the affected registered-runtime,
+normal-org/shared-daemon/store/source/environment and cooperative-other-host
+window, including publications, profiles, moves, recovery and competing restarts.
+Establish human control before constructor effects or a preceding source update;
+repeat supported scope/process/lifecycle/identity observations before and after
+effects and keep the original SQLite reservations. One census, PID absence or a
+human yes alone is insufficient; unavailable present exclusion still refuses.
+Historical pending jobs on ended owners, nonquiescent receipts, failed old
+preparations/started audits and retained relocation storage alone require no
+closure certification. Preserve their labels/ownership/keys/bytes; never settle,
+relabel, clear or replay them. Current tasks, automatically consumable pending
+work, source-result processing and current publication/profile/Pause/move/recovery
+owners still hold. Complete data/history validation remains separate. This is
+cooperative exclusion, not a cross-host lock, hostile same-user or hard real-time
+guarantee. The original supported stop must succeed if attempted; independently
+selected already-stopped entry skips stop without reconstructing old shutdown.
 Exact I/source SQL types/rowids/bytes/FKs, unchanged retained equality, four empty
 additions, complete independent J validation, FK ON and rollback remain required.
 The primitive receives the script's original source identity and independently
@@ -4357,7 +4369,7 @@ The published human-terminal command is
 Use the actual reviewed pinned source update supplied by root; the runtime guide
 specifies bootstrap, strict flags, all-runtime maintenance and private recovery
 material. No agent may run host setup effects. Managed/unknown attribution and
-active/UNKNOWN original ownership refuse before stop/preparation; no environment
+current ownership or unavailable present exclusion refuse before stop/preparation; no environment
 marker stripping, credential copy or new grant is permitted.
 
 The coordinator reuses existing human `workflows coding release-import-show`
@@ -4382,7 +4394,7 @@ revalidation, durable command intent precedes stop; failure/interruption retains
 observed result or unresolved intent, exact argv, actual/null exit and bounded
 stream digests at the printed existing receipt path. Lifecycle log bodies remain
 in original custody. Receipt-only INCOMPLETE.json and BACKUP-STARTED.json are not
-complete backup; only manifest.json establishes that. Failed persistence prevents
+complete backup; only verified, durably published manifest.json accepted in this invocation establishes that. Failed persistence prevents
 later effects. The start-reported uv wrapper and daemon.pid Python child have
 separate authenticated start/executable/source/home/ancestry identities; status
 and serving checks use the actual daemon PID/port with repeated pair validation.
@@ -4425,11 +4437,54 @@ Closed identity validation precedes set/dict projection; all boot/source/runtime
 org/cutoff/error checks remain. Separate memory qualification may be required;
 no epoch reset/collection acceptance occurs.
 
-Reserved relocation _pending (all four original inboxes) and historical native
-started/failed preparations remain Engineering/original-owner holds pending
-authenticated positive disposition/outer closure. Loader omission, empty storage,
-terminal labels, absent Pause/PID and completed commands cannot release them.
-No general historical ordinary-start-to-positive-outer-close reader is supplied.
+Under ROOT12912 / Founder THR320seq177–178, historical job/receipt/launch
+uncertainty alone is not a migration-maintenance refusal. Preserve all original
+labels, ownership, keys, bytes and adverse evidence without cancel/relabel/settle,
+journal clearing, replay or claims of never-ran/quiescence. Account for `_pending`
+and `_archive` boundaries only: do not descend/read/copy their members, archives
+or OP evidence, move or delete them. They are untouched migration exclusions,
+not backup targets. A real present writer involving them still conflicts; unknown
+ordinary/partial orgs and actually affected uncopied material still hold.
+
+The human-controlled complete cooperative window begins before constructor
+commands/RO effects and any preceding host update. It covers all affected
+registered runtimes, normal orgs, shared-daemon stores, source/environment users
+and other hosts through backup, preparation, every migration, controlled restart,
+import checks and return. Repeat supported current owner/process/preparation/
+lifecycle/identity checks before and after effects; retain SQLite reservations.
+A one-time census, PID absence or human confirmation alone supplies no exclusion.
+Missing present attribution holds. No cross-host lock, hostile same-user or hard
+real-time guarantee is claimed; failure retains safe custody for Engineering.
+
+Running entry requires complete trustworthy current observations and one original
+stop/intent/result/status/process closure. A failed/uncertain stop in this invocation
+never falls into stopped success. Independently selected positive already-stopped/
+excluded entry uses existing lifecycle/process/cooperative controls, skips stop
+truthfully and queries no stopped HTTP service; it reconstructs no old shutdown.
+Fresh distinct wrapper/Python checks remain mandatory after original start.
+Current failed views with opening preparations[], null cutoff/no installed
+identity are incomplete and hold running entry. Engineering/serving must establish
+a supported complete running observation, or the human operator must establish
+genuine positive stopped entry with existing controls. No error bypass or memory
+endpoint/reset is supplied. Final selected loaded-source/UI acceptance remains
+after restart, with all twelve actual selected objects, full D1 list validation,
+closed identity/budgets/bookends and human rendering before import.
+
+Stop's shutdown effects precede the full stopped backup; receipt-only evidence
+is incomplete. Full affected DB/config/source/environment/UI/shared-daemon recovery
+inventory, WAL-inclusive SQLite backup/integrity/FKs and verified copy hashes,
+identities, restore mappings and original credential custody precede preparation
+or schema mutation. No WAL/SHM reset/checkpoint occurs. Accept the complete manifest
+only after verification and exclusive durable publication; retain its identity/
+digest and require that accepted custody before later stages. Existence alone is
+insufficient. Each original writer0 requires its exact post-check0 and full target
+validation before accepted-layout advance. All earlier pre/post-reservation calls
+and all three I→J idle calls, including post-DDL, use current maintenance selection;
+the nonmigration roster caller retains its original semantics. Full schema/data/
+history/types/rowids/bytes/release/FK validation, original FK policies, RO→RW
+identity, reservations/offline bookends and rollback remain unchanged. Behavioral,
+backup/restore/reopen/rollback and operational acceptance remain NOT RUN/open.
+
 Stage evidence distinguishes custody, stop, backup, preparation subcommands/UI,
 each migration/last accepted layout, start/pair/serving and original import file/
 intent/send/receipt/readback. Failed commands never become successful from a later

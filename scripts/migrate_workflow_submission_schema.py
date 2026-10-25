@@ -32,9 +32,10 @@ def _lifecycle_snapshot(runtime_root: Path) -> tuple:
     """Bounded existing lifecycle observation; no socket, stop, or new protocol.
 
     daemon.sh stop removes PID/port files. Any remaining port or live/unknown
-    PID refuses. Missing lifecycle files describe a never-recorded daemon only
-    under the operator's cooperative offline precondition, not arbitrary-start
-    exclusion. Readiness checks and validated G replay do not call this owner.
+    PID refuses. Missing lifecycle files describe current stopped controls only
+    with the operator's complete maintained cooperative offline exclusion. They
+    certify neither historical shutdown nor arbitrary-start exclusion. Readiness
+    checks and validated G replay do not call this owner.
     """
     home = daemon_home()
     if not home.is_absolute() or home.is_symlink() or not home.is_dir():

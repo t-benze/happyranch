@@ -99,6 +99,7 @@ class DiagnosticContext:
             'observation_hold', 'original_owner_unsettled', 'reserved_relocation_custody', 'reserved_archive_custody',
             'native_preparation_closure_unavailable', 'native_started_closure_unavailable',
             'preparation_list_invalid', 'preparations_owned', 'serving_observation_unavailable', 'command_failed',
+            'current_owner_active',
         }
         hold_type = globals().get('Hold')
         if hold_type is not None and isinstance(exc, hold_type) and exc.category in allowed:
@@ -162,14 +163,10 @@ class DiagnosticContext:
                 facts['diagnostic_persistence_failed'] = self.token(type(persistence).__name__)
                 detail += '; private diagnostic persistence failed; any partial file is incomplete'
         guidance = {
-            'reserved_relocation_custody': 'Engineering owns original relocation ledgers and positive writer/disposition evidence; loader omission or empty storage cannot release custody.',
-            'reserved_archive_custody': 'Engineering owns original reserved archive custody; no archive traversal or clearance is inferred.',
-            'native_started_closure_unavailable': 'Historical started audit is a launch fact, not an unclosed marker. Engineering/native owner needs authentic original positive outer-close evidence; no general historical reader is available.',
-            'native_preparation_closure_unavailable': 'Engineering/native preparation owner needs authenticated original preparation/outer disposition. Terminal status, absent Pause/PID and age cannot release this hold.',
-            'preparation_list_invalid': 'Engineering/serving observer owns the malformed or unavailable five-field preparation list.',
-            'preparations_owned': 'Engineering/original preparation owners need positive original closure; exact references remain private and independent observation errors/cutoffs remain held.',
-            'original_owner_unsettled': 'Engineering coordinates original journal/native/outer owners and positive disposition; no terminal-label or PID inference.',
-        }.get(category, 'Engineering inspects the stage, source locations and original owners; failed or uncertain effects prevent the next effect.')
+            'preparation_list_invalid': 'Engineering/serving observer owns the malformed or unavailable complete current preparation list.',
+            'preparations_owned': 'Engineering/operator must exclude current preparation owners; original references remain private.',
+            'serving_observation_unavailable': 'Engineering/serving owner must establish supported complete running-entry observations, or the human operator must establish positive already-stopped/excluded entry through existing controls. Failed opening lists grant no exclusion.',
+        }.get(category, 'Engineering inspects the current stage and original causes. Complete present exclusion and verified backup are required; historical uncertainty alone needs no closure certification. Failed or uncertain effects prevent the next effect.')
         public = dict(facts)
         # Original references/observation bodies stay in memory/private custody.
         # Only a fixed-shape command summary is suitable for terminal output.
@@ -283,7 +280,26 @@ class Coordinator:
         self.last_layout = 'not yet accepted'
         self.commands = []
         self.boots = None
+        self.accepted_backup = None
+        self.original_process = None
         self.python = self.source / '.venv' / 'bin' / 'python'
+        # The human established control before environment/helper/constructor
+        # effects. This selection is independently observed, never a fallback
+        # after a failed stop in this invocation.
+        diagnostic.enter('constructor-entry-boundary')
+        registered = registry(self.home)
+        self.runtime = literal(args.runtime_root or Path(registered['active']))
+        self.frozen = {'registry': registered}
+        for name in ('daemon.pid', 'daemon.port'):
+            literal(self.home / name, missing=True)
+        self.entry_running = (self.home / 'daemon.pid').exists()
+        self.offline = not self.entry_running
+        if self.entry_running:
+            self.entry_lifecycle = self.running_lifecycle()
+        else:
+            self.offline_lifecycle = self.stopped_lifecycle()
+        self.process_boundary(offline=self.offline)
+        diagnostic.observations['entry'] = 'running' if self.entry_running else 'positive-stopped; stop not attempted'
         diagnostic.enter('constructor-python')
         self.python_pin = self.python_identity()
         self.cli = [str(self.python), '-m', 'cli.main']
@@ -307,11 +323,20 @@ class Coordinator:
                 raise Hold(f'{name} version unavailable/unsupported; Node24 required before maintenance')
             self.tools[name]['version'] = version.strip()
         diagnostic.enter('constructor-registry')
-        registered = registry(self.home)
-        self.runtime = literal(args.runtime_root or Path(registered['active']))
+        if registry(self.home) != registered:
+            raise Hold('runtime registry moved during constructor')
         diagnostic.enter('constructor-maintenance')
         diagnostic.pre_effect = False  # RO SQLite may affect reader sidecars.
         self.frozen = observe_maintenance(self.home, self.runtime)
+        if self.frozen['registry'] != registered:
+            raise Hold('runtime registry moved during constructor')
+        self.process_boundary(offline=self.offline)
+        if self.entry_running:
+            if self.running_lifecycle() != self.entry_lifecycle:
+                raise Hold('original running lifecycle moved during constructor')
+            self.live_scope()
+        elif self.stopped_lifecycle() != self.offline_lifecycle:
+            raise Hold('stopped lifecycle moved during constructor')
         self.accepted_layouts = {o['path']: o['layout'] for o in self.frozen['orgs']}
         self.target = next((o for o in self.frozen['orgs'] if o['runtime'] == str(self.runtime) and o['org'] == args.org), None)
         if self.target is None:
@@ -519,7 +544,9 @@ class Coordinator:
                 'locks': {p: digest(read_file(self.source / p)) for p in ('uv.lock', 'pyproject.toml', 'web/package-lock.json', 'web/package.json',
                           'scripts/setup_coding.py', 'scripts/_coding_setup_preflight.py', 'scripts/daemon.sh', 'scripts/build_web.sh')}}
 
-    def revalidate(self, *, offline=False, accepted_target=None):
+    def revalidate(self, *, offline=None, accepted_target=None):
+        if offline is None:
+            offline = self.offline
         self.diagnostic.observe('revalidate-host')
         require_human_host()
         if identity(self.home)[:4] != self.home_pin:
@@ -547,12 +574,19 @@ class Coordinator:
             expected[accepted_target[0]] = accepted_target[1]
         # Layouts may advance ONLY through the individually accepted writer.
         if (current['registry'] != self.frozen['registry'] or current['directories'] != self.frozen['directories']
-                or current['runtimes'] != self.frozen['runtimes']
+                or current['runtimes'] != self.frozen['runtimes'] or current['excluded'] != self.frozen['excluded']
                 or [(o['path'], o['identity']) for o in current['orgs']] != [(o['path'], o['identity']) for o in self.frozen['orgs']]
                 or {o['path']: o['layout'] for o in current['orgs']} != expected):
             raise Hold('runtime/org/database membership or identity changed')
         self.diagnostic.observe('revalidate-processes')
         self.process_boundary(offline=offline)
+        if offline:
+            if self.stopped_lifecycle() != self.offline_lifecycle:
+                raise Hold('current stopped lifecycle drift; preserve last accepted stage')
+        elif not hasattr(self, 'started') and self.running_lifecycle() != self.entry_lifecycle:
+            raise Hold('original running lifecycle changed; no stop/restart fallback')
+        if self.accepted_backup is not None:
+            self.require_backup()
         if not offline and hasattr(self, 'started'):
             self.diagnostic.observe('revalidate-started-pair')
             self.revalidate_start()
@@ -564,7 +598,11 @@ class Coordinator:
         return current
 
     def live_scope(self):
-        """Supplement durable history with actual serving/native observations."""
+        """Require complete current evidence; final selected coverage is later.
+
+        Failed identity views expose only an opening preparation list. They
+        cannot supply exclusion, even when that opening list is empty.
+        """
         from cli.client.client import OpcClient
         from runtime.infrastructure.memory_collection import _identity_schema
         with OpcClient.from_env() as client:
@@ -637,6 +675,16 @@ class Coordinator:
                 if not valid:
                     raise Hold('preparation reference list malformed or unavailable', category='preparation_list_invalid')
                 self.diagnostic.preparations[slug] = preparations  # exact original, including every row
+                cutoff = view.get('data_through')
+                try:
+                    cutoff_valid = isinstance(cutoff, str) and datetime.fromisoformat(cutoff).tzinfo is not None
+                except ValueError:
+                    cutoff_valid = False
+                if (view.get('observation_error') is not None
+                        or not isinstance(view.get('boot_id'), str) or not view['boot_id']
+                        or view.get('org') != slug or not cutoff_valid):
+                    raise Hold('complete current preparation observation unavailable; Engineering/serving owner must establish a supported running observation or operator positive stopped entry',
+                               category='serving_observation_unavailable', details={'org': slug})
                 loaded = view.get('installed_identity')
                 _identity_schema(loaded)
                 self.diagnostic.checks[slug]['identity_valid'] = True
@@ -644,7 +692,8 @@ class Coordinator:
                     raise Hold('original preparations retain ownership', category='preparations_owned')
                 if (view.get('observation_error') is not None or not view.get('boot_id') or not view.get('data_through')
                         or loaded.get('org_root') != root
-                        or loaded.get('runtime_root') != str(self.runtime) or loaded.get('source_root') != str(self.source)):
+                        or loaded.get('runtime_root') != str(self.runtime)
+                        or (hasattr(self, 'started') and loaded.get('source_root') != str(self.source))):
                     raise Hold(f'{slug}: serving boot/source/native preparation/outer observation unknown; original observer owner must reconcile before any effect')
                 observations[slug] = view
             boots = {slug: view['boot_id'] for slug, view in observations.items()}
@@ -662,8 +711,9 @@ class Coordinator:
                 raise Hold('current host ancestor census incomplete')
             ancestors.add(current)
             current = by_pid[current].ppid
-        # Same-user cwd census supplements durable ownership. It never discharges
-        # an unknown native journal. Other users' private processes are irrelevant.
+        # Same-user attribution and all current durable owners supplement the
+        # human-controlled cooperative window. Other hosts need that control;
+        # neither this census nor a terminal task certifies historical closure.
         for row in rows:
             proc = Path('/proc') / str(row.pid)
             try:
@@ -684,6 +734,9 @@ class Coordinator:
                 raise Hold(f'process {row.pid}: managed task/job/native execution still active; original owner must close it')
             if any(cwd.is_relative_to(Path(r) / 'orgs') for r in self.frozen['registry']['registered']):
                 raise Hold(f'process {row.pid}: runtime/org/workspace consumer still active; original process owner must close it')
+            if (row.pid not in ancestors and cwd.is_relative_to(self.home)
+                    and b'runtime.daemon' not in raw):
+                raise Hold(f'process {row.pid}: shared-daemon store consumer still active')
             if offline and b'runtime.daemon' in raw:
                 raise Hold(f'process {row.pid}: daemon still active; original lifecycle owner must reconcile')
             if b'runtime.daemon' in raw:
@@ -734,28 +787,72 @@ class Coordinator:
         self.diagnostic.references['incomplete'] = str(self.backup / 'INCOMPLETE.json')
         self.diagnostic.effect('receipt-custody', 'accepted-receipts-only-backup-incomplete')
         self.diagnostic.accepted('receipt-custody')
-        print(f'   Recovery evidence: {self.receipts}; backup INCOMPLETE until manifest.json')
+        print(f'   Recovery evidence: {self.receipts}; backup INCOMPLETE until verified manifest acceptance')
+
+    def running_lifecycle(self):
+        """Select the original live owner before stop, never from PID absence."""
+        pins = {name: identity(self.home / name) for name in ('daemon.pid', 'daemon.port')}
+        if any(pin[3] != os.getuid() for pin in pins.values()):
+            raise Hold('running lifecycle custody unavailable')
+        pid_raw, port_raw = (read_file(self.home / name, 64) for name in ('daemon.pid', 'daemon.port'))
+        if (re.fullmatch(rb'[1-9][0-9]{0,9}\n?', pid_raw) is None
+                or re.fullmatch(rb'[1-9][0-9]{0,4}\n?', port_raw) is None
+                or not 1 <= int(port_raw) <= 65535):
+            raise Hold('running lifecycle identity malformed')
+        pid = int(pid_raw)
+        rows = {r.pid: r for r in checked_processes()}
+        original = rows.get(pid)
+        if original is None or original.start_identity is None:
+            raise Hold('stale/unknown current daemon identity; no stopped-entry fallback')
+        proc = Path('/proc') / str(pid)
+        if (proc.stat().st_uid != os.getuid() or b'runtime.daemon' not in (proc / 'cmdline').read_bytes()
+                or Path(os.readlink(proc / 'cwd')) != self.source):
+            raise Hold('original daemon process source/custody unavailable')
+        selected = (pid, original.start_identity)
+        if self.original_process is not None and selected != self.original_process:
+            raise Hold('original daemon process replaced; no fallback or stop')
+        later = {r.pid: r for r in checked_processes()}.get(pid)
+        if (later is None or later.start_identity != original.start_identity
+                or {name: identity(self.home / name) for name in pins} != pins
+                or read_file(self.home / 'daemon.pid', 64) != pid_raw
+                or read_file(self.home / 'daemon.port', 64) != port_raw):
+            raise Hold('original running lifecycle moved during observation')
+        self.original_process = selected
+        return pins, pid_raw, port_raw, selected
+
+    def stopped_lifecycle(self):
+        """Positive existing stopped control plus registry, never old shutdown proof.
+
+        Used with repeated complete current owner/process observations and the
+        maintained human/cooperative window. No stopped HTTP request or fake
+        preparation/stop receipt is manufactured.
+        """
+        from scripts.migrate_workflow_submission_schema import _lifecycle_snapshot
+        for name in ('daemon.pid', 'daemon.port'):
+            path = literal(self.home / name, missing=True)
+            if path.exists():
+                raise Hold('stopped entry requires both original lifecycle files absent; stale/partial files hold')
+        observed = _lifecycle_snapshot(self.runtime)
+        if not any(row[0] == 'runtimes.yaml' and row[1] is not None for row in observed):
+            raise Hold('complete stopped lifecycle/runtime registration unavailable')
+        if registry(self.home) != self.frozen['registry']:
+            raise Hold('stopped runtime registration moved')
+        return observed
 
     def stop(self):
         self.diagnostic.enter('stop-preflight')
         self.revalidate()
         self.initialize_receipts()
+        self.revalidate()
+        if not self.entry_running:
+            # This branch was independently selected before any stop attempt.
+            # Leave the stop effect not-attempted; preserve old stop uncertainty.
+            self.diagnostic.accepted('positive-stopped-entry; stop-not-attempted')
+            return
         self.diagnostic.enter('stop-original-process')
-        path = self.home / 'daemon.pid'
-        if not path.exists():
-            raise Hold('already-stopped installation lacks positive original lifecycle closure; original host owner must reconcile; no PID-absence inference')
-        raw = read_file(path, 64)
-        if re.fullmatch(rb'[1-9][0-9]{0,9}\n?', raw) is None:
-            raise Hold('original daemon PID identity malformed')
-        pid = int(raw)
-        rows = {r.pid: r for r in checked_processes()}
-        original = rows.get(pid)
-        if original is None or original.start_identity is None:
-            raise Hold('stale/unknown original daemon process; no stop attempted')
-        self.original_process = (original.pid, original.start_identity)
-        cmd = (Path('/proc') / str(pid) / 'cmdline').read_bytes()
-        if b'runtime.daemon' not in cmd and b'uv' not in cmd:
-            raise Hold('daemon PID does not identify the original lifecycle executable')
+        if self.running_lifecycle() != self.entry_lifecycle:
+            raise Hold('original running lifecycle moved before stop')
+        pid = self.original_process[0]
         self.diagnostic.enter('stop-command')
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'stop', '--force'], private=True, effect='stop')
         self.diagnostic.enter('stop-closure')
@@ -764,7 +861,9 @@ class Coordinator:
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'status'], accept=(1,), private=True)
         if out != 'not running\n' or err or pid in {r.pid for r in checked_processes()}:
             raise Hold('original daemon stop closure unavailable; no preparation/migration/restart')
+        self.offline_lifecycle = self.stopped_lifecycle()
         self.revalidate(offline=True)
+        self.offline = True  # Only successful original closure can change phase.
         self.diagnostic.effect('stop', 'accepted-original-closure')
         self.diagnostic.accepted('stop')
 
@@ -792,6 +891,8 @@ class Coordinator:
         for root in roots:
             excluded.update((root / 'task-tmp', root / 'scratch'))
         excluded.update(Path(o['path']).parent / 'workspaces' for o in self.frozen['orgs'])
+        reserved = {Path(path): pin for path, pin in self.frozen['excluded']}
+        excluded.update(reserved)
         def visit(path, root):
             nonlocal count
             count += 1
@@ -802,6 +903,12 @@ class Coordinator:
             if path != root and path in roots:
                 return  # independently inventoried under its own root
             info = path.lstat()
+            if path in reserved:
+                if identity(path) != reserved[path]:
+                    raise Hold('untouched reserved boundary moved; no traversal or copying')
+                inventory['files'].append({'source': str(path), 'identity': reserved[path],
+                                           'disposition': 'untouched migration exclusion; boundary only; members not traversed or backed up'})
+                return
             if info.st_dev != root.stat().st_dev:
                 raise Hold(f'unaccounted affected mount boundary: {path}')
             row = {'source': str(path), 'identity': [info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink],
@@ -832,6 +939,13 @@ class Coordinator:
                 if (any(word in path.name.lower() for word in ('token', 'credential', 'secret', '.env', 'feishu', 'password'))
                         or path.name in ('.npmrc', '.netrc', '.pypirc', 'auth.json') or path.suffix in ('.key', '.pem', '.p12')):
                     row['disposition'] = 'credential custody retained; identity only, contents never read/copied'
+                    # Keep the existing custody classification. It can also
+                    # match source/package filenames; identity-only material
+                    # in required source/environment/UI recovery is not a copy.
+                    if path.is_relative_to(self.source):
+                        inventory['files'].append(row)
+                        raise Hold('affected source/environment/UI recovery material is uncopied under existing credential custody; source/environment and credential custodians must resolve recovery scope before preparation',
+                                   details={'path': str(path), 'required_action': 'resolve affected uncopied recovery material without reading/copying credentials or claiming complete backup'})
                 elif str(path).endswith(('-wal', '-shm', '-journal')):
                     main = Path(re.sub(r'-(wal|shm|journal)$', '', str(path)))
                     if not main.is_file() or main.suffix not in ('.db', '.sqlite3', '.sqlite'):
@@ -857,6 +971,16 @@ class Coordinator:
             for root in roots:
                 visit(root, root)
             self.revalidate(offline=True)
+            # Verify EVERY copied object again before publishing completeness.
+            # An accepted manifest is not a claim that restore was exercised.
+            for row in inventory['files']:
+                if 'backup' in row:
+                    target = literal(Path(row['backup']))
+                    pin = identity(target)
+                    if (not stat.S_ISREG(pin[2]) or pin[3] != os.getuid() or pin[4] != 1
+                            or self.hash_file(target) != row['sha256']):
+                        raise Hold('backup verification/custody failed; no complete manifest')
+                    row['backup_identity'] = pin
             fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 os.fsync(fd)
@@ -864,8 +988,19 @@ class Coordinator:
                 os.close(fd)
             self.diagnostic.observe('backup-complete-manifest')
             inventory['complete'] = True
-            exclusive(self.backup / 'manifest.json', canonical(inventory))
+            raw = canonical(inventory)
+            manifest = self.backup / 'manifest.json'
+            exclusive(manifest, raw)
+            accepted = {'manifest': identity(manifest), 'digest': digest(raw), 'size': len(raw),
+                        'backup': identity(self.backup)[:4], 'receipts': identity(self.receipts)[:4]}
+            if read_file(manifest, len(raw)) != raw:
+                raise Hold('complete manifest verification failed')
+            self.revalidate(offline=True)
+            self.accepted_backup = accepted
+            self.require_backup()
         except BaseException as original:
+            self.accepted_backup = None
+            inventory['complete'] = False
             try:
                 exclusive(self.backup / 'FAILED.json', canonical(inventory))
             except BaseException as persistence:
@@ -876,6 +1011,18 @@ class Coordinator:
         self.diagnostic.effect('backup', 'accepted-complete-manifest-restore-unverified')
         self.diagnostic.accepted('backup')
         print(f'3. Backup complete: {self.backup}/manifest.json (restore NOT RUN; no automatic rollback)')
+
+    def require_backup(self):
+        accepted = self.accepted_backup
+        if accepted is None:
+            raise Hold('no verified complete backup accepted in this invocation')
+        manifest = self.backup / 'manifest.json'
+        if (identity(self.backup)[:4] != accepted['backup']
+                or identity(self.receipts)[:4] != accepted['receipts']
+                or any(stat.S_IMODE(path.lstat().st_mode) != 0o700 for path in (self.backup, self.receipts))
+                or identity(manifest) != accepted['manifest']
+                or digest(read_file(manifest, accepted['size'])) != accepted['digest']):
+            raise Hold('accepted backup manifest/custody changed; no next effect')
 
     @staticmethod
     def hash_file(path):
@@ -927,8 +1074,7 @@ class Coordinator:
         self.diagnostic.enter('preparation-preflight')
         print('4. Preparing locked source environment and matching UI')
         self.revalidate(offline=True)
-        if not (self.backup / 'manifest.json').exists():
-            raise Hold('complete recovery manifest unavailable')
+        self.require_backup()
         self.diagnostic.enter('preparation-uv')
         self.command([self.tools['uv']['path'], 'sync', '--locked', '--no-python-downloads', '--python', str(self.python),
                       '--cache-dir', str(self.backup / 'preparation-uv-cache')], effect='preparation-uv')
@@ -961,6 +1107,7 @@ class Coordinator:
         if _resolve_dist_dir(self.settings) != self.dist:
             raise Hold('built UI is not the selected served artifact')
         self.ui = self.ui_inventory()
+        self.revalidate(offline=True)
         exclusive(self.receipts / 'prepared-ui.json', canonical(self.ui))
         self.diagnostic.references['prepared_ui'] = str(self.receipts / 'prepared-ui.json')
         self.diagnostic.effect('preparation-ui', 'accepted-artifact-receipt')
@@ -983,6 +1130,7 @@ class Coordinator:
 
     def run_transition(self, source_layouts, target_layout, script, arguments, needed_exit, needed_text):
         self.diagnostic.enter('migration-' + target_layout + '-preflight')
+        self.require_backup()
         current = self.revalidate(offline=True)
         layout = next(o['layout'] for o in current['orgs'] if o['path'] == self.target['path'])
         self.last_layout = layout
@@ -1100,7 +1248,7 @@ class Coordinator:
         daemon = self.launch_process(pid, 'daemon', rows)
         for process in (wrapper, daemon):
             key = (process['pid'], process['start_identity'])
-            if (key in self.before_start or key == self.original_process
+            if (key in self.before_start or (self.original_process is not None and key == self.original_process)
                     or int(process['start_identity']) < self.start_floor):
                 raise Hold('start reported an existing/reused/unattributed original process; import held')
         if (pid == wrapper_pid or daemon['ppid'] != wrapper_pid
@@ -1267,8 +1415,8 @@ class Coordinator:
         self.revalidate()
         print(f'1. Source {self.source} HEAD={self.source_pin["head"]}; runtime {self.runtime}; org {self.args.org}; layout {self.last_layout}')
         print(f'   Shared scope: {self.frozen["registry"]["registered"]}; UI {self.dist} ({self.args.ui_profile}); backup {self.backup}')
-        self.confirm('Maintain the coordinated no-new-work/no-restart/no-publication/profile/move window across ALL registered runtimes until this command returns. This is cooperative exclusion, not a daemon lock.')
-        print('2. Stopping original daemon once')
+        self.confirm('Renew the already-established complete human/cooperative window: all affected registered runtimes, normal orgs, shared-daemon stores, source/environment users and other hosts remain excluded from work/publication/profile/move/recovery/restart through controlled restart, import checks and return. Stop if any actor/host is unknown. Repeated observations and SQLite reservations do not create a cross-host lock or hostile same-user/hard real-time guarantee.')
+        print('2. Stopping original daemon once' if self.entry_running else '2. Positive already-stopped entry; stop not attempted')
         self.stop()
         self.backup_inventory()
         self.prepare()
@@ -1276,6 +1424,7 @@ class Coordinator:
         print('6. Starting selected compatible source once')
         self.diagnostic.enter('start-preflight')
         self.revalidate(offline=True)
+        self.require_backup()
         self.before_start = {(r.pid, r.start_identity) for r in checked_processes()}
         self.start_floor = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf('SC_CLK_TCK'))
         self.diagnostic.enter('start-command')
@@ -1287,6 +1436,7 @@ class Coordinator:
         self.diagnostic.enter('start-pair-observation')
         self.diagnostic.effect('start-pair', 'observation-attempted')
         self.started = self.started_processes(wrapper_pid, port)
+        self.offline = False
         exclusive(self.receipts / 'started-processes.json', canonical(self.started))
         self.diagnostic.references['started_pair'] = str(self.receipts / 'started-processes.json')
         self.diagnostic.effect('start-pair', 'accepted-pair-receipt-status-pending')
@@ -1302,6 +1452,8 @@ class Coordinator:
         self.serving()
         print('7. Checking original human release import')
         self.import_release()
+        self.revalidate()
+        self.require_backup()
         self.diagnostic.enter('settings-disabled-handoff')
         port = read_file(self.home / 'daemon.port', 64).decode().strip()
         print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding')
@@ -1340,6 +1492,10 @@ def main(argv=None):
         # Use only the existing installed source environment; never uv run here
         # (it may sync). Missing preflight dependencies give an owner hold.
         diagnostic.accepted('arguments')
+        diagnostic.enter('cooperative-window-before-effects')
+        if input('Before invoking setup (and any preceding host update), the human operator must control ALL affected runtime/org/shared-daemon stores, source/environment users and cooperative other hosts. Maintain no new work, publications, profiles, moves, recovery or competing restart through backup, preparation, migration, controlled restart, import checks and return. Unknown actors/hosts or unavailable current observations HOLD; a confirmation or PID absence alone is insufficient. Type CONFIRM only with this complete existing window: ') != 'CONFIRM':
+            raise HostRefusal('complete cooperative maintenance window not established')
+        diagnostic.accepted('cooperative-window-confirmed; observations-still-required')
         diagnostic.enter('selected-environment')
         selected = _SOURCE / '.venv' / 'bin' / 'python'
         if Path(sys.prefix) != _SOURCE / '.venv':
