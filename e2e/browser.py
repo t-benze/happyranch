@@ -1496,6 +1496,7 @@ class Browser:
         page = self.thread_page
         page.set_default_timeout(self.controller.remaining(10) * 1000)
         requests = {}
+        self.thread_streams = set()
         def request(req):
             observed = dict(event='request', request_id=len(requests), url=req.url, method=req.method,
                             resource_type=req.resource_type, navigation=req.is_navigation_request(), at=time.monotonic())
@@ -1514,12 +1515,20 @@ class Browser:
                                                resource_type=req.resource_type, at=time.monotonic()))
         def failed(req):
             observed = requests[req]
+            self.thread_streams.discard(observed['request_id'])
             event = dict(event='request-failed', request_id=observed['request_id'], url=req.url,
                          method=req.method, failure=req.failure, at=time.monotonic())
             self.thread_events.append(event)
             if req.url.startswith(self.thread_base + '/'):
+                self.controller.browser_relay.browser_terminal(event)
                 self.controller.browser_relay.browser_abort(dict(event, target=req.url[len(self.thread_base):]))
         def response(res):
+            if (res.headers.get('content-type') or '').split(';')[0] == 'text/event-stream':
+                observed = requests[res.request]
+                self.thread_streams.add(observed['request_id'])
+                self.thread_events.append(dict(event='stream-response', request_id=observed['request_id'],
+                                               url=res.url, method=res.request.method, status=res.status,
+                                               at=time.monotonic()))
             if res.request.method == "POST" and res.url == self.thread_base + "/api/v1/orgs/alpha/threads":
                 record = dict(event="compose-response", url=res.url, status=res.status, at=time.monotonic())
                 self.thread_events.append(record)
@@ -1535,7 +1544,19 @@ class Browser:
                 self.controller.remaining()
         page.on("request", request)
         page.on("requestfailed", failed)
+        def finished(req):
+            observed = requests[req]
+            self.thread_streams.discard(observed['request_id'])
+            event = dict(event='request-finished', request_id=observed['request_id'],
+                         url=req.url, method=req.method, at=time.monotonic())
+            self.thread_events.append(event)
+            if req.url.startswith(self.thread_base + '/'):
+                self.controller.browser_relay.browser_terminal(event)
+        page.on('requestfinished', finished)
         page.on("response", response)
+        def context_closed(_context):
+            self.thread_events.append(dict(event='context-close', at=time.monotonic()))
+        self.thread_context.on('close', context_closed)
         lineage = None
         def navigated(payload):
             nonlocal lineage
@@ -1681,12 +1702,28 @@ class Browser:
         if hasattr(self, "thread_context"):
             try:
                 self._healthy()
-                self.thread_events.append(dict(event='context-closing', at=time.monotonic()))
-                self._native(self.thread_context._impl_obj.close, self.controller.effective_end())
-                self._detach(*self.thread_navigation_listener)
-                del self.thread_navigation_listener
-                self.thread_events.append(dict(event="context-closed", at=time.monotonic()))
+                closing = dict(event='context-closing', request_ids=sorted(self.thread_streams), at=time.monotonic())
+                self.thread_events.append(closing)
+                relay = self.controller.browser_relay
+                shutdown_error = None
+                try:
+                    streams = relay.close_context_streams(closing, self.controller.effective_end())
+                    self.thread_events.append(dict(event='proxy-streams-shutdown', streams=streams, at=time.monotonic()))
+                except Exception as exc:
+                    shutdown_error = exc
+                    self.thread_events.append(dict(event='context-shutdown-error', error=type(exc).__name__, at=time.monotonic()))
+                try:
+                    self._native(self.thread_context._impl_obj.close, self.controller.effective_end())
+                finally:
+                    if hasattr(self, 'thread_navigation_listener'):
+                        self._detach(*self.thread_navigation_listener)
+                        del self.thread_navigation_listener
+                closed = dict(event="context-closed", at=time.monotonic())
+                self.thread_events.append(closed)
+                relay.context_closed = dict(closed)
                 del self.thread_context
+                if shutdown_error is not None:
+                    raise shutdown_error
             finally:
                 self.controller._atomic_json(self.controller.root / "raw/e05-browser-events.json", list(self.thread_events))
 
