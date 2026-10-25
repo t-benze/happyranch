@@ -2562,12 +2562,15 @@ def main() -> int:
             except (OSError, ValueError, KeyError, TypeError, UnicodeError):
                 health["completed_cases"][version] = []
                 health["errors"].append(f"e2e-{version}: completed case evidence unavailable")
+            required_evidence_accepted = True
             for name in required + phase_logs:
                 path = directory / name
                 if not path.is_file() or (name.endswith((".json", ".png")) and path.stat().st_size == 0):
+                    required_evidence_accepted = False
                     health["errors"].append(f"missing/empty artifact: e2e-{version}/{name}")
             if (directory / "result.json").is_file():
                 result = None
+                diagnostic_accepted = False
                 try:
                     result, diagnostic_facts = _decode_diagnostic(directory / "result.json")
                     if type(result) is not dict:
@@ -2578,6 +2581,7 @@ def main() -> int:
                 else:
                     try:
                         _diagnostic_projection(result, diagnostic_facts, args.source, root=True)
+                        diagnostic_accepted = True
                     except (ValueError, KeyError, TypeError, IndexError, RecursionError, OverflowError):
                         health["errors"].append(f"e2e-{version}: invalid diagnostic metadata")
                 diagnostic_facts = None  # Release this decode's selected duplicate records.
@@ -2598,7 +2602,9 @@ def main() -> int:
                                      json.loads((directory / "browser-events.json").read_text()), directory)
                         validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
                         validate_e07(result, json.loads((directory / "observations.json").read_text()), directory)
-                        if complete_join:
+                        # No case attribution exists for these lane-wide gates.
+                        # Retain UNKNOWN if required evidence was not admitted.
+                        if complete_join and required_evidence_accepted and diagnostic_accepted:
                             content_accepted.add(version)
                     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                         health["errors"].append(f"e2e-{version}: {exc}")

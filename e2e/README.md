@@ -1919,6 +1919,16 @@ never replace observations.json, E04/E05/E07 content, images or witnesses; any
 missing obligation still makes run/Health FAIL. Missing/unsafe evidence stays
 UNKNOWN; no historical PASS is reconstructed. Group isolation is deferred.
 
+Individual case promotion also requires every required artifact/phase log in
+that Python lane to pass the existing presence/nonempty rules and its result
+to pass diagnostic decoding/projection admission. Missing/empty required images
+(including lifecycle, response-loss, org-switch or browser-final) or rejected
+diagnostic metadata keep ALL retained cases in that lane UNKNOWN: these checks
+have no finer accepted case attribution. Ledger/result joins and E04/E05/E07
+content checks cannot substitute for those admissions. Complete valid evidence
+retains the original promotion path through all existing row/admission gates;
+Health errors remain independently fatal.
+
 Four answers / finite acceptance map (extends the existing R3-05/R3-06,
 Controller.mark/export and aggregate.controls keepers):
 
@@ -1930,6 +1940,7 @@ Controller.mark/export and aggregate.controls keepers):
 | A2 completed prefix then later action/cleanup/export failure | Committed closed evidence survives producer memory loss; unsafe fallback erasure or marker-only success would lose evidence/launder failure. | Controller.mark, run failure_receipt/export, aggregate.controls. Previous terminal-only raw staging lost all cases. | NO. Existing controls execute actual mark/atomic publication/reopened prefix/copy and UNKNOWN refusal. Whole Product late-failure cleanup/export transitions remain NOT RUN; source ordering reviewed. |
 | A2 identity/duplicate/conflict/path/secret safety | Closed bound exact identities and accepted references only; loosening unknown fields leaks arbitrary data. | Same existing aggregate.controls, extended completed_controls. Source/run join, filesystem custody and future-secret rejection are distinct from whole-run status checks. | NO. Actual publisher/reader controls cover wrong coherent identities, duplicate JSON/case, bad sequence/index/reference/digest, symlink/conflicting publication, raw-field rejection and secret-free bytes. |
 | A2 all56 complete record | All original identities/results join without changing ordered membership or full final oracles; a partial-ledger shortcut could fabricate complete health. | Existing validate and independent validate_e04/e05/e07 remain; new join is consistency only. | NO. Actual producer/all56 ledger consistency control executed; full56 EACH3.12/3.14 Product remains manager-owned/NOT RUN here. |
+| A2 required-file/diagnostic admission (TASK12950) | Missing/empty required artifacts or invalid diagnostics keep affected-lane cases UNKNOWN and Health FAIL; omitting either admission from promotion can falsely label all56 PASS. Complete valid evidence retains every original gate. | Existing main required-file loop/diagnostic projection and controls/completed_controls; controls cover metadata/ledger consistency, not main's full-artifact promotion. This gap concerns unavailable independent content despite an accepted ledger. | NO new test or production seam. PROOF NOT RUN: no existing complete full-artifact control fixture reaches main with valid independent content/Actions admission. Missing-image/invalid-projection before/after assessment is source-traced; old unknown-field proof does not cover it. No new harness or Product allocation. |
 
 Task evidence records the exact Python3.14.4 commands/cwd, candidate source
 hashes, complete streams and exits. `python -B e2e/aggregate.py --controls`
