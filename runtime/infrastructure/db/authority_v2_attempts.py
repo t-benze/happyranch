@@ -129,16 +129,19 @@ _V2_STARTUP_ROOT_CAP = 8
 _V2_STARTUP_ROW_CAP = 4096
 _V2_STARTUP_BYTE_CAP = 8 * 1024 * 1024
 _StartupResult = TypeVar("_StartupResult")
+# Payload containers are private and read-only after their one complete charge.
+_V2StartupPayload = tuple[str, tuple, list[dict]]
+_V2StartupEntry = tuple[_V2StartupPayload, int]
 
 
-def _v2_startup_retained_size(value: Any) -> int:
-    """Actual closed builtin graph sizes, once per identity; no serialization."""
+def _v2_startup_retained_size(value: Any, *, opaque: set[int] | None = None) -> int:
+    """Size a new graph, or metadata stopping ONLY at fully charged payloads."""
     seen: set[int] = set()
     pending = [value]
     size = 0
     while pending:
         item = pending.pop()
-        if id(item) in seen:
+        if id(item) in seen or (opaque is not None and id(item) in opaque):
             continue
         seen.add(id(item))
         kind = type(item)
@@ -163,12 +166,16 @@ class _V2StartupReads:
 
     def __init__(self, db: Any) -> None:
         self.db = db
-        # Values are (complete raw scalar row tuples, private decoded history).
+        # Values are (payload, charge); payload includes the actual root key,
+        # complete raw scalar row tuples and private decoded history.
         # Accepted entries move to pending during a speculative closure; they
         # become reusable across reads only after matching outside bookends.
-        self._memo: OrderedDict[str, tuple[tuple, list[dict]]] = OrderedDict()
-        self._pending: OrderedDict[str, tuple[tuple, list[dict]]] = OrderedDict()
+        self._memo: OrderedDict[str, _V2StartupEntry] = OrderedDict()
+        self._pending: OrderedDict[str, _V2StartupEntry] = OrderedDict()
         self._epoch: tuple | None = None
+        self._groups: tuple[tuple[str, int, int], ...] = ()
+        self._position = -1
+        self._window_end: int | None = 0
         self._closed = False
         self.unsafe: _V2StartupConnectionUnsafe | None = None
         with db._lock:
@@ -196,6 +203,138 @@ class _V2StartupReads:
             self._memo.clear()
             self._pending.clear()
             self._epoch = None
+            self._groups = ()
+            self._position = -1
+            self._window_end = 0
+
+    def _retention_fits(
+        self, pending: OrderedDict[str, _V2StartupEntry] | None = None,
+        *, groups: tuple | None = None, position: int | None = None,
+        window_end: int | None = None,
+    ) -> bool:
+        """Conservative M + sum(C), without revisiting any old payload graph."""
+        # Materialize the ACTUAL field dictionary before measuring its storage.
+        fields = self.__dict__
+        if self.unsafe is not None:
+            return False  # Never size, replace or sanitize sticky safety causes.
+        pending = self._pending if pending is None else pending
+        if len(pending) + len(self._memo) > _V2_STARTUP_ROOT_CAP:
+            return False
+        opaque = set()
+        charge = 0
+        for entries in (pending, self._memo):
+            for payload, entry_charge in entries.values():
+                opaque.add(id(payload))
+                charge += entry_charge
+        children = []
+        for key, value in fields.items():
+            children.append(key)
+            # Borrowed owners are excluded only at these explicit field edges;
+            # their field names/reference slots remain in the measured dict.
+            if key not in ("db", "conn"):
+                if key == "_pending":
+                    value = pending
+                elif key == "_groups" and groups is not None:
+                    value = groups
+                elif key == "_position" and position is not None:
+                    value = position
+                elif key == "_window_end" and window_end is not None:
+                    value = window_end
+                children.append(value)
+        metadata = (
+            sys.getsizeof(self) + sys.getsizeof(fields)
+            + _v2_startup_retained_size(tuple(children), opaque=opaque)
+        )
+        return metadata + charge <= _V2_STARTUP_BYTE_CAP
+
+    def _reconcile_retention(self) -> None:
+        # Catch accounting only. JSON, projection, authentication and view
+        # cleanup failures must keep their original ordering/escape boundary.
+        try:
+            if not self._retention_fits():
+                self.invalidate()
+        except Exception:
+            self.invalidate()
+
+    def _protected(self, root: str) -> bool:
+        return any(
+            key == root and first <= self._position <= last
+            for key, first, last in self._groups
+        )
+
+    def _admit(self, root: str, entry: _V2StartupEntry) -> None:
+        # One-call trial locals never survive to the next projection. No edit
+        # to the original map, including its allocation/order, until acceptance.
+        trial = OrderedDict(self._pending)
+        trial[root] = entry
+        while True:
+            if self._retention_fits(trial):
+                self._pending = trial
+                return
+            victim = next(
+                (key for key in trial if key != root and not self._protected(key)),
+                None,
+            )
+            if victim is None:
+                return
+            del trial[victim]
+
+    def _discovery_position(self, rows: list, position: int) -> None:
+        """Bounded raw-key planning only; never prefetch fallible evidence."""
+        if self._epoch is None or self._window_end is None:
+            return
+        try:
+            if position >= self._window_end:
+                end = min(len(rows), position + 2 * _V2_STARTUP_ROOT_CAP)
+                groups = []
+                for first in range(position, end):
+                    root = rows[first]["root_task_id"]
+                    if type(root) is not str:
+                        continue
+                    # Bounded pairwise scans: no slices, per-root position
+                    # lists, future projections or unbounded grouping index.
+                    if any(
+                        type(rows[prior]["root_task_id"]) is str
+                        and rows[prior]["root_task_id"] == root
+                        for prior in range(position, first)
+                    ):
+                        continue
+                    last = first
+                    for later in range(first + 1, end):
+                        key = rows[later]["root_task_id"]
+                        if type(key) is str and key == root:
+                            last = later
+                    if last != first:
+                        groups.append((root, first, last))
+                plan = tuple(groups)  # <=8 repeated roots in <=16 rows.
+                # Trial field VALUES, actual session-dict allocation. A
+                # nonfitting plan changes no entry or map allocation/order.
+                if not self._retention_fits(
+                    groups=plan, position=position, window_end=end,
+                ):
+                    # Ordinary LRU for the rest of this discovery. None is
+                    # already charged at unsafe; replacing the uniquely owned
+                    # group tuple with () cannot grow storage. Keep the charged
+                    # position object. No entry is evicted merely for planning.
+                    self._groups = ()
+                    self._window_end = None
+                    return
+                self._groups = plan
+                self._window_end = end
+            else:
+                self._groups = tuple(
+                    group for group in self._groups if group[2] >= position
+                )
+            self._position = position
+            self._reconcile_retention()
+        except Exception:
+            self.invalidate()
+
+    def _clear_groups(self) -> None:
+        self._groups = ()
+        self._position = -1
+        self._window_end = 0
+        self._reconcile_retention()
 
     def _abort(self, reason: str, *causes: BaseException) -> None:
         self.invalidate()
@@ -304,6 +443,9 @@ class _V2StartupReads:
                     self.invalidate()
                     self._epoch = opening
                 # Keep the already-accounted equal epoch object on hits.
+                self._reconcile_retention()
+                # Swapping the SAME two map references preserves field/dict
+                # allocation, metadata reachability and every wrapper/charge.
                 self._pending, self._memo = self._memo, self._pending
                 with self._view():
                     result = operation()
@@ -326,8 +468,13 @@ class _V2StartupReads:
     def _history(self, root: str) -> list[dict]:
         # Only called by _project inside _read's locked coherent closure.
         if root in self._pending:
-            self._pending.move_to_end(root)
-            return self._pending[root][1]
+            history = self._pending[root][0][2]
+            try:
+                self._pending.move_to_end(root)
+                self._reconcile_retention()
+            except Exception:
+                self.invalidate()
+            return history
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (root,),
         ).fetchall()
@@ -342,19 +489,9 @@ class _V2StartupReads:
         if self._epoch is not None and rows and len(rows) <= _V2_STARTUP_ROW_CAP:
             try:
                 raw = tuple(tuple(row) for row in rows)
-                self._pending[root] = (raw, history)
-                # The graph includes entry tuples, keys, raw/decoded scalars,
-                # OrderedDict storage and epoch/attachment metadata. Session
-                # field storage is also charged; borrowed DB/connection owners
-                # themselves are not cache allocations.
-                while self._pending:
-                    size = (
-                        sys.getsizeof(self) + sys.getsizeof(self.__dict__)
-                        + _v2_startup_retained_size((self._pending, self._memo, self._epoch))
-                    )
-                    if len(self._pending) <= _V2_STARTUP_ROOT_CAP and size <= _V2_STARTUP_BYTE_CAP:
-                        break
-                    self._pending.popitem(last=False)
+                payload = (root, raw, history)
+                charge = _v2_startup_retained_size(payload)
+                self._admit(root, (payload, charge))
             except Exception:
                 # Unsupported/failed accounting never changes full evaluation.
                 self.invalidate()
@@ -384,7 +521,22 @@ class _V2StartupReads:
                    WHERE finalization_state='unfinalized'
                    ORDER BY created_at, attempt_id""",
             ).fetchall()
-            return [self._project(row) for row in rows]
+            result = []
+            try:
+                self._discovery_position(rows, 0)
+                for row in rows:
+                    result.append(self._project(row))
+                    # Release a group's protection immediately after last use,
+                    # while its fitting history may remain ordinary LRU. The
+                    # only across-projection index is the charged field itself.
+                    self._discovery_position(rows, self._position + 1)
+            except BaseException:
+                # Release immediately without doing new accounting while an
+                # evidence failure/interruption is already escaping.
+                self.invalidate()
+                raise
+            self._clear_groups()
+            return result
         return self._read(project)
 
     def exact(
