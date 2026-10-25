@@ -65,6 +65,28 @@ class ThreadPreparation:
         self.attempt_open = False
         self.safe_selflaunch_defer = False
 
+        self._repository_preparations = {}
+        self._repository_effect_intervals = []
+        self._repository_retained_effects = []
+        self._repository_worker_active = False
+
+    def repository_preparation_binding(self):
+        from runtime.orchestrator.workspace_adapters import _repo_owner_binding
+        return _repo_owner_binding(self)
+
+    def repository_preparation_revalidate(self, evidence):
+        from runtime.orchestrator.workspace_adapters import _repo_preparation_writer
+        with _repo_preparation_writer(self, evidence):
+            self.admission.revalidate_uncommitted(self)
+
+    def record_repository_preparation(self, evidence, body):
+        from runtime.orchestrator.workspace_adapters import _repo_native_record
+        return _repo_native_record(self, evidence, body)
+
+    def settle_repository_preparation(self, evidence):
+        from runtime.orchestrator.workspace_adapters import _repo_native_settle
+        return _repo_native_settle(self, evidence)
+
     @property
     def move_reservation(self) -> ThreadPreparation:
         return self
@@ -86,8 +108,10 @@ class ThreadPreparation:
         this effect interval become sticky cleanup uncertainty; ordinary early
         no-effect refusals do not. A later successful interval cannot clear it.
         """
+        from runtime.orchestrator.workspace_adapters import _repo_effect_interval
         try:
-            yield
+            with _repo_effect_interval(self):
+                yield
         except BaseException as exc:
             try:
                 self.failed_cleanup()
@@ -234,7 +258,14 @@ class ThreadPreparation:
         # Provider return cannot certify the uncontained tree.
         self.terminal(None)
 
-    def failed_cleanup(self) -> None:
+    def failed_cleanup(self, *, repository_deadline: float | None = None) -> None:
+        if repository_deadline is not None:
+            # An expired/busy persistence gate cannot delay the local latch.
+            self.state = self.state.model_copy(update={"failed_cleanup": True})
+            from runtime.orchestrator.workspace_adapters import _repo_preparation_cleanup
+            with _repo_preparation_cleanup(self, repository_deadline):
+                self.admission.write(self, failed_cleanup=True)
+            return
         with self.admission.db._lock:
             # Retain uncertainty BEFORE persistence: interruption of that write
             # must not let a caught preparation error finish as a clean owner.
@@ -247,10 +278,12 @@ class ThreadPreparation:
 
     def finish(self, *, deferred: bool, failed: bool) -> None:
         with self.admission.db._lock:
+            failed = failed or any(not v.closed for v in self._repository_preparations.values())
             self.owner_live = False
             self.admission.write(self, deferred=deferred, producer_settled=True,
                 failed_cleanup=self.state.failed_cleanup or failed)
-            self.admission.live.pop(self.inv.id, None)
+            if all(v.closed for v in self._repository_preparations.values()):
+                self.admission.live.pop(self.inv.id, None)
 
 
 class ThreadMoveAdmission:

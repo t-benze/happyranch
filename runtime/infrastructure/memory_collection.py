@@ -753,6 +753,8 @@ def _post_expectation_refusal(identity: dict, terminal: dict, rows: list[dict], 
             or p["disposition"] not in {"bounded_admission", "unclosed_preparation"}
             or not isinstance(p["first_cause"], dict) or not p["first_cause"]):
         raise ValueError("refusal_native_shape")
+    from runtime.orchestrator.launch_refusals import validate_preparation_cause
+    validate_preparation_cause(p["first_cause"])
     _sha256(p["logical_owner"])
     for key in ("attempt_id", "invocation_id"):
         if not isinstance(p[key], str) or re.fullmatch(r"[0-9a-f]{32}", p[key]) is None:

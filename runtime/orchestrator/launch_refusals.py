@@ -21,7 +21,8 @@ def safe_cause(stage: str, exc: BaseException | None = None, *,
                diagnostic_category: str | None = None, diagnostic_rule: str | None = None,
                capture_complete: bool | None = None, capture_truncated: bool | None = None,
                timed_out: bool | None = None, operation: str | None = None,
-               refresh_phase: str | None = None) -> dict:
+               refresh_phase: str | None = None, refresh_probe: str | None = None,
+               preparation_receipt: int | None = None) -> dict:
     """No exception text, source lines, command arguments or process output."""
     cause: dict[str, Any] = {"stage": stage}
     if exc is not None:
@@ -89,7 +90,57 @@ def safe_cause(stage: str, exc: BaseException | None = None, *,
             "capture_truncated": capture_truncated if type(capture_truncated) is bool else False,
             "timed_out": timed_out if type(timed_out) is bool else False,
         })
+    if stage == "repository_pull":
+        if refresh_probe in {"identity_after_fetch", "source_after_fetch", "target_type", "ancestry_forward",
+                "ancestry_reverse", "final_branch", "final_head"}:
+            cause["refresh_probe"] = refresh_probe
+        if type(preparation_receipt) is int and preparation_receipt > 0:
+            cause["preparation_receipt"] = preparation_receipt
     return cause
+
+
+def validate_preparation_cause(value: Any) -> dict:
+    """Strict optional parity for historical and new sanitized cause forms."""
+    import re
+    fields = {"stage", "exception_class", "code", "locations", "repo", "operation", "refresh_phase",
+        "returncode", "diagnostic_category", "diagnostic_rule", "capture_complete", "capture_truncated", "timed_out",
+        "refresh_probe", "preparation_receipt"}
+    if type(value) is not dict or not {"stage"} <= value.keys() <= fields:
+        raise ValueError("preparation_cause_shape")
+    if type(value["stage"]) is not str or re.fullmatch(r"[a-z_]{1,80}", value["stage"]) is None:
+        raise ValueError("preparation_cause_stage")
+    if "exception_class" in value and (type(value["exception_class"]) is not str
+            or not value["exception_class"].isidentifier() or len(value["exception_class"]) > 80):
+        raise ValueError("preparation_cause_exception")
+    if "code" in value and value["code"] not in {"pause_control_unavailable", "root_paused", "unknown_task", "task_terminal",
+            "root_task_required", "task_not_in_progress", "control_generation_conflict", "pause_refusal"}:
+        raise ValueError("preparation_cause_code")
+    if "locations" in value and (type(value["locations"]) is not list or len(value["locations"]) > 4 or any(
+            type(v) is not str or len(v) > 220 or re.fullmatch(r"(?:external|(?:runtime|cli)/[A-Za-z0-9_./-]+):[0-9]{1,9}", v) is None
+            for v in value["locations"])):
+        raise ValueError("preparation_cause_locations")
+    if "repo" in value and (type(value["repo"]) is not str or re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value["repo"]) is None):
+        raise ValueError("preparation_cause_repository")
+    if "operation" in value and value["operation"] not in {"pull_ff_only", "refresh_ff_only"}:
+        raise ValueError("preparation_cause_operation")
+    if "refresh_phase" in value and value["refresh_phase"] not in {"precheck", "fetch", "between_stages", "merge", "submodule_update"}:
+        raise ValueError("preparation_cause_phase")
+    if "returncode" in value and type(value["returncode"]) is not int:
+        raise ValueError("preparation_cause_returncode")
+    diagnostics = {"diagnostic_category", "diagnostic_rule", "capture_complete", "capture_truncated", "timed_out"}
+    if value.keys() & diagnostics:
+        pairs = {("lock", "pull-lock-exists-v1"), ("network", "pull-resolve-host-v1"),
+            ("auth", "pull-auth-failed-v1"), ("other", "pull-non-ff-v1"),
+            ("other", "pull-unmatched-v1"), ("unknown", "pull-unknown-v1")}
+        if (not diagnostics <= value.keys() or (value["diagnostic_category"], value["diagnostic_rule"]) not in pairs
+                or any(type(value[k]) is not bool for k in ("capture_complete", "capture_truncated", "timed_out"))):
+            raise ValueError("preparation_cause_diagnostics")
+    if "refresh_probe" in value and value["refresh_probe"] not in {"identity_after_fetch", "source_after_fetch", "target_type",
+            "ancestry_forward", "ancestry_reverse", "final_branch", "final_head"}:
+        raise ValueError("preparation_cause_probe")
+    if "preparation_receipt" in value and (type(value["preparation_receipt"]) is not int or value["preparation_receipt"] <= 0):
+        raise ValueError("preparation_cause_receipt")
+    return value
 
 
 def _logical_owner(invocation) -> str:

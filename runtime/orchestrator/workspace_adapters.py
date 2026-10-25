@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import stat
+import uuid
 import json
 import logging
 import os
@@ -10,9 +13,9 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -1840,6 +1843,659 @@ class PersistentWorkspaceSetup:
 _REPO_REFRESH_SECONDS = 30.0
 
 
+# Preparation state follows the original owner through the joined offload.
+_repo_preparation: ContextVar[Any] = ContextVar("repository_preparation", default=None)
+
+
+def _repo_directory(path: Path) -> int:
+    path = Path(path)
+    if not path.is_absolute():
+        raise OSError("repository_path_not_absolute")
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid():
+            raise OSError("repository_directory_owner")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _repo_refresh_repository(repo_dir: Path) -> dict[str, Any]:
+    """Observe literal physical identity before ordered lease admission."""
+
+    def literal_file(parent, name):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                raise OSError("repository_pointer_unsafe")
+            raw = os.read(fd, 4097)
+            if len(raw) > 4096 or os.read(fd, 1):
+                raise OSError("repository_pointer_bound")
+            return raw
+        finally:
+            os.close(fd)
+
+    def locate():
+        literal_root = Path(repo_dir).absolute()
+        checked = _repo_directory(literal_root)
+        os.close(checked)
+        root = Path(os.path.abspath(literal_root))
+        fd = _repo_directory(root)
+        try:
+            info = os.stat(".git", dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                gitdir = root / ".git"
+            else:
+                raw = literal_file(fd, ".git")
+                if not raw.startswith(b"gitdir: "):
+                    raise OSError("repository_pointer_invalid")
+                value = _repo_refresh_line(raw[8:])
+                gitdir = root / value
+        finally:
+            os.close(fd)
+        fd = _repo_directory(gitdir)
+        try:
+            try:
+                raw = literal_file(fd, "commondir")
+            except FileNotFoundError:
+                common = Path(os.path.abspath(gitdir))
+            else:
+                literal_common = gitdir / _repo_refresh_line(raw)
+                checked = _repo_directory(literal_common)
+                os.close(checked)
+                common = Path(os.path.abspath(literal_common))
+        finally:
+            os.close(fd)
+        return common
+
+    common = locate()
+    descriptor = _repo_directory(common)
+    try:
+        pin = os.fstat(descriptor)
+        return {"path": str(common), "device": pin.st_dev, "inode": pin.st_ino}
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+        expected_repository: dict | None = None, blocking: bool = True):
+    """Stable descriptor custody, physically ordered by the caller; never unlink."""
+    import fcntl
+
+    repository = _repo_refresh_repository(repo_dir)
+    if expected_repository is not None and repository != expected_repository:
+        raise OSError("repository_common_directory_changed")
+    common = Path(repository["path"])
+    parent = _repo_directory(common)
+    lock = None
+    try:
+        pin = os.fstat(parent)
+        if (pin.st_dev, pin.st_ino) != (repository["device"], repository["inode"]):
+            raise OSError("repository_common_directory_changed")
+        lock = os.open("happyranch-repository-refresh.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                       0o600, dir_fd=parent)
+        lock_pin = os.fstat(lock)
+        if (not stat.S_ISREG(lock_pin.st_mode) or lock_pin.st_uid != os.getuid()
+                or lock_pin.st_nlink != 1 or lock_pin.st_mode & 0o022):
+            raise OSError("repository_lease_unsafe")
+        while True:
+            if time.monotonic() >= deadline or (cancel_requested is not None and cancel_requested.is_set()):
+                raise TimeoutError("repository_lease_unavailable")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not blocking:
+                    raise TimeoutError("repository_lease_unavailable") from None
+                if cancel_requested is not None:
+                    cancel_requested.wait(min(.05, max(0.0, deadline-time.monotonic())))
+                else:
+                    time.sleep(min(.05, max(0.0, deadline-time.monotonic())))
+
+        def validate(*, finishing: bool = False):
+            if not finishing and (time.monotonic() >= deadline or (cancel_requested is not None and cancel_requested.is_set())):
+                raise TimeoutError("repository_lease_unavailable")
+            if _repo_refresh_repository(repo_dir) != repository:
+                raise OSError("repository_common_directory_changed")
+            check = _repo_directory(common)
+            try:
+                current = os.fstat(check)
+                entry = os.stat("happyranch-repository-refresh.lock", dir_fd=check, follow_symlinks=False)
+                if ((current.st_dev, current.st_ino) != (pin.st_dev, pin.st_ino)
+                        or (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_nlink, entry.st_mode) !=
+                        (lock_pin.st_dev, lock_pin.st_ino, lock_pin.st_uid, lock_pin.st_nlink, lock_pin.st_mode)):
+                    raise OSError("repository_lease_identity_changed")
+            finally:
+                os.close(check)
+        validate()
+        yield {"path": str(common), "device": pin.st_dev, "inode": pin.st_ino}, validate
+    finally:
+        # Closing the original locked descriptor releases it. Never unlink:
+        # waiting owners must keep contending on this SAME inode.
+        if lock is not None:
+            os.close(lock)
+        os.close(parent)
+
+
+def _repo_owner_binding(owner: Any) -> tuple[dict[str, Any], Any]:
+    """Read the actual native owner; IDs never manufacture a replacement."""
+    if hasattr(owner, "orch"):
+        db, org, kind = owner.orch._db, owner.orch._slug, "task"
+        scope, agent, invocation, attempt, native = (owner.task.id, owner.agent,
+            owner.identity, owner.refusal_attempt_id, owner.task.id)
+    else:
+        db, org = owner.admission.db, owner.state.org_slug
+        state = owner.state
+        kind = "thread" if hasattr(owner, "inv") else state.kind
+        scope = state.thread_id if kind == "thread" else state.source_id
+        agent, invocation = state.agent_id, state.preparation_id
+        native = owner.inv.id if kind == "thread" else state.occurrence_id
+        # No artificial task/executor identity. The existing native phase and
+        # ordinal bind the repository attempt on this actual preparation.
+        attempt = hashlib.sha256((invocation+":"+getattr(state, "phase", "initial")+":"
+            +state.boundary+":"+str(state.ordinal)).encode()).hexdigest()[:32]
+    context = getattr(db, "_memory_collection_context", None)
+    observer = getattr(context, "memory_collection", None)
+    if observer is None or observer.db is not db or observer.org != org:
+        raise RuntimeError("repository_preparation_boot_unavailable")
+    return {"org": org, "kind": kind, "scope": scope, "agent": agent,
+        "session_id": owner.session_id, "invocation_id": invocation, "attempt_id": attempt,
+        "native_id": native, "boot_id": observer.boot_id, "source": _repo_preparation_source(owner)}, db
+
+
+def _repo_preparation_source(owner: Any) -> str:
+    """Bounded selected loaded/source agreement, not an executing-commit claim.
+
+    Compilation is retained only on this same live owner. Every use rechecks
+    actual function/code bindings, finite globals and every bounded source file;
+    no historical proof or mutable DB observation is cached.
+    """
+    import inspect
+    import sys
+    from types import FunctionType
+    from runtime.infrastructure.memory_collection import _code_projection, _find_code
+    db = owner.orch._db if hasattr(owner, "orch") else owner.admission.db
+    functions = [inspect.unwrap(v) for k, v in tuple(globals().items())
+        if k.startswith("_repo_") and type(v) is FunctionType]
+    functions += [getattr(_RepoPreparationEvidence, name) for name in
+        ("__init__", "emit", "committed", "active", "revalidate", "returned", "settle")]
+    functions += [getattr(type(owner), name) for name in ("record_repository_preparation",
+        "settle_repository_preparation", "repository_preparation_revalidate", "failed_cleanup")]
+    functions += [getattr(db, name).__func__ for name in ("repository_preparation_history_uncommitted",
+        "append_repository_preparation_uncommitted", "repository_preparation_snapshot_uncommitted")]
+    identities = tuple((v, v.__code__) for v in functions)
+    constants = (_REPO_REFRESH_SECONDS, _REPO_PULL_CAPTURE_BYTES, _REPO_PULL_POLL_SECONDS)
+    if constants != (30.0, 4096, 0.05) or tuple(type(v) for v in constants) != (float, int, float):
+        raise RuntimeError("repository_preparation_globals_changed")
+    cache = getattr(owner, "_repository_source_cache", None)
+    sources = {}
+    for function in functions:
+        path = Path(function.__code__.co_filename)
+        if str(path) not in sources:
+            with path.open("rb") as stream:
+                raw = stream.read(1024*1024+1)
+            if len(raw) > 1024*1024:
+                raise RuntimeError("repository_preparation_source_bound")
+            sources[str(path)] = (raw, hashlib.sha256(raw).hexdigest())
+    digests = tuple((path, digest) for path, (_, digest) in sources.items())
+    if cache is not None:
+        if cache[:2] != (identities, digests):
+            raise RuntimeError("repository_preparation_loaded_source_changed")
+        return cache[2]
+    compiled, rows = {}, []
+    for function in functions:
+        code = function.__code__
+        path = code.co_filename
+        if path not in compiled:
+            compiled[path] = compile(sources[path][0], path, "exec", dont_inherit=True, optimize=sys.flags.optimize)
+        loaded = _code_projection(code)
+        if loaded != _code_projection(_find_code(compiled[path], code.co_qualname)):
+            raise RuntimeError("repository_preparation_loaded_source_changed")
+        rows.append([function.__module__, code.co_qualname, sources[path][1], loaded])
+    digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    owner._repository_source_cache = (identities, digests, digest)
+    return digest
+
+
+def _repo_retain_materialization(owner: Any, workspace: Path, settings: Settings, specs: list[dict]) -> None:
+    from runtime.skills.canonical_store import _get_canonical_store_root
+    if type(specs) is not list or len(specs) > 128:
+        raise RuntimeError("repository_preparation_materialization_bound")
+    raw = json.dumps(specs, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    if len(raw) > 65536:
+        raise RuntimeError("repository_preparation_materialization_bound")
+    receipt = hashlib.sha256(raw).hexdigest()
+    paths = (workspace, _get_canonical_store_root(settings))
+    for path in paths:
+        descriptor = _repo_directory(Path(path).absolute())
+        os.close(descriptor)
+    owner._repository_retained_effects = [{"path": str(path), "disposition": "retained", "receipt": receipt}
+        for path in paths]
+
+
+def _repo_effect_inventory(owner: Any) -> dict:
+    """Retain completed original intervals and native scratch observations.
+
+    Retention is not deletion or proof a writer remains alive. An unknown
+    interval or unsupported inventory blocks only positive settlement.
+    """
+    intervals = getattr(owner, "_repository_effect_intervals", [])
+    if len(intervals) > 128 or any(not v["closed"] or v["failed"] for v in intervals):
+        raise RuntimeError("repository_preparation_earlier_effects_unresolved")
+    retained = list(getattr(owner, "_repository_retained_effects", []))
+    if hasattr(owner, "orch"):
+        from runtime.orchestrator.task_scratch import validate_task_scratch_manifest
+        workspace = owner.orch._paths.workspaces_dir / owner.agent
+        path = workspace / ".happyranch" / "task-scratch-manifests" / (owner.task.id+".json")
+        parent_descriptor = None
+        try:
+            parent_descriptor = _repo_directory(path.parent)
+            descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_descriptor)
+        except FileNotFoundError:
+            # First refresh precedes native task scratch creation. A missing
+            # manifest cannot close an actually admitted scratch interval.
+            if any(v.get("kind") == "scratch" for v in intervals):
+                raise RuntimeError("repository_preparation_scratch_unavailable") from None
+        else:
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+                    raise RuntimeError("repository_preparation_scratch_unsafe")
+                raw = os.read(descriptor, 65537)
+                if len(raw) > 65536 or os.read(descriptor, 1):
+                    raise RuntimeError("repository_preparation_scratch_bound")
+                manifest = json.loads(raw)
+                root = workspace / ".happyranch" / "task-tmp" / owner.task.id
+                producers = validate_task_scratch_manifest(manifest, expected_task_id=owner.task.id, expected_root=root)
+                matching = [v for v in producers if v["producer_kind"] == "agent" and v["producer_id"] == owner.session_id]
+                if any(v.get("kind") == "scratch" for v in intervals) and len(matching) != 1:
+                    raise RuntimeError("repository_preparation_scratch_owner_unavailable")
+                if matching:
+                    retained.append({"path": str(root), "disposition": "retained",
+                        "receipt": hashlib.sha256(raw).hexdigest()})
+            finally:
+                os.close(descriptor)
+        finally:
+            if parent_descriptor is not None:
+                os.close(parent_descriptor)
+    for evidence in getattr(owner, "_repository_preparations", {}).values():
+        raw = json.dumps(evidence.repository, sort_keys=True, separators=(",", ":")).encode()
+        retained.append({"path": evidence.repository["path"], "disposition": "retained",
+            "receipt": hashlib.sha256(raw).hexdigest()})
+    if len(retained) > 128:
+        raise RuntimeError("repository_preparation_inventory_bound")
+    return {"intervals": [dict(v) for v in intervals], "retained": retained, "outer_closed": True}
+
+
+@contextmanager
+def _repo_effect_control(owner: Any) -> Iterator[None]:
+    """Short original-owner arbitration; never keep gates across effect work."""
+    if hasattr(owner, "orch"):
+        with owner.store.writer(owner.task.id):
+            yield
+    else:
+        with owner.admission.move.gate, owner.admission.db._lock:
+            yield
+
+
+@contextmanager
+def _repo_effect_interval(owner: Any) -> Iterator[None]:
+    intervals = getattr(owner, "_repository_effect_intervals", None)
+    if intervals is None:
+        owner._repository_effect_intervals = intervals = []
+    if len(intervals) >= 128:
+        owner.failed_cleanup()
+        raise RuntimeError("repository_preparation_effect_bound")
+    import sys
+    from runtime.orchestrator.task_scratch import prepare_task_scratch
+    frame = sys._getframe()
+    kind = "native"
+    for _ in range(24):
+        if frame is None:
+            break
+        if frame.f_code is prepare_task_scratch.__code__:
+            kind = "scratch"
+            break
+        frame = frame.f_back
+    del frame
+    with _repo_effect_control(owner):
+        if len(intervals) >= 128:
+            raise RuntimeError("repository_preparation_effect_bound")
+        interval = {"id": len(intervals), "kind": kind, "closed": False, "failed": False}
+        intervals.append(interval)
+    try:
+        yield
+    except BaseException:
+        with _repo_effect_control(owner):
+            interval["failed"] = True
+        raise
+    finally:
+        with _repo_effect_control(owner):
+            interval["closed"] = True
+
+
+@contextmanager
+def _repo_preparation_gates(owner: Any, evidence: Any = None, *, deadline: float | None = None,
+        finishing: bool = False) -> Iterator[str | None]:
+    """All preparation-local application admission, including gate registries.
+
+    The caller already owns repository custody. Registry mutexes are released
+    before waiting for their native gate; the plain binding lock is taken once.
+    Ordinary FIFO, Pause and tracker callers keep their existing semantics.
+    """
+    from contextlib import ExitStack
+    db = owner.orch._db if hasattr(owner, "orch") else owner.admission.db
+    if evidence is not None:
+        if evidence.owner is not owner or evidence.db is not db:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        deadline, finishing = evidence.deadline, evidence.finishing or finishing
+    if deadline is None:
+        raise RuntimeError("repository_preparation_deadline_unavailable")
+
+    def acquire(lock: Any) -> None:
+        remaining = deadline-time.monotonic()
+        admitted = (lock.acquire(timeout=remaining) if remaining > 0 else
+            finishing and lock.acquire(blocking=False))
+        if not admitted:
+            raise TimeoutError("repository_preparation_control_deadline")
+
+    root_id = None
+    if hasattr(owner, "orch"):
+        acquire(db._lock)
+        try:
+            with db._memory_collection_read_budget(publication=True):
+                root_id = owner.store.root_uncommitted(owner.task.id)["id"]
+        finally:
+            db._lock.release()
+    with ExitStack() as stack:
+        if root_id is not None:
+            sessions = owner.orch._sessions
+            if sessions is None:
+                raise RuntimeError("repository_preparation_binding_unavailable")
+            # These are the SAME persistent native maps. Calling their public
+            # lookup while holding the plain map mutex would acquire it twice.
+            acquire(sessions._lock)
+            try:
+                key = (owner.task.id, owner.agent)
+                binding = sessions._binding_leases.setdefault(key, threading.Lock())
+            finally:
+                sessions._lock.release()
+            acquire(binding)
+            stack.callback(binding.release)
+            acquire(owner.store._gates_lock)
+            try:
+                root_gate = owner.store._gates.setdefault(root_id, threading.RLock())
+            finally:
+                owner.store._gates_lock.release()
+            acquire(root_gate)
+            stack.callback(root_gate.release)
+        locks = ([owner.orch._team_moves.gate] if root_id is not None
+            else [owner.admission.move.gate]) + [db._lock]
+        for lock in locks:
+            acquire(lock)
+            stack.callback(lock.release)
+        yield root_id
+
+
+@contextmanager
+def _repo_preparation_writer(owner: Any, evidence: Any, *,
+        committed: Callable[[], None] | None = None) -> Iterator[None]:
+    """One original-owner transaction; publish COMMIT facts before gate release."""
+    db = evidence.db
+    with _repo_preparation_gates(owner, evidence) as root_id:
+        if not evidence.active() and not evidence.finishing:
+            raise TimeoutError("repository_preparation_control_deadline")
+        with db._memory_collection_read_budget(publication=True):
+            if db._conn.in_transaction:
+                raise RuntimeError("repository_preparation_sql_owner")
+            db._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if root_id is not None:
+                    # Same root/row validation as the native Pause writer,
+                    # without another unbounded registry lookup or binding lock.
+                    if owner.store.root_uncommitted(owner.task.id)["id"] != root_id:
+                        raise RuntimeError("repository_preparation_root_changed")
+                    owner.store.row_uncommitted(root_id)
+                else:
+                    owner.admission.revalidate_uncommitted(owner)
+                yield
+                db._conn.commit()
+            except BaseException:
+                db._conn.rollback()
+                raise
+            # No deadline/readback/reacquisition follows successful COMMIT.
+            # Even a later context restoration error cannot erase these facts.
+            if committed is not None:
+                committed()
+
+
+@contextmanager
+def _repo_preparation_cleanup(owner: Any, deadline: float) -> Iterator[None]:
+    """Bound failure attribution even when evidence construction itself failed.
+
+    This is the original batch deadline, not a replacement evidence identity.
+    The caller MUST latch uncertainty before this fallible admission.
+    """
+    db = owner.orch._db if hasattr(owner, "orch") else owner.admission.db
+    with _repo_preparation_gates(owner, deadline=deadline, finishing=True) as root_id:
+        with db._memory_collection_read_budget(publication=True):
+            if root_id is None:
+                # Native thread/producer leaf writers own their transaction.
+                yield
+                return
+            if db._conn.in_transaction:
+                raise RuntimeError("repository_preparation_sql_owner")
+            db._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if owner.store.root_uncommitted(owner.task.id)["id"] != root_id:
+                    raise RuntimeError("repository_preparation_root_changed")
+                owner.store.row_uncommitted(root_id)
+                yield
+                db._conn.commit()
+            except BaseException:
+                db._conn.rollback()
+                raise
+
+
+def _repo_closure_digest_uncommitted(owner: Any, evidence: Any) -> str:
+    db = evidence.db
+    if hasattr(owner, "orch"):
+        return db.repository_preparation_snapshot_uncommitted(owner.task.id,
+            owner.identity, owner.refusal_attempt_id)["state_digest"]
+    state = {"native": owner.state.model_dump(mode="json"),
+        "history": db.repository_preparation_history_uncommitted(evidence.binding["scope"])}
+    return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _repo_closure_digest(owner: Any, evidence: Any) -> str:
+    # Digest admission is the preparation writer's admission, never a new
+    # census lock-wait allowance. The existing finite SQL/work budget remains.
+    if not evidence.db._lock._is_owned() or not evidence.db._conn.in_transaction:
+        raise RuntimeError("repository_preparation_sql_owner")
+    return _repo_closure_digest_uncommitted(owner, evidence)
+
+
+def _repo_check_closure_uncommitted(owner: Any, evidence: Any, body: dict) -> None:
+    if body["phase"] != "closed":
+        return
+    if (getattr(owner, "_repository_worker_active", True) or not evidence.worker_returned
+            or evidence.pending or evidence.uncertain or evidence.closed
+            or body["state_digest"] != _repo_closure_digest_uncommitted(owner, evidence)):
+        raise RuntimeError("repository_preparation_stale_closure")
+    history = evidence.db.repository_preparation_history_uncommitted(evidence.binding["scope"])
+    selected = [v["event"] for v in history if v["event"]["obligation"] == evidence.obligation]
+    if (not selected or selected[-1]["phase"] != "outer_closed"
+            or selected[-1]["inventory"]["intervals"] != owner._repository_effect_intervals):
+        raise RuntimeError("repository_preparation_outer_changed")
+
+
+def _repo_record_uncommitted(owner: Any, evidence: Any, body: dict) -> int:
+    if hasattr(owner, "orch"):
+        from runtime.orchestrator.launch_refusals import _current
+        owner.store.held_uncommitted(owner.task.id)
+        owner.orch._team_moves.revalidate_uncommitted(owner.move_reservation)
+        if (owner.store._live.get(owner.identity) is not owner or not _current(owner)
+                or owner.launch_observed or owner.attempt_committed):
+            raise RuntimeError("repository_preparation_owner_changed")
+    if body["phase"] == "opened":
+        owner._repository_preparations[body["obligation"]] = evidence
+        if hasattr(owner, "orch"):
+            owner.move_reservation.repository_obligations[body["obligation"]] = False
+            owner.move_reservation.repository_evidence[body["obligation"]] = evidence
+    elif owner._repository_preparations.get(body["obligation"]) is not evidence:
+        raise RuntimeError("repository_preparation_wrong_obligation")
+    if body["phase"] == "closed" and not hasattr(owner, "orch") and (
+            owner.state.failed_cleanup or not owner.owner_live or owner.attempt_open):
+        raise RuntimeError("repository_preparation_owner_changed")
+    _repo_check_closure_uncommitted(owner, evidence, body)
+    return evidence.db.append_repository_preparation_uncommitted(body)
+
+
+def _repo_native_record(owner: Any, evidence: Any, body: dict) -> int:
+    try:
+        if evidence.owner is not owner or body["owner"] != owner.repository_preparation_binding()[0]:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        with _repo_preparation_writer(owner, evidence,
+                committed=lambda: evidence.committed(body, receipt)):
+            receipt = _repo_record_uncommitted(owner, evidence, body)
+        return receipt
+    except BaseException as exc:
+        try:
+            owner.failed_cleanup(repository_deadline=evidence.deadline)
+        except BaseException:
+            exc.add_note("repository preparation failure attribution unavailable; original error retained")
+        raise
+
+
+def _repo_close_preparation(owner: Any, evidence: Any) -> bool:
+    """Construct, validate and append closure on ONE admitted native snapshot."""
+    from runtime.infrastructure.db.tasks import repository_preparation_event
+    try:
+        if evidence.owner is not owner or owner.repository_preparation_binding()[0] != evidence.binding:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        with _repo_preparation_writer(owner, evidence,
+                committed=lambda: evidence.committed(body, receipt)):
+            body = repository_preparation_event(evidence.binding, evidence.repository, evidence.obligation,
+                evidence.sequence, "closed", probe=evidence.probe, complete=True,
+                state_digest=_repo_closure_digest(owner, evidence))
+            receipt = _repo_record_uncommitted(owner, evidence, body)
+        return evidence.closed
+    except BaseException as exc:
+        evidence.uncertain = True
+        try:
+            owner.failed_cleanup(repository_deadline=evidence.deadline)
+        except BaseException:
+            exc.add_note("repository preparation failure attribution unavailable; original error retained")
+        raise
+
+
+def _repo_native_settle(owner: Any, evidence: Any) -> bool:
+    if (evidence.owner is not owner or not evidence.worker_returned or evidence.pending
+            or evidence.uncertain or owner.state.failed_cleanup or not owner.owner_live or owner.attempt_open):
+        return False
+    inventory = _repo_effect_inventory(owner)
+    evidence.emit("outer_closed", complete=True, inventory=inventory)
+    # The closure writer revalidates the actual native owner. Ordinary FIFO
+    # admission has no place in this deadline-bound finishing tail.
+    return _repo_close_preparation(owner, evidence)
+
+
+class _RepoPreparationEvidence:
+    """A single native obligation, never an old-owner reconstruction."""
+
+    def __init__(self, owner, supervisor, repository, validate, deadline, cancel_requested):
+        from runtime.orchestrator.host_supervisor import CancellationToken
+        self.owner, self.supervisor, self.repository = owner, supervisor, repository
+        self.validate_lease, self.deadline, self.cancel_requested = validate, deadline, cancel_requested
+        self.binding, self.db = owner.repository_preparation_binding()
+        self.obligation = uuid.uuid4().hex
+        self.sequence, self.uncertain = 0, False
+        self.probe = None
+        self.cancellation = CancellationToken()
+        self.enqueued_at = deadline - _REPO_REFRESH_SECONDS
+        self.worker_returned = False
+        self.closed = False
+        self.last_receipt = None
+        self.pending = set()
+        self.children = {}  # Original opaque handles/Popen objects stay private and owner-bound.
+        self.opening_attempted = False
+        self.finishing = False
+
+    def active(self) -> bool:
+        return (time.monotonic() < self.deadline and not self.cancellation.cancelled
+            and not (self.cancel_requested is not None and self.cancel_requested.is_set()))
+
+    def revalidate(self) -> None:
+        self.validate_lease()
+        self.owner.repository_preparation_revalidate(self)
+        binding, db = self.owner.repository_preparation_binding()
+        if binding != self.binding or db is not self.db:
+            raise RuntimeError("repository_preparation_owner_changed")
+
+    def emit(self, phase: str, **facts: Any) -> int:
+        from runtime.infrastructure.db.tasks import repository_preparation_event
+        if phase in {"consumed", "finished", "not_admitted", "worker_returned", "outer_closed", "closed"}:
+            # Cleanup/evidence tails may use only immediately available native
+            # gates after expiry. They never extend Git/queue admission time.
+            self.finishing = True
+        if phase != "opened" and self.sequence == 0:
+            self.opening_attempted = True
+            self.emit("opened")
+        if self.sequence >= 512:
+            self.uncertain = True
+            raise RuntimeError("repository_preparation_overflow")
+        body = repository_preparation_event(self.binding, self.repository, self.obligation,
+            self.sequence, phase, probe=self.probe, **facts)
+        try:
+            receipt = self.owner.record_repository_preparation(self, body)
+        except BaseException:
+            self.uncertain = True
+            raise
+        return receipt
+
+    def committed(self, body: dict, receipt: int) -> None:
+        # Called only AFTER the actual COMMIT, still under original gates.
+        # These fixed local publications require no further application lock.
+        self.sequence += 1
+        phase = body["phase"]
+        if phase == "intent":
+            self.pending.add(body["request_ref"])
+        if phase in {"finished", "not_admitted"}:
+            self.pending.discard(body["request_ref"])
+            self.uncertain |= body["complete"] is not True
+        self.last_receipt = receipt
+        if phase == "closed":
+            self.closed = True
+            if hasattr(self.owner, "orch"):
+                self.owner.move_reservation.repository_obligations[self.obligation] = True
+
+    def returned(self) -> None:
+        # Called by the ORIGINAL caller after actual worker return/join. There
+        # is no process-absence or timeout inference here.
+        self.worker_returned = True
+        if not self.opening_attempted and self.sequence == 0:
+            # Affirmative no child/audit admission, not missing child evidence.
+            # There is no new repository obligation to settle or clear.
+            self.closed = True
+            return
+        self.emit("worker_returned", complete=not self.pending and not self.uncertain)
+
+    def settle(self) -> bool:
+        self.validate_lease(finishing=True)
+        if self.closed:
+            return True
+        self.closed = self.owner.settle_repository_preparation(self)
+        return self.closed
+
+
 def _repo_refresh_git(
     repo_dir: Path, arguments: list[str], *, deadline: float,
     cancel_requested: threading.Event | None,
@@ -1857,7 +2513,7 @@ def _repo_refresh_git(
         return None
     try:
         if (result.failure is not None or not result.settled
-                or not result.capture_complete or result.capture_truncated):
+                or not result.tree_quiescent or not result.capture_complete or result.capture_truncated):
             if result.failure is not None:
                 raise result.failure from None
             raise subprocess.SubprocessError("repository_refresh_probe_unavailable")
@@ -1875,6 +2531,9 @@ class _RepoPullOutcome:
     """Private capture only; neither bytes nor an original exception leave here."""
 
     refresh_phase: str = "fetch"
+    probe: str | None = None
+    tree_quiescent: bool = False
+    receipt_ref: int | None = None
     started: bool = False
     returncode: int | None = None
     settled: bool = False
@@ -1885,7 +2544,7 @@ class _RepoPullOutcome:
     failure: BaseException | None = field(default=None, repr=False)
 
     def fail(self, exc: BaseException) -> None:
-        if self.failure is None or isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        if self.failure is None:
             self.failure = _repo_pull_safe_error(exc)
         self.timed_out = self.timed_out or isinstance(exc, subprocess.TimeoutExpired)
         self.capture_complete = False
@@ -1912,35 +2571,48 @@ def _repo_refresh_child(
     repo_dir: Path, arguments: list[str], *, deadline: float,
     cancel_requested: threading.Event | None, control_output: bool = False,
 ) -> _RepoPullOutcome | None:
-    """One owned direct child, bounded nonblocking capture, no descendant EOF wait.
+    """One original contained request; its Popen alone owns consumed status.
 
-    None proves admission refused before attempting Popen. All other failures,
-    including attempted creation, require native uncertainty at the caller.
+    No backend token is reconstructed and no uncontained fallback exists.
+    The supervisor finishes/abandons every admitted handle, including probes.
     """
-    remaining = deadline - time.monotonic()
-    if remaining <= 0 or (cancel_requested is not None and cancel_requested.is_set()):
+    evidence = _repo_preparation.get()
+    if evidence is None or not evidence.active():
         return None
-    outcome = _RepoPullOutcome()
-    process: subprocess.Popen[bytes] | None = None
-    pipe = None
-    # Unsupported capture still uses bounded execution without a blocking reader.
+    from runtime.orchestrator.host_supervisor import AdmissionRequest, LaunchResult
+    from runtime.platform.session_backend import LaunchSpec
+    outcome = _RepoPullOutcome(probe=evidence.probe)
+    command = arguments[1] if arguments[:1] == ["--no-lazy-fetch"] else arguments[0]
+    kind = command if command in {"fetch", "merge", "submodule"} else "probe"
+    request_id = uuid.uuid4().hex
+    from runtime.orchestrator.host_supervisor import CancellationToken
+    evidence.cancellation = CancellationToken()
+    request = AdmissionRequest(org=evidence.binding["org"], agent_id=evidence.binding["agent"],
+        invocation_kind="repository_preparation", logical_id=request_id,
+        executor_profile="repository_preparation", cancellation=evidence.cancellation,
+        enqueued_at=evidence.enqueued_at)
+    evidence.revalidate()
+    evidence.emit("intent", command=kind, request_ref=request_id)
     capture_available = os.name == "posix" and hasattr(os, "set_blocking")
-    try:
-        process = subprocess.Popen(
-            ["git", "--no-optional-locks", *arguments], cwd=str(repo_dir),
-            stdout=subprocess.PIPE if control_output and capture_available else subprocess.DEVNULL,
-            stderr=subprocess.PIPE if not control_output and capture_available else subprocess.DEVNULL,
-        )
-        outcome.started = True
-        pipe = process.stdout if control_output else process.stderr
-        if capture_available:
-            if pipe is None:
-                raise OSError("repository_pull_capture_unavailable")
+
+    def body(running):
+        process, pipe = running.process, None
+        try:
+            if process is None or running.request_id != request_id or running.root_pid != process.pid:
+                raise RuntimeError("repository_preparation_handle_unavailable")
+            evidence.children[request_id] = running
+            outcome.started = True
+            evidence.emit("started", command=kind, request_ref=request_id,
+                handle_ref=hashlib.sha256(running.token.encode()).hexdigest(),
+                pid=running.root_pid, start_pin=(hashlib.sha256(running.start_identity.encode()).hexdigest()
+                    if running.start_identity else None), attempted=True, started=True)
+            pipe = process.stdout if control_output else process.stderr
+            if not capture_available or pipe is None:
+                raise OSError("repository_preparation_capture_unavailable")
             descriptor = pipe.fileno()
             os.set_blocking(descriptor, False)
 
-            def read_once() -> bool:
-                """One <=4096-byte scratch read; True only for proven EOF."""
+            def read_once():
                 try:
                     chunk = os.read(descriptor, _REPO_PULL_CAPTURE_BYTES)
                 except BlockingIOError:
@@ -1949,67 +2621,124 @@ def _repo_refresh_child(
                     return True
                 capacity = _REPO_PULL_CAPTURE_BYTES - len(outcome.stderr)
                 outcome.stderr.extend(chunk[:capacity])
-                if len(chunk) > capacity:
-                    outcome.capture_truncated = True
+                outcome.capture_truncated |= len(chunk) > capacity
                 return False
 
             eof = False
             while process.poll() is None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    outcome.timed_out = True
-                    raise subprocess.TimeoutExpired("git_pull_ff_only", _REPO_REFRESH_SECONDS)
+                if not evidence.active():
+                    outcome.timed_out = time.monotonic() >= deadline
+                    # The opaque control performs whole-tree cleanup. Return to
+                    # the SAME Popen afterward for its consuming wait.
+                    evidence.cancellation.cancel()
+                    raise subprocess.TimeoutExpired("repository_preparation", _REPO_REFRESH_SECONDS)
+                remaining = max(0.0, deadline - time.monotonic())
                 if eof:
-                    # EOF alone is not child settlement. Wait only to the original bound.
-                    process.wait(timeout=remaining)
+                    try:
+                        process.wait(timeout=min(remaining, _REPO_PULL_POLL_SECONDS))
+                    except subprocess.TimeoutExpired:
+                        pass
                 elif select.select([descriptor], [], [], min(remaining, _REPO_PULL_POLL_SECONDS))[0]:
                     eof = read_once()
-            # Never drain to EOF after exit: a descendant may retain/write the pipe.
             for _ in range(2):
                 if eof:
                     break
                 eof = read_once()
             outcome.capture_complete = eof
-        else:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                outcome.timed_out = True
-                raise subprocess.TimeoutExpired("git_pull_ff_only", _REPO_REFRESH_SECONDS)
-            process.wait(timeout=remaining)
-        outcome.returncode = process.returncode
-    except BaseException as exc:
-        outcome.fail(exc)
-    finally:
-        # Close OUR read end before any reap; never wait for pipe EOF or a reader.
-        if pipe is not None:
+        except BaseException as exc:
+            outcome.fail(exc)
+        finally:
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except BaseException as exc:
+                    outcome.fail(exc)
+        # Do not detach a possible child after an evidence/capture error. This
+        # request's original opaque control owns teardown; no direct PID kill.
+        if process is not None:
             try:
-                pipe.close()
+                if process.poll() is None:
+                    evidence.cancellation.cancel()
+                outcome.returncode = process.wait(timeout=max(0.0, deadline-time.monotonic()))
+                outcome.settled = True
             except BaseException as exc:
                 outcome.fail(exc)
-        if process is not None:
-            while True:
-                try:
-                    if process.poll() is None:
-                        process.kill()  # Direct child only; no tree-quiescence claim.
-                    break
-                except ProcessLookupError:
-                    break
-                except (InterruptedError, KeyboardInterrupt, SystemExit, asyncio.CancelledError) as exc:
-                    outcome.fail(exc)
-                except BaseException as exc:
-                    outcome.fail(exc)
-                    break
-            # Repeated process-control interruption cannot detach our direct child.
-            while True:
-                try:
-                    outcome.returncode = process.wait()
-                    outcome.settled = True
-                    break
-                except (InterruptedError, KeyboardInterrupt, SystemExit, asyncio.CancelledError) as exc:
-                    outcome.fail(exc)
-                except BaseException as exc:
-                    outcome.fail(exc)
-                    break
+        cause = None
+        if outcome.failure is not None or kind != "probe" and outcome.returncode is not None and outcome.returncode != 0:
+            # Expected probe rc1 (missing optional config/non-ancestor) is an
+            # observation, never fabricated as the first failure.
+            # Fixed fields only: preserve the original observed failure before
+            # backend finish/export can fail. No stderr or exception text.
+            cause = {"stage": "repository_pull"}
+            if outcome.failure is not None:
+                cause["exception_class"] = type(outcome.failure).__name__
+            if outcome.returncode is not None:
+                cause["returncode"] = outcome.returncode
+            if evidence.probe is not None:
+                cause["refresh_probe"] = evidence.probe
+        try:
+            if outcome.settled:
+                evidence.emit("consumed", command=kind, request_ref=request_id,
+                    attempted=True, started=outcome.started, consumed=True,
+                    returncode=outcome.returncode, cause=cause,
+                    capture_complete=outcome.capture_complete, capture_truncated=outcome.capture_truncated)
+        except BaseException as exc:
+            outcome.fail(exc)
+        return LaunchResult(success=outcome.failure is None and outcome.returncode == 0,
+            duration_seconds=0.0, returncode=outcome.returncode, timed_out=outcome.timed_out)
+
+    attempted = False
+    def validate():
+        if not evidence.active():
+            raise RuntimeError("repository_preparation_deadline")
+        evidence.revalidate()
+
+    def admitted():
+        nonlocal attempted
+        validate()
+        evidence.emit("attempted", command=kind, request_ref=request_id, attempted=True)
+        attempted = True
+
+    def not_admitted():
+        evidence.emit("not_admitted", command=kind, request_ref=request_id, complete=True)
+
+    try:
+        # The first validator is AFTER host FIFO admission and BEFORE backend
+        # prepare. A queued timeout/cancel has no invented creation attempt.
+        terminal = evidence.supervisor.run(request,
+            launch_spec=LaunchSpec(argv=("git", "--no-optional-locks", *arguments), cwd=str(repo_dir),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE if control_output else subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL if control_output else subprocess.PIPE, text=False),
+            launch_body=body, timeout=max(0.0, deadline-time.monotonic()),
+            grace_seconds=max(0.0, min(1.0, deadline-time.monotonic())),
+            pre_launch_validator=admitted, final_prelaunch_validator=validate, allow_retries=False)
+        if not attempted:
+            not_admitted()
+            return None
+        receipt = terminal.receipt
+        outcome.tree_quiescent = bool(outcome.settled and receipt is not None
+            and receipt.backend != "passthrough" and receipt.quiescent is True
+            and not receipt.survivors and receipt.cleanup_status.value != "incomplete"
+            and terminal.cleanup_error is None and terminal.request is request)
+        outcome.receipt_ref = evidence.emit("finished", command=kind, request_ref=request_id,
+            attempted=True, started=outcome.started, consumed=outcome.settled,
+            returncode=outcome.returncode, complete=outcome.tree_quiescent,
+            receipt={"quiescent": receipt.quiescent if receipt is not None else None,
+                "survivors": len(receipt.survivors) if receipt is not None else None,
+                "cleanup_error": terminal.cleanup_error is not None,
+                "cleanup_status": receipt.cleanup_status.value if receipt is not None else None},
+            capture_complete=outcome.capture_complete, capture_truncated=outcome.capture_truncated)
+    except BaseException as exc:
+        from runtime.orchestrator.host_supervisor import AdmissionTimeout
+        if isinstance(exc, AdmissionTimeout) and not attempted:
+            not_admitted()
+            return None
+        outcome.fail(exc)
+        evidence.uncertain = True
+    if not outcome.tree_quiescent:
+        evidence.uncertain = True
+        if outcome.failure is None:
+            outcome.fail(subprocess.SubprocessError("repository_preparation_unresolved"))
     return outcome
 
 
@@ -2065,13 +2794,15 @@ def _repo_pull_diagnostics(outcome: _RepoPullOutcome) -> dict[str, str | bool]:
 
 def _repo_pull_failed(
     preparation: TaskInvocation | ThreadPreparation | ProducerPreparation | None,
-    name: str, outcome: _RepoPullOutcome,
+    name: str, outcome: _RepoPullOutcome, *, preparation_closed: bool = False,
+    repository_deadline: float | None = None,
 ) -> None:
     """Latch uncertainty BEFORE any fallible attribution, including classifier work."""
     evidence_failure: BaseException | None = None
     if preparation is not None:
         try:
-            preparation.failed_cleanup()
+            if not preparation_closed:
+                preparation.failed_cleanup(repository_deadline=repository_deadline)
         except BaseException as exc:
             evidence_failure = _repo_pull_safe_error(exc)
         from runtime.orchestrator.task_pause import current_invocation
@@ -2081,7 +2812,8 @@ def _repo_pull_failed(
                 preparation.record_preparation_cause(
                     "repository_pull", outcome.failure, repo=name,
                     returncode=outcome.returncode, operation="refresh_ff_only",
-                    refresh_phase=outcome.refresh_phase, **facts,
+                    refresh_phase=outcome.refresh_phase, refresh_probe=outcome.probe,
+                    preparation_receipt=outcome.receipt_ref, **facts,
                 )
             except BaseException as exc:
                 if evidence_failure is None or isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
@@ -2249,6 +2981,9 @@ def _repo_refresh_admit(
         return identity
     except (subprocess.SubprocessError, OSError, UnicodeError, ValueError):
         # No raw control values, exception text, repo paths or remote URLs.
+        evidence = _repo_preparation.get()
+        if evidence is not None and evidence.uncertain:
+            raise RuntimeError("repository_admission_probe_unresolved") from None
         logger.debug("repo refresh skipped: unsupported_or_unavailable_refresh_configuration")
         return None
 
@@ -2334,6 +3069,7 @@ def _repo_refresh_pull(
     if not active():
         return None
     phase = "precheck"
+    evidence = _repo_preparation.get()
     result: _RepoPullOutcome | None = None
     try:
         merge_options, recursive = _repo_refresh_precheck(
@@ -2349,12 +3085,16 @@ def _repo_refresh_pull(
             return result
         result.stderr.clear()
         phase = "between_stages"
+        if evidence is not None:
+            evidence.probe = "identity_after_fetch"
         if not active() or _repo_refresh_identity(
             repo_dir, deadline=deadline, cancel_requested=cancel_requested,
         ) != identity:
             raise subprocess.SubprocessError("repository_refresh_changed_or_interrupted")
         # Select U once, AFTER the successful fetch, independently of FETCH_HEAD
         # and tracking contents. No fetch/chase/fallback on unavailable objects.
+        if evidence is not None:
+            evidence.probe = "source_after_fetch"
         target = _repo_refresh_advertised(repo_dir, identity, deadline=deadline,
                                           cancel_requested=cancel_requested)
 
@@ -2362,11 +3102,21 @@ def _repo_refresh_pull(
             return _repo_refresh_observe(repo_dir, arguments, deadline=deadline,
                                          cancel_requested=cancel_requested, allowed=allowed)
 
+        if evidence is not None:
+            evidence.probe = "target_type"
         if observe(["cat-file", "-t", target]).stdout != b"commit\n":
             raise subprocess.SubprocessError("repository_refresh_commit_unavailable")
+        if evidence is not None:
+            evidence.probe = "ancestry_forward"
         behind = observe(["merge-base", "--is-ancestor", identity.head, target], (0, 1)).returncode == 0
+        if evidence is not None:
+            evidence.probe = "ancestry_reverse"
         ahead = observe(["merge-base", "--is-ancestor", target, identity.head], (0, 1)).returncode == 0
         expected = target if behind else identity.head
+        if evidence is not None:
+            evidence.probe = None
+        if _repo_refresh_identity(repo_dir, deadline=deadline, cancel_requested=cancel_requested) != identity:
+            raise subprocess.SubprocessError("repository_refresh_changed")
         phase = "merge"
         result = _repo_refresh_child(repo_dir, ["merge", "--ff-only", *merge_options, target],
                                      deadline=deadline, cancel_requested=cancel_requested)
@@ -2377,7 +3127,16 @@ def _repo_refresh_pull(
         if result.failure is not None or result.returncode != 0 or not result.settled:
             return result
         result.stderr.clear()
+        phase = "between_stages"
+        if evidence is not None:
+            evidence.probe = "identity_after_fetch"
+        current_identity = _repo_refresh_identity(repo_dir, deadline=deadline, cancel_requested=cancel_requested)
+        from dataclasses import replace
+        if current_identity != replace(identity, head=expected):
+            raise subprocess.SubprocessError("repository_refresh_changed")
         if recursive:
+            if evidence is not None:
+                evidence.probe = None
             phase = "submodule_update"
             result = _repo_refresh_child(repo_dir, ["submodule", "update", "--recursive", "--checkout"],
                                          deadline=deadline, cancel_requested=cancel_requested)
@@ -2389,7 +3148,15 @@ def _repo_refresh_pull(
                 return result
             result.stderr.clear()
         phase = "between_stages"
+        if evidence is not None:
+            evidence.probe = "identity_after_fetch"
+        if _repo_refresh_identity(repo_dir, deadline=deadline, cancel_requested=cancel_requested) != replace(identity, head=expected):
+            raise subprocess.SubprocessError("repository_refresh_changed")
+        if evidence is not None:
+            evidence.probe = "final_branch"
         final_branch = _repo_refresh_line(observe(["symbolic-ref", "--quiet", "HEAD"]).stdout)
+        if evidence is not None:
+            evidence.probe = "final_head"
         final_head = _repo_refresh_line(observe(["rev-parse", "--verify", "--quiet", "HEAD"]).stdout)
         if (not active() or not (behind or ahead) or final_branch != identity.branch_ref
                 or final_head != expected):
@@ -2401,107 +3168,226 @@ def _repo_refresh_pull(
         if result is not None:
             result.stderr.clear()
         failure = _repo_pull_safe_error(exc)
-    return _RepoPullOutcome(refresh_phase=phase, failure=failure)
+    return _RepoPullOutcome(refresh_phase=phase, failure=failure,
+        probe=evidence.probe if evidence is not None else None,
+        receipt_ref=evidence.last_receipt if evidence is not None else None)
 
 
-def refresh_workspace_repos(
-    workspace: Path, *, _deadline: float | None = None,
-    _cancel_requested: threading.Event | None = None,
-) -> dict[str, bool]:
-    """Best-effort standard-origin/same-name refresh before executor launch.
-
-    Admission, probes, pull-state prechecks, configured fetch, literal pinned-U
-    ff-only merge, conditional recursive checkout and final B/L/U oracle share
-    ONE original30s batch deadline, including scan and executor-queue time.
-    Unsupported/missing/detached/unusable/deleted-source admission is false/stale
-    without new cleanup uncertainty. Admitted-state semantic precheck failures
-    and every incomplete possible mutating attempt retain failed_cleanup before
-    fallible attribution. Later no-start or stable HEAD never proves no effects.
-
-    U is one exact origin/source advertisement AFTER successful fetch, with
-    locally available commit/ancestry; U0/FETCH_HEAD/late tracking values cannot
-    select it. Stable checkout/config/transport is cooperative, not atomic:
-    last-window/ABA and remote-observation correspondence remain limitations.
-    Direct-child settlement is required, not process-tree quiescence. OS/DB
-    creation/reap/persistence are not hard real-time bounds. Expected Git errors
-    are best-effort; evidence errors/control propagate. False always warns stale.
-    """
-    deadline = time.monotonic() + _REPO_REFRESH_SECONDS if _deadline is None else _deadline
+def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, deadline: float,
+        cancel_requested: threading.Event, work: list[dict]) -> dict[str, bool]:
+    from runtime.platform.session_backend import Capability, CapabilityLevel
     try:
-        repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
+        names = sorted(PersistentWorkspaceSetup.detect_repo_names(workspace))
     except OSError:
-        logger.debug("repo refresh skipped: repository_scan_unavailable")
         return {}
-    from runtime.orchestrator.producer_move import current_producer_preparation
-    from runtime.orchestrator.thread_move import current_thread_preparation
-    from runtime.orchestrator.task_pause import current_invocation
-    preparation = current_thread_preparation() or current_producer_preparation() or current_invocation()
-    results: dict[str, bool] = {}
-    for name in repo_names:
-        results[name] = False
+    results = dict.fromkeys(names, False)
+    # Never substitute another supervisor or an uncontained Popen. Missing
+    # positive host capability is an affirmative pre-child stale refusal.
+    if preparation is None or supervisor is None:
+        return results
+    report = supervisor.probe()
+    if not report.healthy or report.level(Capability.KILLS_TREE_GUARANTEED) != CapabilityLevel.GUARANTEED:
+        logger.debug("repo refresh skipped: containment_unavailable")
+        return results
+    # Discover without holding another repository, then acquire by physical
+    # identity in every batch (names can enumerate the same resources in reverse).
+    # A duplicate remains false for its OWN name; it has no child/obligation.
+    candidates, physical = [], set()
+    for name in names:
+        if time.monotonic() >= deadline or cancel_requested.is_set():
+            break
         repo_dir = workspace / "repos" / name
-        identity = _repo_refresh_admit(repo_dir, deadline=deadline,
-                                        cancel_requested=_cancel_requested)
-        if identity is None:
-            continue
         try:
-            result = _repo_refresh_pull(repo_dir, identity, deadline=deadline,
-                                        cancel_requested=_cancel_requested)
+            repository = _repo_refresh_repository(repo_dir)
+        except (OSError, ValueError):
+            continue
+        key = (repository["device"], repository["inode"])
+        if key in physical:
+            logger.debug("repo refresh skipped: duplicate_physical_repository")
+            continue
+        physical.add(key)
+        candidates.append((key, name, repo_dir, repository))
+    for _, name, repo_dir, repository in sorted(candidates):
+        if time.monotonic() >= deadline or cancel_requested.is_set():
+            break
+        lease = _repo_refresh_lease(repo_dir, deadline=deadline, cancel_requested=cancel_requested,
+            expected_repository=repository)
+        try:
+            repository, validate = lease.__enter__()
+        except (OSError, ValueError, TimeoutError):
+            continue
+        record = {"name": name, "lease": lease, "evidence": None, "outcome": None, "deadline": deadline}
+        work.append(record)
+        try:
+            evidence = _RepoPreparationEvidence(preparation, supervisor, repository, validate, deadline, cancel_requested)
+            record["evidence"] = evidence
+            evidence.repo_dir = repo_dir
+            token = _repo_preparation.set(evidence)
+            try:
+                evidence.revalidate()
+                identity = _repo_refresh_admit(repo_dir, deadline=deadline, cancel_requested=cancel_requested)
+                if identity is not None:
+                    record["outcome"] = _repo_refresh_pull(repo_dir, identity, deadline=deadline,
+                        cancel_requested=cancel_requested)
+            finally:
+                _repo_preparation.reset(token)
+            if record["outcome"] is not None and isinstance(record["outcome"].failure,
+                    (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                cancel_requested.set()
         except BaseException as exc:
-            # An unexpected capture-helper failure is never a no-start receipt.
-            # Leave the handler before attribution/raising so raw context stays private.
-            result = _RepoPullOutcome(failure=_repo_pull_safe_error(exc))
-        # None is affirmative no-start; attempted creation is not that proof.
-        if result is not None:
-            results[name] = result.returncode == 0 and result.failure is None and result.settled
-            if not results[name]:
-                _repo_pull_failed(preparation, name, result)
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                cancel_requested.set()
+            evidence = record["evidence"]
+            if (not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit))
+                    and (evidence is None or not evidence.opening_attempted)):
+                record["outcome"] = None
+                logger.debug("repo refresh skipped: preparation_capability_unavailable")
             else:
-                result.stderr.clear()
+                record["outcome"] = _RepoPullOutcome(failure=_repo_pull_safe_error(exc))
+                if evidence is not None:
+                    evidence.uncertain = True
     return results
 
 
-async def refresh_workspace_repos_async(workspace: Path) -> dict[str, bool]:
-    """Offload with the caller's ContextVars and join before owner settlement.
+def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: list[dict]) -> dict[str, bool]:
+    """The original caller owns this tail AFTER actual worker return/join."""
+    primary = None
+    for record in work:
+        evidence, outcome = record["evidence"], record["outcome"]
+        try:
+            if evidence is not None:
+                evidence.returned()
+                if not evidence.settle():
+                    if outcome is None:
+                        outcome = _RepoPullOutcome(failure=RuntimeError("repository_preparation_unresolved"))
+                    evidence.uncertain = True
+                else:
+                    results[record["name"]] = bool(outcome is not None and outcome.returncode == 0
+                        and outcome.failure is None and outcome.tree_quiescent)
+            if outcome is not None and not results[record["name"]]:
+                _repo_pull_failed(preparation, record["name"], outcome,
+                    preparation_closed=evidence is not None and evidence.closed,
+                    repository_deadline=record["deadline"])
+            elif outcome is not None:
+                outcome.stderr.clear()
+        except BaseException as exc:
+            # Failed closure/export cannot turn a completed Popen into a
+            # settled preparation; latch before preserving the first safe cause.
+            safe_error = _repo_pull_safe_error(exc)
+            try:
+                if evidence is not None:
+                    evidence.uncertain = True
+                preparation.failed_cleanup(repository_deadline=record["deadline"])
+            except BaseException:
+                safe_error.add_note("repository preparation failure attribution unavailable; ownership remains unknown")
+            if outcome is not None:
+                try:
+                    _repo_pull_failed(preparation, record["name"], outcome,
+                        preparation_closed=evidence is not None and evidence.closed,
+                        repository_deadline=record["deadline"])
+                except BaseException:
+                    safe_error.add_note("repository preparation cause attribution failed; original failure retained")
+            if primary is None:
+                primary = safe_error
+        finally:
+            record["lease"].__exit__(None, None, None)
+    if primary is not None:
+        raise primary from None
+    return results
 
-    Match the existing owned cleanup shield/join pattern. Cancelling an offload
-    await alone does not stop its worker. Keep the caller's preparation-effects scope
-    open through actual worker completion, including repeated cancellation.
-    Stop admitting further Git commands and then propagate cancellation; an
-    active command retains the original batch deadline and uncertainty rules.
-    Executor-queue time also consumes that deadline.
+
+def refresh_workspace_repos(
+    workspace: Path, *, preparation=None, host_supervisor=None,
+    materialization=None,
+    _deadline: float | None = None, _cancel_requested: threading.Event | None = None,
+) -> dict[str, bool]:
+    """One original30s cooperative batch before outer executor admission.
+
+    All Git children/probes use configured native host containment. New
+    preparation-specific closure never resets a prior unknown owner. The
+    original caller closes evidence only after the worker function returned.
+    Manual Git/hooks/other hosts and arbitrary same-UID writes do not cooperate.
     """
-    cancel_requested = threading.Event()
-    deadline = time.monotonic() + _REPO_REFRESH_SECONDS
+    deadline = time.monotonic()+_REPO_REFRESH_SECONDS if _deadline is None else _deadline
+    cancel = _cancel_requested if _cancel_requested is not None else threading.Event()
+    work, results = [], {}
+    if preparation is not None and materialization is not None:
+        _repo_retain_materialization(preparation, workspace, *materialization)
+    if preparation is not None:
+        preparation._repository_worker_active = True
+        preparation._repository_completion_active = True
+    try:
+        results = _repo_refresh_batch(workspace, preparation, host_supervisor, deadline, cancel, work)
+    finally:
+        if preparation is not None:
+            preparation._repository_worker_active = False
+        try:
+            results = _repo_refresh_complete(preparation, results, work)
+        finally:
+            if preparation is not None:
+                preparation._repository_completion_active = False
+    return results
+
+
+async def refresh_workspace_repos_async(workspace: Path, *, preparation=None, host_supervisor=None, materialization=None) -> dict[str, bool]:
+    """Keep the real native owner/OrgState alive through shielded worker join."""
+    cancel = threading.Event()
+    deadline = time.monotonic()+_REPO_REFRESH_SECONDS
     context = copy_context()
-
-    def refresh() -> dict[str, bool]:
-        return refresh_workspace_repos(workspace, _deadline=deadline,
-                                       _cancel_requested=cancel_requested)
-
-    # A private executor Future, rather than a separately cancellable asyncio
-    # Task, also avoids all-task shutdown cancelling a to_thread task while its
-    # actual thread is still running. Only shielded awaits observe this future.
+    work = []
+    if preparation is not None and materialization is not None:
+        _repo_retain_materialization(preparation, workspace, *materialization)
+    if preparation is not None:
+        preparation._repository_worker_active = True
+        preparation._repository_completion_active = True
+    def refresh():
+        return _repo_refresh_batch(workspace, preparation, host_supervisor, deadline, cancel, work)
     worker = asyncio.get_running_loop().run_in_executor(None, context.run, refresh)
-    cancellation: asyncio.CancelledError | None = None
+    cancellation, failure, results = None, None, {}
     while True:
         try:
             results = await asyncio.shield(worker)
             break
         except asyncio.CancelledError as exc:
-            # A completed worker may itself raise CancelledError. Do not
-            # re-await that same completed failure indefinitely.
-            if worker.done():
-                raise cancellation or exc
             cancellation = cancellation or exc
-            cancel_requested.set()
-        except BaseException:
-            if cancellation is not None:
-                cancellation.add_note("repository refresh worker failed; native evidence may be unavailable")
-                raise cancellation from None
-            raise
+            cancel.set()
+            if worker.done():
+                break
+        except BaseException as exc:
+            failure = _repo_pull_safe_error(exc)
+            break
+    if preparation is not None:
+        preparation._repository_worker_active = False
+    # The batch has genuinely returned; keep its leases and the caller's org
+    # lifetime through a joined off-loop completion tail. Binding/root/DB waits
+    # use the SAME original deadline, never the serving event loop.
+    tail = asyncio.get_running_loop().run_in_executor(None, context.run,
+        _repo_refresh_complete, preparation, results, work)
+    try:
+        while True:
+            try:
+                results = await asyncio.shield(tail)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                cancel.set()
+                if tail.done():
+                    # Retrieve a completed result/error despite waiter cancellation.
+                    results = tail.result()
+                    break
+    except BaseException as exc:
+        failure = failure or _repo_pull_safe_error(exc)
+    finally:
+        if preparation is not None:
+            preparation._repository_completion_active = False
     if cancellation is not None:
-        raise cancellation
+        # Escaping an outer effects interval retains its sticky uncertainty;
+        # actual worker return is not proof that interval completed normally.
+        if preparation is not None:
+            preparation.failed_cleanup()
+        raise cancellation from None
+    if failure is not None:
+        raise failure from None
     return results
 
 
