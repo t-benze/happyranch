@@ -1726,13 +1726,23 @@ unavailable tokens discard the whole memo; only clean ownership/cleanup permits
 one fresh uncached coherent fallback. Caller transactions bypass sharing.
 Canonical/result/binding/owner checks and shipping parsing remain fresh.
 Only closed read-only validators inspect private decoded graphs alongside raw
-scalar row tuples. Public readers return independent objects. LRU retention is
-at most 8 roots, 4096 rows/root, 8 MiB recursively accounted objects/metadata;
-oversize/unsupported accounting evaluates full history uncached. No RSS/time
-bound follows. Invalidate before refusal/tails, failures and scope exit.
-S1–S3/Q1–Q5 behavior, query counts and sensitivity remain NOT RUN/PROOF NOT RUN
-without the accepted producer/barrier/downstream observer, owned by ROOT12801;
-static checks and source review are distinct. See the schema-refusal recovery spec.
+scalar row tuples. Public readers return independent objects. THR308seq151 /
+ROOT12914 keeps caps of 8 roots across both maps, 4096 rows/root and 8 MiB:
+one complete new-payload charge plus actual session/map/epoch/group metadata
+forms a conservative object-graph upper bound. Shared objects may be charged
+again, reducing effective capacity. Shallow trial admission preserves original
+map allocation/order/entry/charge identities on benign rejection; accounting
+Exception instead clears retention and evaluates complete history uncached.
+Discovery plans at most 16 chronological positions / 8 repeated-root descriptors;
+it protects only admitted fitting histories through last use, evicting LRU
+unprotected entries. Projections and first-use evidence stay chronological;
+exact reads use ordinary LRU and fresh individual closures. Groups clear on
+exit/invalidation/fallback before publication. No RSS/time bound follows.
+Invalidate before refusal/tails, failures and scope exit. S1–S3/Q1–Q5 behavior,
+query counts and sensitivity remain NOT RUN/PROOF NOT RUN without the accepted
+producer/barrier/downstream observer. ROOT12914 accepts current source-delivery
+uncertainty; ROOT12801's historical gaps remain. Static checks and source review
+are distinct. See the schema-refusal recovery spec.
 
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 

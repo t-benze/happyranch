@@ -2412,11 +2412,25 @@ Contract (founder-approved in THR-028, refined in THR-078):
    fresh uncached fallback. Current identity/authority checks and shipping parsing
    remain fresh. Private raw scalar tuples/decoded graphs reach only closed
    read-only validators; public audit readers allocate independent graphs.
-   LRU caps of 8 roots/4096 rows per root/8 MiB recursively accounted retention,
-   including metadata; oversize/failed accounting evaluates full history uncached.
+   THR308seq151 / ROOT12914 retains caps of 8 entries across both maps,
+   4096 rows/root and 8 MiB. One complete new-payload charge plus actual
+   session/field/map/wrapper/charge/epoch/group metadata is a conservative
+   object-graph upper bound; shared objects can overcharge and reduce capacity.
+   Old payloads are not rewalked for sizing. Shallow trial rejection preserves
+   original map allocation/order/entry/charge identities. Discovery affinity
+   plans at most 16 chronological positions / 8 repeated-root descriptors,
+   protects only admitted fitting histories through last use and evicts LRU
+   unprotected entries. Nonfitting plans do not evict useful entries; all-protected
+   admission rejects unchanged. Projections/first-use reads stay chronological;
+   exact reads retain ordinary LRU and individual fresh closure. Group state
+   clears before fallback/exact/publication and on exit/invalidation/escape.
+   Oversize evaluates complete history uncached; accounting Exception clears
+   retention, while strict evidence/cleanup/interruption keep original escapes.
    Transient allocations/SQLite/RSS/time are not bounded. Memo references clear
    before refusal/tails, on failure and invocation exit. S1–S3/Q1–Q5 behavior/
-   query counts/sensitivity remain NOT RUN/PROOF NOT RUN, owned by ROOT12801.
+   discovery/exact SELECT/fetch/decode counts/sensitivity remain NOT RUN/PROOF
+   NOT RUN. ROOT12914 accepts current source-delivery gaps; ROOT12801's historical
+   limitations remain attributed to that delivery.
    Attributable later exact/refusal failures quarantine the root before bounded
    logging, skipping all later same-root work; pending also excludes siblings.
    Ambiguous attribution fails task recovery globally. No early diagnostic append is added and local

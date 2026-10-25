@@ -97,15 +97,66 @@ anchors and codes contain scalars; no callback/parser/formatter/writer/public
 consumer receives aliases. Generic get_audit_logs remains uncached and allocates
 independent graphs, preserving JSON types, Unicode and empty payload behavior.
 
-Private constants bound retention to 8 root entries, 4096 rows/root and 8 MiB
-aggregate recursive actual object sizes once per identity, including raw and
-decoded containers/scalars and entry/key/bookend metadata. Admit only complete
-strict parses with supported accounting; LRU evicts complete entries to fit.
-Empty/error/partial histories are never retained. Oversize or unsupported/failed
-accounting still evaluates all evidence uncached without truncation or coercion.
-Eviction/scope exit drop accepted and pending references. Bounds exclude transient
-fetch/parse/traversal allocations and SQLite native memory, hard RSS/time or
-whole-startup work. No setting/dependency/production inspection export is added.
+THR308seq151 / sole ROOT12914 changes local accounting/admission/affinity only.
+Private caps remain 8 entries across both maps, 4096 rows/root and 8 MiB. A private
+immutable payload is (actual root key, complete raw scalar row tuples, decoded
+history). Compute its complete identity-deduplicated supported-builtin C once on
+new admission work; retain (payload, C). M + sum(C for EVERY retained entry)
+is a conservative object-graph upper bound, not an exact identity-union promise.
+Overlapping/shared objects may overcharge, lowering effective capacity. M covers
+the actual session/materialized field dictionary/field keys and owned values,
+both actual OrderedDict allocations/keys including reserved storage, wrappers,
+actual charge integers, epoch/attachments/flags and all bounded group metadata.
+Exclude borrowed db/conn owners only at explicit fields, charging their reference
+storage. Trial measurement substitutes prospective field VALUES while measuring
+the actual field dictionary, never its copy; stop M only at fully charged payload
+tuples. No persistent identity ledger, guessed JSON-byte size or old-payload
+sizing walk on hit/admission/eviction/transfer is introduced. Equal epochs retain
+the charged object; map swaps transfer the same wrappers/charges and preserve
+field allocation/reachability. Actual metadata changes are remeasured.
+
+Build a shallow trial OrderedDict in original pending order, append the complete
+candidate and evict whole eligible oldest entries only in the trial. Publish only
+if candidate survives and all caps fit. Benign oversize/all-protected rejection
+preserves original map object/allocation/order/wrapper/payload/charge identities.
+All ordered rows and strict truthy JSON decode precede admission or conversion,
+including unrelated malformed last siblings. Empty/error/partial/over4096-row
+histories are not retained; complete current evaluation still proceeds uncached.
+Accounting/copy/plan Exception clears both maps/epoch/groups without retaining
+errors. Catch accounting only; strict evidence/authentication/projection/cleanup
+errors keep original semantics, and BaseException invalidates/escapes immediately.
+
+Discovery grouping is bounded chronological root affinity. Within already-fetched
+rows, windows contain at most 16 positions and 8 repeated-root (exact-string key,
+first, last) descriptors in first-occurrence order. Bounded pairwise raw-key scans
+create no per-root position lists, slices, extra output array or future SQL/JSON/
+canonical/authentication work. Actual group/position storage counts in M throughout
+its across-projection lifetime. Admit a plan only if it fits existing entries;
+nonfit discards it without evicting useful entries merely for planning and uses
+ordinary LRU for the rest of that discovery call. Every
+_project and first-use complete history read stays at its original position.
+Protect only complete fitting histories already reached/admitted through last
+use/window end; evict LRU unprotected entries. If all eligible victims are
+protected, reject trial unchanged and evaluate candidate uncached. Oversized,
+empty and rejected roots receive no pin. Ordinary LRU applies outside groups.
+Release all plan/protection state at last use/window/exit, invalidation/escape,
+caller/unsupported epoch and before fallback/exact/clean cross-read publication.
+Eligible histories may remain ordinary LRU for both-pass reuse. Exact reads and
+effects retain original chronology and fresh individual closure; no future
+target/anchor/authentication or snapshot is held across effects.
+
+Failure-order examples: with valid A1/all A history, malformed unrelated last B
+audit and malformed A2 canonical JSON, A1,B1,A2 stops at B. With malformed A1
+canonical but valid A history and malformed B audit, A1 fails before reading B.
+No reordered projection, eager prefetch, stored-error replay or deferred cleanup/
+BaseException repairs these contracts. Conditional A1,B1,C1,D1,E1,F1,G1,H1,I1,A2
+within one window can protect fitting A and evict unprotected B at I; this is
+source rationale, not measured savings or a one-read-per-root guarantee.
+
+Eviction/scope exit release whole entries/charges; no trial/replaced-map/helper
+alias survives to the next projection. Bounds exclude transient fetch/parse/
+traversal and SQLite native memory, hard RSS/time or whole-startup work. No
+setting/dependency/production inspection export is added.
 
 An optional frozen scalar anchor authenticates the complete canonical admitted
 attempt, original admission audit, actual INTEGER result/task/agent/SID, sealed
@@ -164,7 +215,9 @@ Source/static delivery is separate from operational proof. S1–S3/Q1–Q5,
 including corruption/ownership/cleanup/caller/downstream/bounds assertions and
 separate discovery/exact SELECT/fetch/strict-parse count reductions, are NOT RUN;
 sensitivity is PROOF NOT RUN without the accepted full v2 producer, deterministic
-barriers and actual downstream observer. ROOT12801 owns that limitation.
+barriers and actual downstream observer. ROOT12914 explicitly accepts current
+source-delivery uncertainty; ROOT12801 historical limitations remain attached to
+the original delivery. No runtime fault/count/alias/bound result follows from lint.
 General integration is SKIPPED24342; Python units RETIRED. No executed query
 savings, benchmark, speedup/under30s or activation claim follows from source.
 
