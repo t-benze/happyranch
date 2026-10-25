@@ -19,18 +19,20 @@ observations and their notice copies are retained too.
 | Native vendor binaries | Concrete Analysis inputs outside distribution RECORD/Python core are named individually; missing original association refuses by path |
 | Fonts/icons/public assets | Separate census, exact font revision and co-version OFL association; first-party assets use the original source LICENSE; source/app/archive bytes remain checked |
 
-The self-hosted web fonts retain three unmodified upstream originals:
-Hanken Grotesk at `marcologous/hanken-grotesk@e6e3c4df55acfe44333c587e3d97ae3c44b7dce5`
-and Newsreader normal/italic at
-`productiontype/NewsReader@1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3`.
+The self-hosted web fonts retain four unmodified upstream originals:
+Hanken Grotesk at `marcologous/hanken-grotesk@e6e3c4df55acfe44333c587e3d97ae3c44b7dce5`,
+Newsreader normal/italic at
+`productiontype/NewsReader@1ece6a8bfe5db1a2b90c76cc1fe5d3b2eed5dcf3`
+and Baloo 2 at `yanone/Baloo2-Variable@da523dfa21aa0e376253d61c21e39146dc55702a`.
 Their full co-version original OFL texts are retained verbatim as
-`web/public/fonts/HankenGrotesk-OFL.txt` and `Newsreader-OFL.txt`.
+`web/public/fonts/HankenGrotesk-OFL.txt`, `Newsreader-OFL.txt` and
+`Baloo2-OFL.txt`.
 [`notice-data/font-assets.json`](notice-data/font-assets.json) records the
 source URLs, commit-to-tree-to-blob identities and font-to-notice relations.
 The Hanken Google Fonts import title says 3.012; its body and original font
 say 3.013. Both facts are preserved in that record.
 
-Vite's existing public-copy step emits these three TTFs and two notices into
+Vite's existing public-copy step emits these four TTFs and three notices into
 `web/dist/fonts/`; the existing app assembly copies that dist into
 `Contents/Resources/web/dist/`. Source retention and a web-copy observation
 do not prove actual app/archive custody, native loading or complete asset

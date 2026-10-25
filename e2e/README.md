@@ -1807,9 +1807,11 @@ between discovery and original POST; JSON show remains discovery then GET.
 The reader permits no arbitrary extras or prefix family.
 
 Original browser origin failures remain failures. Future origin-bypass records
-retain URL/method/resource type; historical records lacked these facts. Current
-HTML references external Google fonts, which is a concrete outside-radius owner
-dependency, not permission to relax the whole-origin predicate. New navigation records retain the pinned native new-document Request lineage.
+retain URL/method/resource type; historical records lacked these facts. At this
+checkpoint the HTML referenced external Google fonts, a concrete outside-radius
+owner dependency, not permission to relax the whole-origin predicate. The page
+source later self-hosts that Baloo 2 face locally; attribution of the earlier
+origin failures to fonts remains UNKNOWN and none is reclassified. New navigation records retain the pinned native new-document Request lineage.
 The reader permits at most one nondeparting same-URL initialization per actual
 document and still requires the exact automatic detail entry/four real revisits;
 extra documents or changed targets refuse. Historical repeated same-URL events

@@ -97,6 +97,37 @@
         "relationship": "Import commit names the pinned upstream revision; font and OFL Git blobs match upstream.",
         "version_note": "Import and original font say 1.003."
       }
+    },
+    {
+      "family": "Baloo 2",
+      "destination": "web/public/fonts/Baloo2-wght.ttf",
+      "size": 683200,
+      "sha256": "d47a6852548059b1db49a1319d06d499d546c3fa2237cf9eee9c43c8abb025c2",
+      "git_blob_sha1": "bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c",
+      "source": {
+        "repository": "yanone/Baloo2-Variable",
+        "commit": "da523dfa21aa0e376253d61c21e39146dc55702a",
+        "tree": "ee9c552de40bd9e663927524a877b9b7f7af3e77",
+        "path": "fonts/variable/Baloo2[wght].ttf",
+        "url": "https://raw.githubusercontent.com/yanone/Baloo2-Variable/da523dfa21aa0e376253d61c21e39146dc55702a/fonts/variable/Baloo2%5Bwght%5D.ttf"
+      },
+      "notice": {
+        "destination": "web/public/fonts/Baloo2-OFL.txt",
+        "size": 4384,
+        "sha256": "ad09b05dc8bc678c9daf7c4c5f7ef1f55e5726127f4330b2e98e40b9dffcb860",
+        "git_blob_sha1": "72adb492d4f0ede2a9dbdefed607f33ad3a6fc68",
+        "source_path": "OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/yanone/Baloo2-Variable/da523dfa21aa0e376253d61c21e39146dc55702a/OFL.txt",
+        "source_commit": "da523dfa21aa0e376253d61c21e39146dc55702a",
+        "source_tree": "ee9c552de40bd9e663927524a877b9b7f7af3e77",
+        "relationship": "Full original OFL.txt colocated at the same immutable upstream revision as the font; unchanged bytes."
+      },
+      "google_fonts_import": {
+        "commit": "8e0cd05881f3ae5e933ba4161103005a3e841ce0",
+        "tree": "38468c4376b576451a5d7a7575154afd0eeebffd",
+        "relationship": "Import commit names the pinned upstream revision; font and OFL Git blobs match upstream.",
+        "version_note": "Import title and original font say 1.700."
+      }
     }
   ]
 }
