@@ -5,6 +5,7 @@ partial evidence is a failure; authored predicates are not execution proof.
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -634,24 +635,39 @@ def exercise(c: Controller) -> None:
             c.e07["window"] = window
             window["end"] = window["entered"]+1
             require(window["end"] < c.case_deadline,"E07 reserve full second")
-            while True:
-                sample, sample_content = frame(c,P,W)
-                sample["closure"] = closure(c,tree,held["launch"]["child"])
-                window["samples"].append(sample)
-                require(sample_content == freeze_content and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
-                host(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
-                require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
-                        and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
-                previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
-                require(sample["entered"]-previous <= .05 and sample["finished"]-sample["entered"] <= .05,"E07 fresh sample interval <=50ms")
-                c.remaining()
-                if sample["entered"] >= window["end"]:
-                    break
-                # Fresh observations and assertions consume the pacing interval.
-                delay = min(sample["entered"]+.01,window["end"])-time.monotonic()
-                if delay > 0:
-                    time.sleep(delay)
+            # Retained full evidence is live: cyclic GC can scan that entire
+            # growing graph without reclaiming it. Defer only automatic cyclic
+            # collection in THIS controller interpreter during the bounded
+            # window; every fresh acquisition and comparison remains charged.
+            gc_enabled = gc.isenabled()
+            try:
+                gc.disable()
+                while True:
+                    sample, sample_content = frame(c,P,W)
+                    sample["closure"] = closure(c,tree,held["launch"]["child"])
+                    window["samples"].append(sample)
+                    require(sample_content == freeze_content and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
+                    host(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
+                    require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
+                            and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
+                    previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
+                    require(sample["entered"]-previous <= .05 and sample["finished"]-sample["entered"] <= .05,"E07 fresh sample interval <=50ms")
+                    c.remaining()
+                    if sample["entered"] >= window["end"]:
+                        break
+                    # Fresh observations and assertions consume the pacing interval.
+                    delay = min(sample["entered"]+.01,window["end"])-time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+            finally:
+                # Restore even for assertions, raising deadlines and interrupts,
+                # including callers that had already disabled collection.
+                if gc_enabled:
+                    gc.enable()
+                else:
+                    gc.disable()
             window["finished"] = time.monotonic()
+            c.remaining()
 
             phase("archive",50)
             final, final_content = frame(c,P,W)
