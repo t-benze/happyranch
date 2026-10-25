@@ -196,32 +196,66 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
         _repository_require(not request.query_params and not request.headers.getlist("X-HappyRanch-Task-Session"),
             "invalid_request", 422)
         body = repository_preparation_command(bytes(raw))
-        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+        deadline = time.monotonic()+30.0
+        def acquire(lock):
+            # Serving routes refuse immediately; no application-lock wait may
+            # occupy this event loop or create a binding -> repository cycle.
+            _repository_require(time.monotonic() < deadline and lock.acquire(blocking=False),
+                "control_unavailable", 503)
+        with ExitStack() as reading:
+            acquire(org.db._lock)
+            reading.callback(org.db._lock.release)
+            reading.enter_context(org.db._memory_collection_read_budget())
+            reading.enter_context(org.db.coherent_read_view())
             replay = org.db.repository_preparation_operation_uncommitted(task_id, body)
             if replay is not None:
                 return replay if replay["committed"] else JSONResponse(status_code=409, content=replay)
             view = org.db.repository_preparation_snapshot_uncommitted(task_id, body["invocation_id"], body["attempt_id"])
             store = getattr(org.db, "_task_pause_store", None)
             live = None if store is None else store._live.get(body["invocation_id"])
+            root_id = None if store is None else store.root_uncommitted(task_id)["id"]
+            selected = () if live is None else tuple(live._repository_preparations.items())
+            resources = [(key, e, dict(e.repository), e.repo_dir) for key, e in selected]
+            reservation = None if live is None else live.move_reservation
+            _repository_require(not {"active_worker", "active_preparation"}.intersection(view["missing_predicates"]),
+                "active_owner")
+            _repository_require(live is None or not (getattr(live, "_repository_worker_active", False)
+                or getattr(live, "_repository_completion_active", False)), "active_owner")
         # An absent old owner cannot be recreated. Persist that refusal under
         # the original task, preserving every journal/result/reservation byte.
         _repository_require(org.sessions is not None and store is not None, "control_unavailable", 503)
+        sessions = org.sessions
         native_binding = None if live is None else live.repository_preparation_binding()[0]
-        deadline = time.monotonic()+30.0
-        with org.db._memory_collection_read_budget():
-            root_id = store.root_uncommitted(task_id)["id"]
         with ExitStack() as stack:
+            validations = []
             if live is not None:
                 _repository_require(live.refusal_attempt_id == body["attempt_id"], "conflicting_history")
-                stack.enter_context(org.sessions.binding_lease(task_id, live.agent))
-                # Current cooperative resource exclusion precedes root/move/DB.
-                for evidence in ([] if "active_worker" in view["missing_predicates"] else live._repository_preparations.values()):
-                    lease = stack.enter_context(_repo_refresh_lease(evidence.repo_dir,
-                        deadline=deadline, cancel_requested=None))
-                    _repository_require(lease[0] == evidence.repository, "stale_state")
+                ordered = sorted((pin["device"], pin["inode"], key, e, pin, path)
+                    for key, e, pin, path in resources)
+                _repository_require(len({(dev, ino) for dev, ino, *_ in ordered}) == len(ordered),
+                    "conflicting_history")
+                # SAME physical order as the worker, BEFORE binding/root/move/DB.
+                # Busy resource admission is an immediate refusal on this loop.
+                for _, _, _, evidence, pin, path in ordered:
+                    try:
+                        lease = stack.enter_context(_repo_refresh_lease(path,
+                            deadline=deadline, cancel_requested=None,
+                            expected_repository=pin, blocking=False))
+                    except TimeoutError:
+                        raise RepositoryPreparationError("active_owner") from None
                     lease[1]()
+                    validations.append(lease[1])
+                binding = sessions.binding_lease(task_id, live.agent)
+                acquire(binding)
+                stack.callback(binding.release)
+                # Loaded/source and filesystem observations stay outside the
+                # short root/move/DB writer, after resource/binding admission.
+                current_binding, current_db = live.repository_preparation_binding()
+                _repository_require(current_binding == native_binding and current_db is org.db, "stale_state")
+                for validate in validations:
+                    validate()
             for lock in (store.gate(root_id), org.orchestrator._team_moves.gate, org.db._lock):
-                _repository_require(lock.acquire(timeout=max(0.0, deadline-time.monotonic())), "control_unavailable", 503)
+                acquire(lock)
                 stack.callback(lock.release)
             _repository_require(time.monotonic() < deadline, "control_unavailable", 503)
             with org.db._memory_collection_read_budget(publication=True):
@@ -230,6 +264,20 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
                     if replay is not None:
                         return replay if replay["committed"] else JSONResponse(status_code=409, content=replay)
                     _repository_require(store.root_uncommitted(task_id)["id"] == root_id, "stale_state")
+                    _repository_require(org.sessions is sessions and org.db._task_pause_store is store, "stale_state")
+                    _repository_require(store._live.get(body["invocation_id"]) is live, "stale_state")
+                    if live is not None:
+                        _repository_require(live.refusal_attempt_id == body["attempt_id"]
+                            and tuple(live._repository_preparations.items()) == selected
+                            and live.identity == body["invocation_id"] and live.task.id == task_id
+                            and live.orch is org.orchestrator and live.orch._db is org.db
+                            and live.orch._sessions is sessions
+                            and live.move_reservation is reservation
+                            and live.agent == native_binding["agent"] and live.session_id == native_binding["session_id"]
+                            and all(e.owner is live and e.obligation == key and e.binding == native_binding
+                                and e.repository == pin and e.repo_dir == path for key, e, pin, path in resources), "stale_state")
+                        _repository_require(not live._repository_worker_active
+                            and not getattr(live, "_repository_completion_active", False), "active_owner")
                     current = org.db.repository_preparation_snapshot_uncommitted(task_id,
                         body["invocation_id"], body["attempt_id"])
                     _repository_require(current["state_digest"] == body["expected_state_digest"], "stale_state")

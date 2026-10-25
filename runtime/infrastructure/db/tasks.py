@@ -312,6 +312,8 @@ def validate_repository_preparation_owner(owner: dict) -> None:
             and all(c.isprintable() for c in owner[key]))
     _repository_require((type(owner["native_id"]) is int and owner["native_id"] > 0) if owner["kind"] == "thread"
         else type(owner["native_id"]) is str and 0 < len(owner["native_id"]) <= 256)
+    if owner["kind"] == "task":
+        _repository_require(owner["native_id"] == owner["scope"])
     for key in ("invocation_id", "attempt_id"):
         _repository_require(re.fullmatch(r"[a-f0-9]{32}", owner[key]) is not None)
     _repository_require(type(owner["source"]) is str and re.fullmatch(r"[a-f0-9]{64}", owner["source"]) is not None)
@@ -327,6 +329,7 @@ def validate_repository_preparation_event(body: dict) -> None:
     _repository_require(body["phase"] in _REPO_PREPARATION_PHASES)
     _repository_require(body["command"] in {None, "probe", "fetch", "merge", "submodule"})
     _repository_require(body["probe"] is None or body["probe"] in _REPO_PREPARATION_PROBES)
+    _repository_require(body["command"] in {None, "probe"} or body["probe"] is None)
     for key in ("attempted", "started", "consumed", "complete", "capture_complete", "capture_truncated"):
         _repository_require(type(body[key]) is bool)
     for key, pattern in (("request_ref", r"[a-f0-9]{32}"), ("handle_ref", r"[a-f0-9]{64}"),
@@ -334,14 +337,43 @@ def validate_repository_preparation_event(body: dict) -> None:
         _repository_require(body[key] is None or type(body[key]) is str and re.fullmatch(pattern, body[key]) is not None)
     _repository_require(body["pid"] is None or type(body["pid"]) is int and body["pid"] > 0)
     _repository_require(body["returncode"] is None or type(body["returncode"]) is int and -(2**31) <= body["returncode"] < 2**31)
-    if body["phase"] in {"intent", "attempted", "started", "consumed", "finished"}:
+    phase = body["phase"]
+    command_phase = phase in {"intent", "attempted", "started", "consumed", "finished", "not_admitted"}
+    if command_phase:
         _repository_require(body["request_ref"] is not None and body["command"] is not None)
-    if body["phase"] == "started":
-        _repository_require(body["started"] and body["pid"] is not None and body["handle_ref"] is not None)
-    if body["phase"] == "closed":
+    else:
+        _repository_require(body["request_ref"] is None and body["command"] is None)
+    if phase == "closed":
         _repository_require(body["complete"] and body["state_digest"] is not None)
     _repository_require(not body["started"] or body["attempted"])
     _repository_require(not body["consumed"] or body["started"] and body["returncode"] is not None)
+    _repository_require(body["consumed"] == (body["returncode"] is not None))
+    _repository_require(body["started"] or all(body[k] is None for k in ("handle_ref", "pid", "start_pin")))
+    _repository_require(phase == "finished" or body["receipt"] is None)
+    _repository_require(phase == "outer_closed" or body["inventory"] is None)
+    _repository_require(phase == "closed" or body["state_digest"] is None)
+    if phase not in {"consumed", "finished"}:
+        _repository_require(not body["capture_complete"] and not body["capture_truncated"] and body["cause"] is None)
+    elif not body["started"]:
+        _repository_require(not body["capture_complete"] and not body["capture_truncated"])
+    # Phase facts are implications, not optional assertions a later suffix can
+    # overwrite. Missing suffixes and truthful uncertain finishes remain valid.
+    flags = {
+        "opened": (False, False, False, False),
+        "intent": (False, False, False, False),
+        "attempted": (True, False, False, False),
+        "started": (True, True, False, False),
+        "consumed": (True, True, True, False),
+        "not_admitted": (False, False, False, True),
+    }
+    if phase in flags:
+        _repository_require(tuple(body[k] for k in ("attempted", "started", "consumed", "complete")) == flags[phase])
+    elif phase == "finished":
+        _repository_require(body["attempted"])
+    else:
+        _repository_require(not body["attempted"] and not body["started"] and not body["consumed"])
+    if phase == "started":
+        _repository_require(body["pid"] is not None and body["handle_ref"] is not None)
     _repository_require(body["state_digest"] is None or type(body["state_digest"]) is str
         and re.fullmatch(r"[a-f0-9]{64}", body["state_digest"]) is not None)
     repository = body["repository"]
@@ -356,9 +388,19 @@ def validate_repository_preparation_event(body: dict) -> None:
         _repository_require(receipt["survivors"] is None or type(receipt["survivors"]) is int and 0 <= receipt["survivors"] <= 65536)
         _repository_require(type(receipt["cleanup_error"]) is bool)
         _repository_require(receipt["cleanup_status"] in {None, "clean", "term", "kill", "incomplete"})
+        _repository_require(receipt["quiescent"] is not True or receipt["survivors"] == 0)
+    if phase == "finished" and body["complete"]:
+        _repository_require(body["consumed"] and receipt is not None and receipt["quiescent"] is True
+            and receipt["survivors"] == 0 and not receipt["cleanup_error"]
+            and receipt["cleanup_status"] in {"clean", "term", "kill"})
     if body["cause"] is not None:
         from runtime.orchestrator.launch_refusals import validate_preparation_cause
         validate_preparation_cause(body["cause"])
+        _repository_require(body["cause"]["stage"] == "repository_pull")
+        if "returncode" in body["cause"]:
+            _repository_require(body["cause"]["returncode"] == body["returncode"])
+        if "refresh_probe" in body["cause"]:
+            _repository_require(body["cause"]["refresh_probe"] == body["probe"])
     inventory = body["inventory"]
     if inventory is not None:
         _repository_require(type(inventory) is dict and set(inventory) == {"intervals", "retained", "outer_closed"})
@@ -374,45 +416,77 @@ def validate_repository_preparation_event(body: dict) -> None:
                 and type(effect["path"]) is str and 0 < len(effect["path"]) <= 4096 and "\0" not in effect["path"]
                 and effect["disposition"] == "retained" and type(effect["receipt"]) is str
                 and re.fullmatch(r"[a-f0-9]{64}", effect["receipt"]) is not None)
+    if phase == "outer_closed" and body["complete"]:
+        _repository_require(inventory is not None and inventory["outer_closed"]
+            and all(v["closed"] and not v["failed"] for v in inventory["intervals"])
+            and [v["id"] for v in inventory["intervals"]] == list(range(len(inventory["intervals"]))))
     _repository_require(len(json.dumps(body, ensure_ascii=False).encode()) <= 16384, "evidence_unavailable", 503)
 
 
 def repository_preparation_closed(events: list[dict]) -> bool:
-    """Independently reconstruct every command and the final owner inventory."""
+    """Validate any prefix; only coherent original-command proof can close it.
+
+    Consumed/finished records historically omit identity pins. Such omissions
+    remain supported; supplied pins must equal the ORIGINAL started event and
+    cannot supply an identity fact that was missing at start.
+    """
+    _repository_require(type(events) is list and len(events) <= 512)
     requests, returned, outer = {}, False, False
     worker_seen, outer_seen = False, False
     for ordinal, event in enumerate(events):
+        validate_repository_preparation_event(event)
+        _repository_require(event["sequence"] == ordinal)
+        if ordinal == 0:
+            _repository_require(event["phase"] == "opened")
+        else:
+            _repository_require(events[ordinal-1]["phase"] != "closed"
+                and all(event[k] == events[0][k] for k in ("owner", "repository", "obligation")))
         phase, request = event["phase"], event["request_ref"]
         if phase == "opened":
             _repository_require(ordinal == 0)
         elif phase == "intent":
             _repository_require(not worker_seen)
             _repository_require(request is not None and request not in requests)
+            _repository_require(all(v[-1]["phase"] in {"finished", "not_admitted"} for v in requests.values()))
             requests[request] = [event]
         elif phase == "not_admitted":
             _repository_require(not worker_seen and request in requests and requests[request][-1]["phase"] == "intent")
-            _repository_require(event["complete"] and not event["attempted"] and not event["started"]
-                and not event["consumed"] and event["pid"] is None and event["handle_ref"] is None
-                and event["start_pin"] is None and event["returncode"] is None and event["receipt"] is None)
+            _repository_require(all(event[k] == requests[request][0][k] for k in ("command", "probe")))
             requests[request].append(event)
         elif phase in {"attempted", "started", "consumed", "finished"}:
             _repository_require(not worker_seen and request in requests)
             prior = requests[request][-1]
             expected = {"attempted": "intent", "started": "attempted", "consumed": "started", "finished": "consumed"}[phase]
             _repository_require((prior["phase"] == expected or phase == "finished" and prior["phase"] in {"attempted", "started"})
-                and prior["command"] == event["command"])
+                and all(event[k] == requests[request][0][k] for k in ("command", "probe")))
+            started = next((v for v in requests[request] if v["phase"] == "started"), None)
+            consumed = next((v for v in requests[request] if v["phase"] == "consumed"), None)
+            if phase in {"consumed", "finished"}:
+                _repository_require(event["started"] == (started is not None))
+                for key in ("handle_ref", "pid", "start_pin"):
+                    if event[key] is not None:
+                        _repository_require(started is not None and event[key] == started[key])
+            if phase == "finished":
+                _repository_require(event["consumed"] == (consumed is not None))
+                if consumed is not None:
+                    _repository_require(all(event[k] == consumed[k] for k in
+                        ("returncode", "capture_complete", "capture_truncated")))
+                    if event["cause"] is not None and consumed["cause"] is not None:
+                        _repository_require(event["cause"] == consumed["cause"])
             requests[request].append(event)
         elif phase == "worker_returned":
             _repository_require(not worker_seen)
             worker_seen = True
             returned = event["complete"]
+            if returned:
+                _repository_require(all(v[-1]["phase"] in {"finished", "not_admitted"}
+                    and v[-1]["complete"] for v in requests.values()))
         elif phase == "outer_closed":
-            _repository_require(not outer_seen and returned)
+            _repository_require(not outer_seen and worker_seen)
             outer_seen = True
-            inventory = event["inventory"]
-            outer = bool(event["complete"] and inventory is not None and inventory["outer_closed"]
-                and all(v["closed"] and not v["failed"] for v in inventory["intervals"])
-                and [v["id"] for v in inventory["intervals"]] == list(range(len(inventory["intervals"]))))
+            outer = event["complete"]
+        elif phase == "closed":
+            _repository_require(worker_seen and outer_seen)
     complete = bool(returned and outer and requests)
     for phases in requests.values():
         end = phases[-1]
@@ -424,6 +498,8 @@ def repository_preparation_closed(events: list[dict]) -> bool:
             and phases[2]["pid"] is not None and phases[2]["handle_ref"] is not None and phases[2]["start_pin"] is not None
             and receipt is not None and receipt["quiescent"] is True and receipt["survivors"] == 0
             and not receipt["cleanup_error"] and receipt["cleanup_status"] in {"clean", "term", "kill"})
+    if events and events[-1]["phase"] == "closed":
+        _repository_require(complete, "unresolved_preparation")
     return complete
 
 
@@ -435,7 +511,7 @@ class TasksMixin:
             "WHERE task_id=? AND action='repository_preparation' ORDER BY id LIMIT 4097", (scope,))
         history, streams, total = [], {}, 0
         complete_streams = {}
-        owners = {}
+        owners, requests = {}, set()
         for row in rows:
             _repository_require(len(history) < 4096 and type(row["payload"]) is str, "evidence_unavailable", 503)
             raw = row["payload"]
@@ -453,6 +529,9 @@ class TasksMixin:
             except (ValueError, TypeError, RecursionError, KeyError):
                 raise RepositoryPreparationError("conflicting_history") from None
             _repository_require(event["owner"]["scope"] == scope and event["owner"]["agent"] == row["agent"])
+            if event["phase"] == "intent":
+                _repository_require(event["request_ref"] not in requests)
+                requests.add(event["request_ref"])
             owner_key = (event["owner"]["invocation_id"], event["owner"]["attempt_id"])
             if owner_key in owners:
                 _repository_require(owners[owner_key] == event["owner"])
@@ -474,6 +553,8 @@ class TasksMixin:
     def append_repository_preparation_uncommitted(self, body: dict) -> int:
         validate_repository_preparation_event(body)
         history = self.repository_preparation_history_uncommitted(body["owner"]["scope"])
+        if body["phase"] == "intent":
+            _repository_require(all(v["event"]["request_ref"] != body["request_ref"] for v in history))
         same = [row["event"] for row in history if row["event"]["obligation"] == body["obligation"]]
         _repository_require(body["sequence"] == len(same))
         if same:
@@ -627,7 +708,8 @@ class TasksMixin:
                         event = fact["event"]
                         if fact["id"] < row["id"] and event["owner"] == response["owner"]:
                             streams.setdefault(event["obligation"], []).append(event)
-                    _repository_require(bool(streams) and all(repository_preparation_closed(v) for v in streams.values()))
+                    _repository_require(bool(streams) and all(repository_preparation_closed(v)
+                        and v[-1]["phase"] == "closed" for v in streams.values()))
                 if command["operation_key"] == body["operation_key"]:
                     _repository_require(command == body, "conflicting_history")
                     matches.append(response)

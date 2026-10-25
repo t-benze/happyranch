@@ -1866,17 +1866,8 @@ def _repo_directory(path: Path) -> int:
         raise
 
 
-@contextmanager
-def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None):
-    """Cooperative common-dir exclusion, never stale-lock removal.
-
-    Literal no-follow traversal rejects unsafe aliases. Linked worktrees can
-    select the same common directory through their native gitdir/commondir files.
-    All identities are re-opened from the literal path at every validation.
-    """
-    import fcntl
-
-    directory = _repo_directory
+def _repo_refresh_repository(repo_dir: Path) -> dict[str, Any]:
+    """Observe literal physical identity before ordered lease admission."""
 
     def literal_file(parent, name):
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
@@ -1893,10 +1884,10 @@ def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: th
 
     def locate():
         literal_root = Path(repo_dir).absolute()
-        checked = directory(literal_root)
+        checked = _repo_directory(literal_root)
         os.close(checked)
         root = Path(os.path.abspath(literal_root))
-        fd = directory(root)
+        fd = _repo_directory(root)
         try:
             info = os.stat(".git", dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
@@ -1909,7 +1900,7 @@ def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: th
                 gitdir = root / value
         finally:
             os.close(fd)
-        fd = directory(gitdir)
+        fd = _repo_directory(gitdir)
         try:
             try:
                 raw = literal_file(fd, "commondir")
@@ -1917,7 +1908,7 @@ def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: th
                 common = Path(os.path.abspath(gitdir))
             else:
                 literal_common = gitdir / _repo_refresh_line(raw)
-                checked = directory(literal_common)
+                checked = _repo_directory(literal_common)
                 os.close(checked)
                 common = Path(os.path.abspath(literal_common))
         finally:
@@ -1925,10 +1916,30 @@ def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: th
         return common
 
     common = locate()
-    parent = directory(common)
+    descriptor = _repo_directory(common)
+    try:
+        pin = os.fstat(descriptor)
+        return {"path": str(common), "device": pin.st_dev, "inode": pin.st_ino}
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: threading.Event | None,
+        expected_repository: dict | None = None, blocking: bool = True):
+    """Stable descriptor custody, physically ordered by the caller; never unlink."""
+    import fcntl
+
+    repository = _repo_refresh_repository(repo_dir)
+    if expected_repository is not None and repository != expected_repository:
+        raise OSError("repository_common_directory_changed")
+    common = Path(repository["path"])
+    parent = _repo_directory(common)
     lock = None
     try:
         pin = os.fstat(parent)
+        if (pin.st_dev, pin.st_ino) != (repository["device"], repository["inode"]):
+            raise OSError("repository_common_directory_changed")
         lock = os.open("happyranch-repository-refresh.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
                        0o600, dir_fd=parent)
         lock_pin = os.fstat(lock)
@@ -1942,6 +1953,8 @@ def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: th
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                if not blocking:
+                    raise TimeoutError("repository_lease_unavailable") from None
                 if cancel_requested is not None:
                     cancel_requested.wait(min(.05, max(0.0, deadline-time.monotonic())))
                 else:
@@ -1950,9 +1963,9 @@ def _repo_refresh_lease(repo_dir: Path, *, deadline: float, cancel_requested: th
         def validate(*, finishing: bool = False):
             if not finishing and (time.monotonic() >= deadline or (cancel_requested is not None and cancel_requested.is_set())):
                 raise TimeoutError("repository_lease_unavailable")
-            if locate() != common:
+            if _repo_refresh_repository(repo_dir) != repository:
                 raise OSError("repository_common_directory_changed")
-            check = directory(common)
+            check = _repo_directory(common)
             try:
                 current = os.fstat(check)
                 entry = os.stat("happyranch-repository-refresh.lock", dir_fd=check, follow_symlinks=False)
@@ -2192,7 +2205,9 @@ def _repo_preparation_writer(owner: Any, evidence: Any) -> Iterator[None]:
             sessions = owner.orch._sessions
             if sessions is None:
                 raise RuntimeError("repository_preparation_binding_unavailable")
-            stack.enter_context(sessions.binding_lease(owner.task.id, owner.agent))
+            binding = sessions.binding_lease(owner.task.id, owner.agent)
+            acquire(binding)
+            stack.callback(binding.release)
         locks = ([owner.store.gate(root_id), owner.orch._team_moves.gate] if root_id is not None
             else [owner.admission.move.gate]) + [db._lock]
         for lock in locks:
@@ -3046,11 +3061,29 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
     if not report.healthy or report.level(Capability.KILLS_TREE_GUARANTEED) != CapabilityLevel.GUARANTEED:
         logger.debug("repo refresh skipped: containment_unavailable")
         return results
+    # Discover without holding another repository, then acquire by physical
+    # identity in every batch (names can enumerate the same resources in reverse).
+    # A duplicate remains false for its OWN name; it has no child/obligation.
+    candidates, physical = [], set()
     for name in names:
         if time.monotonic() >= deadline or cancel_requested.is_set():
             break
         repo_dir = workspace / "repos" / name
-        lease = _repo_refresh_lease(repo_dir, deadline=deadline, cancel_requested=cancel_requested)
+        try:
+            repository = _repo_refresh_repository(repo_dir)
+        except (OSError, ValueError):
+            continue
+        key = (repository["device"], repository["inode"])
+        if key in physical:
+            logger.debug("repo refresh skipped: duplicate_physical_repository")
+            continue
+        physical.add(key)
+        candidates.append((key, name, repo_dir, repository))
+    for _, name, repo_dir, repository in sorted(candidates):
+        if time.monotonic() >= deadline or cancel_requested.is_set():
+            break
+        lease = _repo_refresh_lease(repo_dir, deadline=deadline, cancel_requested=cancel_requested,
+            expected_repository=repository)
         try:
             repository, validate = lease.__enter__()
         except (OSError, ValueError, TimeoutError):
@@ -3191,8 +3224,23 @@ async def refresh_workspace_repos_async(workspace: Path, *, preparation=None, ho
             break
     if preparation is not None:
         preparation._repository_worker_active = False
+    # The batch has genuinely returned; keep its leases and the caller's org
+    # lifetime through a joined off-loop completion tail. Binding/root/DB waits
+    # use the SAME original deadline, never the serving event loop.
+    tail = asyncio.get_running_loop().run_in_executor(None, context.run,
+        _repo_refresh_complete, preparation, results, work)
     try:
-        results = _repo_refresh_complete(preparation, results, work)
+        while True:
+            try:
+                results = await asyncio.shield(tail)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                cancel.set()
+                if tail.done():
+                    # Retrieve a completed result/error despite waiter cancellation.
+                    results = tail.result()
+                    break
     except BaseException as exc:
         failure = failure or _repo_pull_safe_error(exc)
     finally:

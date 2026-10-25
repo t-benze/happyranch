@@ -679,6 +679,15 @@ are not covered by that rail — are documented in the **manage-agent** skill an
 Repository refresh uses the same original native preparation owner, cooperative
 common-Git-directory descriptor lease and configured host containment for all Git
 children/probes. Its original30s budget includes scan/queue/admission and siblings.
+Distinct physical resources use (device,inode) order; duplicate physical names
+refuse promptly with their own false result. Repository custody precedes binding/
+root/Pause/move/DB; worker binding waits use only the original remaining deadline,
+with immediate-only expired finishing tails. Async completion stays off-loop and
+joined after actual worker return. Human reconcile refuses active completion and
+busy leases immediately, then revalidates the original owner/root/binding/evidence.
+Each evidence phase must agree with original intent/start/consumed identity and
+facts. Historical omitted later pins and truthful incomplete prefixes/no-start/
+uncertain finishes remain supported without authorizing positive closure.
 Only complete already-persisted original child/tree/earlier-effect/worker/outer
 proof under current authority can close that selected new obligation. Every other
 failure retains sticky UNKNOWN before attribution; later child exit, source update

@@ -715,7 +715,11 @@ never certifies process-tree quiescence; existing unknown owners remain sticky.
 Repository preparation now has a cooperative common-Git-directory descriptor
 lease. Literal path/device/inode and stable no-follow lock metadata are pinned;
 release closes the descriptor without unlinking or deleting stale locks. Aliases
-must converge on the pinned physical directory or refuse. The lease lasts through
+must converge on the pinned physical directory or refuse. Each batch discovers
+physical identities before acquiring leases, refuses duplicate physical entries
+with a separate false result for that name, and acquires distinct resources in
+(device,inode) order, also used by operator admission. Expected identities are
+revalidated inside each lease; aliases never receive a new timeout. The lease lasts through
 admission, final validation, actual worker return and evidence completion. All
 siblings, queue/lease/host admission, probes and Git commands share the original
 30-second batch. Current path/config/transport are revalidated between phases.
@@ -731,7 +735,14 @@ host receipt with no survivors/cleanup error are separate facts. Capture stays
 private/bounded4096B with draining and at most two exit-tail reads. An admitted
 unsettled probe cannot become a harmless unsupported-configuration skip. Async
 cancellation stops admission and joins the real worker under its original OrgState
-lifetime before evidence completion and lease release.
+lifetime before evidence completion and lease release. Completion runs in the
+same joined off-loop executor mechanism after the actual batch worker returns.
+Repository custody precedes binding, root/Pause, move and short DB arbitration.
+Worker binding acquisition is clipped to the original remaining deadline; expired
+finishing tails acquire only immediately available gates. Human reconcile refuses
+known active workers/completion before resource admission and uses immediate
+resource/application-lease refusal on the serving loop, then rechecks the live
+owner, binding, root, evidence set and physical pins under the acquired gates.
 
 Version1 repository_preparation events append to existing audit rows with the
 original org/task/agent/reserved SID/invocation/refusal attempt/boot/repository
@@ -744,7 +755,15 @@ Closure concerns owned native preparation only: it proves neither absence of
 remote/external Git effects nor replay safety. No argv, remote URLs, stderr,
 exception text/chains, config/environment or backend
 token is public or persisted. Oversized, duplicate, missing or mismatched evidence
-refuses rather than truncating into positive proof. Earlier materialized/scratch
+refuses rather than truncating into positive proof. Each phase enforces its own
+required/forbidden facts; command/probe/request identity remains bound to original
+intent and any later supplied handle/PID/start pin must equal the original start.
+Historical omitted consumed/finished pins remain supported. Status, capture and
+receipt facts cannot contradict the original consumed result. Valid opened/intent/
+attempted/started/consumed prefixes and truthful no-start or uncertain finishes
+remain appendable and incomplete, without a fabricated closed suffix. Saved
+successful reconciliation requires the original explicit closed event as well as
+the complete coherent proof. Earlier materialized/scratch
 paths remain retained effects; closed original write intervals, native receipts,
 worker/outer closure and current ownership must all agree. A retained directory
 alone proves neither a live writer nor successful cleanup.
