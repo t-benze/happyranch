@@ -1,10 +1,14 @@
 # Managed remote access: Linux package operations (N3)
 
-**Current PR800 allocation — THR228seq648 / sole ROOT TASK-12936.**
+**Current PR800 allocation — THR228seq648 / sole recovery ROOT TASK-13017.**
+Founder seq655 authorizes supported recovery continuing FAILED TASK-12936 and
+failed partial TASK-13004 under the SAME seq648 allocation, without replenishment.
+All original failed tasks, preparations, jobs and custody remain preserved.
 Founder seq648 authorizes the local spawn-helper duplicate repair, fresh review
 and static checks, then **ONE publication and ONE automatic attempt1** of a
 **PARTIAL installer + same-boot diagnostic** campaign, retaining seq641's PARTIAL ceiling.
-The new seq648 allocation starts **publication0/1 and automatic attempt0/1**.
+The SAME seq648 allocation is **publication0/1 and automatic attempt0/1** at
+recovery intake only; the manager rechecks before effects. No grant is renewed.
 Seq641's publication1/1 and automatic attempt1/1 are exhausted by actual FAILED
 run40153837361/attempt1 at `7b1038df750245b25018b7af0be41dceebbfc94c`:
 `managed_lifecycle_deadline` during helper-output waiting. Installation, installed
@@ -23,7 +27,8 @@ The one update must synchronize same-repository PR800 `task/TASK-6475` to `main`
 from verified public before `7b1038df750245b25018b7af0be41dceebbfc94c` to a
 distinct valid40hex event after equal to the actual PR head, checkout and proof
 subject, on attempt1 only. Manual, reopen, main, rerun and later-update events
-cannot renew this grant. TASK-12938 performs LOCAL source/static preparation;
+cannot renew this grant. TASK-12938's original LOCAL source/static preparation
+remains history; TASK-13019 performs current LOCAL integration under ROOT13017;
 FULL independent final-head review and same-head SOURCE/STATIC QA precede the
 manager's publication. The automatic run must build that corrected subject's
 actual wheel, frozen connector and package; old package bytes are not its proof.

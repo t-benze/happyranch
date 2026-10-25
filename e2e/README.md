@@ -1940,9 +1940,20 @@ E07's forward-and-observe loop counts fresh frame, closure and assertion work
 toward its optional 10ms pacing interval, sleeping only for time left in that
 interval or the observation window. It retains real timestamps, every fresh
 observation, both <=50ms interval/frame assertions and the full1s window.
-This removes additive idle time; hosted scheduler latency can still cause a
-real overrun and failure. Native verification remains pending until the
-manager's changed-reviewed-main Product run.
+Each `e07.frame` returns the complete raw record and a separate local full
+comparison value, constructed once after the original raw HTTP-index joins.
+The final frozen reference keeps its own comparison value; every new sample
+still acquires and normalizes its own complete content. Detail normalization
+uses a comparison copy before the outer JSON serialization, without an inner
+JSON encode/decode round trip. The values retain all fields, JSON types and
+array order under the same narrow Pause observation-time normalization; they
+are never exported in place of raw observations or used by the independent
+aggregate reader. No observation is cached across samples.
+This reduces repeated deterministic work and additive idle time; real overruns
+still fail. Product40163040613 failed both timing predicates after the sleep
+correction; its timestamps do not identify the cause of the long frames.
+Native verification remains pending until the manager's changed-reviewed-main
+Product run, and no hard scheduling guarantee follows.
 
 Four answers / finite acceptance map (extends the existing R3-05/R3-06,
 Controller.mark/export and aggregate.controls keepers):

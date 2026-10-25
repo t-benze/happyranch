@@ -2524,6 +2524,15 @@ def _repo_refresh_git(
 
 _REPO_PULL_CAPTURE_BYTES = 4096
 _REPO_PULL_POLL_SECONDS = 0.05
+# Contained Git children are often sub-second. The systemd backend refuses a
+# target that exits before its scope/limits are verified, so each child waits
+# on stdin for one release byte from the launch body, then execs Git with the
+# same PID/start identity and /dev/null stdin. EOF without the byte exits 125
+# and never runs Git.
+_REPO_PREPARATION_GATE = (
+    "/bin/sh", "-c", 'IFS= read -r _gate || exit 125; exec "$@" </dev/null',
+    "happyranch-repository-preparation",
+)
 
 
 @dataclass
@@ -2611,6 +2620,14 @@ def _repo_refresh_child(
                 raise OSError("repository_preparation_capture_unavailable")
             descriptor = pipe.fileno()
             os.set_blocking(descriptor, False)
+            # Release the launch gate only now: the backend has verified the
+            # live scope, start is recorded and capture is ready. Git itself
+            # never runs unless this exact byte arrives.
+            gate = process.stdin
+            if gate is None:
+                raise OSError("repository_preparation_gate_unavailable")
+            gate.write(b"\n")
+            gate.close()
 
             def read_once():
                 try:
@@ -2648,6 +2665,12 @@ def _repo_refresh_child(
         except BaseException as exc:
             outcome.fail(exc)
         finally:
+            if process is not None and process.stdin is not None:
+                # An unreleased gate sees EOF and exits without running Git.
+                try:
+                    process.stdin.close()
+                except BaseException as exc:
+                    outcome.fail(exc)
             if pipe is not None:
                 try:
                     pipe.close()
@@ -2706,8 +2729,8 @@ def _repo_refresh_child(
         # The first validator is AFTER host FIFO admission and BEFORE backend
         # prepare. A queued timeout/cancel has no invented creation attempt.
         terminal = evidence.supervisor.run(request,
-            launch_spec=LaunchSpec(argv=("git", "--no-optional-locks", *arguments), cwd=str(repo_dir),
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE if control_output else subprocess.DEVNULL,
+            launch_spec=LaunchSpec(argv=(*_REPO_PREPARATION_GATE, "git", "--no-optional-locks", *arguments),
+                cwd=str(repo_dir), stdin=subprocess.PIPE, stdout=subprocess.PIPE if control_output else subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL if control_output else subprocess.PIPE, text=False),
             launch_body=body, timeout=max(0.0, deadline-time.monotonic()),
             grace_seconds=max(0.0, min(1.0, deadline-time.monotonic())),
