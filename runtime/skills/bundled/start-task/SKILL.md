@@ -681,9 +681,14 @@ common-Git-directory descriptor lease and configured host containment for all Gi
 children/probes. Its original30s budget includes scan/queue/admission and siblings.
 Distinct physical resources use (device,inode) order; duplicate physical names
 refuse promptly with their own false result. Repository custody precedes binding/
-root/Pause/move/DB; worker binding waits use only the original remaining deadline,
-with immediate-only expired finishing tails. Async completion stays off-loop and
-joined after actual worker return. Human reconcile refuses active completion and
+root/Pause/move/DB. Completion owner/digest admission, binding/root gate-map
+lookups and failure attribution use only the original remaining deadline, with
+immediate-only expired finishing gates. Digest construction/revalidation shares
+the coherent bounded writer; successful COMMIT publishes the receipt and selected
+obligation under the same gates without a later acquisition or deadline refusal.
+Local uncertainty latches before fallible bounded attribution; unavailable
+persistence remains UNKNOWN, never claimed persisted. Async completion stays
+off-loop and joined after actual worker return. Human reconcile refuses active completion and
 busy leases immediately, then revalidates the original owner/root/binding/evidence.
 Each evidence phase must agree with original intent/start/consumed identity and
 facts. Historical omitted later pins and truthful incomplete prefixes/no-start/

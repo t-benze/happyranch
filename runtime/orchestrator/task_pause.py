@@ -169,29 +169,8 @@ class TaskInvocation:
                 raise RuntimeError("repository_preparation_owner_changed")
 
     def record_repository_preparation(self, evidence, body):
-        if evidence.owner is not self or body["owner"] != self.repository_preparation_binding()[0]:
-            raise RuntimeError("repository_preparation_wrong_owner")
-        from runtime.orchestrator.workspace_adapters import _repo_preparation_writer
-        from runtime.orchestrator.launch_refusals import _current
-        try:
-            with _repo_preparation_writer(self, evidence):
-                self.store.held_uncommitted(self.task.id)
-                self.orch._team_moves.revalidate_uncommitted(self.move_reservation)
-                if (self.store._live.get(self.identity) is not self or not _current(self)
-                        or self.launch_observed or self.attempt_committed):
-                    raise RuntimeError("repository_preparation_owner_changed")
-                if body["phase"] == "opened":
-                    self.move_reservation.repository_obligations[body["obligation"]] = False
-                    self._repository_preparations[body["obligation"]] = evidence
-                    self.move_reservation.repository_evidence[body["obligation"]] = evidence
-                elif self._repository_preparations.get(body["obligation"]) is not evidence:
-                    raise RuntimeError("repository_preparation_wrong_obligation")
-                from runtime.orchestrator.workspace_adapters import _repo_check_closure_uncommitted
-                _repo_check_closure_uncommitted(self, evidence, body)
-                return self.orch._db.append_repository_preparation_uncommitted(body)
-        except BaseException:
-            self.move_reservation.failed_cleanup()
-            raise
+        from runtime.orchestrator.workspace_adapters import _repo_native_record
+        return _repo_native_record(self, evidence, body)
 
     def settle_repository_preparation(self, evidence):
         if evidence.closed:
@@ -203,14 +182,10 @@ class TaskInvocation:
         from runtime.orchestrator.workspace_adapters import _repo_effect_inventory
         inventory = _repo_effect_inventory(self)
         evidence.emit("outer_closed", complete=True, inventory=inventory)
-        self.repository_preparation_revalidate(evidence)
-        from runtime.orchestrator.workspace_adapters import _repo_closure_digest
-        evidence.emit("closed", complete=True, state_digest=_repo_closure_digest(self, evidence))
-        # Only this obligation becomes closed, after durable positive proof.
-        # Neither the old Boolean nor a historical Pause UNKNOWN is cleared.
-        with self.orch._db._lock:
-            self.move_reservation.repository_obligations[evidence.obligation] = True
-        return True
+        from runtime.orchestrator.workspace_adapters import _repo_close_preparation
+        # The original writer owns digest/append and post-COMMIT publication;
+        # closing only this obligation needs no later DB reacquisition.
+        return _repo_close_preparation(self, evidence)
 
     @property
     def store(self) -> TaskPauseStore:
@@ -262,7 +237,20 @@ class TaskInvocation:
             from runtime.orchestrator.launch_refusals import safe_cause
             self.preparation_cause = safe_cause(stage, exc, **facts)
 
-    def failed_cleanup(self) -> None:
+    def failed_cleanup(self, *, repository_deadline: float | None = None) -> None:
+        if repository_deadline is not None:
+            # Latch BEFORE even bounded admission. A refused attribution keeps
+            # the original active reservation and cannot look clean locally.
+            self.move_reservation.cleanup_failed = True
+            from runtime.orchestrator.workspace_adapters import _repo_preparation_cleanup
+            with _repo_preparation_cleanup(self, repository_deadline):
+                row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
+                entry = self._entry(row)
+                entry["context"]["execution_unknown"] = True
+                entry["phase"] = "unknown"
+                entry["started_at"] = entry["captured_generation"] = None
+                self.store.save_journal_uncommitted(row)
+            return
         # Sticky local ownership precedes any fallible journal/COMMIT. A caught
         # save failure or rollback must never permit clean terminal release.
         self.move_reservation.failed_cleanup()

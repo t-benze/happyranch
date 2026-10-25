@@ -258,7 +258,14 @@ class ThreadPreparation:
         # Provider return cannot certify the uncontained tree.
         self.terminal(None)
 
-    def failed_cleanup(self) -> None:
+    def failed_cleanup(self, *, repository_deadline: float | None = None) -> None:
+        if repository_deadline is not None:
+            # An expired/busy persistence gate cannot delay the local latch.
+            self.state = self.state.model_copy(update={"failed_cleanup": True})
+            from runtime.orchestrator.workspace_adapters import _repo_preparation_cleanup
+            with _repo_preparation_cleanup(self, repository_deadline):
+                self.admission.write(self, failed_cleanup=True)
+            return
         with self.admission.db._lock:
             # Retain uncertainty BEFORE persistence: interruption of that write
             # must not let a caught preparation error finish as a clean owner.

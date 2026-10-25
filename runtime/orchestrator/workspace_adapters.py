@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
@@ -2026,7 +2026,7 @@ def _repo_preparation_source(owner: Any) -> str:
     functions = [inspect.unwrap(v) for k, v in tuple(globals().items())
         if k.startswith("_repo_") and type(v) is FunctionType]
     functions += [getattr(_RepoPreparationEvidence, name) for name in
-        ("__init__", "emit", "active", "revalidate", "returned", "settle")]
+        ("__init__", "emit", "committed", "active", "revalidate", "returned", "settle")]
     functions += [getattr(type(owner), name) for name in ("record_repository_preparation",
         "settle_repository_preparation", "repository_preparation_revalidate", "failed_cleanup")]
     functions += [getattr(db, name).__func__ for name in ("repository_preparation_history_uncommitted",
@@ -2183,21 +2183,36 @@ def _repo_effect_interval(owner: Any) -> Iterator[None]:
 
 
 @contextmanager
-def _repo_preparation_writer(owner: Any, evidence: Any) -> Iterator[None]:
-    """Acquire only short native gates, in original owner order, clipped to batch."""
+def _repo_preparation_gates(owner: Any, evidence: Any = None, *, deadline: float | None = None,
+        finishing: bool = False) -> Iterator[str | None]:
+    """All preparation-local application admission, including gate registries.
+
+    The caller already owns repository custody. Registry mutexes are released
+    before waiting for their native gate; the plain binding lock is taken once.
+    Ordinary FIFO, Pause and tracker callers keep their existing semantics.
+    """
     from contextlib import ExitStack
     db = owner.orch._db if hasattr(owner, "orch") else owner.admission.db
-    def acquire(lock):
-        remaining = evidence.deadline-time.monotonic()
+    if evidence is not None:
+        if evidence.owner is not owner or evidence.db is not db:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        deadline, finishing = evidence.deadline, evidence.finishing or finishing
+    if deadline is None:
+        raise RuntimeError("repository_preparation_deadline_unavailable")
+
+    def acquire(lock: Any) -> None:
+        remaining = deadline-time.monotonic()
         admitted = (lock.acquire(timeout=remaining) if remaining > 0 else
-            evidence.finishing and lock.acquire(blocking=False))
+            finishing and lock.acquire(blocking=False))
         if not admitted:
             raise TimeoutError("repository_preparation_control_deadline")
+
     root_id = None
     if hasattr(owner, "orch"):
         acquire(db._lock)
         try:
-            root_id = owner.store.root_uncommitted(owner.task.id)["id"]
+            with db._memory_collection_read_budget(publication=True):
+                root_id = owner.store.root_uncommitted(owner.task.id)["id"]
         finally:
             db._lock.release()
     with ExitStack() as stack:
@@ -2205,33 +2220,89 @@ def _repo_preparation_writer(owner: Any, evidence: Any) -> Iterator[None]:
             sessions = owner.orch._sessions
             if sessions is None:
                 raise RuntimeError("repository_preparation_binding_unavailable")
-            binding = sessions.binding_lease(owner.task.id, owner.agent)
+            # These are the SAME persistent native maps. Calling their public
+            # lookup while holding the plain map mutex would acquire it twice.
+            acquire(sessions._lock)
+            try:
+                key = (owner.task.id, owner.agent)
+                binding = sessions._binding_leases.setdefault(key, threading.Lock())
+            finally:
+                sessions._lock.release()
             acquire(binding)
             stack.callback(binding.release)
-        locks = ([owner.store.gate(root_id), owner.orch._team_moves.gate] if root_id is not None
+            acquire(owner.store._gates_lock)
+            try:
+                root_gate = owner.store._gates.setdefault(root_id, threading.RLock())
+            finally:
+                owner.store._gates_lock.release()
+            acquire(root_gate)
+            stack.callback(root_gate.release)
+        locks = ([owner.orch._team_moves.gate] if root_id is not None
             else [owner.admission.move.gate]) + [db._lock]
         for lock in locks:
             acquire(lock)
             stack.callback(lock.release)
+        yield root_id
+
+
+@contextmanager
+def _repo_preparation_writer(owner: Any, evidence: Any, *,
+        committed: Callable[[], None] | None = None) -> Iterator[None]:
+    """One original-owner transaction; publish COMMIT facts before gate release."""
+    db = evidence.db
+    with _repo_preparation_gates(owner, evidence) as root_id:
         if not evidence.active() and not evidence.finishing:
             raise TimeoutError("repository_preparation_control_deadline")
         with db._memory_collection_read_budget(publication=True):
-            if root_id is not None:
-                with owner.store.writer(owner.task.id, admission=True):
+            if db._conn.in_transaction:
+                raise RuntimeError("repository_preparation_sql_owner")
+            db._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if root_id is not None:
+                    # Same root/row validation as the native Pause writer,
+                    # without another unbounded registry lookup or binding lock.
                     if owner.store.root_uncommitted(owner.task.id)["id"] != root_id:
                         raise RuntimeError("repository_preparation_root_changed")
-                    yield
-            else:
-                owner.admission.revalidate_uncommitted(owner)
-                if db._conn.in_transaction:
-                    raise RuntimeError("repository_preparation_sql_owner")
-                db._conn.execute("BEGIN IMMEDIATE")
-                try:
-                    yield
-                    db._conn.commit()
-                except BaseException:
-                    db._conn.rollback()
-                    raise
+                    owner.store.row_uncommitted(root_id)
+                else:
+                    owner.admission.revalidate_uncommitted(owner)
+                yield
+                db._conn.commit()
+            except BaseException:
+                db._conn.rollback()
+                raise
+            # No deadline/readback/reacquisition follows successful COMMIT.
+            # Even a later context restoration error cannot erase these facts.
+            if committed is not None:
+                committed()
+
+
+@contextmanager
+def _repo_preparation_cleanup(owner: Any, deadline: float) -> Iterator[None]:
+    """Bound failure attribution even when evidence construction itself failed.
+
+    This is the original batch deadline, not a replacement evidence identity.
+    The caller MUST latch uncertainty before this fallible admission.
+    """
+    db = owner.orch._db if hasattr(owner, "orch") else owner.admission.db
+    with _repo_preparation_gates(owner, deadline=deadline, finishing=True) as root_id:
+        with db._memory_collection_read_budget(publication=True):
+            if root_id is None:
+                # Native thread/producer leaf writers own their transaction.
+                yield
+                return
+            if db._conn.in_transaction:
+                raise RuntimeError("repository_preparation_sql_owner")
+            db._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if owner.store.root_uncommitted(owner.task.id)["id"] != root_id:
+                    raise RuntimeError("repository_preparation_root_changed")
+                owner.store.row_uncommitted(root_id)
+                yield
+                db._conn.commit()
+            except BaseException:
+                db._conn.rollback()
+                raise
 
 
 def _repo_closure_digest_uncommitted(owner: Any, evidence: Any) -> str:
@@ -2245,8 +2316,11 @@ def _repo_closure_digest_uncommitted(owner: Any, evidence: Any) -> str:
 
 
 def _repo_closure_digest(owner: Any, evidence: Any) -> str:
-    with evidence.db._memory_collection_read_budget(), evidence.db.coherent_read_view():
-        return _repo_closure_digest_uncommitted(owner, evidence)
+    # Digest admission is the preparation writer's admission, never a new
+    # census lock-wait allowance. The existing finite SQL/work budget remains.
+    if not evidence.db._lock._is_owned() or not evidence.db._conn.in_transaction:
+        raise RuntimeError("repository_preparation_sql_owner")
+    return _repo_closure_digest_uncommitted(owner, evidence)
 
 
 def _repo_check_closure_uncommitted(owner: Any, evidence: Any, body: dict) -> None:
@@ -2263,19 +2337,63 @@ def _repo_check_closure_uncommitted(owner: Any, evidence: Any, body: dict) -> No
         raise RuntimeError("repository_preparation_outer_changed")
 
 
+def _repo_record_uncommitted(owner: Any, evidence: Any, body: dict) -> int:
+    if hasattr(owner, "orch"):
+        from runtime.orchestrator.launch_refusals import _current
+        owner.store.held_uncommitted(owner.task.id)
+        owner.orch._team_moves.revalidate_uncommitted(owner.move_reservation)
+        if (owner.store._live.get(owner.identity) is not owner or not _current(owner)
+                or owner.launch_observed or owner.attempt_committed):
+            raise RuntimeError("repository_preparation_owner_changed")
+    if body["phase"] == "opened":
+        owner._repository_preparations[body["obligation"]] = evidence
+        if hasattr(owner, "orch"):
+            owner.move_reservation.repository_obligations[body["obligation"]] = False
+            owner.move_reservation.repository_evidence[body["obligation"]] = evidence
+    elif owner._repository_preparations.get(body["obligation"]) is not evidence:
+        raise RuntimeError("repository_preparation_wrong_obligation")
+    if body["phase"] == "closed" and not hasattr(owner, "orch") and (
+            owner.state.failed_cleanup or not owner.owner_live or owner.attempt_open):
+        raise RuntimeError("repository_preparation_owner_changed")
+    _repo_check_closure_uncommitted(owner, evidence, body)
+    return evidence.db.append_repository_preparation_uncommitted(body)
+
+
 def _repo_native_record(owner: Any, evidence: Any, body: dict) -> int:
-    if evidence.owner is not owner or body["owner"] != owner.repository_preparation_binding()[0]:
-        raise RuntimeError("repository_preparation_wrong_owner")
     try:
-        with _repo_preparation_writer(owner, evidence):
-            if body["phase"] == "opened":
-                owner._repository_preparations[body["obligation"]] = evidence
-            elif owner._repository_preparations.get(body["obligation"]) is not evidence:
-                raise RuntimeError("repository_preparation_wrong_obligation")
-            _repo_check_closure_uncommitted(owner, evidence, body)
-            return owner.admission.db.append_repository_preparation_uncommitted(body)
-    except BaseException:
-        owner.failed_cleanup()
+        if evidence.owner is not owner or body["owner"] != owner.repository_preparation_binding()[0]:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        with _repo_preparation_writer(owner, evidence,
+                committed=lambda: evidence.committed(body, receipt)):
+            receipt = _repo_record_uncommitted(owner, evidence, body)
+        return receipt
+    except BaseException as exc:
+        try:
+            owner.failed_cleanup(repository_deadline=evidence.deadline)
+        except BaseException:
+            exc.add_note("repository preparation failure attribution unavailable; original error retained")
+        raise
+
+
+def _repo_close_preparation(owner: Any, evidence: Any) -> bool:
+    """Construct, validate and append closure on ONE admitted native snapshot."""
+    from runtime.infrastructure.db.tasks import repository_preparation_event
+    try:
+        if evidence.owner is not owner or owner.repository_preparation_binding()[0] != evidence.binding:
+            raise RuntimeError("repository_preparation_wrong_owner")
+        with _repo_preparation_writer(owner, evidence,
+                committed=lambda: evidence.committed(body, receipt)):
+            body = repository_preparation_event(evidence.binding, evidence.repository, evidence.obligation,
+                evidence.sequence, "closed", probe=evidence.probe, complete=True,
+                state_digest=_repo_closure_digest(owner, evidence))
+            receipt = _repo_record_uncommitted(owner, evidence, body)
+        return evidence.closed
+    except BaseException as exc:
+        evidence.uncertain = True
+        try:
+            owner.failed_cleanup(repository_deadline=evidence.deadline)
+        except BaseException:
+            exc.add_note("repository preparation failure attribution unavailable; original error retained")
         raise
 
 
@@ -2285,9 +2403,9 @@ def _repo_native_settle(owner: Any, evidence: Any) -> bool:
         return False
     inventory = _repo_effect_inventory(owner)
     evidence.emit("outer_closed", complete=True, inventory=inventory)
-    owner.before_fifo()
-    evidence.emit("closed", complete=True, state_digest=_repo_closure_digest(owner, evidence))
-    return True
+    # The closure writer revalidates the actual native owner. Ordinary FIFO
+    # admission has no place in this deadline-bound finishing tail.
+    return _repo_close_preparation(owner, evidence)
 
 
 class _RepoPreparationEvidence:
@@ -2341,14 +2459,23 @@ class _RepoPreparationEvidence:
         except BaseException:
             self.uncertain = True
             raise
-        self.sequence += 1
-        if phase == "intent":
-            self.pending.add(facts["request_ref"])
-        if phase in {"finished", "not_admitted"}:
-            self.pending.discard(facts["request_ref"])
-            self.uncertain |= facts.get("complete") is not True
-        self.last_receipt = receipt
         return receipt
+
+    def committed(self, body: dict, receipt: int) -> None:
+        # Called only AFTER the actual COMMIT, still under original gates.
+        # These fixed local publications require no further application lock.
+        self.sequence += 1
+        phase = body["phase"]
+        if phase == "intent":
+            self.pending.add(body["request_ref"])
+        if phase in {"finished", "not_admitted"}:
+            self.pending.discard(body["request_ref"])
+            self.uncertain |= body["complete"] is not True
+        self.last_receipt = receipt
+        if phase == "closed":
+            self.closed = True
+            if hasattr(self.owner, "orch"):
+                self.owner.move_reservation.repository_obligations[self.obligation] = True
 
     def returned(self) -> None:
         # Called by the ORIGINAL caller after actual worker return/join. There
@@ -2668,13 +2795,14 @@ def _repo_pull_diagnostics(outcome: _RepoPullOutcome) -> dict[str, str | bool]:
 def _repo_pull_failed(
     preparation: TaskInvocation | ThreadPreparation | ProducerPreparation | None,
     name: str, outcome: _RepoPullOutcome, *, preparation_closed: bool = False,
+    repository_deadline: float | None = None,
 ) -> None:
     """Latch uncertainty BEFORE any fallible attribution, including classifier work."""
     evidence_failure: BaseException | None = None
     if preparation is not None:
         try:
             if not preparation_closed:
-                preparation.failed_cleanup()
+                preparation.failed_cleanup(repository_deadline=repository_deadline)
         except BaseException as exc:
             evidence_failure = _repo_pull_safe_error(exc)
         from runtime.orchestrator.task_pause import current_invocation
@@ -3088,7 +3216,7 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
             repository, validate = lease.__enter__()
         except (OSError, ValueError, TimeoutError):
             continue
-        record = {"name": name, "lease": lease, "evidence": None, "outcome": None}
+        record = {"name": name, "lease": lease, "evidence": None, "outcome": None, "deadline": deadline}
         work.append(record)
         try:
             evidence = _RepoPreparationEvidence(preparation, supervisor, repository, validate, deadline, cancel_requested)
@@ -3138,23 +3266,29 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
                         and outcome.failure is None and outcome.tree_quiescent)
             if outcome is not None and not results[record["name"]]:
                 _repo_pull_failed(preparation, record["name"], outcome,
-                    preparation_closed=evidence is not None and evidence.closed)
+                    preparation_closed=evidence is not None and evidence.closed,
+                    repository_deadline=record["deadline"])
             elif outcome is not None:
                 outcome.stderr.clear()
         except BaseException as exc:
             # Failed closure/export cannot turn a completed Popen into a
             # settled preparation; latch before preserving the first safe cause.
+            safe_error = _repo_pull_safe_error(exc)
             try:
-                preparation.failed_cleanup()
+                if evidence is not None:
+                    evidence.uncertain = True
+                preparation.failed_cleanup(repository_deadline=record["deadline"])
             except BaseException:
-                pass
+                safe_error.add_note("repository preparation failure attribution unavailable; ownership remains unknown")
             if outcome is not None:
                 try:
-                    _repo_pull_failed(preparation, record["name"], outcome)
+                    _repo_pull_failed(preparation, record["name"], outcome,
+                        preparation_closed=evidence is not None and evidence.closed,
+                        repository_deadline=record["deadline"])
                 except BaseException:
-                    pass
+                    safe_error.add_note("repository preparation cause attribution failed; original failure retained")
             if primary is None:
-                primary = _repo_pull_safe_error(exc)
+                primary = safe_error
         finally:
             record["lease"].__exit__(None, None, None)
     if primary is not None:

@@ -301,7 +301,15 @@ class ProducerPreparation:
     def direct_terminal(self):
         self.terminal(None)  # local parent return is not process-tree proof
 
-    def failed_cleanup(self):
+    def failed_cleanup(self, *, repository_deadline: float | None = None):
+        if repository_deadline is not None:
+            # An expired/busy persistence gate cannot delay the local latch.
+            self.state = self.state.model_copy(update={"failed_cleanup": True})
+            from runtime.orchestrator.workspace_adapters import _repo_preparation_cleanup
+            with _repo_preparation_cleanup(self, repository_deadline):
+                if not self.admission.db._conn.in_transaction:
+                    self.save(failed_cleanup=True)
+            return
         with self.admission.db._lock:
             if self.admission.db._conn.in_transaction:
                 # A caught package/event error may still own native SQL work.

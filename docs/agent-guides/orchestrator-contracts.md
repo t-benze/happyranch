@@ -738,8 +738,15 @@ cancellation stops admission and joins the real worker under its original OrgSta
 lifetime before evidence completion and lease release. Completion runs in the
 same joined off-loop executor mechanism after the actual batch worker returns.
 Repository custody precedes binding, root/Pause, move and short DB arbitration.
-Worker binding acquisition is clipped to the original remaining deadline; expired
-finishing tails acquire only immediately available gates. Human reconcile refuses
+Worker and completion acquisition, including native owner rechecks, binding/root
+gate-map lookups and failure attribution, uses the original remaining deadline;
+expired finishing tails acquire only immediately available gates. Closure digest
+construction and revalidation share the admitted writer's coherent transaction
+and finite SQL/work allowance, without a fresh lock-wait budget. After successful
+COMMIT, the original gates still protect receipt/sequence and selected-obligation
+publication; clock expiry cannot turn committed closure into a no-write claim.
+Failure latches local uncertainty before bounded persistence admission; unavailable
+attribution retains UNKNOWN without claiming a persisted update. Human reconcile refuses
 known active workers/completion before resource admission and uses immediate
 resource/application-lease refusal on the serving loop, then rechecks the live
 owner, binding, root, evidence set and physical pins under the acquired gates.
