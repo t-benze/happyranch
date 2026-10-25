@@ -48,6 +48,23 @@ original complete captures and stable ancestry identity remain validated, while
 all coding-owned current task rows still compare exactly. Returned graphs no
 longer block drain; J and all retained new bytes still require a compatible reader.
 
+A later ordinary ancestor cascade retains a genuinely returned coding graph as
+immutable history, including through terminal ordinary dependency paths and
+alongside fresh or already cancelled graphs. Full return replay, every original
+successful/quiescent native and positive outer closure, terminal owned rows and
+original capture ordering are required; a complete label alone never qualifies.
+Only reachable live ordinary tasks receive their sole cancellation overlay;
+only fresh coding graphs receive a fence. Returned source/carrier/stage/result/
+event/PR/merge/owner bytes receive no write or control. Batches containing a
+returned graph use closed cancellation command/event@2, or ordinary-cancellation@2
+when no fresh graph exists; retained anchors select the original authenticated
+return or cancellation event. Literal @1 retained anchors still require prior cancellation.
+Independent readers reconstruct membership, every anchor and audit/causal order,
+then compare full current SQL within the original transaction and ONE aggregate
+budget before COMMIT. Missing return, held/unknown/unsettled/native-uncertain work,
+hidden live descendants, drift or malformed membership/order refuse and roll back.
+Point stops of coding-dependent ordinary ancestors still refuse before writes.
+
 Native deferred recovery remains unavailable. Source/static delivery is not native
 or remote workflow acceptance. No deployment, host maintenance/restart, migration,
 import, role assignment, activation or historical settlement follows. Benze or the

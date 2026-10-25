@@ -946,6 +946,18 @@ without a PID and after a successful control return. Only positive original owne
 settlement permits the existing safe disposition; never clear tracker/journal
 ownership to force it. The existing Founder task-cancel route owns cancellation;
 this skill grants no control tool.
+A later ordinary ancestor cascade also retains a genuinely returned graph,
+including through terminal ordinary dependency paths and beside fresh/cancelled
+graphs. Complete independent return/native/positive-outer proof and terminal
+owned rows are required; complete alone never qualifies. Returned history is
+immutable, with no task/event/result/control/merge/owner mutation. Only reachable
+live ordinary rows receive their sole overlay and only fresh graphs are fenced.
+Returned/mixed batches use closed command/event@2 or ordinary-cancellation@2,
+anchoring original authenticated return/cancellation events. Literal @1 retained
+anchors still require prior cancellation. Complete readers authenticate all fields, causal membership and
+original audit/capture order, compare full SQL and validate before COMMIT within
+the ONE original budget. Missing/held/unknown/unsettled proof, hidden live work,
+drift or bad membership/order refuses with rollback; point-stop refusal remains.
 Founder THR320seq136 removes genuine four-stage/schema-import/operator/scratch
 availability as source-merge prerequisites under sole recovery ROOT12727.
 Real workflow/Founder persistence/across-team/two-org/backup/reopen/rollback
