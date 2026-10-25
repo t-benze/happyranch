@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import sys
 import uuid
 
 import httpx
+from pydantic import ValidationError
 
 from cli._shared import _ok
 from cli.client.client import OpcClient
@@ -48,12 +50,60 @@ def _revision(value):
         raise argparse.ArgumentTypeError("expected a positive state revision") from None
 
 
-def _result(response, *, operation=False, expected_request_digest=None):
+def _preview_failure(phase, exc):
+    category = "unknown"
+    for classes, label in (
+        ((httpx.TimeoutException,), "timeout"),
+        ((httpx.HTTPError,), "http_error"),
+        ((RuntimeError,), "runtime"),
+        ((OSError,), "io"),
+        ((ValidationError, ValueError), "validation_value"),
+        ((KeyError,), "key"),
+        ((TypeError,), "type"),
+        ((SystemExit,), "exit"),
+    ):
+        if isinstance(exc, classes):
+            category = label
+            break
+    try:
+        print(f"Team-move preview failure: phase={phase} category={category}", file=sys.stderr)
+    except Exception:
+        pass  # A diagnostic sink failure must not replace the original failure.
+
+
+@contextmanager
+def _preview_client(phase):
+    body_error = None
+    try:
+        with OpcClient.from_env() as client:
+            try:
+                yield client
+            except BaseException as exc:
+                body_error = exc
+                _preview_failure(phase[0], exc)
+                raise
+            finally:
+                phase[0] = "client_close"
+    except BaseException as exc:
+        if exc is not body_error:
+            _preview_failure(phase[0], exc)
+        raise
+
+
+def _result(response, *, operation=False, expected_request_digest=None, preview_phase=None):
+    if preview_phase is not None:
+        preview_phase[0] = "json_decode"
     try:
         result = response.json()
     except ValueError:
+        if preview_phase is not None:
+            preview_phase[0] = "envelope_output"
         print(json.dumps({"http_status": response.status_code, "code": "team_move_invalid_response"}))
+        if preview_phase is not None:
+            preview_phase[0] = "json_decode"
         raise SystemExit(1) from None
+    if preview_phase is not None:
+        preview_phase[0] = "envelope_output"
     print(json.dumps({"http_status": response.status_code, "result": result}, indent=2))
     if response.status_code == 202:
         raise SystemExit(3)  # Accepted/in-flight, even if a misleading body says otherwise.
@@ -100,21 +150,27 @@ def cmd_teams_move(args: argparse.Namespace) -> None:
         raise SystemExit(2) from None
     if key is not None:
         print("operation_key=" + key, file=sys.stderr, flush=True)
+    preview_phase = ["client_construction_entry"] if args.move_command == "preview" else None
     try:
-        with OpcClient.from_env() as client:
+        with (_preview_client(preview_phase) if preview_phase is not None else OpcClient.from_env()) as client:
             if args.move_command == "capability":
                 response = client.team_move_capability(args.org)
                 if response.status_code == 404:
                     print("Loaded service does not expose team-move capability; arrange release activation.", file=sys.stderr)
                 _result(response)
             elif args.move_command == "preview":
-                result = _result(client.team_move_preview(args.org, request_bytes))
+                preview_phase[0] = "request_response"
+                result = _result(client.team_move_preview(args.org, request_bytes), preview_phase=preview_phase)
+                preview_phase[0] = "normalized_request_validation"
                 normalized = PublicMoveRequest.model_validate_json(encoded(result["request"]))
+                preview_phase[0] = "digest_inventory_consent_validation"
                 if (result["inventory_complete"] is not True or
                         result["request_digest"] != _digest(_bytes(normalized)) or
                         normalized.drain_threads != selection.drain_threads):
                     raise ValueError("Preview request/inventory is unavailable; do not apply")
+                preview_phase[0] = "apply_request_save"
                 cache.save(key, "apply", ApplyMove(operation_key=key, request=normalized).model_dump(mode="json"))
+                preview_phase[0] = "guidance_output"
                 print(f"Saved normalized request. Review the exact diff, then use teams move apply --org {args.org} "
                       f"--operation-key {key} --expected-digest {result['request_digest']}", file=sys.stderr)
             elif args.move_command == "apply":

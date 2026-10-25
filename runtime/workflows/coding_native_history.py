@@ -384,6 +384,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     for event in events:
         budget.step()
         kind = event['event_kind']
+        _check(not state.get('returned'))  # A returned graph has no further writer.
         if kind == 'cancelled':
             _check(cancellation is None)
             from runtime.workflows._coding_cancellation_history import replay as replay_cancellation
@@ -828,6 +829,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
         storage.add('workflow_coding_events', event)
     _check(state['claim'] is None or state['host'] is not None)
     tasks, pending = fold_heartbeats(conn, org, budget, storage, tasks, anchors)
+    _check(not state.get('returned') or not pending)
     if cancellation is not None:
         from runtime.workflows._coding_cancellation_history import native_checkpoint
         native_checkpoint(cancellation_history, None, tasks, pending, budget)

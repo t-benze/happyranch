@@ -50,6 +50,82 @@ supersedes only the one publication/automatic-attempt hold stated here. No merge
 or deployment is authorized. Required lint/static gates and separate Product E2E
 policy remain unchanged. These banners describe the grant, not runtime success.
 
+## Current explicit coding execution and caller return — ROOT13015
+
+Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
+coding integration. This current contract supersedes unconditional-disabled
+instructions in the historical K3/R2/revision/source checkpoints below; their
+original observations, failures, approvals and immutable encodings remain history.
+
+New starts require the mounted native queue/host/runtime, complete valid J/import,
+current canonical settings with Admission Explicit and matching settings/release/
+mapping pins, and the existing current-authority/native admission predicates.
+Missing, malformed or Disabled settings refuse before callback persistence, spend
+or allocation. Disabled remains the default; ordinary routing remains legacy.
+Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
+work retains its original pins across later disable/default changes and still
+requires current selected-role/repository authority, Pause/move and native proof.
+
+Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
+this is neither per-org admission nor installed/loaded/operational acceptance.
+The strict historical false/downstream-unavailable pair remains readable. Settings
+copy in both locales distinguishes capability, admission and saving from a run.
+
+The existing four distinct actual roles and their genuine task/SID/INTEGER results
+progress through development, independent review, QA and final live manager.
+The selected final manager alone performs the existing local guarded expected-head,
+non-admin action and independent actual MERGED/commit/aware-time observation before
+its own callback. No daemon PR I/O, job executor or callback substitution is added.
+Fresh revisions and the bounded no-action manager successor use the same return.
+
+After manager_completed records merged work AND every original stage has successful
+host/quiescence and positive outer settlement, additive event@9/return@1 completes
+the original source and structural carrier in that SAME transaction. Their final
+summary/directory and note derive from the genuine manager result; source SID and
+all original results remain, and the carrier gets no SID/result. The independent
+reader derives every changed task field; rollback/full target validation uses the
+original aggregate allowance. Literal old complete/held histories are not adopted
+or rewritten. Returned metadata uses run@8, retaining old run@1–7 readers.
+
+Only a committed authenticated return may notify the ordinary parent and publish
+the existing terminal task history/thread tail. Runtime wiring rediscovers returned
+sources omitted from nonterminal scans, using complete readers and the native
+stored thread marker to avoid a second notification. A partial thread tail stays
+with its original owner. Coding leaves/carriers never enter legacy allocation.
+The existing root terminal-worktree tail remains separately attributable.
+After return, ordinary callers own their later state and later allocations;
+original complete captures and stable ancestry identity remain validated, while
+all coding-owned current task rows still compare exactly. Returned graphs no
+longer block drain; J and all retained new bytes still require a compatible reader.
+
+A later ordinary ancestor cascade retains a genuinely returned coding graph as
+immutable history, including through terminal ordinary dependency paths and
+alongside fresh or already cancelled graphs. Full return replay, every original
+successful/quiescent native and positive outer closure, terminal owned rows and
+original capture ordering are required; a complete label alone never qualifies.
+Only reachable live ordinary tasks receive their sole cancellation overlay;
+only fresh coding graphs receive a fence. Returned source/carrier/stage/result/
+event/PR/merge/owner bytes receive no write or control. Batches containing a
+returned graph use closed cancellation command/event@2, or ordinary-cancellation@2
+when no fresh graph exists; retained anchors select the original authenticated
+return or cancellation event. Literal @1 retained anchors still require prior cancellation.
+Independent readers reconstruct membership, every anchor and audit/causal order,
+then compare full current SQL within the original transaction and ONE aggregate
+budget before COMMIT. Missing return, held/unknown/unsettled/native-uncertain work,
+hidden live descendants, drift or malformed membership/order refuse and roll back.
+Point stops of coding-dependent ordinary ancestors still refuse before writes.
+
+Native deferred recovery remains unavailable. Source/static delivery is not native
+or remote workflow acceptance. No deployment, host maintenance/restart, migration,
+import, role assignment, activation or historical settlement follows. Benze or the
+designated host operator owns existing guided deployment/setup; the human Founder
+owns original import/settings. First genuine scratch through four actual roles
+and actual merge remains required before ordinary routing. Revision/control,
+cross-team persistence, two-org/default/override/backup/rollback remain open until
+demonstrated. Python units RETIRED; integration INCLUDING callback/lifespan/
+SessionTracker SKIPPED24342; Swift UNEXECUTED/FOUNDER-EXEMPTED/NONBLOCKING32093.
+
+
 <!-- K3a result-owned queued bootstrap: TASK12003 / ROOT10693 step87 -->
 ## Result-owned coding start and queued ownership (K3a)
 
@@ -1200,6 +1276,19 @@ complete bytes after a failed save proceed only after this boundary succeeds;
 partial/changed bytes remain preserved and refuse without overwrite/new key.
 The CLI prints the key and retains it on uncertainty. Same-UID races remain a
 cooperative-storage limitation, not an OS isolation guarantee.
+Preview failures after key output add bounded stderr phase/category attribution
+for client construction/entry, request/response acquisition, JSON decode,
+envelope output, normalized request validation, digest/inventory/consent
+validation, exact apply-request save, final guidance output or client close.
+Categories are fixed: timeout, http_error, runtime, io, validation_value,
+key, type, exit (existing CLI SystemExit) or unknown. No exception text, dynamic
+class name, traceback, payload, credential or private path is added. A body
+failure is attributed before close; a replacing close failure is reported
+separately, while unchanged body propagation is not labeled close. Existing
+HTTP envelopes, caught families, exits, preservation guidance, successful
+preview output and other move subcommands are unchanged. A request timeout
+does not identify a server/native cause; these observations neither diagnose
+the historical failure nor prove request/effect absence or loaded source.
 Apply transport loss performs one same-key GET, never a second POST/new key.
 HTTP202/CLI3 means accepted/in-flight; only saved COMPLETE/readback/release yields
 apply HTTP200/CLI0. Refusal/repair is CLI1; local argument validation is2.

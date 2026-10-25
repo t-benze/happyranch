@@ -35,7 +35,12 @@ def affected(conn: Any, task_id: str, cascade: bool, saved: Any, budget: _Budget
         selected[key] = row
         owner = saved.owners.get(key)
         if owner is not None and owner[1] not in instances:
-            _check(not retaining or saved.runs[owner[1]]['run']['state'] == 'cancelled')
+            entry = saved.runs[owner[1]]
+            if entry['run']['state'] == 'complete':
+                from runtime.workflows._coding_cancellation_history import _returned_event
+                _returned_event(entry, budget)
+            else:
+                _check(not retaining or entry['run']['state'] == 'cancelled')
             instances.add(owner[1])
             (retained if retaining else pending).extend(saved.runs[owner[1]]['tasks'])
         if cascade and row['status'] not in TERMINAL:
@@ -103,7 +108,8 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     _check(conn.execute('SELECT 1 FROM workflow_instances WHERE root_task_id=? LIMIT 1', (key,)).fetchone() is None)
             live = {k: v for k, v in selected.items() if v['status'] not in TERMINAL}
             _check(live)
-            fresh = {i for i in instances if saved.runs[i]['run']['state'] != 'cancelled'}
+            returned = {i for i in instances if saved.runs[i]['run']['state'] == 'complete'}
+            fresh = {i for i in instances if saved.runs[i]['run']['state'] not in ('cancelled', 'complete')}
             # Retained graphs still belong to the complete closure, but never
             # receive another cancellation event, task write or control.
             for instance in instances - fresh:
@@ -119,6 +125,8 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     for native in decode_journal(pause['admission_journal_json'])['entries']:
                         budget.step()
                         if native['task_id'] in selected:
+                            owner = saved.owners.get(native['task_id'])
+                            _check(owner is None or owner[1] not in returned)
                             native_owners.append(native)
             _check(len(native_owners) <= 512 and len({n['id'] for n in native_owners}) == len(native_owners))
             native_owners.sort(key=lambda n: n['id'])
@@ -133,7 +141,8 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     owned = state['claim'] is not None or state.get('queue_owner') is not None or state['host'] is not None
                     teardown_incomplete |= owned and not (state['cleanup_recorded'] and state['cleanup'])
             now = stamp()
-            command = dict(format='workflow-coding-cancellation-command@1', target_task_id=task_id,
+            version = '2' if returned else '1'
+            command = dict(format='workflow-coding-cancellation-command@' + version, target_task_id=task_id,
                 cascade=cascade, actor=actor, rationale=rationale, cancelled_at=now, native_owners=native_owners,
                 tasks=[dict(id=k, record=encode_row(v)) for k, v in sorted(selected.items())],
                 owners=[dict(task_id=k, kind=owner[0], instance_id=owner[1])
@@ -169,7 +178,7 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     for a in entry['attempts'].values():
                         if a['task_id'] in live:
                             conn.execute("UPDATE workflow_coding_attempts SET state='cancelled' WHERE id=?", (a['id'],))
-                    payload = dict(format='workflow-coding-cancellation-event@1', id=event_id, instance_id=instance,
+                    payload = dict(format='workflow-coding-cancellation-event@' + version, id=event_id, instance_id=instance,
                         event_seq=previous['event_seq'] + 1, event_kind='cancelled', attempt_id=entry['attempt']['id'],
                         operation=dict(org_slug=org.slug, principal=principal, key=key, request_digest=digest),
                         previous_digest=previous['event_digest'],
@@ -190,7 +199,7 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                     # ordinary ancestor stop. Its own closed task-scoped audit
                     # anchors the earlier genuine fences without modifying them.
                     from runtime.workflows._coding_cancellation_history import ordinary_overlay
-                    overlay = ordinary_overlay(org.slug, command, audits, saved, instances)
+                    overlay = ordinary_overlay(org.slug, command, audits, saved, instances, budget)
                     _copy_allowance(overlay, budget)
                     _check(len(_canonical(overlay)) <= 1048576)
                     db.insert_audit_log_uncommitted(task_id, actor, 'coding_ordinary_cancellation', overlay)

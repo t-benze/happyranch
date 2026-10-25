@@ -15,7 +15,7 @@ from runtime.workflows.coding_start_records import effective_mapping, parse_fina
 
 EDGE_KINDS = ('artifact_staged', 'contribution_recorded', 'stage_queued', 'advance')
 QA_EDGE_KINDS = ('review_staged', 'stage_queued', 'advance')
-KINDS = (*EDGE_KINDS, 'review_staged', 'manager_completed')
+KINDS = (*EDGE_KINDS, 'review_staged', 'manager_completed', 'return')
 
 
 def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
@@ -77,8 +77,15 @@ def admission(conn: Any, org: str, budget: Any, storage: Any, value: dict, *,
             for name in ('id', 'assigned_agent', 'team', 'brief', 'parent_task_id', 'revisit_of_task_id'):
                 _check(same(row[name], closure[key][name]))
         discovered.add(key)
-        pending.extend(r['id'] for r in rows(conn, 'tasks', budget,
-            where='parent_task_id=? OR revisit_of_task_id=?', args=(key, key), maximum=512))
+        for child in rows(conn, 'tasks', budget,
+                where='parent_task_id=? OR revisit_of_task_id=?', args=(key, key), maximum=512):
+            if child['id'] not in closure and child['id'] != future_task_id and child['id'] not in later_qa_tasks:
+                from datetime import datetime
+                _check(storage.return_boundary is not None and
+                    datetime.fromisoformat(child['created_at']) >
+                    datetime.fromisoformat(storage.return_boundary.replace('Z', '+00:00')))
+                continue  # Later ordinary caller work; return must still replay.
+            pending.append(child['id'])
         pending.extend(row[k] for k in ('parent_task_id', 'revisit_of_task_id') if row[k] is not None)
     _check(discovered == set(closure))
     current, seen = closure[source['task_id']], set()
@@ -139,6 +146,10 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
            later_qa_tasks: set[str], later_manager_tasks: set[str], settled_stages: dict) -> tuple:
     """Derive every target row from validated predecessors and actual callback."""
     from runtime.workflows.coding_start_history import same
+    if body['format'] == 'workflow-coding-event@9' or event['event_kind'] == 'return':
+        return replay_return(org, budget, event=event, body=body, previous=previous,
+            initial=initial, run=run, attempts=attempts, tasks=tasks, state=state,
+            source=source, command=command, settled_stages=settled_stages)
     if body['format'] in ('workflow-coding-event@7', 'workflow-coding-event@8'):
         from runtime.workflows.coding_revision_history import replay_revision
         return replay_revision(conn, org, budget, storage, event=event, body=body, previous=previous,
@@ -247,6 +258,72 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body:
             target_run.update(current_attempt_id=next_attempt['id'], current_revision=1, state='code_review')
     _check(same(body['after'], projection(target_run, target_attempts, target_tasks)))
     return target_run, target_attempts, target_tasks
+
+
+def replay_return(org: str, budget: Any, *, event: dict, body: dict, previous: dict,
+                  initial: dict, run: dict, attempts: dict, tasks: dict, state: dict,
+                  source: dict, command: dict, settled_stages: dict) -> tuple:
+    """Independently derive the sole structural return from authentic work."""
+    from datetime import datetime
+    from runtime.workflows.coding_start_history import same
+    from runtime.workflows.coding_revision import _copy_allowance
+    current = attempts[run['current_attempt_id']]
+    _check(command['format'] == 'workflow-coding-start@2'
+           and body['format'] == 'workflow-coding-event@9' and event['event_kind'] == 'return'
+           and event['attempt_id'] == current['id'] and current['stage'] == 'manager_closeout'
+           and current['state'] == 'completed' and run['state'] == 'complete'
+           and previous['event_kind'] == 'manager_completed' and not state.get('returned')
+           and state['final_output']['outcome'] == 'merged'
+           and datetime.fromisoformat(event['created_at'].replace('Z', '+00:00')) >=
+               datetime.fromisoformat(previous['created_at'].replace('Z', '+00:00')))
+    for native in (*settled_stages.values(), state):
+        _check(native['source_settled'] and native['cleanup_recorded'] and native['cleanup']
+               and native['terminal'] == 'success' and not native.get('ownership_unknown'))
+    callback = state['callback']
+    _check(callback is not None and callback['id'] == current['result_id'])
+    subject = state['final_output']['subject']
+    note = ('Coding workflow merged: ' + subject['navigation']['pr_url'] + ' head=' + subject['head']
+            + '; manager_result=' + str(callback['id']))
+    carrier_id = initial['evidence']['facts']['carrier_task_id']
+    expected_facts = dict(format='workflow-coding-return@1', result_id=callback['id'],
+        output_digest=_hash(callback['output_summary'].encode('utf8')),
+        source_task_id=source['task_id'], carrier_task_id=carrier_id)
+    evidence = _closed(body['evidence'], 'kind command origin authority rows facts native_task_observations')
+    facts = _closed(evidence['facts'], 'format result_id output_digest source_task_id carrier_task_id')
+    _check(same(facts, expected_facts) and evidence['kind'] == 'return'
+           and evidence['authority'] == initial['evidence']['authority'] and evidence['rows'] == [])
+    internal = dict(format='workflow-coding-return-command@1', kind='return',
+        source_event_ids=[previous['id']], source_event_digests=[previous['event_digest']], facts=expected_facts)
+    _check(same(evidence['command'], internal) and same(evidence['origin'], dict(kind='settled_result',
+        principal=current['principal'], task_id=current['task_id'], session_id=current['session_id'],
+        result_id=callback['id'], claim=state['claim'])))
+    principal = 'service:coding-dispatcher:' + org
+    key = 'coding-internal:' + _hash(_canonical([run['instance_id'], 'return', callback['id'], internal]))
+    operation = dict(org_slug=org, principal=principal, key=key, request_digest=_hash(_canonical(internal)))
+    _check(same(body['operation'], operation) and event['org_slug'] == org and event['principal'] == principal
+           and event['operation_key'] == key and event['request_digest'] == operation['request_digest']
+           and event['id'] == identity('event', org, run['instance_id'], principal, key))
+    def projection(r: dict, t: dict) -> dict:
+        return dict(run=r, attempts=[dict(id=k, record=encode_row(attempts[k])) for k in sorted(attempts)],
+            tasks=[dict(id=k, record=encode_row(t[k])) for k in sorted(t)],
+            instances=initial['after']['instances'], rounds=[], requests=[], assignments=[])
+    for value in (body['before'], body['after']):
+        _closed(value, 'run attempts instances tasks rounds requests assignments')
+    _check(same(body['before'], projection(run, tasks)))
+    for value in (run, tasks):
+        _copy_allowance(value, budget)
+    target_run, target_tasks = dict(run), dict(tasks)
+    target_run.update(cas_version=run['cas_version'] + 1, last_event_id=event['id'])
+    for task_id in (source['task_id'], carrier_id):
+        original = tasks[task_id]
+        _check(original['status'] == 'in_progress' and original['block_kind'] == 'delegated'
+               and original['cancelled_at'] is None and original['completed_at'] is None)
+        target_tasks[task_id] = {**original, 'status': 'completed', 'block_kind': None,
+            'completed_at': event['created_at'], 'updated_at': event['created_at'], 'note': note,
+            'final_output_summary': callback['output_summary'], 'final_output_dir': callback['output_dir']}
+    _check(same(body['after'], projection(target_run, target_tasks)))
+    state['returned'] = event['id']
+    return target_run, attempts, target_tasks
 
 
 def replay_qa(conn: Any, org: str, budget: Any, storage: Any, *, event: dict, body: dict,

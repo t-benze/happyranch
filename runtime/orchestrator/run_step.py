@@ -5581,9 +5581,19 @@ def _enqueue_parent_if_waiting(
     if task is None or task.parent_task_id is None:
         return
     from runtime.workflows.recovery import classify_task
-    for owned_id in (task_id, task.parent_task_id):
-        if classify_task(orch._db, owned_id, org_slug=getattr(orch, "_slug", None)).kind != "legacy":
+    ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
+    if ownership.kind != 'legacy':
+        if ownership.kind != 'coding_source_waiting':
             return
+        # The original source may notify its ordinary caller only after the
+        # independent complete reader admits the committed structural return.
+        from runtime.workflows.coding_start import queued_storage
+        with orch._db._lock:
+            entry = queued_storage(orch._db._conn, orch._slug).runs[ownership.intent_id]
+            if not entry['native'].get('returned') or entry['source']['task_id'] != task_id:
+                return
+    if classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None)).kind != 'legacy':
+        return
     parent = orch._db.get_task(task.parent_task_id)
     # Path B: a delegating parent is in_progress(delegated). The non-cascading
     # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.
