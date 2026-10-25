@@ -1803,8 +1803,11 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               and [r['acquired'] for r in resources] == sorted(r['acquired'] for r in resources),
               'R2 complete actual per-handle closure, never workers-zero inference')
         by_name = {r['name']:r for r in resources}
-        check(by_name['original']['acquired'] <= mode['at'] and by_name['duplicate']['acquired'] <= mode['at'],
-              'R2 mode belongs to the already-acquired original connection and duplicate')
+        check(by_name['connection']['acquired'] <= by_name['original']['acquired']
+              <= by_name['duplicate']['acquired'] <= mode['at']
+              and by_name['raw']['acquired'] <= by_name['buffer']['acquired']
+              <= by_name['file']['acquired'] <= by_name['response']['acquired'],
+              'R2 mode and parser wrappers belong to their already-acquired underlying handles')
         registrations = owner['registrations']
         check(type(registrations) is list and len(registrations) == 2
               and {r.get('name') for r in registrations} == {'duplicate','wake_read'}
@@ -1979,6 +1982,27 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
             else:
                 check(not body_returns, 'R2 header operation cannot consume body payload')
             previous = op
+        # These are final explicit successful close acknowledgements, rather
+        # than HTTPConnection detach or HTTPResponse's automatic file close.
+        # Every inventoried owner and registration is retained until finally,
+        # after the last operation (including any shutdown ack) and checkpoint.
+        last_use = max(operations[-1]['finished'], trace[-1]['at'])
+        check(all(last_use <= r['closed'] for r in resources)
+              and all(last_use <= r['unregistered'] for r in registrations),
+              'R2 final handle closure and unregister follow all worker I/O, validation and shutdown')
+        first = operations[0]
+        check(first['kind'] == 'getresponse' and trace[0]['event'] == 'checkpoint'
+              and trace[0]['kind'] == 'before-response'
+              and all(r['acquired'] <= trace[0]['at'] for r in resources if r['name'] != 'response')
+              and trace[0]['at'] <= first['started'] <= by_name['response']['acquired'] <= first['finished']
+              and all(by_name['response']['acquired'] <= op['started'] for op in operations[1:]),
+              'R2 initialized reader precedes first call and response is acquired inside getresponse before later uses')
+        for index, op in enumerate(operations):
+            completed = [c for c in checkpoints if c['kind'] == 'between'
+                         and op['finished'] <= c['at']
+                         and (index+1 == len(operations) or c['at'] <= operations[index+1]['started'])]
+            check(len(completed) == (1 if op['outcome'] == 'returned' else 0),
+                  'R2 each validated return establishes its own between checkpoint before the next operation')
         if proxied.get('streaming') and reads:
             read = proxied.get('stream_read')
             last = reads[-1]
@@ -1991,12 +2015,46 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                   'R2 current/prior stream read remains validated even with null stop read ID')
         else:
             check('stream_read' not in proxied, 'R2 genuine no-prior-stream-read state')
-        for fact in trace:
+        for index, fact in enumerate(trace):
             if fact['event'] != 'checkpoint':
                 check(len([op for op in operations if op['kind'] != 'stop'
                            and op['started'] <= fact['at'] <= op['finished']]) == 1
                       and by_name['response']['acquired'] <= fact['at'],
                       'R2 raw I/O belongs to exactly one actual parser operation')
+            elif fact['kind'] == 'between':
+                establishing = [op for i, op in enumerate(operations) if op['outcome'] == 'returned'
+                                and op['finished'] <= fact['at']
+                                and (i+1 == len(operations) or fact['at'] <= operations[i+1]['started'])]
+                check(len(establishing) == 1,
+                      'R2 between checkpoint follows its exact completed validation, outside later operations')
+            elif fact['kind'] != 'before-response':
+                establishing = [op for op in reads if op['started'] <= fact['at'] <= op['finished']]
+                check(len(establishing) == 1 and establishing[0]['id'] > 1,
+                      'R2 framing checkpoint belongs to one actual body read after headers')
+                current_read = establishing[0]
+                preceding = operations[current_read['id']-2]
+                check(preceding['outcome'] == 'returned' and preceding['finished'] <= current_read['started'],
+                      'R2 framing checkpoint preserves the distinct prior validated operation')
+                raw_before = [t for t in trace[:index] if t['event'] != 'checkpoint'
+                              and current_read['started'] <= t['at']]
+                files_before = [t for t in raw_before if t['event'] == 'file-return']
+                if fact['kind'] == 'finite':
+                    remaining = (preceding['result']['remaining_after'] if preceding['kind'] == 'read'
+                                 else proxied['response_outcome']['length'])
+                    check(proxied['response_outcome']['chunked'] is False and not raw_before
+                          and type(remaining) is int and remaining > 0 and fact['remaining'] == remaining,
+                          'R2 finite checkpoint precedes raw work in its exact remaining-length read')
+                else:
+                    check(proxied['response_outcome']['chunked'] is True,
+                          'R2 chunk framing checkpoints require actual chunked headers')
+                    if fact['kind'] == 'chunk-size':
+                        check(not raw_before if fact['delimiter'] is None else
+                              bool(files_before) and files_before[-1]['method'] == 'read'
+                              and files_before[-1]['bytes'] == 2,
+                              'R2 size checkpoint follows its own read delimiter validation or first chunk entry')
+                    else:
+                        check(not raw_before or bool(files_before) and files_before[-1]['method'] == 'readline',
+                              'R2 payload checkpoint follows its own parsed size or retained chunk entry')
         eof_facts = [t for t in trace if t['event'] == 'receive' and t['bytes'] == 0]
         last_return = next((o for o in reversed(operations) if o.get('outcome') == 'returned'),None)
         check((owner['terminal'] is None and not eof_facts)

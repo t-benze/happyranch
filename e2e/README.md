@@ -1802,7 +1802,16 @@ The sole-worker cancellation correction extends that SAME record and the SAME
 five E05 variants; it adds no manifest variant, suite, test-only seam or native
 execution venue. Acquired resource `closed` times acknowledge explicit successful
 close calls, not the first physical descriptor closure. Selector registrations
-are removed before final descriptor closes. A complete finite/bodyless outcome
+are removed after the worker's last operation/checkpoint and before final
+descriptor closes; every final explicit close must also follow that work,
+including the actual shutdown acknowledgement. Initialization precedes the
+first checkpoint/call, while the response is acquired inside getresponse before
+parser I/O. Original-socket detach and automatic response-file close remain
+separate from those final explicit acknowledgements. Each returned operation
+establishes its own between checkpoint after completed validation and before
+the next operation. Size/payload/finite checkpoints belong to their exact body
+read and its validated framing/remaining length, retaining distinct prior/current
+IDs. A complete finite/bodyless outcome
 may be cancelled after completion; its returned bytes/length remain and it is
 never labeled downstream delivery.
 
@@ -1814,6 +1823,9 @@ never labeled downstream delivery.
 | Live final SSE, first/later blocked read, terminal after context-closing but before per-worker start, terminal during/after real start | Earlier terminal refuses; later terminal alone supplies no acceptance. Every exact acknowledgement, actual context event AND return and full ownership closure must join | Existing final4/context owner, same original end and separate main browser. Native lifecycle/repetition NOT RUN/PROOF NOT RUN. |
 | Missing/duplicate/wrong Request, query target, method, owner/generation, original selected POST, ERR_FAILED or no native event | Refuse reassignment, nonGET/POST exemption, synthetic terminal and exception-name substitution | Existing five cases and independent raw ledger; no production flag/export/injection seam. |
 | Partial setup/registration, wake/ack/shutdown/close failure, late callback, forced teardown, expired original end or surviving worker/listener | Retain first/subsequent errors and unresolved inventory; attempt every acquired close. A late notification cannot resume an ended browser bridge | Same disposable owner. Static inspection is not actual closure; native proof NOT RUN/PROOF NOT RUN. |
+| Final explicit close of any of the ten resources or unregister of either selector interest before later read/validation/shutdown; late or reversed acquisition | Refuse at the independent lifetime/acquisition predicate. Preserve legitimate original-socket detach and automatic finite/bodyless/EOF file closure; final explicit close at the completed worker boundary remains admissible | Same serialized keeper, including navigation/context premature-close counterexamples and each handle/registration. Native use-after-close is NOT reproduced. |
+| Between checkpoint before its header/body validation or inside the next read; size/payload/finite checkpoint outside its own read | Refuse at the exact establishing-operation predicate. A between checkpoint at its own validation finish and existing valid framing waits remain admissible | Existing raw reader controls; no obsolete grammar or unrelated early refusal supplies new sensitivity proof. |
+| Native bridge exits before local acknowledgement coroutine cleanup resumes, or an already queued signal runs after exit | Synchronous finally deactivates the shared local latch and detaches only this exact notifier; coroutine finally is idempotent. Inactive notifications schedule nothing and queued signals cannot set the ended owner's event | Source failure-path assessment only. No shared bridge change, cancellation drain, additional wait or renewed deadline. Native cancellation/interleaving proof NOT RUN/PROOF NOT RUN. |
 | Missing/extra/retyped/reordered/stale/detached/forged counters, framing, identities, operations, native events or closure facts with producer success | Independent closed grammar reconstructs counts, finite lengths, chunk transitions, prior results and intent/ack/native/owner joins; historical failed full runs stay refused | Existing exact-source serialized-clause technique over isolated inputs. Scoped acceptance is NEVER whole-reader/native/Product PASS. |
 | Original one held compose POST200/body/hash/independent commit/release/delivery, automatic navigation/four revisits, public/raw-origin/durable C/N/D | All original assertions remain unconditional in all five original variants | Existing compose/content keeper; GET cancellation supplies no substitute. Native NOT RUN/PROOF NOT RUN. |
 
@@ -1825,7 +1837,13 @@ each row; (3) extend the SAME five E05 cases/validate_e05 because old between-ca
 controls do not observe blocked raw/parser/ack work, while the CLI relay and
 TERM/INT cover different ownership; (4) NO test-only production seam. Native
 I/O ownership and independently rejected contradictory exports are distinct
-risks, so neither layer replaces the other. Scoped serialized intended-fail and
+risks, so neither layer replaces the other. For the added lifetime/checkpoint
+rows, the credible regression is omitting the final-use/acquisition or exact
+establishing-operation join. For notifier ownership it is relying solely on
+coroutine finally or clearing a different owner's notifier. The nearest existing
+keeper inspected final counts/times or successful coroutine teardown; it did not
+reject these contradictory lifetimes or cover a bridge exit without a resumed
+coroutine. Scoped serialized intended-fail and
 restored results, where available, belong to these rows only. Missing native
 proof is NOT RUN/PROOF NOT RUN, never behavioral acceptance. The four historical
 owned/navigation no-first-read/between-read positive semantic contracts and all
@@ -1844,7 +1862,7 @@ failed-shutdown-owner, false-read-identity, false-status, missing-read,
 wrong-live-context, idle-unexpected-error, idle-failure-before-shutdown,
 duplicate-request, duplicate-proxy, duplicate-failed, workers-zero-errors.
 
-Maker scoped serialization observed 69 distinct current-protocol inputs:
+The original maker at the rejected source observed 69 distinct current-protocol inputs:
 15 clause acceptances and 54 refusals, with four additional case-label aliases
 reusing the same keeper observations. The ten cancellation shapes, four finite
 completion/delivery shapes and selected-delivery clause do not execute I/O.
@@ -1859,6 +1877,22 @@ supply no targeted sensitivity evidence. Actual CPython 3.12.14/3.14.4 method
 inspection and compile-only checks do not certify hosted parser execution.
 Native I/O/interleaving/lifecycle/fail-restored/repetition remain NOT RUN/PROOF
 NOT RUN; local/hosted lint and independent source review/QA are separate gates.
+
+The lifetime/checkpoint correction preserves all original 73 labels and their
+69 distinct inputs/15 scoped acceptances/54 refusals/four aliases as historical
+source observations. The extended same-record evaluation has 101 labels over
+96 distinct inputs: 18 scoped acceptances and 78 refusals, with five aliases.
+The original 73 label outcomes remain unchanged. Both independent premature-close
+inputs, the early-between observation, each final handle/registration control,
+acquisition-order controls and stale framing checkpoints now refuse at their
+owning predicates; the rejected-source clauses accepted those contradictions.
+Valid final-close and completed-validation boundaries remain admissible, along
+with the original pre-header, finite/bodyless/EOF completion and framing keepers.
+One exploratory delivered-owner-without-Request-pointer clause input remains
+accepted as in the review; it is not a positive whole-reader contract or native
+observation. No production source was temporarily mutated for this pre-fix/fixed
+comparison. Notifier cleanup has source assessment only; its native failure,
+restoration and repetition proof remain NOT RUN/PROOF NOT RUN.
 
 Mention-bearing C reply AND replay perform org discovery, exact
 `identities/resolve` lookup, selected thread GET and original reply POST. Plain

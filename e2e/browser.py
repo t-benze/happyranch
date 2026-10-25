@@ -1702,23 +1702,35 @@ class Browser:
         if hasattr(self, "thread_context"):
             relay = self.controller.browser_relay
             end = self.controller.effective_end()
+            active = True
+            notify = None
+            def detach_notify() -> None:
+                nonlocal active
+                with relay.lock:
+                    active = False
+                    if notify is not None and relay.context_notify is notify:
+                        relay.context_notify = None
             async def close_owned() -> None:
+                nonlocal notify
                 # This coroutine runs through the unchanged native bridge.
                 # The original loop continues processing Request terminals.
                 loop = asyncio.get_running_loop()
                 changed = asyncio.Event()
-                active = True
                 errors = []
                 def signal() -> None:
                     if active:
                         changed.set()
                 def notify() -> None:
-                    loop.call_soon_threadsafe(signal)
-                closing = dict(event='context-closing', request_ids=sorted(self.thread_streams), at=time.monotonic())
-                self.thread_events.append(closing)
+                    with relay.lock:
+                        if active:
+                            loop.call_soon_threadsafe(signal)
                 with relay.lock:
+                    if not active:
+                        return
                     relay.context_notify = notify
                 try:
+                    closing = dict(event='context-closing', request_ids=sorted(self.thread_streams), at=time.monotonic())
+                    self.thread_events.append(closing)
                     try:
                         records = relay.close_context_streams(closing, end)
                         while True:
@@ -1767,9 +1779,7 @@ class Browser:
                     if errors:
                         raise errors[0]
                 finally:
-                    active = False
-                    with relay.lock:
-                        relay.context_notify = None
+                    detach_notify()
             primary = None
             try:
                 self._healthy()
@@ -1777,6 +1787,9 @@ class Browser:
             except BaseException as exc:
                 primary = exc
             finally:
+                # The native bridge can return without draining cancellation.
+                # Retire this owner even if close_owned never resumes its finally.
+                detach_notify()
                 try:
                     if hasattr(self, 'thread_navigation_listener'):
                         self._detach(*self.thread_navigation_listener)
