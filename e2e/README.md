@@ -1949,17 +1949,44 @@ JSON encode/decode round trip. The values retain all fields, JSON types and
 array order under the same narrow Pause observation-time normalization; they
 are never exported in place of raw observations or used by the independent
 aggregate reader. No observation is cached across samples.
+`authenticate_public` avoids two redundant JSON encodings when the HTTP ledger
+and frame hold the identical freshly parsed response returned by `Controller.api`.
+Method/path/status/index checks still run; detached responses retain the original
+complete JSON comparison, including types, unknown fields and array order.
+Full comparison data is still constructed before the original frame `finished`.
+No GC/interpreter state, sampling acquisition, clock, bound or sampling assertion
+is changed.
 This reduces repeated deterministic work and additive idle time; real overruns
 still fail. Product40163040613 failed both timing predicates after the sleep
 correction; its timestamps do not identify the cause of the long frames.
+Product40193640406 at94b01228 separately retained a143.794089ms Python3.12
+acquisition after13 passing samples; its cause remains UNKNOWN. Its Python3.14
+window completed39 fresh samples across1s with both50ms checks satisfied, then
+failed the invalid live-to-cancelled `updated_at` equality. These failed runs
+remain failed; reader replay cannot supply native timing or whole-run credit.
 Native verification remains pending until the manager's changed-reviewed-main
 Product run, and no hard scheduling guarantee follows.
+
+The positive cancellation lifecycle oracle follows the shipping DB owner:
+`cancel_task` captures one cancellation time, then `Db.update_task` stamps
+each actual update before that task's cancellation audit. Both rows require
+aware UTC timestamps with created <= live updated < shared cancelled/completed
+<= own updated <= own audit; the parent audit precedes the worker update.
+Live and cancelled SQL timestamps must agree with both public list and detail
+`updated_at`. Exact key sets and every unrelated field, including last_heartbeat,
+remain required. The oracle runs at freeze and final; every subsequent full
+SQL/public/witness/window/final equality still includes the frozen updated_at.
+The aggregate reconstructs the transition independently from raw evidence,
+without importing the producer helper or accepting its verdict.
 
 Four answers / finite acceptance map (extends the existing R3-05/R3-06,
 Controller.mark/export and aggregate.controls keepers):
 
 | Cases | Observable contract and credible regression | Nearest keeper / precise gap and distinct risk | Test-only production seam / actual evidence |
 | --- | --- | --- | --- |
+| E07.cancel-cascade-browser / E07.cancel-terminal-unchanged / E07.cancelled-late-cli: fresh sampling and raw HTTP joins | Every sample obtains full SQL/files/public/detail/Recall/metrics/witness/pending and closure evidence; both50ms checks/full1s persist. Stale reuse, omitted reads, mismatched HTTP fields/types/order or uncharged work violates this boundary. | Existing frame/window/host/closure keepers retained; this correction removes duplicate same-object encoding only. Detached aggregate readers own independent serialized equality. | NO production seam/global state. Archived content/reader checks are bounded replay only; native timing restoration NOT RUN, original3.12 overrun remains rejected. State-restoration case is inapplicable: no global/interpreter state is touched. |
+| Same THREE E07 variants: live-to-cancelled lifecycle | Only legitimate ordered aware-UTC cancellation updates may change updated_at; naive/reversed/future stamps, key changes, unrelated last_heartbeat/content changes or public disagreement refuse. | Existing cancelled fields/audits and immutable freeze checks retained; old equality incorrectly excluded the actual DB update stamp. Terminal-refusal tests alone do not own live-to-cancelled ordering. | NO production seam. Original3.14 failure is attributable to the old equality; corrected raw transition acceptance does not accept its failed whole run. |
+| Independent aggregate.e07_cancellation_transition / validate_e07 | Reopen original raw rows/public/audits and reconstruct the same lifecycle bounds; frozen timestamps/content/witnesses still compare exactly through every sample/final. Accepting producer verdicts or ignoring updated_at would hide exported tampering. | Producer assertion cannot establish independent serialized validity. Existing e07_public_state/window/final/Health readers retain distinct export and whole-run refusal risks. | NO shared producer helper or new verifier/venue. Pure-reader checks only; complete native56 EACH and protected sensitivity/repetitions NOT RUN here. |
 | A1 adopted exited child while controller live | One actual generation-qualified consumed status/disappearance; controller remains live then retains its own intended exit. Removing active reap reproduces the late-wait dependency. | Owned tracking/cleanup, E07 strict disappearance and old R3-05/R3-06; WNOWAIT diagnostics/late numeric returns did not establish active reaping. | NO. One authorized isolated Linux exercise executed: adopted exit23, live controller then own37, setup parent own19; cleanup joined/one receipt. |
 | A1 live/foreign-parent/unknown/stale/direct-Popen, including creation-registration | No wait/status theft; dropping generation/parent checks or registering exclusion after unlocking admits foreign or direct status. | Same keeper; creation interval and direct dependency Popen custody differ from adopted child eligibility. | NO. Same exercise observed overall refusal for live/foreign/unknown/simulated stale registration and a contending reaper blocked during real Popen creation/registration. Stale input also had live/foreign guards, so isolated stale-generation sensitivity is NOT proved; actual OS PID reuse was NOT forced. |
 | A1 watcher plus cleanup/freeze | One consuming claim, actual statuses, no publication from an active watcher. A second consuming loop or pre-join publication loses status/immutability. | Same cleanup and stopped-watcher freeze; optional diagnostic completeness supplies no consuming authority. | NO. Same exercise checked duplicate refusal and stopped-watcher cleanup; asynchronous interruption/syscall-gap schedules remain source-reviewed, NOT RUN. |
@@ -1967,6 +1994,18 @@ Controller.mark/export and aggregate.controls keepers):
 | A2 identity/duplicate/conflict/path/secret safety | Closed bound exact identities and accepted references only; loosening unknown fields leaks arbitrary data. | Same existing aggregate.controls, extended completed_controls. Source/run join, filesystem custody and future-secret rejection are distinct from whole-run status checks. | NO. Actual publisher/reader controls cover wrong coherent identities, duplicate JSON/case, bad sequence/index/reference/digest, symlink/conflicting publication, raw-field rejection and secret-free bytes. |
 | A2 all56 complete record | All original identities/results join without changing ordered membership or full final oracles; a partial-ledger shortcut could fabricate complete health. | Existing validate and independent validate_e04/e05/e07 remain; new join is consistency only. | NO. Actual producer/all56 ledger consistency control executed; full56 EACH3.12/3.14 Product remains manager-owned/NOT RUN here. |
 | A2 required-file/diagnostic admission (TASK12950) | Missing/empty required artifacts or invalid diagnostics keep affected-lane cases UNKNOWN and Health FAIL; omitting either admission from promotion can falsely label all56 PASS. Complete valid evidence retains every original gate. | Existing main required-file loop/diagnostic projection and controls/completed_controls; controls cover metadata/ledger consistency, not main's full-artifact promotion. This gap concerns unavailable independent content despite an accepted ledger. | NO new test or production seam. PROOF NOT RUN: no existing complete full-artifact control fixture reaches main with valid independent content/Actions admission. Missing-image/invalid-projection before/after assessment is source-traced; old unknown-field proof does not cover it. No new harness or Product allocation. |
+
+TASK13023's existing pure-reader replay evaluated the original94b01228 field
+assertion against the unchanged3.14 archive: intended equality failure, then
+both corrected transition readers accepted those same raw freeze/final rows.
+Naive/future update stamps, unrelated heartbeat and added-key inputs refused
+in both readers. All14+39 archived window samples retained full content/raw
+HTTP/host/witness/closure agreement; the original timing predicate still
+rejected sample14 in3.12, and whole-run validation still refused BOTH failed
+results. A changed frozen timestamp/witness or detached raw response mismatch
+remained significant. This is bounded reader evidence only: no native sampling,
+full Product or protected mutation/repetition PASS. The existing aggregate
+`--controls` command also returned0; it does not exercise a complete E07 run.
 
 Task evidence records the exact Python3.14.4 commands/cwd, candidate source
 hashes, complete streams and exits. `python -B e2e/aggregate.py --controls`
