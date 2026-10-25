@@ -945,11 +945,23 @@ extension/dependency/VFS/raw-pointer/ctypes change is supplied or needed under
 this model. Direct same-user file/DB swapping between observations remains a
 disclosed cooperative limit; source-only delivery cannot certify its behavior.
 
-Writes additionally require documented daemon stop, reconciled hosts/outer tails
-and exclusion of cooperative restarts/publication/profile/move until return.
-Neither confirmation nor PID absence, TTL, terminal labels or producer_settled
-uncertainty releases ownership. Complete source-idle checks retain publication/
-profile, F5/draft/recovery/source claims, Pause release and team-move reservations.
+Writes require positive current stopped state and complete current writer,
+preparation and process exclusion throughout the affected registered-runtime,
+normal-org/shared-daemon/store/source/environment and cooperative-other-host
+window, including publications, profiles, moves, recovery and competing restarts.
+Establish human control before constructor effects or a preceding source update;
+repeat supported scope/process/lifecycle/identity observations before and after
+effects and keep the original SQLite reservations. One census, PID absence or a
+human yes alone is insufficient; unavailable present exclusion still refuses.
+Historical pending jobs on ended owners, nonquiescent receipts, failed old
+preparations/started audits and retained relocation storage alone require no
+closure certification. Preserve their labels/ownership/keys/bytes; never settle,
+relabel, clear or replay them. Current tasks, automatically consumable pending
+work, source-result processing and current publication/profile/Pause/move/recovery
+owners still hold. Complete data/history validation remains separate. This is
+cooperative exclusion, not a cross-host lock, hostile same-user or hard real-time
+guarantee. The original supported stop must succeed if attempted; independently
+selected already-stopped entry skips stop without reconstructing old shutdown.
 Exact I/source SQL types/rowids/bytes/FKs, unchanged retained equality, four empty
 additions, complete independent J validation, FK ON and rollback remain required.
 The primitive receives the script's original source identity and independently
@@ -990,7 +1002,7 @@ by manager guarded merge. Root owns K2a2–K6 and operational/real-agent accepta
 
 The accepted11414/11430 case design and manager step40 acceptance are reused.
 The original C15 O/D/G/S, shipping seam, expected observable and future cold venue
-are preserved below verbatim. These are design answers; no deliberate defect,
+are retained, with only the seq177–178 maintenance clause corrected below. These are design answers; no deliberate defect,
 assertion, SQL, runtime or cold-compatibility experiment was executed.
 
 | Case / input | Public observable / O | D | G | S | Future level | Environment | Isolation | Resource / prerequisite owner | Final transition / denial-no-effect oracle |
@@ -1004,7 +1016,7 @@ assertion, SQL, runtime or cold-compatibility experiment was executed.
 | One row in EACH of mappings/runs/attempts/events; orphan coding pins/import/context/provenance/submitted/join/scope/native result action/audit; unsupported coding ownership/format | Every installed reader including validate_data=False refuses categorically; no partial graph admission or legacy fallback | validate_empty_coding_data called after complete layout comparison for F–J, J retained validators forced; future isolated negative source-seeded DBs only after authorization |
 | F–J × four histories × naming0/1 × Pause × team move, including cache identity and unavailable construction | Independent full five-component references preserve every old preimage; any missing reference refuses, all192 combinations have source branches | _release_schema_digest only J allowlist delta; _validate_release_database full SQL digest; future complete isolated whole-reference/cold matrix, not executed |
 | Exact idle I→J, read-only I check and complete-J replay, FKs, retained types/rowids/bytes | Expected check3/replay0; explicitly confirmed cooperative migration adds four empty tables with FK ON/full target/retained equality and rollback on failure. Source branches are runnable but outcomes unexecuted | migrate_coding_schema/_coding_org_identity/_coding_retained_rows and operator script; future separately admitted stopped disposable owned runtime with authentic retained data and original RO→RW identity |
-| Unknown publication/profile/F5/draft/recovery/source-claim/Pause/host/outer-tail/team-move owner; source DB/file/lifecycle/rows change before/after acquisition or target validation failure | Concrete original-owner refusal; no PID/TTL/terminal-label release, no DDL committed, retained rows unchanged after rollback | _validate_coding_source_idle + operator cooperative offline_check + BEGIN EXCLUSIVE/source equality/before-commit identity/except rollback; future isolated controlled owner/change/failure barriers |
+| Current publication/profile/F5/draft/recovery/source-claim/Pause/host/team-move owner or unavailable complete present exclusion (retained historical uncertainty alone does not require closure certification); source DB/file/lifecycle/rows change before/after acquisition or target validation failure | Concrete current-exclusion refusal; no PID/TTL/terminal-label clearance, no DDL committed, retained rows unchanged after rollback; historical records remain byte/label/ownership-preserved | _validate_coding_source_idle + operator cooperative offline_check + BEGIN EXCLUSIVE/source equality/before-commit identity/except rollback; future isolated controlled owner/change/failure barriers |
 | Startup/reopen/enable/current create-org and pre-J reader/downgrade | Startup validates only; create-org stays I; old reader refuses J, even empty; downgrade preflight gives coding_schema_requires_compatible_reader | OrgState guidance/unchanged install path, routes/orgs I call read-only, cutover _read/document scans/downgrade; future archived preceding-reader vs exact empty J and cold no-upgrade observation |
 
 Each row is SOURCE INSPECTED only; behavioral/security/reader/migration/upgrade
@@ -1058,15 +1070,16 @@ Oversized/deep metadata refuses, never truncates a row prefix into acceptance.
 | R1 every inventory entry in incomplete/duplicate/escaped native decision, including action=workflow_start, kind/artifact_kind=code-change, source_kind=coding-manager-result, business_purpose=coding-replacement-selection@1; compare ordinary worker_execution purpose and prose containing the same words/quoted snippets | Full/metadata readers reject unsupported coding; recovery yields reconciliation_required. Ordinary document strings stay outside typed discrimination | Remove an inventory entry or restore partial fallback regex/last-key-wins | Shared scalar and lexical member discriminator before malformed-native absence | _refuse_coding_metadata→validate_empty_coding_data→_validate_installed/classify_task; no dispatch/claim/schema/task effect, no fabricated legacy validity PASS |
 | R2 canonical/hash-valid orphan authority with reserved source_pin, setup namespace alone or both; current pointer with no linked document instance | Unsupported coding authority refuses regardless of canonical/hash integrity or old closure absence | Inspect authority_bytes only or omit scalar authority/pointer namespace | Complete typed scalar inventory independent of stored canonical-byte decoder | All workflow scalar columns→_coding_scalar; native malformed BLOB scalar cannot hide a reserved family; neither setup reader nor issuer/write exists |
 | R3 no workflow tables but reserved native result/audit; valid old F–I with orphan coding and no draft/F5 alias; populated/partial/empty J with no old ownership; unknown coding table/view/index/trigger, wrong object type or case variation, including generic no-workflow graph; schema/scan error or unknown org | Every relevant early path reconciles/refuses before legacy; generic noncoding remains legacy, valid retained document draft/F5 still follows original owners | Move the guard after no-tables/no-roots legacy, or validate only old aliases | Pre-return empty/reserved scan and complete coding schema validation under existing lock/error fence | classify_task→runner.enqueue_task/jobs.submit/run_step prelaunch/completion/startup recover_owned_task; no queue/dispatch/coding task owner; all consumers read-only |
-| R4 original owned path/pre-open baseline, valid I check, empty-J replay, explicitly confirmed stopped/idle I migration, target failure/rollback; known path/dev/inode/mode/lifecycle drift before/after RW reopen, after-exclusive or precommit; unavailable observation | Expected RO check3/replay0 without writer; valid migration retains exact source rows and four empty additions; invalid source/confirmation/owner/observation or known drift refuses, no DDL committed and rollback preserves source. All operational results UNEXECUTED | Omit expected path/mode, reset baseline from RW writer, skip exclusive/precommit identity/offline/whole-source checks, or claim direct same-user swap exclusion | Cooperative exact-main/path/attachments and regular single-link uid/dev/inode/mode observations using ORIGINAL RO baseline; source-idle/whole-release/typed-row/FK validation; no native FD proof requirement | Operator independently resolved path/pre-open observation→RO _coding_org_identity→pre/post RW comparison→migrate_coding_schema after-exclusive/precommit→exception rollback; future authorized stopped disposable runtime, no SQL/security experiment now |
+| R4 original owned path/pre-open baseline, valid I check, empty-J replay, explicitly confirmed stopped/idle I migration, target failure/rollback; known path/dev/inode/mode/lifecycle drift before/after RW reopen, after-exclusive or precommit; unavailable observation | Expected RO check3/replay0 without writer; valid migration retains exact source rows and four empty additions; invalid source, missing complete present exclusion/current owner or observation, or known drift refuses; retained historical uncertainty alone needs no closure certification; no DDL committed and rollback preserves source. All operational results UNEXECUTED | Omit expected path/mode, reset baseline from RW writer, skip exclusive/precommit identity/offline/whole-source checks, or claim direct same-user swap exclusion | Cooperative exact-main/path/attachments and regular single-link uid/dev/inode/mode observations using ORIGINAL RO baseline; source-idle/whole-release/typed-row/FK validation; no native FD proof requirement | Operator independently resolved path/pre-open observation→RO _coding_org_identity→pre/post RW comparison→migrate_coding_schema after-exclusive/precommit→exception rollback; future authorized stopped disposable runtime, no SQL/security experiment now |
 
 Future level: independent scoped reader/recovery/cold migration checks in an
 explicitly admitted disposable venue; runtime/security/SQL execution remains
 UNEXECUTED. Future isolation: distinct synthetic orgs and private DB/source paths,
-separate stopped runtime plus registered daemon home and genuinely reconciled
-host/outer-tail owners; no shared live daemon/org/store/port or production swaps.
-Resource owner: ROOT10693 separately authorizes any venue/execution; original source/host/publication owners reconcile
-uncertainty; independent QA owns observations, maker never supplies a verdict.
+separate stopped runtime plus registered daemon home and complete current
+writer/preparation/process/cooperative-host exclusion throughout maintenance,
+without requiring historical closure certification; no shared live daemon/org/store/port or production swaps.
+Resource owner: the current root separately authorizes any venue/execution; source/host/publication owners establish
+complete present exclusion; independent QA owns observations, maker never supplies a verdict.
 C01 preserves actual-org binding without claiming mappings/override; C09 adds
 unavailable-observation/original RO→RW/check/replay/migration/rollback/no-alias recovery boundaries without coding CAS or
 callback implementation; C12 remains exact-head lint/static only, with genuine
@@ -2416,12 +2429,10 @@ implicit startup migration, browser import action or readiness change.
 The command denies managed/unknown host attribution using stdlib before product
 imports, client/credential access or receipt creation. It freezes literal source,
 registry/all-runtime/org/DB/environment/tool/UI identities, preserves `.codegraph`
-without traversal, and refuses dirty/unaccounted source or active/UNKNOWN durable,
-native, outer, schedule, publication/profile, Pause/move/recovery ownership.
-F is authenticated as F and never passed to an I-only idle query. Missing original
-native closure stays unknown even for terminal tasks, absent PIDs or expired leases.
-Earlier-layout profile/recovery histories without a complete supported
-ownership composition retain their original owner hold. No settlement writer runs.
+without traversal, and refuses dirty/unaccounted source or current task/native/
+schedule/publication/profile/Pause/move/recovery ownership and unavailable present
+exclusion. F is authenticated as F without draft-table queries. Historical
+closure is not reconstructed; complete validity readers remain authoritative.
 
 After positive observations and human coordination, every effect revalidates the
 same membership, ownership and source. Before stop, private durable receipt-only
@@ -2429,8 +2440,8 @@ INCOMPLETE.json and per-command intent are saved; each observed result retains
 actual/null exit, bounded digest scope, time/output/interruption or launch/closure
 uncertainty and safe diagnostics, without arbitrary lifecycle logs/private stderr.
 Unclosed intent or failed receipt persistence holds all later effects.
-BACKUP-STARTED.json adds inventory without losing pre-stop evidence; only complete
-manifest.json establishes backup. Original stop must positively close;
+BACKUP-STARTED.json adds inventory without losing pre-stop evidence; only verified complete
+manifest.json accepted in this invocation establishes backup. If running, original stop must positively close;
 stale/force-killed/ambiguous outcomes stop. Exclusive private recovery inventory
 covers affected registered runtime/org/config/durable DB/files, old source,
 environment and served UI. SQLite backup includes committed WAL, validates
@@ -2541,16 +2552,53 @@ despite later effect observation. Original keys/bytes/intents/results/receipts
 remain, without overwrite, replay/restart/restore/resume or a new operation key.
 Any failed observation or evidence persistence prevents the next effect.
 
-Reserved _pending is relocation custody retaining complete immediate membership/
-identity and an explicit owner hold, even empty; all four original inboxes remain.
-Reserved _archive holds without traversal. Historical started audits are launch
-facts, not paired unclosed markers, and no general ordinary-start-to-positive-
-outer-close reader exists. Original relocation/native/job owners and Engineering
-own supported read-only investigation/positive authenticated original disposition,
-with precise protected recovery decisions returned before mutation. Pending
-JOB1989/1698/1637, UNKNOWN12877/5388/5389/5390 and FAILED12568/12298 preparations
-retain all original holds. No label, PID absence, empty Pause, age or another
-settled store proves closure. Source delivery leaves setup NOT READY, Coding
-Disabled and real host/native/loaded/workflow/Founder/backup/restore/reopen/rollback
-acceptance NOT RUN/open. Unaffected C13 metadata/repositories/formats/four distinct
+Under ROOT12912 / Founder THR320seq177–178, historical job/receipt/launch
+uncertainty alone is not a migration-maintenance refusal. Preserve all original
+labels, ownership, keys, bytes and adverse evidence without cancel/relabel/settle,
+journal clearing, replay or claims of never-ran/quiescence. Account for `_pending`
+and `_archive` boundaries only: do not descend/read/copy their members, archives
+or OP evidence, move or delete them. They are untouched migration exclusions,
+not backup targets. A real present writer involving them still conflicts; unknown
+ordinary/partial orgs and actually affected uncopied material still hold.
+
+The human-controlled complete cooperative window begins before constructor
+commands/RO effects and any preceding host update. It covers all affected
+registered runtimes, normal orgs, shared-daemon stores, source/environment users
+and other hosts through backup, preparation, every migration, controlled restart,
+import checks and return. Repeat supported current owner/process/preparation/
+lifecycle/identity checks before and after effects; retain SQLite reservations.
+A one-time census, PID absence or human confirmation alone supplies no exclusion.
+Missing present attribution holds. No cross-host lock, hostile same-user or hard
+real-time guarantee is claimed; failure retains safe custody for Engineering.
+
+Running entry requires complete trustworthy current observations and one original
+stop/intent/result/status/process closure. A failed/uncertain stop in this invocation
+never falls into stopped success. Independently selected positive already-stopped/
+excluded entry uses existing lifecycle/process/cooperative controls, skips stop
+truthfully and queries no stopped HTTP service; it reconstructs no old shutdown.
+Fresh distinct wrapper/Python checks remain mandatory after original start.
+Current failed views with opening preparations[], null cutoff/no installed
+identity are incomplete and hold running entry. Engineering/serving must establish
+a supported complete running observation, or the human operator must establish
+genuine positive stopped entry with existing controls. No error bypass or memory
+endpoint/reset is supplied. Final selected loaded-source/UI acceptance remains
+after restart, with all twelve actual selected objects, full D1 list validation,
+closed identity/budgets/bookends and human rendering before import.
+
+Stop's shutdown effects precede the full stopped backup; receipt-only evidence
+is incomplete. Full affected DB/config/source/environment/UI/shared-daemon recovery
+inventory, WAL-inclusive SQLite backup/integrity/FKs and verified copy hashes,
+identities, restore mappings and original credential custody precede preparation
+or schema mutation. No WAL/SHM reset/checkpoint occurs. Accept the complete manifest
+only after verification and exclusive durable publication; retain its identity/
+digest and require that accepted custody before later stages. Existence alone is
+insufficient. Each original writer0 requires its exact post-check0 and full target
+validation before accepted-layout advance. All earlier pre/post-reservation calls
+and all three I→J idle calls, including post-DDL, use current maintenance selection;
+the nonmigration roster caller retains its original semantics. Full schema/data/
+history/types/rowids/bytes/release/FK validation, original FK policies, RO→RW
+identity, reservations/offline bookends and rollback remain unchanged. Behavioral,
+backup/restore/reopen/rollback and operational acceptance remain NOT RUN/open.
+
+Source delivery leaves setup NOT READY and Coding Disabled. Unaffected C13 metadata/repositories/formats/four distinct
 eligible cross-team agents/final manager/Disabled save-reopen/original-save remains.

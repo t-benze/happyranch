@@ -1,7 +1,7 @@
 """Read-only host maintenance composition. Never constructs Database/OrgState.
 
 This is a cooperative observation, not a maintenance reservation. The original
-schema/history owners remain authoritative; missing native closure stays unknown.
+schema/history owners remain authoritative; historical closure is not inferred.
 Only setup_coding imports this module, after its stdlib host-entry denial.
 """
 from __future__ import annotations
@@ -15,7 +15,6 @@ import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import yaml
 
@@ -131,145 +130,31 @@ def read_database(path: Path):
         conn.close()
 
 
-# Ordinary producer admission predicates from the original I/J idle owner.
-# They do not query layout-dependent draft/revision tables on F.
-_ORDINARY = (
-    ('workflow_publication_leases', '1'),
-    ('workflow_profile_leases', '1'),
-    ('workflow_publication_journals', "state NOT IN ('cache_installed','aborted')"),
-    ('workflow_profile_operations', "state NOT IN ('published','aborted')"),
-    ('workflow_recovery_claims', "state='claimed'"),
-    ('workflow_authority_pointers', "state!='ready'"),
-    ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
-    ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
-    ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
-    ('tasks', "status NOT IN ('completed','failed','cancelled','superseded') OR active_chain IS NOT NULL OR active_fanout IS NOT NULL OR blocked_on_job_ids IS NOT NULL OR executor_pid IS NOT NULL"),
-    ('task_completion_recoveries', "state!='callback_consumed' OR settled_at IS NULL"),
-    ('jobs', "status NOT IN ('completed','failed','rejected','cancelled')"),
-    ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
-    ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
-    ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
-    ('schedules', "active=1 OR session_id IS NOT NULL OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
-    ('remote_job_attempts', "state!='terminal'"),
-    ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
-)
-
-
-def owner_hold(org: str, table: str, row) -> None:
-    keys = ('id', 'task_id', 'root_task_id', 'record_id', 'source_id', 'session_id',
-            'current_session_id', 'preparation_id', 'operation_id', 'namespace', 'writer_id', 'invocation_id')
-    owner = ', '.join(f'{k}={row[k]}' for k in keys if k in row.keys() and row[k] is not None)
-    raise Hold(f'{org}: {table} {owner}; original owner must reconcile journal/native/outer closure; no stop attempted',
-               category='original_owner_unsettled',
-               details={'org': org, 'table': table,
-                        'owner': {k: row[k] for k in keys if k in row.keys() and row[k] is not None}})
-
-
 def inspect_org_owners(conn: sqlite3.Connection, layout: str, org: str) -> None:
-    from runtime.infrastructure.workflow_schema import (
-        _validate_coding_source_idle, _validate_submission_source_ownership,
-    )
-    from runtime.infrastructure.producer_admission import ProducerAdmissionStore, NativeWriterStore
-    from runtime.infrastructure.thread_admission import ThreadAdmissionStore
-    from runtime.infrastructure.task_pause_controls import validate_pause_schema, decode_journal
-    from runtime.infrastructure.team_move_store import validate_team_move_schema
-    from runtime.workflows.review_dispatch import validate_review_dispatch_storage
+    """One migration classification at wrapper and every inner writer boundary.
 
-    for table, predicate in _ORDINARY:
-        row = conn.execute(f'SELECT * FROM {table} WHERE {predicate} LIMIT 1').fetchone()
-        if row is not None:
-            owner_hold(org, table, row)
-    if layout != 'F':
-        row = conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE state NOT IN ('cancelled','failed','completed') LIMIT 1").fetchone()
-        if row is not None:
-            owner_hold(org, 'workflow_draft_dispatch_intents', row)
-    _validate_submission_source_ownership(conn, layout)
-    if validate_pause_schema(conn, org_slug=org, allow_absent=True):
-        for row in conn.execute('SELECT * FROM task_pause_controls'):
-            if row['held'] or row['release_pending_generation'] is not None or decode_journal(row['admission_journal_json'])['entries']:
-                owner_hold(org, 'task_pause_controls', row)
-    if validate_team_move_schema(conn, org_slug=org):
-        row = conn.execute('SELECT * FROM team_move_operations WHERE active_slot IS NOT NULL LIMIT 1').fetchone()
-        if row is not None:
-            owner_hold(org, 'team_move_operations', row)
-    adapter = SimpleNamespace(_conn=conn)
-    for state in ProducerAdmissionStore(adapter, org).history_uncommitted().values():
-        if state.unknown or not state.producer_settled or any(not a.settled or a.possible_launch and not a.quiescent for a in state.attempts):
-            owner_hold(org, 'producer_move_lifecycle', state.model_dump())
-    for state in NativeWriterStore(adapter, org).history_uncommitted().values():
-        if state.state != 'settled':
-            owner_hold(org, 'team_move_native_writer', state.model_dump())
-    store = ThreadAdmissionStore(adapter, org)
-    scopes = list(conn.execute("SELECT DISTINCT task_id FROM audit_log WHERE action='thread_move_lifecycle'"))
-    for scope in scopes:
-        rows = list(conn.execute("SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='thread_move_lifecycle' ORDER BY id", (scope[0],)))
-        decoded = list(store._decode_states(scope[0], rows, check=lambda: None))
-        ids = {state.invocation_id for _, state in decoded}
-        for invocation_id in ids:
-            row = conn.execute('SELECT * FROM thread_invocations WHERE id=?', (invocation_id,)).fetchone()
-            if row is None or row['thread_id'] != scope[0]:
-                raise Hold(f'{org}: thread invocation {invocation_id} original owner missing')
-            states = store._replay_bounded(SimpleNamespace(**dict(row)), rows, check=lambda: None)
-            state = states[-1][1]
-            if state.unknown or not state.producer_settled or any(not a.settled or a.possible_launch and not a.quiescent for a in state.attempts):
-                owner_hold(org, 'thread_move_lifecycle', state.model_dump())
-
-    # Refusal/started audit is NOT a terminal or outer-settlement certificate.
-    # There is no supported historical ordinary-native closure reader for this
-    # family. Preserve the exact original owner instead of guessing from labels.
-    for row in conn.execute("SELECT id,task_id,agent,payload FROM audit_log WHERE action='task_native_launch_boundary' ORDER BY id"):
-        payload = json.loads(row['payload'])
-        if payload.get('disposition') == 'unclosed_preparation' or payload.get('kind') == 'started':
-            raise Hold(f'{org}: {row["task_id"]} SID={payload.get("session_id")} invocation={payload.get("invocation_id")} audit={row["id"]}: '
-                       'original native preparation/outer closure observation unavailable; original task/native owner must reconcile; no terminal/PID inference',
-                       category=('native_preparation_closure_unavailable' if payload.get('disposition') == 'unclosed_preparation'
-                                 else 'native_started_closure_unavailable'),
-                       details={'org': org, 'task_id': row['task_id'], 'audit_id': row['id'],
-                                'session_id': payload.get('session_id'), 'invocation_id': payload.get('invocation_id')})
-
-    if layout in ('I', 'J'):
-        _validate_coding_source_idle(conn, expected_org_slug=org)
-        return
-    # Full document readers already validated draft/handoff/source history.
-    # Validate F5 terminal projections with their original storage reader.
-    graph = [{r[0] for r in conn.execute(f'SELECT request_id FROM {table}')} for table in
-             ('workflow_dispatch_operations', 'workflow_dispatch_outbox', 'workflow_request_task_bridges')]
-    if graph[0] != graph[1] or graph[0] != graph[2]:
-        raise Hold(f'{org}: incomplete original F5 graph')
-    for request in graph[0]:
-        validate_review_dispatch_storage(conn, request_id=request)
-    if layout != 'F':
-        # The original complete data reader authenticates the event bytes. A
-        # launched draft still needs its explicit host-quiescent final event.
-        from runtime.infrastructure.workflow_schema import _stored_json
-        for intent in conn.execute('SELECT * FROM workflow_draft_dispatch_intents'):
-            if intent['host_launch_started']:
-                event = conn.execute('SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq DESC LIMIT 1', (intent['id'],)).fetchone()
-                if event is None or _stored_json(event['event_bytes'], event['event_digest']).get('terminal_evidence') != {'host_quiescent': True}:
-                    owner_hold(org, 'workflow_draft_dispatch_intents', intent)
-    from runtime.workflows.authority import WorkflowAuthorityCoordinator, validate_authority_snapshot
-    from runtime.infrastructure.workflow_schema import _stored_json
-    # _journal is an existing SELECT-only namespace-bound reader. Its receiver
-    # needs only the literal namespace; no coordinator/Database is initialized.
-    for row in conn.execute('SELECT * FROM workflow_publication_journals'):
-        receiver = SimpleNamespace(namespace=row['namespace'])
-        journal = WorkflowAuthorityCoordinator._journal(receiver, conn, row['id'])
-        validate_authority_snapshot(_stored_json(journal['snapshot_bytes'], journal['snapshot_digest']))
-        if any(type(journal[k]) is not str or not journal[k] for k in ('publisher', 'publisher_invocation', 'recovery_owner')):
-            owner_hold(org, 'workflow_publication_journals', row)
-    for pointer in conn.execute('SELECT * FROM workflow_authority_pointers'):
-        generation, jid, value, state, fence = WorkflowAuthorityCoordinator._pointer(conn, pointer['namespace'])
-        if generation:
-            journal = WorkflowAuthorityCoordinator._journal(SimpleNamespace(namespace=pointer['namespace']), conn, jid)
-            if (state != 'ready' or journal['state'] != 'cache_installed' or journal['generation'] != generation
-                    or journal['snapshot_digest'] != value or journal['profile_fence'] != fence):
-                owner_hold(org, 'workflow_authority_pointers', pointer)
-    # No generic earlier-layout API closes cross-org profile/recovery terminal
-    # ownership. Preserve those owners instead of duplicating an I-only reader.
-    for table in ('workflow_profile_operations', 'workflow_recovery_claims', 'task_completion_recoveries'):
-        row = conn.execute(f'SELECT * FROM {table} LIMIT 1').fetchone()
-        if row is not None:
-            owner_hold(org, table, row)
+    Full schema/data/release readers run first. This is only the durable half
+    of current exclusion; process/preparation/cooperative host checks remain
+    required. No audit/journal is cleared or historical closure reconstructed.
+    """
+    from runtime.infrastructure.workflow_schema import _validate_coding_source_idle
+    try:
+        _validate_coding_source_idle(conn, expected_org_slug=org, layout=layout)
+    except ValueError as exc:
+        # Preserve current owner attribution in private diagnostics; unrelated
+        # schema/data errors retain their original exception and refusal.
+        message = str(exc)
+        prefixes = ('workflow_coding_source_owner_unresolved: ', 'workflow_submission_source_owner_active: ')
+        prefix = next((value for value in prefixes if message.startswith(value)), None)
+        if prefix is None:
+            raise
+        table, _, reference = message[len(prefix):].split(';', 1)[0].partition(':')
+        if re.fullmatch(r'[a-z_]+', table) is None:
+            raise
+        raise Hold('current owner prevents maintenance; establish complete present exclusion',
+                   category='current_owner_active',
+                   details={'org': org, 'table': table, 'owner': {'id': reference} if reference else {},
+                            'original_cause': message}) from exc
 
 
 def observe_maintenance(home: Path, selected: Path) -> dict:
@@ -280,7 +165,7 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
     frozen = registry(home)
     if str(selected) != frozen['active']:
         raise Hold('selected runtime must be the literal active registered runtime; no switching')
-    result = {'registry': frozen, 'orgs': [], 'directories': [], 'runtimes': []}
+    result = {'registry': frozen, 'orgs': [], 'directories': [], 'runtimes': [], 'excluded': []}
     for name in frozen['registered']:
         root = Path(name)
         runtime = RuntimeDir.load(root)
@@ -296,24 +181,10 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
         for org in entries:
             literal(org)
             if org.name in ('_pending', '_archive') and org.is_dir():
-                # Loader omission is not an idle observation. Preserve reserved
-                # custody and all immediate inbox identities; never open an org
-                # DB here, traverse archive contents or clear an empty tree.
-                pin = identity(org)
-                details = {'path': str(org), 'identity': pin,
-                           'directory': result['directories'][-1]}
-                if org.name == '_pending':
-                    members = sorted(org.iterdir())
-                    if len(members) > 1024:
-                        raise Hold('reserved relocation census budget exhausted')
-                    details['members'] = [(p.name, identity(p)) for p in members]
-                    if (identity(org) != pin or tuple(p.name for p in sorted(org.iterdir()))
-                            != tuple(p.name for p in members)
-                            or [(p.name, identity(p)) for p in members] != details['members']):
-                        raise Hold('reserved relocation custody moved')
-                raise Hold('reserved storage retains its original owner; loader omission and empty storage prove no clearance',
-                           category='reserved_relocation_custody' if org.name == '_pending' else 'reserved_archive_custody',
-                           details=details)
+                # Account only for the untouched boundary. Do not enumerate,
+                # read or copy members, archives or original OP evidence.
+                result['excluded'].append((str(org), identity(org)))
+                continue
             if not org.is_dir() or not re.fullmatch(r'[a-z0-9-]{1,40}', org.name):
                 # Pending/archive entries cannot silently disappear from scope.
                 raise Hold(f'{org}: unaccounted/partial org entry; original registry/org owner must reconcile')

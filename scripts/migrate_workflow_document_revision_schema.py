@@ -15,7 +15,7 @@ from scripts.migrate_workflow_submission_schema import (  # noqa: E402
     _MigrationConnection, _identity, _lifecycle_snapshot, resolve_org_database,
 )
 from runtime.infrastructure.workflow_schema import (  # noqa: E402
-    _validate_release_database, _validate_submission_source_ownership,
+    _validate_release_database, _validate_coding_source_idle,
     revision_migration_guidance, migrate_document_revision_schema, validate_workflow_schema,
 )
 
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
             print('migration-required: ' + revision_migration_guidance())
             return 1
         offline = _lifecycle_snapshot(runtime_root)
-        _validate_submission_source_ownership(conn, layout)
+        _validate_coding_source_idle(conn, expected_org_slug=args.org_slug, layout=layout)
         if _identity(path, conn) != identity or _lifecycle_snapshot(runtime_root) != offline:
             raise ValueError('offline_source_identity_changed')
         conn.path, conn.runtime_root = path, runtime_root
