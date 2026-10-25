@@ -1070,7 +1070,7 @@ Oversized/deep metadata refuses, never truncates a row prefix into acceptance.
 | R1 every inventory entry in incomplete/duplicate/escaped native decision, including action=workflow_start, kind/artifact_kind=code-change, source_kind=coding-manager-result, business_purpose=coding-replacement-selection@1; compare ordinary worker_execution purpose and prose containing the same words/quoted snippets | Full/metadata readers reject unsupported coding; recovery yields reconciliation_required. Ordinary document strings stay outside typed discrimination | Remove an inventory entry or restore partial fallback regex/last-key-wins | Shared scalar and lexical member discriminator before malformed-native absence | _refuse_coding_metadata→validate_empty_coding_data→_validate_installed/classify_task; no dispatch/claim/schema/task effect, no fabricated legacy validity PASS |
 | R2 canonical/hash-valid orphan authority with reserved source_pin, setup namespace alone or both; current pointer with no linked document instance | Unsupported coding authority refuses regardless of canonical/hash integrity or old closure absence | Inspect authority_bytes only or omit scalar authority/pointer namespace | Complete typed scalar inventory independent of stored canonical-byte decoder | All workflow scalar columns→_coding_scalar; native malformed BLOB scalar cannot hide a reserved family; neither setup reader nor issuer/write exists |
 | R3 no workflow tables but reserved native result/audit; valid old F–I with orphan coding and no draft/F5 alias; populated/partial/empty J with no old ownership; unknown coding table/view/index/trigger, wrong object type or case variation, including generic no-workflow graph; schema/scan error or unknown org | Every relevant early path reconciles/refuses before legacy; generic noncoding remains legacy, valid retained document draft/F5 still follows original owners | Move the guard after no-tables/no-roots legacy, or validate only old aliases | Pre-return empty/reserved scan and complete coding schema validation under existing lock/error fence | classify_task→runner.enqueue_task/jobs.submit/run_step prelaunch/completion/startup recover_owned_task; no queue/dispatch/coding task owner; all consumers read-only |
-| R4 original owned path/pre-open baseline, valid I check, empty-J replay, explicitly confirmed stopped/idle I migration, target failure/rollback; known path/dev/inode/mode/lifecycle drift before/after RW reopen, after-exclusive or precommit; unavailable observation | Expected RO check3/replay0 without writer; valid migration retains exact source rows and four empty additions; invalid source, missing complete present exclusion/current owner or observation, or known drift refuses; retained historical uncertainty alone needs no closure certification; no DDL committed and rollback preserves source. All operational results UNEXECUTED | Omit expected path/mode, reset baseline from RW writer, skip exclusive/precommit identity/offline/whole-source checks, or claim direct same-user swap exclusion | Cooperative exact-main/path/attachments and regular single-link uid/dev/inode/mode observations using ORIGINAL RO baseline; source-idle/whole-release/typed-row/FK validation; no native FD proof requirement | Operator independently resolved path/pre-open observation→RO _coding_org_identity→pre/post RW comparison→migrate_coding_schema after-exclusive/precommit→exception rollback; future authorized stopped disposable runtime, no SQL/security experiment now |
+| R4 complete accepted OLD recovery custody under C06-B/C07 below; original owned path/pre-open baseline, valid I check, empty-J replay, explicitly confirmed stopped/idle I migration, target failure/rollback; known path/dev/inode/mode/lifecycle drift before/after RW reopen, after-exclusive or precommit; unavailable observation | Expected RO check3/replay0 without writer; valid migration retains exact source rows and four empty additions; invalid source, missing complete present exclusion/current owner or observation, or known drift refuses; retained historical uncertainty alone needs no closure certification; no DDL committed and rollback preserves source. All operational results UNEXECUTED | Omit expected path/mode, reset baseline from RW writer, skip exclusive/precommit identity/offline/whole-source checks, or claim direct same-user swap exclusion | Cooperative exact-main/path/attachments and regular single-link uid/dev/inode/mode observations using ORIGINAL RO baseline; source-idle/whole-release/typed-row/FK validation; no native FD proof requirement | Operator independently resolved path/pre-open observation→RO _coding_org_identity→pre/post RW comparison→migrate_coding_schema after-exclusive/precommit→exception rollback; future authorized stopped disposable runtime, no SQL/security experiment now |
 
 Future level: independent scoped reader/recovery/cold migration checks in an
 explicitly admitted disposable venue; runtime/security/SQL execution remains
@@ -2445,8 +2445,11 @@ manifest.json accepted in this invocation establishes backup. If running, origin
 stale/force-killed/ambiguous outcomes stop. Exclusive private recovery inventory
 covers affected registered runtime/org/config/durable DB/files, old source,
 environment and served UI. SQLite backup includes committed WAL, validates
-integrity/FKs and preserves originals. Credentials remain in existing custody,
-identity-only; aliases/unaccounted affected paths and incomplete backup refuse.
+integrity/FKs and preserves originals. Genuine credentials remain in existing
+custody, unopened/uncopied; affected credentials block completeness. Filename
+suspicion alone is not credential evidence: exact known public material uses the
+C06-B/C07 admission/origin/original-copy contract below. Unaccounted aliases or
+affected paths and incomplete backup refuse.
 No restore is automatic; restore/rollback is unexecuted, and pre-J code must never
 boot J. Exclusion is cooperative, without a new maintenance reservation.
 
@@ -2599,6 +2602,71 @@ the nonmigration roster caller retains its original semantics. Full schema/data/
 history/types/rowids/bytes/release/FK validation, original FK policies, RO→RW
 identity, reservations/offline bookends and rollback remain unchanged. Behavioral,
 backup/restore/reopen/rollback and operational acceptance remain NOT RUN/open.
+
+C06-B/C07 public recovery uses the existing guided command, without a prewritten
+inputs/roles/selector/mapping ledger. Setup first discovers complete literal
+root/parent/object metadata, membership, inode aliases and allowed-link/referent
+closure. Separate current-custodian questions bind exact machine membership to
+known/mixed/unknown public/package/generated roles, private separation and all
+writer/shared-inode-user control. Exceptions name exact paths/subtrees and only
+deny admission, including innocently named private material. Unknown/disputed or
+conflicting roles refuse unopened. These are genuine present facts, not an
+access grant, proof of human knowledge or a historical installation certificate;
+no such host knowledge/control is supplied by source delivery. Ordinary nonmatched
+shared DB/config/state stays with its existing backup owner; ordinary private
+business state is not relabeled public code, and credential exceptions still deny.
+
+Reference custody/public role precedes reference content access. When installed
+matches require public inputs, the conversation selects a literal private local
+archive directory (default `<backup.parent>/public-origin-inputs/<source-tree>`)
+and an exact prior-reviewed full source commit only if OLD locks differ. Setup
+produces exact lock/member joins, dependencies and a retained recovery plan;
+humans supply no per-file identities or archive mapping JSON. Missing-input
+output points to exact reviewed lock URLs/hashes. Only a human later obtains
+anonymous exact-lock public archives. Setup adds no download/network client,
+cache/home/auth-config scan or installation before complete recovery.
+
+Candidate role AND independent pinned Git blob, whole-lock-verified ordinary
+wheel/tar member or supported CPython expectation precede candidate open, even a
+header/hash. Names, package prefixes, RECORD, archive membership, UID/nlink or a
+generic yes alone never admit. The finite CPython recipe uses independent paired
+public source, exact cache tag/filename, optimization0/1/2, current compiler/marshal
+configuration and magic/header flags0/1/3, exact source timestamp/size or hash, and
+in-memory compile/serialization; the paired actual source is verified first.
+It never imports/unmarshals/executes candidates or writes caches. Node selects the
+exact longest lock installation path and safe ordinary tar member. Unsupported
+wheel/platform/generation, unsafe namespace, mismatch or ambiguity refuses;
+reference bytes and rebuilds never replace ORIGINAL recovery copies.
+
+Admitted reads/copies hold no-follow parent/file descriptors with full metadata
+and path bookends, byte equality and exclusive private independent copies.
+Stable source nlink>1 requires actual complete shared-user control; no link-breaking,
+chmod/chown or preparation repair. Record unobserved external aliases honestly;
+recovery promises selected content/paths, not their topology. Allowed env/node/raw
+CLAUDE→AGENTS links, including lib64, retain every intermediate hop and close
+through admitted originals or the positively untouched usable selected external
+base interpreter/chain. Other unknown
+external dependencies refuse. The existing daemon token stays unopened/uncopied
+in original custody, with metadata rechecks and an exact unchanged-owner effect
+reason; no blanket credential exception exists. Any affected genuine credential
+blocks completeness: return its exact object/custodian/proposed operation and
+C07 remover to Engineering before access.
+
+Retain ALL actual OLD source/env/node/dist/feature state and affected shared-daemon/
+runtime/ordinary-partial-org DB/config/referents. Existing WAL-consistent SQLite
+backup/integrity/FKs/mappings remain; SHM readmarks are not byte-immutable evidence.
+Shared cooperative bounds are200000 entries,512MiB archive bytes,1GiB expanded
+members,64MiB selected member,8MiB compiler source,1MiB lock input and600s origin
+work; no hard RSS/OS-I/O time or hostile-user fence is claimed. Closing verification
+recomputes full original membership/coverage, then verifies retained inputs/plan/
+copies and exclusively publishes/readbacks the durable manifest. Every later
+uv/npm/build/migration/start/import/return gate authenticates complete accepted
+OLD recovery custody, including reference/copy membership; after legitimate C07
+replacement it does not compare the new environment with OLD contents. Any drift,
+missing copy/reference, publication or later failure clears invocation acceptance,
+retains the first cause/partial originals/receipts and secondary persistence failure,
+and permits zero next effects, with no repair/retry/new key/restore/replay/restart.
+Behavior/recovery proof remains NOT RUN/PROOF NOT RUN; setup NOT READY, Coding Disabled.
 
 Source delivery leaves setup NOT READY and Coding Disabled. Unaffected C13 metadata/repositories/formats/four distinct
 eligible cross-team agents/final manager/Disabled save-reopen/original-save remains.

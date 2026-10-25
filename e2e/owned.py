@@ -27,6 +27,15 @@ class Owned:
         self.groups: set[str] = set()
         self.providers: set[int] = set()
         self.lock = threading.RLock()
+        # Independent of the optional diagnostic slots. This launcher is the
+        # sole consuming owner of adopted children; Popen owns direct children.
+        self.launcher = (os.getpid(), identity(os.getpid()))
+        if self.launcher[1] is None:
+            raise RuntimeError("launcher generation unavailable")
+        self.direct: dict[int, str | None] = {}
+        self.processes: list[subprocess.Popen] = []
+        self.creation_unknown = False
+        self.reap_claims: dict[tuple[int, str], dict | None] = {}
         self.stop = threading.Event()
         self.errors: list[str] = []
         self.reaped: list[dict] = []
@@ -64,14 +73,90 @@ class Owned:
         self.thread.start()
 
     def add(self, pid: int) -> None:
-        start = identity(pid)
-        if start is not None:
-            with self.lock:
+        with self.lock:
+            start = identity(pid)
+            if start is not None:
                 previous = self.pids.get(pid)
                 if previous is not None and previous != start:
                     self.collisions.append(dict(pid=pid, previous=previous, observed=start, at=time.monotonic()))
                     raise RuntimeError("owned PID number reused")
                 self.pids[pid] = start
+
+    def popen(self, *args, **kwargs) -> subprocess.Popen:
+        # The lock covers creation itself, not just registration afterward.
+        # A watcher cannot discover a direct child in an unexcluded window.
+        with self.lock:
+            if self.creation_unknown:
+                raise RuntimeError("prior direct creation ownership unavailable")
+            # Sticky BEFORE Popen: an asynchronous exception anywhere before
+            # complete registration leaves unknown custody, never a reap grant.
+            self.creation_unknown = True
+            process = subprocess.Popen(*args, **kwargs)
+            self.processes.append(process)  # Retain status ownership on errors.
+            self.direct[process.pid] = None  # Unknown generation excludes too.
+            self.add(process.pid)
+            self.direct[process.pid] = self.pids.get(process.pid)
+            self.creation_unknown = False
+            return process
+
+    def reap(self) -> None:
+        """Consume only registered, exited, launcher-adopted generations."""
+        with self.lock:
+            launcher, launcher_start = self.launcher
+            if os.getpid() != launcher or identity(launcher) != launcher_start:
+                raise RuntimeError("launcher generation changed")
+            if self.creation_unknown:
+                return
+            for pid, start in list(self.pids.items()):
+                if pid in self.direct or (pid, start) in self.reap_claims:
+                    continue
+                def eligible() -> bool:
+                    try:
+                        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                    except (FileNotFoundError, ProcessLookupError):
+                        return False
+                    return (fields[19] == start and int(fields[1]) == launcher
+                            and fields[0] in {"Z", "X", "x"}
+                            and identity(launcher) == launcher_start
+                            and self.pids.get(pid) == start and pid not in self.direct)
+                if not eligible():
+                    continue
+                try:
+                    descriptor = os.pidfd_open(pid)
+                except ProcessLookupError:
+                    continue
+                try:
+                    if not eligible():
+                        continue
+                    observed = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                    if (observed is None or observed.si_pid != pid or observed.si_signo != signal.SIGCHLD
+                            or observed.si_code not in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)
+                            or type(observed.si_status) is not int
+                            or not 0 <= observed.si_status <= (255 if observed.si_code == os.CLD_EXITED else 127)):
+                        continue
+                    if not eligible():
+                        continue
+                    # One actual consuming call on the SAME pinned descriptor.
+                    self.reap_claims[(pid, start)] = None
+                    result = os.waitid(os.P_PIDFD, descriptor, os.WEXITED | os.WNOHANG)
+                    if result is None:
+                        raise RuntimeError("eligible child status unavailable")
+                    receipt = dict(pid=pid, generation=start, launcher=launcher,
+                                   launcher_generation=launcher_start, code=result.si_code,
+                                   status=result.si_status, exit=(result.si_status if result.si_code == os.CLD_EXITED
+                                                                else -result.si_status),
+                                   owner="launcher-pidfd", absent=False)
+                    self.reaped.append(receipt)
+                    self.reap_claims[(pid, start)] = receipt
+                    if result != observed or identity(pid) == start:
+                        raise RuntimeError("consuming child status/disappearance mismatch")
+                    receipt["absent"] = True
+                except ChildProcessError:
+                    # Daemon/foreign children are never wait authority. ECHILD
+                    # is refusal, not a fabricated consumed status receipt.
+                    continue
+                finally:
+                    os.close(descriptor)
 
     def register_provider(self, pid: int) -> dict:
         # A socket peer is not authority to signal arbitrary processes. Verify
@@ -197,6 +282,9 @@ class Owned:
                         if entry.is_dir() and (entry / "cgroup.procs").exists():
                             for pid in (entry / "cgroup.procs").read_text().split():
                                 self.add(int(pid))
+            # Optional incomplete traversal/diagnostics cannot veto an otherwise
+            # independently registered, generation/custody-qualified child.
+            self.reap()
             if selected is None:
                 return
             slot = self.evidence_slots[selected]
@@ -512,37 +600,12 @@ class Owned:
                 self.signal(pid, sig)
             until = time.monotonic() + seconds
             while time.monotonic() < until:
-                try:
-                    while True:
-                        pid, status = os.waitpid(-1, os.WNOHANG)
-                        if not pid:
-                            break
-                        annotation = None
-                        if annotate and annotations["state"] == "claimed":
-                            if len(annotations["rows"]) == 34:
-                                annotations.update(state="incomplete", reason="annotation_limit", coverage="partial")
-                            elif (type(pid) is not int or not 0 < pid < 2**64
-                                  or type(status) is not int or not 0 <= status < 2**32):
-                                annotations.update(state="incomplete", reason="malformed", coverage="partial")
-                            elif self.evidence_budget["clocks"] >= 512:
-                                annotations.update(state="incomplete", reason="no_budget", coverage="partial")
-                            else:
-                                self.evidence_budget["clocks"] += 1
-                                if time.monotonic() >= self.evidence_entry[1]:
-                                    annotations.update(state="incomplete", reason="no_budget", coverage="partial")
-                                else:
-                                    annotation = dict(index=len(annotations["rows"]) + 1, pid=pid, wait_status=status,
-                                                      exit=None, generation=None, join="unknown", slot=None, target=None)
-                                    annotations["rows"].append(annotation)
-                        self.reaped.append(dict(pid=pid, wait_status=status, exit=os.waitstatus_to_exitcode(status)))
-                        if annotation is not None:
-                            decoded = self.reaped[-1]["exit"]  # ORIGINAL decode only.
-                            if type(decoded) is int and -(2**31) <= decoded < 2**31:
-                                annotation["exit"] = decoded
-                            else:
-                                annotations.update(state="incomplete", reason="malformed", coverage="partial")
-                except ChildProcessError:
-                    pass
+                with self.lock:
+                    self.reap()
+                    # These objects are the exclusive consuming owners of every
+                    # direct command, including interrupted setup/controller.
+                    for process in self.processes:
+                        process.poll()
                 self.sample()
                 with self.lock:
                     observed = dict(self.pids)
@@ -551,38 +614,36 @@ class Owned:
                 self.stop.wait(0.05)
         self.stop.set()
         self.thread.join(timeout=2)
+        if self.thread.is_alive():
+            # No copy/publication of live watcher memory and no new child.
+            return dict(ok=False, watcher_stopped=False, errors=["owned watcher stop unavailable"],
+                        seconds=time.monotonic() - started)
         units = {}
         unit_env = {key: os.environ[key] for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if key in os.environ}
         unit_env.update(PATH="/usr/bin:/bin", LANG="C.UTF-8")
         for unit in sorted(self.units):
-            r = subprocess.run(["/usr/bin/systemctl", "--user", "show", unit, "--property=LoadState,ActiveState"],
-                               capture_output=True, text=True, timeout=3, env=unit_env)
-            units[unit] = dict(exit=r.returncode, stdout=r.stdout, stderr=r.stderr)
+            process = self.popen(["/usr/bin/systemctl", "--user", "show", unit, "--property=LoadState,ActiveState"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=unit_env)
+            try:
+                stdout, stderr = process.communicate(timeout=3)
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            units[unit] = dict(exit=process.returncode, stdout=stdout, stderr=stderr)
         survivors = {pid: start for pid, start in self.pids.items() if identity(pid) == start}
         groups = {group: (Path("/sys/fs/cgroup") / group.lstrip("/")).exists() for group in self.groups}
         absent = not survivors and not any(groups.values()) and all(
             "LoadState=not-found" in row["stdout"] for row in units.values())
-        if annotate and annotations["state"] == "claimed":
-            # All ORIGINAL consuming loops returned without a gap. No Popen or
-            # replacement launch occurs between the entry pin and these waits.
-            slot = self.evidence_slots["precleanup"]
-            rows = annotations["rows"]
-            occurrences = {}
-            for row in rows:
-                occurrences[row["pid"]] = occurrences.get(row["pid"], 0) + 1
-            for row in rows:
-                matches = []
-                if slot["state"] == "complete" and row["pid"] != self.evidence_phase_pid:
-                    for index, target in enumerate(slot["targets"]):
-                        if (target["pid"] == row["pid"] and target["registration"] == "matched"
-                                and target["wait"]["state"] == "complete" and target["wait"]["outcome"] == "eligible_exit"
-                                and target["close"] == "closed"):
-                            matches.append((index, target["start"]))
-                # Duplicate consumption would make the entire generation join
-                # ambiguous. Numeric PID/status equality alone never qualifies.
-                if len(matches) == 1 and occurrences[row["pid"]] == 1:
-                    row.update(generation=matches[0][1], join="qualified", slot="precleanup", target=matches[0][0])
-            annotations.update(reason="none", outcome="returned", coverage="all_reached")
-            annotations["state"] = "complete"
-        return dict(ok=absent and not self.errors and not self.thread.is_alive(), survivors=survivors, units=units, groups=groups,
-                    errors=self.errors, identities=self.pids, reaped=self.reaped, collisions=self.collisions, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)
+        if annotate:
+            # Historical diagnostic waitpid slots cannot qualify these new
+            # pidfd receipts. Keep unavailable attribution honest and separate.
+            annotations.update(state="incomplete", reason="incomplete", outcome="unknown", coverage="partial")
+        waits_complete = all(row is not None and row["absent"] for row in self.reap_claims.values())
+        return dict(ok=absent and waits_complete and not self.creation_unknown and not self.errors and not self.thread.is_alive(),
+                    creation_unknown=self.creation_unknown, survivors=survivors, units=units, groups=groups,
+                    unconfirmed_reaps=[dict(pid=pid, generation=start) for (pid, start), row in self.reap_claims.items()
+                                       if row is None or not row["absent"]],
+                    errors=self.errors, identities=self.pids, reaped=self.reaped,
+                    popen_returns=[dict(pid=p.pid, generation=self.direct[p.pid], exit=p.returncode) for p in self.processes],
+                    collisions=self.collisions, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)

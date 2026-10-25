@@ -1841,7 +1841,141 @@ cannot satisfy the case. The original retained POST is then forwarded once to
 boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
 upstream response are distinct; no killed CLI response/exit is fabricated.
 
-### Launcher ownership evidence (TASK12803 / ROOT12738)
+### Active adopted-child reaping and completed-case retention (TASK12942)
+
+Founder THR291seq434 and manager TASK12939 under sole ROOT12937 approve
+this linked correction. TASK12915's accepted package governs this source;
+historical unknown preparation and failed Product receipts remain unchanged.
+This section supersedes only the older diagnostic-only statements below about
+unchanged consuming waits and terminal-only result retention.
+
+`Owned` pins its own launcher PID/start independently of optional diagnostics.
+`Owned.popen` holds the SAME RLock across creation, retained Popen ownership,
+numeric exclusion (including unknown generation), and generation registration.
+All dependency/setup commands and the scenarios controller use it; cleanup's
+systemctl queries do too. Interrupted creation leaves sticky unknown custody
+and cannot authorize consuming waits or successful cleanup. The creator's
+Popen remains the exclusive poll/wait owner, including after interruption;
+its later status is recorded separately and never fills an earlier phase null.
+
+The existing watcher samples/registers generations and invokes `Owned.reap`.
+That method and cleanup serialize through the same lock. Only a registered
+PID/start currently bracketed as an exited child of the pinned live launcher,
+excluded from ALL direct-Popen numbers, is eligible. A pidfd is opened, the
+same target/parent generations rechecked, WEXITED|WNOHANG|WNOWAIT observes
+actual exit eligibility, and the same descriptor consumes WEXITED|WNOHANG
+only after another custody/generation check. A claimed generation is disarmed
+BEFORE consumption. Actual si_code/si_status/decoded exit and launcher/target
+generations are retained in cleanup.reaped; strict disappearance must follow.
+Unconfirmed claims remain explicit and fail cleanup. No waitpid(-1), live-child
+wait, daemon-parent child wait, PID-only authority, Z-as-absence or second
+consuming owner remains. Cleanup polls retained direct Popen objects, joins the
+watcher, and only then publishes detached ownership evidence. An unjoined
+watcher yields failure without reading its mutable registry into the result.
+Optional census/old waitpid-attribution slots remain separate: incomplete slots
+neither grant nor prevent independently qualified reaping, and old returns are
+not relabeled as pidfd receipts. The old optional returns projection remains
+incomplete/unknown on this new path.
+
+`Controller.mark` commits one closed observation and then an append-only-prefix
+ledger in private coord BEFORE returning to later case work. It leaves the
+original result/evidence/at and all case assertions intact. `completed.py` is
+the directly consumed E2E-only publisher/reader shared by Controller, launcher
+and aggregate. It introduces no product hook, CLI flag, test-only seam or venue.
+The <=56 records use actual completion sequence, exact manifest index/variant,
+source SHA/tree, Actions run/attempt, Python lane and exercise. Completion order
+is the existing execution order, not a reordering of the manifest. Evidence is
+an immutable `case-NN.json` reference with exact byte length/SHA256, containing
+ONLY that identity/time and bounded integer counts of HTTP/commands/starts/
+durable observations/evidence fields. These closed observations retain reported
+PASS from assertions but are not independent content proof. Aggregate shows
+UNKNOWN unless complete original results and ALL existing content gates pass.
+No raw body, log, exception text, token, arbitrary field or path is admitted;
+later secret discovery cannot expose an early raw stream through this channel.
+`prepare_redaction`, `_atomic_json`, small/final raw evidence and full-context
+withholding keep their original gates; closed observations do not relax them.
+
+The ledger grammar rejects unknown/duplicate JSON keys, duplicates/conflicts,
+wrong source/tree/run/attempt/lane/exercise/variant/sequence/index, malformed
+counts/times, unsafe paths, absent/digest-mismatched references and overflow.
+The ledger is <=262144 bytes, each referenced observation <=4096 bytes, max56.
+Literal parents are opened no-follow and pinned/rechecked; files must be owned,
+regular, single-link and not group/world writable. Writes use exclusive0600
+pending files, flush/fsync, descriptor-relative replacement and directory fsync;
+existing conflicting bytes refuse. Readers validate references before path use
+and recheck the ledger. These are cooperative same-user observations, not a
+hostile same-UID or crash-atomic two-file transaction guarantee. An orphan
+observation without a committed ledger row supplies no completion credit.
+
+Launcher captures this closed bundle before root teardown and independently
+of token/context/bulky export. Export commits/reopens the safe references before
+initial FAIL, detailed or fallback result publication names the SAME bundle.
+Failure receipts preserve it while keeping variants={} and status FAIL. The
+first actual controller/action error remains independent of later cleanup or
+export failure. Full success additionally joins all56 original result names,
+order, statuses and exact times to the ledger, then retains every original
+content/timing/diagnostic/cleanup/export/Health obligation. Partial records
+never replace observations.json, E04/E05/E07 content, images or witnesses; any
+missing obligation still makes run/Health FAIL. Missing/unsafe evidence stays
+UNKNOWN; no historical PASS is reconstructed. Group isolation is deferred.
+
+Individual case promotion also requires every required artifact/phase log in
+that Python lane to pass the existing presence/nonempty rules and its result
+to pass diagnostic decoding/projection admission. Missing/empty required images
+(including lifecycle, response-loss, org-switch or browser-final) or rejected
+diagnostic metadata keep ALL retained cases in that lane UNKNOWN: these checks
+have no finer accepted case attribution. Ledger/result joins and E04/E05/E07
+content checks cannot substitute for those admissions. Complete valid evidence
+retains the original promotion path through all existing row/admission gates;
+Health errors remain independently fatal.
+
+The aggregate CLI prepends its actual working directory to a relative
+`--artifacts` path before reading lane bundles; absolute paths retain their
+spelling. It does not resolve symlinks or parent traversal: the existing
+descriptor-relative, no-follow directory/file custody checks still refuse
+unsafe paths. Accepted closed metadata remains UNKNOWN until every original
+promotion gate succeeds.
+
+E07's forward-and-observe loop counts fresh frame, closure and assertion work
+toward its optional 10ms pacing interval, sleeping only for time left in that
+interval or the observation window. It retains real timestamps, every fresh
+observation, both <=50ms interval/frame assertions and the full1s window.
+This removes additive idle time; hosted scheduler latency can still cause a
+real overrun and failure. Native verification remains pending until the
+manager's changed-reviewed-main Product run.
+
+Four answers / finite acceptance map (extends the existing R3-05/R3-06,
+Controller.mark/export and aggregate.controls keepers):
+
+| Cases | Observable contract and credible regression | Nearest keeper / precise gap and distinct risk | Test-only production seam / actual evidence |
+| --- | --- | --- | --- |
+| A1 adopted exited child while controller live | One actual generation-qualified consumed status/disappearance; controller remains live then retains its own intended exit. Removing active reap reproduces the late-wait dependency. | Owned tracking/cleanup, E07 strict disappearance and old R3-05/R3-06; WNOWAIT diagnostics/late numeric returns did not establish active reaping. | NO. One authorized isolated Linux exercise executed: adopted exit23, live controller then own37, setup parent own19; cleanup joined/one receipt. |
+| A1 live/foreign-parent/unknown/stale/direct-Popen, including creation-registration | No wait/status theft; dropping generation/parent checks or registering exclusion after unlocking admits foreign or direct status. | Same keeper; creation interval and direct dependency Popen custody differ from adopted child eligibility. | NO. Same exercise observed overall refusal for live/foreign/unknown/simulated stale registration and a contending reaper blocked during real Popen creation/registration. Stale input also had live/foreign guards, so isolated stale-generation sensitivity is NOT proved; actual OS PID reuse was NOT forced. |
+| A1 watcher plus cleanup/freeze | One consuming claim, actual statuses, no publication from an active watcher. A second consuming loop or pre-join publication loses status/immutability. | Same cleanup and stopped-watcher freeze; optional diagnostic completeness supplies no consuming authority. | NO. Same exercise checked duplicate refusal and stopped-watcher cleanup; asynchronous interruption/syscall-gap schedules remain source-reviewed, NOT RUN. |
+| A2 completed prefix then later action/cleanup/export failure | Committed closed evidence survives producer memory loss; unsafe fallback erasure or marker-only success would lose evidence/launder failure. | Controller.mark, run failure_receipt/export, aggregate.controls. Previous terminal-only raw staging lost all cases. | NO. Existing controls execute actual mark/atomic publication/reopened prefix/copy and UNKNOWN refusal. Whole Product late-failure cleanup/export transitions remain NOT RUN; source ordering reviewed. |
+| A2 identity/duplicate/conflict/path/secret safety | Closed bound exact identities and accepted references only; loosening unknown fields leaks arbitrary data. | Same existing aggregate.controls, extended completed_controls. Source/run join, filesystem custody and future-secret rejection are distinct from whole-run status checks. | NO. Actual publisher/reader controls cover wrong coherent identities, duplicate JSON/case, bad sequence/index/reference/digest, symlink/conflicting publication, raw-field rejection and secret-free bytes. |
+| A2 all56 complete record | All original identities/results join without changing ordered membership or full final oracles; a partial-ledger shortcut could fabricate complete health. | Existing validate and independent validate_e04/e05/e07 remain; new join is consistency only. | NO. Actual producer/all56 ledger consistency control executed; full56 EACH3.12/3.14 Product remains manager-owned/NOT RUN here. |
+| A2 required-file/diagnostic admission (TASK12950) | Missing/empty required artifacts or invalid diagnostics keep affected-lane cases UNKNOWN and Health FAIL; omitting either admission from promotion can falsely label all56 PASS. Complete valid evidence retains every original gate. | Existing main required-file loop/diagnostic projection and controls/completed_controls; controls cover metadata/ledger consistency, not main's full-artifact promotion. This gap concerns unavailable independent content despite an accepted ledger. | NO new test or production seam. PROOF NOT RUN: no existing complete full-artifact control fixture reaches main with valid independent content/Actions admission. Missing-image/invalid-projection before/after assessment is source-traced; old unknown-field proof does not cover it. No new harness or Product allocation. |
+
+Task evidence records the exact Python3.14.4 commands/cwd, candidate source
+hashes, complete streams and exits. `python -B e2e/aggregate.py --controls`
+returned0 after one attributable intended-failure/restored-pass pair: temporary
+unknown-field admission caused `unsafe completed case accepted: raw-field`,
+exit1; byte-exact restoration then returned0. This establishes bounded reader/
+publisher sensitivity only, not Product behavior, all concurrency schedules,
+assertion completeness, sanitation of full raw exports,100MiB fit or full
+same-runtime Product acceptance. No retired Python units were run/imported/
+collected/restored/added; integration INCLUDING actual CLI callback remains
+SKIPPED24342/211270-271. Protected12/mutations/repetition, abruptR/E04cap/
+persistentStop and Mac limits remain unchanged. Required checks remain exactly
+Source Boundary Lint and Web Lint(Node24); normal local all/hooks, independent
+full review/same-head scoped QA and manager guarded merge remain required.
+
+### Historical diagnostic ownership contract (TASK12803 / ROOT12738)
+
+The original diagnostic-only delivery below is preserved for its receipts and
+closed optional reader grammar. TASK12942 above governs current active reaping,
+direct-Popen ownership and unavailable old waitpid-return attribution.
 
 Manager step39 accepts TASK12796's consolidated54165B design/SHA256
 `7959be74101b32b2b54c616e1d280f8e94746cd37e4a4cc457fcaa902ce9969b`
