@@ -26,6 +26,7 @@ class BrowserRelay:
         self.connections: set = set()
         self.active_responses: dict[int, socket.socket] = {}
         self.active_streams: dict[int, tuple] = {}
+        self.operation_gates: dict[int, threading.Lock] = {}
         self.context_closing: dict | None = None
         self.context_closed: dict | None = None
         self.browser_requests: list[dict] = []
@@ -51,6 +52,44 @@ class BrowserRelay:
                 pair_request(event['method'], event['target'])
         self.browser_request = browser_request
 
+        def browser_terminal(event: dict) -> None:
+            with relay.lock:
+                for issued in relay.browser_requests:
+                    if issued['request_id'] == event['request_id']:
+                        issued.setdefault('terminals', []).append(dict(event))
+        self.browser_terminal = browser_terminal
+
+        def shutdown_upstream(record: dict, sock: socket.socket, receipt: dict) -> None:
+            # Caller holds relay.lock. Never block behind an I/O owner here:
+            # its native call may already have failed before Python resumes.
+            # The gate spans the actual call AND outcome publication, so only
+            # acquisition with a successful prior outcome proves non-overlap.
+            gate = relay.operation_gates[id(record)]
+            acquired = gate.acquire(blocking=False)
+            try:
+                if not acquired:
+                    receipt['error'] = 'operation_in_flight'
+                else:
+                    prior = record.get('upstream_operation', {})
+                    read = record.get('stream_read')
+                    if (prior.get('outcome') != 'returned'
+                            or read is not None and ('error' in read or read.get('bytes', 0) <= 0)):
+                        receipt['error'] = 'prior_operation_not_successful'
+                    else:
+                        receipt['operation'] = dict(prior)
+                receipt['started'] = time.monotonic()
+                # Even an uncertain overlap needs the original cleanup attempt;
+                # that attempt never clears the refusal recorded above.
+                sock.shutdown(socket.SHUT_RDWR)
+                if 'error' not in receipt:
+                    receipt['outcome'] = 'shutdown'
+            except OSError as exc:
+                receipt['error'] = type(exc).__name__
+            finally:
+                receipt['finished'] = time.monotonic()
+                if acquired:
+                    gate.release()
+
         def browser_abort(event: dict) -> None:
             # Native Request failure is independent of the proxy's socket
             # exception. Ambiguous/unmatched requests receive no exemption.
@@ -71,13 +110,15 @@ class BrowserRelay:
                 record['browser_abort'] = dict(event)
                 sock = relay.active_responses.get(id(record))
                 if sock is not None:
-                    try:
-                        record['abort_shutdown_started'] = time.monotonic()
-                        sock.shutdown(socket.SHUT_RDWR)
-                        record['abort_shutdown'] = time.monotonic()
-                    except OSError:
-                        record['abort_shutdown_error'] = True
-                        relay.errors.append('browser abort upstream shutdown failed')
+                    receipt = {}
+                    shutdown_upstream(record, sock, receipt)
+                    record['abort_shutdown_started'] = receipt['started']
+                    record['abort_shutdown'] = receipt['finished']
+                    if 'operation' in receipt:
+                        record['abort_shutdown_operation'] = receipt['operation']
+                    if 'error' in receipt:
+                        record['abort_shutdown_error'] = receipt['error']
+                        relay.errors.append('browser abort upstream shutdown unproven')
         self.browser_abort = browser_abort
 
         def close_context_streams(event: dict, end: float) -> list[dict]:
@@ -100,20 +141,18 @@ class BrowserRelay:
                         continue
                     if time.monotonic() >= min(end, relay.deadline):
                         raise TimeoutError('E05 context stream shutdown deadline')
+                    issued = [r for r in relay.browser_requests
+                              if r['request_id'] == record['browser_request_id']]
+                    if len(issued) != 1 or issued[0].get('terminals'):
+                        relay.errors.append('E05 native Request ended before stream shutdown')
+                        continue
                     read = record.get('stream_read')
                     receipt = dict(request_id=record['browser_request_id'], target=record['target'],
-                                   context_closing=event['at'], read_id=read['id'] if read and 'finished' not in read else None,
-                                   started=time.monotonic())
+                                   context_closing=event['at'], read_id=read['id'] if read else None)
                     record['context_shutdown'] = receipt
-                    try:
-                        sock.shutdown(socket.SHUT_RDWR)
-                    except OSError as exc:
-                        receipt['error'] = type(exc).__name__
-                        relay.errors.append('E05 owned stream shutdown failed')
-                    else:
-                        receipt['outcome'] = 'shutdown'
-                    finally:
-                        receipt['finished'] = time.monotonic()
+                    shutdown_upstream(record, sock, receipt)
+                    if 'error' in receipt:
+                        relay.errors.append('E05 owned stream shutdown unproven')
                     receipts.append(dict(receipt))
             return receipts
         self.close_context_streams = close_context_streams
@@ -153,6 +192,7 @@ class BrowserRelay:
                               ordinal=ordinal, entered=time.monotonic())
                 with relay.lock:
                     relay.records.append(record)
+                    relay.operation_gates[id(record)] = threading.Lock()
                     pair_request(self.command, self.path)
                 try:
                     def remaining() -> float:
@@ -168,6 +208,30 @@ class BrowserRelay:
                         if relay.stopping:
                             raise ConnectionAbortedError('browser relay stopped')
                         return value
+
+                    def upstream_call(kind: str, call: Callable, read: dict | None = None) -> object:
+                        # The same gate protects the actual native HTTP call,
+                        # including an exception whose publication is delayed.
+                        with relay.operation_gates[id(record)]:
+                            remaining()
+                            outcome = dict(kind=kind, read_id=read['id'] if read else None,
+                                           started=time.monotonic())
+                            record['upstream_operation'] = outcome
+                            if read is not None:
+                                read['started'] = outcome['started']
+                                record['stream_read'] = read
+                            try:
+                                value = call()
+                            except Exception as exc:
+                                outcome.update(finished=time.monotonic(), error=type(exc).__name__)
+                                if read is not None:
+                                    read.update(finished=outcome['finished'], error=outcome['error'])
+                                raise
+                            else:
+                                outcome.update(finished=time.monotonic(), outcome='returned')
+                                if read is not None:
+                                    read.update(finished=outcome['finished'], bytes=len(value))
+                                return value
 
                     self.connection.settimeout(remaining())
                     if self.headers.get("Transfer-Encoding") or self.headers.get("Upgrade"):
@@ -199,7 +263,7 @@ class BrowserRelay:
                     record["forwarded"] = time.monotonic()
                     operation = 'upstream'
                     upstream_socket.settimeout(remaining())
-                    response = connection.getresponse()
+                    response = upstream_call('getresponse', connection.getresponse)
                     remaining()
                     headers = response.getheaders()
                     if response.status == 101:
@@ -216,7 +280,7 @@ class BrowserRelay:
                     content = None
                     if selected:
                         upstream_socket.settimeout(remaining())
-                        content = response.read()
+                        content = upstream_call('read', response.read)
                         remaining()
                         record.update(upstream_complete=time.monotonic(), response_sha256=hashlib.sha256(content).hexdigest(),
                                       response_bytes=len(content), content_type=response.getheader("Content-Type"))
@@ -275,16 +339,9 @@ class BrowserRelay:
                                         remaining()
                                         read = dict(id=record.get('stream_read', {}).get('id', 0)+1,
                                                     started=time.monotonic())
-                                        record['stream_read'] = read
-                                    try:
-                                        chunk = response.read1(65536)
-                                    except Exception as exc:
-                                        read.update(finished=time.monotonic(), error=type(exc).__name__)
-                                        raise
-                                    else:
-                                        read.update(finished=time.monotonic(), bytes=len(chunk))
+                                    chunk = upstream_call('read', lambda: response.read1(65536), read)
                                 else:
-                                    chunk = response.read1(65536)
+                                    chunk = upstream_call('read', lambda: response.read1(65536))
                                 remaining()
                                 if not chunk:
                                     break
@@ -330,6 +387,7 @@ class BrowserRelay:
                             relay.connections.discard(upstream_socket)
                             relay.active_responses.pop(id(record), None)
                             relay.active_streams.pop(id(record), None)
+                            relay.operation_gates.pop(id(record), None)
                         record["closed"] = time.monotonic()
 
             do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = forward
@@ -433,21 +491,17 @@ class BrowserRelay:
                                  and r['method'] == 'GET' and r['target'] == record['target'] and r['at'] <= abort['at']]) == 1
                         and 'abort_shutdown_error' not in record
                         and record['entered'] <= abort['at'] <= record.get('failure_at', -1) <= record['closed'] <= settled
-                        and (failure in {'BrokenPipeError', 'ConnectionResetError', 'RemoteDisconnected'}
-                             and (failure != 'RemoteDisconnected' and record.get('failure_operation') == 'downstream'
-                                  or abort['at'] <= record.get('abort_shutdown_started', -1)
-                                  <= record.get('abort_shutdown', -1) <= record['closed']
-                                  and record.get('failure_operation') == 'upstream'
-                                  and record['abort_shutdown_started'] <= record['failure_at'])
-                             or failure == 'ConnectionAbortedError'
-                             and abort['at'] <= record.get('abort_observed', -1) <= record['failure_at']
-                             or failure == 'IncompleteRead' and record.get('streaming') is True
-                             and abort['at'] <= record.get('abort_shutdown_started', -1)
-                             <= record.get('abort_shutdown', -1) <= record['closed']
-                             and record.get('failure_operation') == 'upstream'
-                             and record.get('stream_read', {}).get('error') == failure
-                             and record['stream_read']['started'] <= record['abort_shutdown_started']
-                             <= record['stream_read']['finished'] <= record['failure_at']))
+                        and failure == 'ConnectionAbortedError'
+                        and abort['at'] <= record.get('abort_shutdown_started', -1)
+                        <= record.get('abort_shutdown', -1) <= record.get('abort_observed', -1) <= record['failure_at']
+                        and record.get('abort_shutdown_operation') == record.get('upstream_operation')
+                        and record.get('upstream_operation', {}).get('outcome') == 'returned'
+                        and record['upstream_operation']['finished'] <= record['abort_shutdown_started']
+                        and ('stream_read' not in record and record['upstream_operation']['read_id'] is None
+                             and (record['upstream_operation']['kind'] == 'getresponse'
+                                  or record.get('streaming') is not True)
+                             or 'stream_read' in record and 'error' not in record['stream_read']
+                             and record['stream_read'].get('bytes', 0) > 0))
             shutdown = record.get('context_shutdown')
             read = record.get('stream_read', {})
             if shutdown is not None:
@@ -461,15 +515,17 @@ class BrowserRelay:
                             and shutdown['context_closing'] == self.context_closing['at']
                             <= shutdown['started'] <= shutdown['finished'] <= self.context_closed['at'] <= entered
                             and shutdown['started'] <= record.get('failure_at', -1) <= record['closed'] <= settled
-                            and (failure == 'IncompleteRead' and record.get('failure_operation') == 'upstream'
-                                 and shutdown['read_id'] is not None and shutdown['read_id'] == read.get('id')
-                                 and read.get('error') == failure and read['started'] <= shutdown['started']
-                                 <= read['finished'] <= record['failure_at']
-                                 or failure == 'ConnectionAbortedError'
-                                 and shutdown['started'] <= record.get('shutdown_observed', -1) <= record['failure_at']
-                                 and (shutdown['read_id'] is None or shutdown['read_id'] == read.get('id')
-                                      and 'error' not in read and read['started'] <= shutdown['started']
-                                      <= read['finished'] <= record['shutdown_observed'])))
+                            and failure == 'ConnectionAbortedError'
+                            and shutdown['finished'] <= record.get('shutdown_observed', -1) <= record['failure_at']
+                            and shutdown.get('operation') == record.get('upstream_operation')
+                            and record.get('upstream_operation', {}).get('outcome') == 'returned'
+                            and record['upstream_operation']['finished'] <= shutdown['started']
+                            and (not read and shutdown['read_id'] is None
+                                 and record['upstream_operation']['kind'] == 'getresponse'
+                                 or read and shutdown['read_id'] == read.get('id')
+                                 and record['upstream_operation']['read_id'] == read['id']
+                                 and 'error' not in read and read.get('bytes', 0) > 0
+                                 and read['finished'] == record['upstream_operation']['finished']))
             if not expected:
                 errors.append(failure + ': browser transport failed')
         result = dict(port=self.port, entered=entered, finished=time.monotonic(),

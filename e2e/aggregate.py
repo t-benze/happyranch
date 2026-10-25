@@ -1583,6 +1583,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         terminals = [e for e in events if e['event'] in {'request-failed', 'request-finished'}
                      and e['request_id'] == issued['request_id']]
         check(len(terminals) <= 1, 'R2 no duplicate or contradictory native Request terminal')
+        check(all(r['at'] <= t['at'] for r in events if r['event'] == 'stream-response'
+                  and r['request_id'] == issued['request_id'] for t in terminals),
+              'R2 native response precedes its exact Request terminal')
     check(C["created"] in events and C["created"]["dialog_count"] == 0 and C["created"]["list_rows"] == 1, "actual dialog closure and one list row")
     check(events and events[-1]["event"] == "context-closed" and not any(e["event"] in {"pageerror","origin-bypass"} for e in events), "real browser origin/closure")
     requests = [e for e in events if e["event"] == "compose-request"]
@@ -1738,7 +1741,7 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(isinstance(shutdowns, list) and len({s['request_id'] for s in shutdowns}) == len(shutdowns)
           and sorted(s['request_id'] for s in shutdowns) == live, 'R2 every original live native stream shutdown accounted')
     for shutdown in shutdowns:
-        check(set(shutdown) == {'request_id','target','context_closing','read_id','started','finished','outcome'}
+        check(set(shutdown) == {'request_id','target','context_closing','read_id','started','finished','outcome','operation'}
               and type(shutdown['request_id']) is int and shutdown['outcome'] == 'shutdown'
               and all(type(shutdown[k]) in (int, float) for k in ('context_closing','started','finished'))
               and shutdown['context_closing'] == closing['at'] <= shutdown['started'] <= shutdown['finished'] <= shutdown_event['at']
@@ -1749,6 +1752,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         check(len(owners) == len(native) == 1 and owners[0].get('browser_request_id') == shutdown['request_id']
               and owners[0]['target'] == shutdown['target'] and native[0]['url'] == origin+shutdown['target']
               and native[0]['at'] <= shutdown['started'], 'R2 exact native response, original proxy response/socket shutdown join')
+        check(not any(t['event'] in {'request-failed', 'request-finished'}
+                      and t['request_id'] == shutdown['request_id'] and t['at'] <= shutdown['started']
+                      for t in events), 'R2 exact native Request remains live until its own shutdown starts')
     used_aborts = set()
     paired_requests = set()
     for proxied in observations['thread_proxy']:
@@ -1756,7 +1762,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                                   'request_sha256 request_bytes upstream_complete response_sha256 response_bytes content_type request '
                                   'invalid_request_json response commit committed held release_observed error client_disconnected failure_operation '
                                   'failure_at browser_abort abort_shutdown_started abort_shutdown abort_shutdown_error abort_observed '
-                                  'context_shutdown shutdown_observed stream_read response_close_error connection_close_error').split())
+                                  'context_shutdown shutdown_observed stream_read upstream_operation abort_shutdown_operation '
+                                  'response_close_error connection_close_error').split())
               and not any(k in proxied for k in ('response_close_error','connection_close_error','abort_shutdown_error')),
               'R2 closed proxy evidence grammar; failed ownership never exempt')
         check(proxied['entered'] <= proxied['closed'] <= closure[0]['finished'], 'R2 every actual browser request settled')
@@ -1769,6 +1776,25 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                   and ('error' in read and type(read['error']) is str
                        or type(read.get('bytes')) is int and 0 <= read['bytes'] <= 65536),
                   'R2 closed original upstream stream read evidence')
+        operation = proxied.get('upstream_operation')
+        if operation is not None:
+            check(set(operation) in ({'kind','read_id','started','finished','outcome'},
+                                     {'kind','read_id','started','finished','error'})
+                  and operation['kind'] in {'getresponse', 'read'}
+                  and all(type(operation[k]) in (int, float) for k in ('started', 'finished'))
+                  and proxied['forwarded'] <= operation['started'] <= operation['finished'] <= proxied['closed']
+                  and (operation['read_id'] is None or type(operation['read_id']) is int and operation['read_id'] > 0)
+                  and (operation['read_id'] is None or 'stream_read' in proxied)
+                  and (operation['kind'] != 'getresponse' or operation['read_id'] is None)
+                  and (operation.get('outcome') == 'returned' or type(operation.get('error')) is str),
+                  'R2 complete original upstream operation outcome, not later handler publication')
+            if 'stream_read' in proxied:
+                read = proxied['stream_read']
+                check(operation['kind'] == 'read' and operation['read_id'] == read['id']
+                      and operation['started'] == read['started'] and operation['finished'] == read['finished']
+                      and (operation.get('error') == read.get('error') and 'error' in read
+                           or operation.get('outcome') == 'returned' and 'bytes' in read),
+                      'R2 exact native upstream operation/read outcome identity')
         if 'browser_request_id' in proxied:
             request_id = proxied['browser_request_id']
             issued = [e for e in events if e['event'] == 'request' and e['request_id'] == request_id]
@@ -1799,17 +1825,15 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                       and all(type(read[k]) in (int, float) for k in ('started','finished'))
                       and proxied['forwarded'] <= read['started'] <= read['finished'] <= proxied['failure_at'],
                       'R2 settled original upstream read grammar/order')
-            if failure == 'IncompleteRead':
-                check(proxied['failure_operation'] == 'upstream' and shutdown['read_id'] is not None
-                      and shutdown['read_id'] == read.get('id') and read.get('error') == 'IncompleteRead'
-                      and read['started'] <= shutdown['started'] <= read['finished'],
-                      'R2 interrupted exact owned in-flight read, never earlier EOF')
-            else:
-                check(failure == 'ConnectionAbortedError' and shutdown['started'] <= proxied.get('shutdown_observed', -1) <= proxied['failure_at']
-                      and (shutdown['read_id'] is None or shutdown['read_id'] == read.get('id') and 'error' not in read
-                           and type(read.get('bytes')) is int and read['bytes'] >= 0
-                           and read['started'] <= shutdown['started'] <= read['finished'] <= proxied['shutdown_observed']),
-                      'R2 deliberate owner stop only; timeout/framing/unrelated error still fails')
+            check(failure == 'ConnectionAbortedError' and operation is not None
+                  and shutdown['operation'] == operation and operation.get('outcome') == 'returned'
+                  and operation['finished'] <= shutdown['started'] <= shutdown['finished']
+                  <= proxied.get('shutdown_observed', -1) <= proxied['failure_at']
+                  and (not read and shutdown['read_id'] is None and operation['kind'] == 'getresponse'
+                       or read and shutdown['read_id'] == read['id'] == operation['read_id']
+                       and 'error' not in read and type(read.get('bytes')) is int and read['bytes'] > 0
+                       and read['finished'] == operation['finished']),
+                  'R2 cooperative owner stop after successful call; overlap/error/EOF never proves causality')
             continue
         abort = proxied.get('browser_abort')
         check(abort is not None and proxied['method'] == 'GET' and proxied['ordinal'] is None
@@ -1823,18 +1847,16 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         issued = [e for e in events if e['event'] == 'request' and e['request_id'] == abort['request_id']]
         check(len(issued) == 1 and issued[0]['url'] == abort['url'] and issued[0]['method'] == 'GET'
               and issued[0]['at'] <= abort['at'] and 'abort_shutdown_error' not in proxied
-              and (failure in {'BrokenPipeError', 'ConnectionResetError', 'RemoteDisconnected'}
-                   and (failure != 'RemoteDisconnected' and proxied.get('failure_operation') == 'downstream'
-                        or abort['at'] <= proxied.get('abort_shutdown_started', -1) <= proxied.get('abort_shutdown', -1) <= proxied['closed']
-                        and proxied['failure_operation'] == 'upstream'
-                        and proxied['abort_shutdown_started'] <= proxied['failure_at'])
-                   or failure == 'ConnectionAbortedError' and abort['at'] <= proxied.get('abort_observed', -1) <= proxied['failure_at']
-                   or failure == 'IncompleteRead' and proxied.get('streaming') is True
-                   and abort['at'] <= proxied.get('abort_shutdown_started', -1) <= proxied.get('abort_shutdown', -1) <= proxied['closed']
-                   and proxied['failure_operation'] == 'upstream' and proxied.get('stream_read', {}).get('error') == failure
-                   and proxied['stream_read']['started'] <= proxied['abort_shutdown_started']
-                   <= proxied['stream_read']['finished'] <= proxied['failure_at']),
-              'R2 native abort joins original GET; timeout/framing/unexpected stream failures refuse')
+              and failure == 'ConnectionAbortedError' and operation is not None
+              and proxied.get('abort_shutdown_operation') == operation and operation.get('outcome') == 'returned'
+              and operation['finished'] <= proxied.get('abort_shutdown_started', -1)
+              and abort['at'] <= proxied['abort_shutdown_started'] <= proxied.get('abort_shutdown', -1)
+              <= proxied.get('abort_observed', -1) <= proxied['failure_at']
+              and ('stream_read' not in proxied and operation['read_id'] is None
+                   and (operation['kind'] == 'getresponse' or proxied.get('streaming') is not True)
+                   or 'stream_read' in proxied and 'error' not in proxied['stream_read']
+                   and proxied['stream_read'].get('bytes', 0) > 0),
+              'R2 native abort cooperatively observed after nonoverlapping successful upstream call')
         used_aborts.add(abort['request_id'])
     final_orgs = [d for d in durable if "threads_final_org" in d]
     check(len(final_orgs) == 2 and {d["threads_final_org"] for d in final_orgs} == {"alpha","beta"}, "both final orgs")

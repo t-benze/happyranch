@@ -1520,6 +1520,7 @@ class Browser:
                          method=req.method, failure=req.failure, at=time.monotonic())
             self.thread_events.append(event)
             if req.url.startswith(self.thread_base + '/'):
+                self.controller.browser_relay.browser_terminal(event)
                 self.controller.browser_relay.browser_abort(dict(event, target=req.url[len(self.thread_base):]))
         def response(res):
             if (res.headers.get('content-type') or '').split(';')[0] == 'text/event-stream':
@@ -1546,8 +1547,11 @@ class Browser:
         def finished(req):
             observed = requests[req]
             self.thread_streams.discard(observed['request_id'])
-            self.thread_events.append(dict(event='request-finished', request_id=observed['request_id'],
-                                           url=req.url, method=req.method, at=time.monotonic()))
+            event = dict(event='request-finished', request_id=observed['request_id'],
+                         url=req.url, method=req.method, at=time.monotonic())
+            self.thread_events.append(event)
+            if req.url.startswith(self.thread_base + '/'):
+                self.controller.browser_relay.browser_terminal(event)
         page.on('requestfinished', finished)
         page.on("response", response)
         def context_closed(_context):
