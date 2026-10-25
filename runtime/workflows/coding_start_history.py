@@ -75,6 +75,8 @@ class QueuedStorage:
     cancellations: dict = field(default_factory=dict)
     cancellation_comparisons: list = field(default_factory=list)
     cancellation_dependencies: set = field(default_factory=set)
+    # Provisional per-graph cutoff; it grants nothing until full return replay.
+    return_boundary: str | None = None
 
     def add(self, table: str, row: dict) -> None:
         key = _canonical(encode_row(row))
@@ -378,6 +380,10 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             actual = list(rows(conn, table, budget, where=f'{column}=?', args=(key,), maximum=2))
             _check(same(actual, expected_pins[table]))
         from runtime.workflows.coding_native_history import read_native
+        returned = [e for e in selected[1:] if e['event_kind'] == 'return']
+        _check(len(returned) <= 1)
+        storage.return_boundary = None if not returned else returned[0]['created_at']
+        comparison_start = len(storage.cancellation_comparisons)
         native = read_native(conn, org, budget, storage, start=event, events=selected[1:],
             tasks=after_tasks, source=source, roles=roles, authority=evidence['authority'],
             command_value=command, mapping=mapping, source_invocation=entry,
@@ -385,8 +391,25 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         # Another graph may carry a later ordinary-ancestor cancellation.
         # Resolve changed equality only after ALL independent batches close.
         from runtime.workflows._coding_cancellation_history import defer_ancestry
+        _check(bool(native.get('returned')) is bool(returned))
         for actual, historical in current_ancestors:
             defer_ancestry(actual, historical, storage, budget)
+        if returned:
+            # This graph relinquished ordinary callers at its authenticated
+            # return. Their later native state is not coding-owned; original
+            # captures/predicates remain fully checked at each historical edge.
+            comparisons = storage.cancellation_comparisons[comparison_start:]
+            for historical in comparisons:
+                actual = list(rows(conn, 'tasks', budget, where='id=?', args=(historical['id'],), maximum=1))
+                _check(len(actual) == 1)
+                current = actual[0]
+                for key in ('id', 'task_type', 'parent_task_id', 'revisit_of_task_id', 'team',
+                            'assigned_agent', 'brief', 'created_at', 'dispatched_from_thread_id'):
+                    _check(same(current[key], historical[key]))
+                _check(datetime.fromisoformat(current['updated_at']) >=
+                       datetime.fromisoformat(storage.return_boundary.replace('Z', '+00:00')))
+            del storage.cancellation_comparisons[comparison_start:]
+        storage.return_boundary = None
         actual_attempts = {a['id']: a for a in selected_attempts}
         _check(len(actual_attempts) == len(selected_attempts)
                and same(native['run'], actual_run) and same(native['attempts'], actual_attempts))

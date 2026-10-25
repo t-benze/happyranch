@@ -258,7 +258,9 @@ class WorkflowCutoverStore:
         if 'workflow_coding_runs' in self._workflow_tables(conn):
             from runtime.workflows.coding_start import queued_storage
             saved = queued_storage(conn, self._org_slug)
-            for instance in saved.runs:
+            for instance, entry in saved.runs.items():
+                if entry['native'].get('returned'):
+                    continue  # Complete original native and caller closure.
                 blockers.append(self._blocker('cutover_coding_queued', record_id=instance,
                     owner='workflow_coding', required_action='retain_compatible_coding_runtime'))
         outboxes = [dict(row) for row in conn.execute("SELECT * FROM workflow_dispatch_outbox ORDER BY id")]

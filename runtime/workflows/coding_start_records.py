@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime
 from typing import Annotated, Literal, Union
-from pydantic import Field, RootModel, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import Field, RootModel, StrictBool, StrictInt, model_validator
 
 from runtime.workflows._coding_role_records import AgentBinding, Closed, MappingPin, Release, RepositoryReference, Roles
 from runtime.workflows.artifacts import CodeChangeDescriptor, SHA256, Token
@@ -121,14 +121,13 @@ def parse_stage_output(result: dict, *, instance: str, attempt: dict,
 
 
 class CodingReadiness(Closed):
-    enabled: Literal[False]
-    reason: Literal['coding_downstream_unavailable']
+    enabled: StrictBool
+    reason: Literal['coding_downstream_unavailable', 'coding_engine_available']
 
-    @field_validator('enabled', mode='before')
-    @classmethod
-    def disabled_only(cls, value: object) -> bool:
-        _check(type(value) is bool and value is False)
-        return value
+    @model_validator(mode='after')
+    def capability_pair(self) -> CodingReadiness:
+        _check(self.enabled is (self.reason == 'coding_engine_available'))
+        return self
 
 
 class QueuedAttempt(Closed):
@@ -253,8 +252,16 @@ class CodingCancelledRunReceipt(CodingFinalRunReceipt):
     history: list[CodingCancelledEvent] = Field(min_length=2, max_length=4096)
 
 
+class CodingReturnedRunReceipt(CodingFinalRunReceipt):
+    format: Literal['workflow-coding-run@8']
+    current_revision: Annotated[StrictInt, Field(ge=1, le=3)]
+    target_revision: Annotated[StrictInt, Field(ge=1, le=3)]
+    state: Literal['complete']
+    history: list[CodingCancelledEvent] = Field(min_length=2, max_length=4096)
+
+
 class CodingRunReceipt(RootModel[Annotated[
-        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt | CodingSuccessorRunReceipt | CodingCancelledRunReceipt,
+        CodingInitialRunReceipt | CodingOrderedRunReceipt | CodingQARunReceipt | CodingFinalRunReceipt | CodingRevisionRunReceipt | CodingSuccessorRunReceipt | CodingCancelledRunReceipt | CodingReturnedRunReceipt,
         Field(discriminator='format')]]):
     pass
 

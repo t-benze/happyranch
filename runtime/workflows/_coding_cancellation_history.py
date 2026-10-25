@@ -12,6 +12,29 @@ from runtime.workflows._coding_settings_execution import _read_json
 TERMINAL = ('completed', 'failed', 'cancelled', 'superseded')
 
 
+def _returned_event(entry: dict, budget: Any) -> dict:
+    """Select only the final return from complete independent native replay.
+
+    A complete label is insufficient. Callers supply the complete reader's
+    reconstruction, never a writer after-image or a caller-certified cache.
+    """
+    native = entry['native']
+    _check(entry['run']['state'] == 'complete' and native.get('returned') is not None
+           and native.get('cancellation') is None and native['source_settled']
+           and not native.get('ownership_unknown') and native['history'])
+    event = native['history'][-1]
+    _check(event['id'] == native['returned'] == entry['run']['last_event_id']
+           and event['event_kind'] == 'return' and event['event_seq'] == entry['run']['cas_version'])
+    for state in native['stages'].values():
+        budget.step()
+        _check(state['source_settled'] and state['cleanup_recorded'] and state['cleanup']
+               and state['terminal'] == 'success' and not state.get('ownership_unknown'))
+    for task in entry['tasks'].values():
+        budget.step()
+        _check(task['status'] in TERMINAL)
+    return event
+
+
 def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
            previous: dict, body: dict, run: dict, attempts: dict, tasks: dict,
            observations: list, source: dict, source_invocation: dict, states: dict) -> tuple:
@@ -19,7 +42,7 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
     from runtime.workflows.coding_native_history import _row
     _check(type(event['event_bytes']) is bytes and _hash(event['event_bytes']) == event['event_digest'])
     _closed(body, 'format id instance_id event_seq event_kind attempt_id operation previous_digest before after evidence created_at')
-    _check(body['format'] == 'workflow-coding-cancellation-event@1'
+    _check(body['format'] in ('workflow-coding-cancellation-event@1', 'workflow-coding-cancellation-event@2')
            and _canonical(body) == event['event_bytes'] and event['event_kind'] == 'cancelled'
            and event['event_seq'] == run['cas_version'] + 1 == previous['event_seq'] + 1
            and event['previous_digest'] == previous['event_digest']
@@ -30,7 +53,8 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
     evidence = _closed(body['evidence'], 'command audits native_task_observations')
     command = _closed(evidence['command'],
         'format target_task_id cascade actor rationale cancelled_at tasks owners native_owners')
-    _check(command['format'] == 'workflow-coding-cancellation-command@1'
+    version = body['format'][-1]
+    _check(command['format'] == 'workflow-coding-cancellation-command@' + version
            and type(command['cascade']) is bool and type(command['actor']) is str
            and bool(command['actor']) and command['actor'].strip() == command['actor']
            and type(command['rationale']) is str and command['rationale'].strip() == command['rationale']
@@ -103,6 +127,9 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
         audit_tasks.append(audit['task_id'])
         storage.add('audit_log', audit)
     _check(audit_tasks == sorted(live))
+    if version == '2':
+        ids = [a['id'] for a in evidence['audits']]
+        _check(ids == sorted(set(ids)) and command['cascade'] is True)
     note = ('cancelled by ' + command['actor'] + (': ' + command['rationale'] if command['rationale'] else ''))
     from runtime.workflows.coding_revision import _copy_allowance
     _copy_allowance(dict(tasks=tasks, attempts=attempts), budget)
@@ -124,22 +151,28 @@ def replay(conn: Any, org: str, budget: Any, storage: Any, *, event: dict,
     return expected_run, expected_attempts, expected_tasks, record
 
 
-def ordinary_overlay(org: str, command: dict, audits: list, saved: Any, instances: set) -> dict:
+def ordinary_overlay(org: str, command: dict, audits: list, saved: Any, instances: set, budget: Any) -> dict:
     """Distinct ordinary operation; never a second coding cancellation event."""
     digest = _hash(_canonical(command))
-    return dict(format='workflow-coding-ordinary-cancellation@1',
+    anchors = []
+    for instance in sorted(instances):
+        budget.step()
+        entry = saved.runs[instance]
+        event = (_returned_event(entry, budget) if entry['run']['state'] == 'complete'
+                 else entry['native']['cancellation']['event'])
+        anchors.append(dict(instance_id=instance, event_id=event['id'], event_digest=event['event_digest']))
+    return dict(format='workflow-coding-ordinary-cancellation@' + command['format'][-1],
         operation=dict(org_slug=org, principal='service:coding-cancellation:' + org,
             key='coding-ordinary-cancel:' + digest, request_digest=digest),
         command=command, audits=audits,
-        retained=[dict(instance_id=i, event_id=saved.runs[i]['native']['cancellation']['event']['id'],
-            event_digest=saved.runs[i]['native']['cancellation']['event']['event_digest']) for i in sorted(instances)])
+        retained=anchors)
 
 
 def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any) -> list:
     """Independently authenticate all ordinary overlays, including orphan rows.
 
-    Existing literal coding event readers are unchanged. This separate closed
-    audit family admits only an ordinary operation over already cancelled graphs.
+    Existing literal @1 retained anchors admit only cancelled graphs. Additive @2 requires at least one
+    independently returned graph, optionally alongside earlier cancellations.
     """
     from runtime.workflows.coding_start_history import rows, same
     from runtime.workflows.coding_native_history import _row
@@ -150,10 +183,11 @@ def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any) -> list:
         _check(type(audit['payload']) is str)
         value = _closed(_read_json(audit['payload'].encode('utf8'), budget, 1048576),
             'format operation command audits retained')
-        _check(value['format'] == 'workflow-coding-ordinary-cancellation@1')
+        _check(value['format'] in ('workflow-coding-ordinary-cancellation@1', 'workflow-coding-ordinary-cancellation@2'))
+        version = value['format'][-1]
         command = _closed(value['command'],
             'format target_task_id cascade actor rationale cancelled_at tasks owners native_owners')
-        _check(command['format'] == 'workflow-coding-cancellation-command@1'
+        _check(command['format'] == 'workflow-coding-cancellation-command@' + version
                and command['cascade'] is True and type(command['actor']) is str
                and bool(command['actor']) and command['actor'].strip() == command['actor']
                and type(command['rationale']) is str and command['rationale'].strip() == command['rationale'])
@@ -215,18 +249,24 @@ def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any) -> list:
                             'owner', 'owner_identity', 'fingerprint', 'generation'):
                     _check(same(native[key], original[0][key]))
         _check(type(value['retained']) is list and 1 <= len(value['retained']) <= 512)
-        instances = []
+        instances, returned = [], set()
         for anchor in value['retained']:
             budget.step()
             _closed(anchor, 'instance_id event_id event_digest')
             instance = anchor['instance_id']
-            _check(instance in storage.runs and storage.runs[instance]['run']['state'] == 'cancelled')
-            earlier = storage.runs[instance]['native'].get('cancellation')
-            _check(earlier is not None and anchor['event_id'] == earlier['event']['id']
-                   and anchor['event_digest'] == earlier['event']['event_digest']
-                   and max(a['id'] for a in earlier['audits']) < min(ids))
+            _check(instance in storage.runs)
+            entry = storage.runs[instance]
+            if version == '2' and entry['run']['state'] == 'complete':
+                event = _returned_event(entry, budget)
+                returned.add(instance)
+            else:
+                _check(entry['run']['state'] == 'cancelled')
+                earlier = entry['native'].get('cancellation')
+                _check(earlier is not None and max(a['id'] for a in earlier['audits']) < min(ids))
+                event = earlier['event']
+            _check(anchor['event_id'] == event['id'] and anchor['event_digest'] == event['event_digest'])
             instances.append(instance)
-        _check(instances == sorted(set(instances)))
+        _check(instances == sorted(set(instances)) and bool(returned) is (version == '2'))
         storage.add('audit_log', audit)
         batches.append(dict(command=command, audits=value['audits'], originals=originals,
                             retained=set(instances), capture_audit=audit))
@@ -261,6 +301,8 @@ def retained_boundary(conn: Any, entry: dict, sample: dict, budget: Any) -> dict
     from runtime.workflows.coding_start_history import rows, same
     from runtime.workflows.coding_native_history import _row
     from runtime.workflows.coding_revision import _copy_allowance
+    if entry['run']['state'] == 'complete':
+        return _returned_boundary(conn, entry, sample, budget)
     earlier = entry['native']['cancellation']
     history = entry['native']['cancellation_history']
     _check(history and history[0]['event']['id'] == earlier['event']['id']
@@ -348,6 +390,49 @@ def retained_boundary(conn: Any, entry: dict, sample: dict, budget: Any) -> dict
     return current if selected is None else selected
 
 
+def _returned_boundary(conn: Any, entry: dict, sample: dict, budget: Any) -> dict:
+    """A returned graph has no suffix writer; authenticate its prior ordering.
+
+    Native replay already derives every task and all return/native evidence.
+    Check the immutable event chain and original native audit IDs against this
+    later capture, then reread full SQL rows, including executor_pid.
+    """
+    from runtime.workflows.coding_start_history import rows, same
+    _check(sample['command']['format'] == 'workflow-coding-cancellation-command@2')
+    event = _returned_event(entry, budget)
+    end = datetime.fromisoformat(event['created_at'].replace('Z', '+00:00'))
+    boundary = datetime.fromisoformat(sample['command']['cancelled_at'].replace('Z', '+00:00'))
+    _check(end < boundary)
+    first = min(a['id'] for a in sample['audits'])
+    prior = None
+    for original in entry['native']['history']:
+        budget.step()
+        instant = datetime.fromisoformat(original['created_at'].replace('Z', '+00:00'))
+        _check(instant <= end and (prior is None or instant >= prior))
+        prior = instant
+    capture_end = boundary
+    for item in sample['audits']:
+        budget.step()
+        audit = decode_row(item['record'])
+        instant = datetime.fromisoformat(audit['timestamp'])
+        _check(instant >= boundary)
+        capture_end = max(capture_end, instant)
+    if 'capture_audit' in sample:
+        instant = datetime.fromisoformat(sample['capture_audit']['timestamp'])
+        _check(instant >= capture_end)
+    for key, task in entry['tasks'].items():
+        budget.step()
+        # These literal native actions were independently read by the source,
+        # stage and heartbeat readers. No unrelated audit action is redefined.
+        for audit in rows(conn, 'audit_log', budget,
+                where="task_id=? AND action IN ('session_start','coding_task_heartbeat')", args=(key,)):
+            budget.step()
+            _check(audit['id'] < first and datetime.fromisoformat(audit['timestamp']) <= end)
+        actual = list(rows(conn, 'tasks', budget, where='id=?', args=(key,), maximum=1))
+        _check(len(actual) == 1 and same(actual[0], task))
+    return entry['tasks']
+
+
 def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     """Cross-graph/legacy closure, including partial and orphan batch refusal."""
     from runtime.workflows.coding_start_history import rows, same
@@ -357,6 +442,7 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     for records, sample in batches:
         command, originals = sample['command'], sample['originals']
         pending, retained, visited, instances = [command['target_task_id']], [], set(), set()
+        returned = set()
         while pending or retained:
             budget.step()
             retaining = not pending
@@ -377,9 +463,14 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
                 if owner[1] not in records:
                     # A later ancestor stop retains this earlier terminal
                     # graph byte-for-byte; no second event/control is owed.
-                    earlier = entry['native'].get('cancellation')
-                    _check(earlier is not None and entry['run']['state'] == 'cancelled'
-                           and max(a['id'] for a in earlier['audits']) < min(a['id'] for a in sample['audits']))
+                    if entry['run']['state'] == 'complete':
+                        _check(command['format'] == 'workflow-coding-cancellation-command@2')
+                        _returned_event(entry, budget)
+                        returned.add(owner[1])
+                    else:
+                        earlier = entry['native'].get('cancellation')
+                        _check(earlier is not None and entry['run']['state'] == 'cancelled'
+                               and max(a['id'] for a in earlier['audits']) < min(a['id'] for a in sample['audits']))
                     historical = retained_boundary(conn, entry, sample, budget)
                     for task_id, task in historical.items():
                         budget.step()
@@ -397,7 +488,13 @@ def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
                     budget.step()
                     if child['id'] in storage.cancellation_dependencies or child['id'] in storage.owners:
                         retained.append(child['id'])
-        _check(visited == set(originals) and set(records) <= instances)
+        _check(visited == set(originals) and set(records) <= instances
+               and bool(returned) is (command['format'] == 'workflow-coding-cancellation-command@2'))
+        if returned:
+            for native in command['native_owners']:
+                budget.step()
+                owner = storage.owners.get(native['task_id'])
+                _check(owner is None or owner[1] not in returned)
         if 'retained' in sample:
             _check(instances == sample['retained'])
         expected_owners = [dict(task_id=k, kind=v[0], instance_id=v[1])

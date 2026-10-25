@@ -31,28 +31,38 @@ class CodingStartError(ValueError):
 
 
 def readiness() -> dict:
-    return dict(enabled=False, reason='coding_downstream_unavailable')
+    # Source capability, not org admission, deployment or scratch acceptance.
+    return dict(enabled=True, reason='coding_engine_available')
 
 
-def require_ready() -> None:
-    # Sole production activation boundary. No caller/config Boolean can bypass
-    # absent dispatcher/native/control/K4-K6 writer-reader/supplement closure.
-    raise CodingStartError('coding_downstream_unavailable')
+def require_ready(org: Any) -> None:
+    """Require the real mounted native runtime, never a caller readiness flag."""
+    orch = org.orchestrator
+    dispatcher = getattr(org, 'workflow_coding_dispatch', None)
+    if (dispatcher is None or getattr(dispatcher, 'db', None) is not org.db
+            or getattr(orch, '_workflow_coding_dispatch', None) is not dispatcher
+            or getattr(orch, '_workflow_coding_start', None) is not org.workflow_coding_start
+            or orch._db is not org.db or getattr(orch, '_host_supervisor', None) is None
+            or getattr(orch, '_queue', None) is None or getattr(orch, '_main_loop', None) is None
+            or not orch._main_loop.is_running()):
+        raise CodingStartError('coding_downstream_unavailable')
 
 
-def require_start_ready(conn: sqlite3.Connection, org: str, command: dict) -> None:
-    # Keep the unconditional source refusal ahead of all result/action writes.
-    require_ready()
-    from runtime.workflows.coding_settings import resolve_coding_settings
-    from runtime.workflows._coding_settings_execution import _fresh_settings, _settings_family
+def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> None:
+    # Fresh starts alone require current explicit settings. Admitted callbacks
+    # and continuations keep their original pins when new admission is disabled.
+    require_ready(org)
+    from runtime.workflows._coding_settings_execution import _settings_family
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
     owned = not conn.in_transaction
     if owned:
         conn.execute('BEGIN')
     try:
         _check(_settings_family(command))
-        pin = dict(**command['settings'], mapping=command['mapping'])
-        state = resolve_coding_settings(conn, org, budget=_Budget(), pinned=pin)
-        _fresh_settings(state, command)
+        budget = _Budget()
+        layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
+        _check(layout == 'J' and inventory is not None)
+        _resolve_start(command, inventory.mappings, inventory.imported, budget, fresh=True)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
         raise CodingStartError('coding_start_settings_unavailable') from None
     finally:
@@ -178,7 +188,7 @@ class CodingStartStore:
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
         with self.db._lock:
-            require_start_ready(self.db._conn, self.org.slug, decision.workflow)
+            require_start_ready(self.db._conn, self.org, decision.workflow)
         # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
         coroutine = self._start(claim, decision, report, owner)
@@ -405,7 +415,7 @@ class CodingStartStore:
         closeout = (None if final is None else dict(result_id=attempt['result_id'], task_id=attempt['task_id'],
             subject=final['subject'], outcome=final['outcome']))
         revised = attempt['revision'] > 1
-        return CodingRunReceipt.model_validate(dict(format='workflow-coding-run@7' if entry['native'].get('cancellation') is not None else 'workflow-coding-run@6' if attempt['attempt_sequence'] > 1 else 'workflow-coding-run@5' if revised else {1: 'workflow-coding-run@1', 2: 'workflow-coding-run@2',
+        return CodingRunReceipt.model_validate(dict(format='workflow-coding-run@8' if entry['native'].get('returned') else 'workflow-coding-run@7' if entry['native'].get('cancellation') is not None else 'workflow-coding-run@6' if attempt['attempt_sequence'] > 1 else 'workflow-coding-run@5' if revised else {1: 'workflow-coding-run@1', 2: 'workflow-coding-run@2',
             3: 'workflow-coding-run@3', 4: 'workflow-coding-run@4'}[len(entry['attempts'])], instance_id=instance,
             release=entry['command']['release'], mapping=entry['command']['mapping'], effective_roles=entry['roles'],
             cas_version=entry['run']['cas_version'], current_revision=entry['run']['current_revision'], target_revision=attempt['revision'], state='cancelled' if entry['native'].get('cancellation') is not None else 'held' if entry['native'].get('ownership_unknown') else 'agent_manager' if entry['run']['state'] == 'manager_closeout' else entry['run']['state'],

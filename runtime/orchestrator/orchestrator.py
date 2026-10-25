@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
 import uuid
 from contextvars import ContextVar
@@ -254,6 +255,15 @@ class Orchestrator:
         """
         self._thread_queue = thread_queue
         self._main_loop = main_loop
+        coding = getattr(self, '_workflow_coding_dispatch', None)
+        if coding is not None:
+            # A terminal source is outside the ordinary nonterminal startup
+            # sweep. Reuse only its independently admitted postcommit return.
+            from runtime.workflows.recovery import rediscover_returned
+            try:
+                rediscover_returned(coding)
+            except (ValueError, TypeError, sqlite3.Error):
+                logger.exception('coding caller notification rediscovery unavailable')
 
     def notify_escalated(
         self, *, task_id: str, agent: str, reason: str, last_summary: str = "",
