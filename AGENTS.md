@@ -4689,6 +4689,71 @@ history/types/rowids/bytes/release/FK validation, original FK policies, RO→RW
 identity, reservations/offline bookends and rollback remain unchanged. Behavioral,
 backup/restore/reopen/rollback and operational acceptance remain NOT RUN/open.
 
+C06-B/C07 public recovery uses the existing guided command, without a prewritten
+inputs/roles/selector/mapping ledger. Setup first discovers complete literal
+root/parent/object metadata, membership, inode aliases and allowed-link/referent
+closure. Separate current-custodian questions bind exact machine membership to
+known/mixed/unknown public/package/generated roles, private separation and all
+writer/shared-inode-user control. Exceptions name exact paths/subtrees and only
+deny admission, including innocently named private material. Unknown/disputed or
+conflicting roles refuse unopened. These are genuine present facts, not an
+access grant, proof of human knowledge or a historical installation certificate;
+no such host knowledge/control is supplied by source delivery. Ordinary nonmatched
+shared DB/config/state stays with its existing backup owner; ordinary private
+business state is not relabeled public code, and credential exceptions still deny.
+
+Reference custody/public role precedes reference content access. When installed
+matches require public inputs, the conversation selects a literal private local
+archive directory (default `<backup.parent>/public-origin-inputs/<source-tree>`)
+and an exact prior-reviewed full source commit only if OLD locks differ. Setup
+produces exact lock/member joins, dependencies and a retained recovery plan;
+humans supply no per-file identities or archive mapping JSON. Missing-input
+output points to exact reviewed lock URLs/hashes. Only a human later obtains
+anonymous exact-lock public archives. Setup adds no download/network client,
+cache/home/auth-config scan or installation before complete recovery.
+
+Candidate role AND independent pinned Git blob, whole-lock-verified ordinary
+wheel/tar member or supported CPython expectation precede candidate open, even a
+header/hash. Names, package prefixes, RECORD, archive membership, UID/nlink or a
+generic yes alone never admit. The finite CPython recipe uses independent paired
+public source, exact cache tag/filename, optimization0/1/2, current compiler/marshal
+configuration and magic/header flags0/1/3, exact source timestamp/size or hash, and
+in-memory compile/serialization; the paired actual source is verified first.
+It never imports/unmarshals/executes candidates or writes caches. Node selects the
+exact longest lock installation path and safe ordinary tar member. Unsupported
+wheel/platform/generation, unsafe namespace, mismatch or ambiguity refuses;
+reference bytes and rebuilds never replace ORIGINAL recovery copies.
+
+Admitted reads/copies hold no-follow parent/file descriptors with full metadata
+and path bookends, byte equality and exclusive private independent copies.
+Stable source nlink>1 requires actual complete shared-user control; no link-breaking,
+chmod/chown or preparation repair. Record unobserved external aliases honestly;
+recovery promises selected content/paths, not their topology. Allowed env/node/raw
+CLAUDE→AGENTS links, including lib64, retain every intermediate hop and close
+through admitted originals or the positively untouched usable selected external
+base interpreter/chain. Other unknown
+external dependencies refuse. The existing daemon token stays unopened/uncopied
+in original custody, with metadata rechecks and an exact unchanged-owner effect
+reason; no blanket credential exception exists. Any affected genuine credential
+blocks completeness: return its exact object/custodian/proposed operation and
+C07 remover to Engineering before access.
+
+Retain ALL actual OLD source/env/node/dist/feature state and affected shared-daemon/
+runtime/ordinary-partial-org DB/config/referents. Existing WAL-consistent SQLite
+backup/integrity/FKs/mappings remain; SHM readmarks are not byte-immutable evidence.
+Shared cooperative bounds are200000 entries,512MiB archive bytes,1GiB expanded
+members,64MiB selected member,8MiB compiler source,1MiB lock input and600s origin
+work; no hard RSS/OS-I/O time or hostile-user fence is claimed. Closing verification
+recomputes full original membership/coverage, then verifies retained inputs/plan/
+copies and exclusively publishes/readbacks the durable manifest. Every later
+uv/npm/build/migration/start/import/return gate authenticates complete accepted
+OLD recovery custody, including reference/copy membership; after legitimate C07
+replacement it does not compare the new environment with OLD contents. Any drift,
+missing copy/reference, publication or later failure clears invocation acceptance,
+retains the first cause/partial originals/receipts and secondary persistence failure,
+and permits zero next effects, with no repair/retry/new key/restore/replay/restart.
+Behavior/recovery proof remains NOT RUN/PROOF NOT RUN; setup NOT READY, Coding Disabled.
+
 Every script-originated refusal has an incident/stage, last completed stage and
 accepted layout, truthful attempted/uncertain effects, and one instruction:
 `Send this output to engineering_manager`. Main owns the in-memory context before
