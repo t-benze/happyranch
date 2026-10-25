@@ -1954,8 +1954,17 @@ and frame hold the identical freshly parsed response returned by `Controller.api
 Method/path/status/index checks still run; detached responses retain the original
 complete JSON comparison, including types, unknown fields and array order.
 Full comparison data is still constructed before the original frame `finished`.
-No GC/interpreter state, sampling acquisition, clock, bound or sampling assertion
-is changed.
+During the existing forward-and-observe loop only, `exercise` saves the
+controller interpreter's cyclic-GC enabled state and disables automatic cyclic
+collection. The controller retains a growing full-evidence graph which a
+collection can scan without reclaiming it. A `finally` restores the exact prior
+enabled/disabled state on normal, assertion, deadline and interrupt exits,
+before `window.finished` and an original-deadline check. Reference-count
+reclamation continues; thresholds, callbacks and frozen generations are untouched.
+There is no explicit collection, warmup, product/daemon GC change or time
+allowance. All fresh reads, raw authentication and complete comparison work
+remain before the original frame `finished`; both50ms predicates, full1s and
+C42 still apply. Native state-restoration and timing proof remain NOT RUN.
 This reduces repeated deterministic work and additive idle time; real overruns
 still fail. Product40163040613 failed both timing predicates after the sleep
 correction; its timestamps do not identify the cause of the long frames.
@@ -1966,6 +1975,16 @@ failed the invalid live-to-cancelled `updated_at` equality. These failed runs
 remain failed; reader replay cannot supply native timing or whole-run credit.
 Native verification remains pending until the manager's changed-reviewed-main
 Product run, and no hard scheduling guarantee follows.
+Product40198955393 at7eabe0f9 subsequently failed acquisition16 on3.12
+(133.463310ms) and acquisition12 on3.14 (61.007805ms); both full1s windows are
+incomplete. Its original samples and whole runs still fail the unchanged
+timing/complete-case readers. The archives do not attribute either spike to GC,
+SQL, HTTP or scheduling. A local single full scan of each retained archive graph
+on Python3.14.4 took about88–91ms and reclaimed nothing: evidence for avoiding
+that interpreter work within the loop, not proof it caused the native spikes
+or that the correction restores timing. Full native normal/error/deadline
+restoration proof is NOT RUN / PROOF NOT RUN without an authorized existing
+isolated venue; source/static and archived content checks cannot supply it.
 
 The positive cancellation lifecycle oracle follows the shipping DB owner:
 `cancel_task` captures one cancellation time, then `Db.update_task` stamps
@@ -1984,7 +2003,8 @@ Controller.mark/export and aggregate.controls keepers):
 
 | Cases | Observable contract and credible regression | Nearest keeper / precise gap and distinct risk | Test-only production seam / actual evidence |
 | --- | --- | --- | --- |
-| E07.cancel-cascade-browser / E07.cancel-terminal-unchanged / E07.cancelled-late-cli: fresh sampling and raw HTTP joins | Every sample obtains full SQL/files/public/detail/Recall/metrics/witness/pending and closure evidence; both50ms checks/full1s persist. Stale reuse, omitted reads, mismatched HTTP fields/types/order or uncharged work violates this boundary. | Existing frame/window/host/closure keepers retained; this correction removes duplicate same-object encoding only. Detached aggregate readers own independent serialized equality. | NO production seam/global state. Archived content/reader checks are bounded replay only; native timing restoration NOT RUN, original3.12 overrun remains rejected. State-restoration case is inapplicable: no global/interpreter state is touched. |
+| E07.cancel-cascade-browser / E07.cancel-terminal-unchanged / E07.cancelled-late-cli: fresh sampling and raw HTTP joins | Every sample obtains full SQL/files/public/detail/BOTH Recall/metrics/witness/pending and closure evidence; both50ms checks/full1s persist. Stale reuse, omitted reads, mismatched HTTP fields/types/order or uncharged work violates this boundary. | Existing frame/window/host/closure keepers retained; automatic controller cyclic collection is deferred only within that loop. Detached aggregate readers own independent serialized equality. | NO production seam. Archived content/reader checks are bounded replay only; native timing restoration NOT RUN, BOTH original40198955393 slow samples/full runs remain rejected. |
+| Same THREE E07 variants: controller interpreter state | Exact prior GC enabled/disabled state restored before window completion, including assertion/raising deadline/interrupt exits. Missing finally or unconditional enable leaks state. | Existing exercise unwind and original deadline owners remain; no isolated existing command proves native GC restoration. This is distinct from raw-content/Health reader consistency, which cannot observe interpreter state. No duplicate test/venue added. | NO production seam. Exact restoration paths source-inspected; native normal/error/deadline restoration NOT RUN / PROOF NOT RUN, not a pass or automatic source-delivery blocker. No thresholds/callback/frozen-state change. |
 | Same THREE E07 variants: live-to-cancelled lifecycle | Only legitimate ordered aware-UTC cancellation updates may change updated_at; naive/reversed/future stamps, key changes, unrelated last_heartbeat/content changes or public disagreement refuse. | Existing cancelled fields/audits and immutable freeze checks retained; old equality incorrectly excluded the actual DB update stamp. Terminal-refusal tests alone do not own live-to-cancelled ordering. | NO production seam. Original3.14 failure is attributable to the old equality; corrected raw transition acceptance does not accept its failed whole run. |
 | Independent aggregate.e07_cancellation_transition / validate_e07 | Reopen original raw rows/public/audits and reconstruct the same lifecycle bounds; frozen timestamps/content/witnesses still compare exactly through every sample/final. Accepting producer verdicts or ignoring updated_at would hide exported tampering. | Producer assertion cannot establish independent serialized validity. Existing e07_public_state/window/final/Health readers retain distinct export and whole-run refusal risks. | NO shared producer helper or new verifier/venue. Pure-reader checks only; complete native56 EACH and protected sensitivity/repetitions NOT RUN here. |
 | A1 adopted exited child while controller live | One actual generation-qualified consumed status/disappearance; controller remains live then retains its own intended exit. Removing active reap reproduces the late-wait dependency. | Owned tracking/cleanup, E07 strict disappearance and old R3-05/R3-06; WNOWAIT diagnostics/late numeric returns did not establish active reaping. | NO. One authorized isolated Linux exercise executed: adopted exit23, live controller then own37, setup parent own19; cleanup joined/one receipt. |
