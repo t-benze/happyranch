@@ -778,8 +778,12 @@ Affected existing lifecycle-ownership case record (THR228seq648):
    while caller originals and child mappings retain custody. Partial duplication,
    spawn/write/read/selector/wait/close errors retain cleanup without double-close
    of a reused FD, under the same deadline and response cap (Linux process/IPC).
+   Final close OSError cannot replace an already propagating body or kill/reap
+   failure; when cleanup is the first failure, category-only refusal chains the
+   actual close OSError after every remaining owned close is attempted.
 2. Credible regression: retain any parent output-writer duplicate through the
-   read loop, or leave a closed duplicate/pipe FD pending in final cleanup.
+   read loop, leave a closed duplicate/pipe FD pending in final cleanup, or
+   unconditionally raise a final-close refusal over the initiating error.
 3. Nearest keeper: the existing fixed-helper/SAME-OFD lifecycle contract here
    and the allocated PARTIAL install boundary in `real_systemd_n3.sh`; neither
    establishes isolated parent-FD or close-error assertions. No executable keeper
@@ -791,6 +795,36 @@ Affected existing lifecycle-ownership case record (THR228seq648):
    SUSPENDED**; this local grant permits source/static inspection only. General
    integration INCLUDING product callback SKIPPED24342; Python units RETIRED.
 
+Required final-close SOURCE branch assessment (TASK12946; no execution):
+
+- Success with successful closes: `unwinding` stays false; no close error is
+  recorded, so the existing returned bytes and descriptor ownership are unchanged.
+- Successful body with final-close OSError: cleanup pops each remaining owned
+  number before attempting close, remembers the first real OSError, attempts all
+  other closes, then raises category-only refusal chained from that OSError.
+  The pending success is not returned and released numbers are never retried.
+- Body deadline/response-invalid/write/read/spawn/other error plus final-close
+  OSError: the body handler marks this invocation as unwinding and immediately
+  bare-reraises. Final cleanup attempts all closes without raising over that
+  error. A caller's unrelated handled exception cannot suppress a first-failure
+  close refusal because the flag tracks only this invocation's unwind.
+- Actual owned-child kill/reap failure plus final-close OSError: the existing
+  kill/reap block's handler marks unwind and bare-reraises its actual failure;
+  remaining closes still run and cannot replace it. No settled-child ownership
+  is manufactured; existing kill/reap precedence over a body error is unchanged.
+- Partial duplication or early endpoint-close failure: existing child-required
+  maps, pop-before-close action duplicates and relinquished early pipe endpoints
+  remain unchanged. Final cleanup visits only remaining owned descriptors, never
+  borrowed originals or a previously attempted/released descriptor number.
+
+All five are SOURCE assessments, not behavioral observations or assertions.
+The existing four-answer record/nearest keeper above owns this clarification;
+no test, sensitivity harness or production seam is introduced. Intended fail/pass,
+red/green, mutation/repetition and executable QA remain NOT RUN / PROOF NOT RUN
+SUSPENDED, with no behavioral or test-authoring PASS. Reviewer12944 identified
+source error precedence; former cleanup could also mask errors, so neither a new
+observed regression nor the sole historical timeout cause is established here.
+
 The fixed lifecycle spawn owner closes every parent-only action duplicate
 immediately after successful `posix_spawn`, before request/output waiting:
 stdin, stdout, null stderr and all borrowed descriptor mappings. Each duplicate
@@ -798,7 +832,9 @@ and early-closed pipe endpoint leaves parent ownership before close; Linux close
 errors/interruption never retry a possibly released/reused FD. Partial duplication
 or failed spawn still closes the remaining owned endpoints; request-write,
 read/selector/wait and kill/reap errors retain final descriptor cleanup, attempting
-all remaining closes on close errors and refusing by category. Child remapped
+all remaining closes on close errors. An already propagating body or kill/reap
+error remains the propagated failure; only a first-failure final close raises
+category-only `managed_lifecycle_refused` from the actual close error. Child remapped
 endpoints and caller-borrowed sealed images/SAME-OFD flock originals remain owned
 by their respective child/caller. No explicit unlock, new allowance or IPC is
 introduced; the original absolute deadline,4096-byte cap plus sentinel and actual

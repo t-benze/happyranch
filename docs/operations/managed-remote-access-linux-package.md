@@ -573,7 +573,9 @@ and early-closed pipe endpoint leaves parent ownership before close; Linux close
 errors/interruption never retry a possibly released/reused FD. Partial duplication
 or failed spawn still closes the remaining owned endpoints; request-write,
 read/selector/wait and kill/reap errors retain final descriptor cleanup, attempting
-all remaining closes on close errors and refusing by category. Child remapped
+all remaining closes on close errors. An already propagating body or kill/reap
+error remains the propagated failure; only a first-failure final close raises
+category-only `managed_lifecycle_refused` from the actual close error. Child remapped
 endpoints and caller-borrowed sealed images/SAME-OFD flock originals remain owned
 by their respective child/caller. No explicit unlock, new allowance or IPC is
 introduced; the original absolute deadline,4096-byte cap plus sentinel and actual

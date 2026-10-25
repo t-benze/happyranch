@@ -165,6 +165,8 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     close them before waiting for output, without closing borrowed originals.
     Relinquish ownership before close: Linux may release the FD even when
     close raises, so retrying could close a reused descriptor.
+    Final close errors refuse only when no body or kill/reap error is already
+    propagating; all remaining owned closes are still attempted.
     """
     if (executable not in {_MANAGED_EXECUTABLE, "/proc/self/fd/5", "/proc/self/fd/6"}
             or executable == "/proc/self/fd/5" and operation != "managed-package"
@@ -181,6 +183,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     source_read = source_write = output_read = output_write = null = -1
     duplicates: list[int] = []
     child: int | None = None
+    unwinding = False
     try:
         source_read, source_write = os.pipe2(os.O_CLOEXEC)
         output_read, output_write = os.pipe2(os.O_CLOEXEC)
@@ -229,6 +232,9 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
             if time.monotonic_ns() >= deadline:
                 raise PackageError("managed_lifecycle_deadline")
             time.sleep(max(0, min(0.01, (deadline - time.monotonic_ns()) / 1_000_000_000)))
+    except BaseException:
+        unwinding = True
+        raise
     finally:
         try:
             if child is not None:
@@ -240,6 +246,9 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 # No detached success or timed unlock. If kernel exit lags, the
                 # caller remains the original owner until this actual reap.
                 os.waitpid(child, 0)
+        except BaseException:
+            unwinding = True
+            raise
         finally:
             remaining = [source_read, source_write, output_read, output_write, null, *duplicates]
             duplicates.clear()
@@ -254,7 +263,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         # other owned closes, including after kill/reap errors.
                         if close_error is None:
                             close_error = exc
-            if close_error is not None:
+            if close_error is not None and not unwinding:
                 raise PackageError("managed_lifecycle_refused") from close_error
 
 
