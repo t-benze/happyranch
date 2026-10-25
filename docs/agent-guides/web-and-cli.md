@@ -2337,8 +2337,8 @@ measured movement returns `observation_moving` with null epoch references.
 Independent installed/provider acceptance and operational health remain
 separate from source implementation and source fixtures.
 
-`happyranch memory report` paginates the existing audit read surface but is
-fail-closed without valid G1 authority: JSON and text return
+`happyranch memory report` consumes one server-owned aggregate acquisition and
+is fail-closed without valid G1 authority: JSON and text return
 `insufficient_instrumentation`. Valid authority exposes the original epoch,
 current health and eligible natural report; short samples remain insufficient.
 There is no CLI flag or input that can override the invalid current/unversioned
@@ -2355,9 +2355,19 @@ ranking changes.
 The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
 They use the same seq480 boot/epoch-activity plus referenced lifecycle, ancestry,
 retry, QA/job and control closure. Current reads/searches on old retired SIDs
-retain their old intervals. HTTP uses existing /audit since/action/task filters,
-keyed task detail/ancestry recall/direct revisits and job/output reads; no new
-endpoint/query parameter is introduced. Both front doors omit their former
+retain their old intervals. HTTP uses the single authenticated parameter-free
+`GET /api/v1/orgs/{slug}/audit/memory-collection`, returning exactly
+`tables`, `view`, `outputs`, `cutoff` under the original shared server budget.
+The strict raw reader validates the closed envelope and aware UTC server cutoff;
+there is no fallback to the former multipage path. Complete current internal
+snapshots and native selected closure are validated on the server. Original
+identity/file/SQL/wait/work/transport limits span all whole-pair attempts, with
+complete charged acknowledged failed-pair retention. Caller cutoffs affect only
+reporting. The CLI brackets roles and buffers both JSON/text rendering under its
+original deadline through final success; cooperative stdout timing is not hard
+OS enforcement. Existing auth/remote/native policy is authoritative and unchanged.
+This response grants no health, acceptance or collection authority. Both front
+doors omit their former
 all-history/task preflight. Closing and atomic rereads recompute membership,
 including new controls/results/retries. No-epoch output stays CLOSED and excludes
 historical proof rows from current natural denominators. Unrelated global SID
