@@ -72,7 +72,7 @@ class BrowserRelay:
                 else:
                     prior = record.get('upstream_operation', {})
                     read = record.get('stream_read')
-                    if (prior.get('outcome') != 'returned'
+                    if (not relay._cooperative_boundary(record)
                             or read is not None and ('error' in read or read.get('bytes', 0) <= 0)):
                         receipt['error'] = 'prior_operation_not_successful'
                     else:
@@ -209,7 +209,8 @@ class BrowserRelay:
                             raise ConnectionAbortedError('browser relay stopped')
                         return value
 
-                    def upstream_call(kind: str, call: Callable, read: dict | None = None) -> object:
+                    def upstream_call(kind: str, call: Callable, validate: Callable,
+                                      read: dict | None = None) -> object:
                         # The same gate protects the actual native HTTP call,
                         # including an exception whose publication is delayed.
                         with relay.operation_gates[id(record)]:
@@ -222,6 +223,9 @@ class BrowserRelay:
                                 record['stream_read'] = read
                             try:
                                 value = call()
+                                # No cancellation check between native return,
+                                # indispensable validation and publication.
+                                validate(value, outcome)
                             except Exception as exc:
                                 outcome.update(finished=time.monotonic(), error=type(exc).__name__)
                                 if read is not None:
@@ -232,6 +236,40 @@ class BrowserRelay:
                                 if read is not None:
                                     read.update(finished=outcome['finished'], bytes=len(value))
                                 return value
+
+                    def receive_response() -> http.client.HTTPResponse:
+                        nonlocal response
+                        # Retain the owner even when header validation fails:
+                        # HTTPConnection may already have detached its socket.
+                        response = connection.getresponse()
+                        return response
+
+                    def validate_response(value, outcome: dict) -> None:
+                        facts = dict(status=value.status,
+                                     transfer_encoding=value.headers.get_all('Transfer-Encoding', []),
+                                     content_length=value.headers.get_all('Content-Length', []),
+                                     content_type=value.headers.get_all('Content-Type', []),
+                                     chunked=value.chunked, length=value.length)
+                        outcome['result'] = facts
+                        if not relay._response_facts(facts, self.command):
+                            raise ValueError('unsupported upstream response framing')
+                        record.update(response_outcome=facts, status=value.status,
+                                      streaming=(facts['content_type'][0] if facts['content_type'] else '')
+                                      .split(';')[0] == 'text/event-stream')
+
+                    def read_response(call: Callable, read: dict | None = None, whole: bool = False) -> bytes:
+                        def validate_read(value, outcome: dict) -> None:
+                            facts = dict(bytes=len(value), remaining_before=before,
+                                         remaining_after=response.length, closed=response.isclosed(),
+                                         eof=not value)
+                            outcome['result'] = facts
+                            if not relay._read_facts(facts, record['response_outcome'], streaming,
+                                                     whole=whole):
+                                raise http.client.IncompleteRead(b'')
+                        # The gate in upstream_call spans both this native read
+                        # and validation; no other owner changes response.length.
+                        before = response.length
+                        return upstream_call('read', call, validate_read, read)
 
                     self.connection.settimeout(remaining())
                     if self.headers.get("Transfer-Encoding") or self.headers.get("Upgrade"):
@@ -263,24 +301,17 @@ class BrowserRelay:
                     record["forwarded"] = time.monotonic()
                     operation = 'upstream'
                     upstream_socket.settimeout(remaining())
-                    response = upstream_call('getresponse', connection.getresponse)
+                    response = upstream_call('getresponse', receive_response, validate_response)
                     remaining()
                     headers = response.getheaders()
-                    if response.status == 101:
-                        raise ValueError("unsupported browser upgrade")
-                    encoding = response.getheader("Transfer-Encoding")
-                    if encoding and (encoding.lower().strip() != "chunked" or response.getheader("Content-Length") is not None):
-                        raise ValueError("unsupported upstream transfer framing")
-                    record["status"] = response.status
-                    streaming = (response.getheader("Content-Type") or "").split(";")[0] == "text/event-stream"
-                    record["streaming"] = streaming
+                    streaming = record['streaming']
                     if streaming:
                         with relay.lock:
                             relay.active_streams[id(record)] = upstream_socket, response
                     content = None
                     if selected:
                         upstream_socket.settimeout(remaining())
-                        content = upstream_call('read', response.read)
+                        content = read_response(response.read, whole=True)
                         remaining()
                         record.update(upstream_complete=time.monotonic(), response_sha256=hashlib.sha256(content).hexdigest(),
                                       response_bytes=len(content), content_type=response.getheader("Content-Type"))
@@ -339,9 +370,9 @@ class BrowserRelay:
                                         remaining()
                                         read = dict(id=record.get('stream_read', {}).get('id', 0)+1,
                                                     started=time.monotonic())
-                                    chunk = upstream_call('read', lambda: response.read1(65536), read)
+                                    chunk = read_response(lambda: response.read1(65536), read)
                                 else:
-                                    chunk = upstream_call('read', lambda: response.read1(65536))
+                                    chunk = read_response(lambda: response.read1(65536))
                                 remaining()
                                 if not chunk:
                                     break
@@ -365,7 +396,8 @@ class BrowserRelay:
                         relay.release.set()
                 except Exception as exc:
                     record['failure_at'] = time.monotonic()
-                    # Never export headers/auth/bootstrap/stream bodies or raw exceptions.
+                    # Only the explicit framing facts above are retained;
+                    # never export arbitrary headers/auth/bodies or raw exceptions.
                     record["error"] = type(exc).__name__
                     record['failure_operation'] = operation
                     if selected:
@@ -424,6 +456,65 @@ class BrowserRelay:
         self.port = self.server.server_port
         self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True)
         self.thread.start()
+
+    @staticmethod
+    def _response_facts(facts: dict, method: str) -> bool:
+        if (set(facts) != {'status', 'transfer_encoding', 'content_length', 'content_type', 'chunked', 'length'}
+                or type(facts['status']) is not int or not 200 <= facts['status'] <= 599
+                or type(facts['chunked']) is not bool
+                or any(type(facts[k]) is not list or len(facts[k]) > 1
+                       or any(type(v) is not str for v in facts[k])
+                       for k in ('transfer_encoding', 'content_length', 'content_type'))):
+            return False
+        transfer, lengths = facts['transfer_encoding'], facts['content_length']
+        if (transfer and (transfer[0].strip().lower() != 'chunked' or lengths)
+                or lengths and (not lengths[0].isascii() or not lengths[0].isdecimal())
+                or facts['chunked'] != bool(transfer)):
+            return False
+        expected = 0 if method == 'HEAD' or facts['status'] in {204, 304} else int(lengths[0]) if lengths else None
+        return (facts['length'] is None if expected is None else
+                type(facts['length']) is int and facts['length'] == expected)
+
+    @staticmethod
+    def _read_facts(facts: dict, response: dict, streaming: bool, *, whole: bool = False) -> bool:
+        if (set(facts) != {'bytes', 'remaining_before', 'remaining_after', 'closed', 'eof'}
+                or type(facts['bytes']) is not int or facts['bytes'] < 0
+                or type(facts['closed']) is not bool or type(facts['eof']) is not bool
+                or facts['eof'] != (facts['bytes'] == 0)
+                or any(v is not None and (type(v) is not int or v < 0)
+                       for v in (facts['remaining_before'], facts['remaining_after']))):
+            return False
+        before, after = facts['remaining_before'], facts['remaining_after']
+        initial = response['length']
+        if (initial is None and (before is not None or after is not None)
+                or initial is not None and (before is None or after is None
+                                           or before > initial or after != before-facts['bytes'])
+                or (facts['closed'] or facts['eof']) and after not in (None, 0)
+                or after == 0 and not facts['closed']
+                or facts['eof'] and not facts['closed']
+                or streaming and (facts['closed'] or facts['eof'])
+                or whole and (not facts['closed'] or after not in (None, 0))):
+            return False
+        return True
+
+    @classmethod
+    def _cooperative_boundary(cls, record: dict) -> bool:
+        operation = record.get('upstream_operation', {})
+        response = record.get('response_outcome', {})
+        if (not cls._response_facts(response, record['method'])
+                or record.get('status') != response['status']
+                or record.get('streaming') is not ((response['content_type'][0] if response['content_type'] else '')
+                                                 .split(';')[0] == 'text/event-stream')
+                or operation.get('outcome') != 'returned'):
+            return False
+        if operation['kind'] == 'getresponse':
+            result = operation.get('result', {})
+            return (operation.get('read_id') is None and 'stream_read' not in record
+                    and cls._response_facts(result, record['method']) and result == response)
+        result = operation.get('result', {})
+        return (operation['kind'] == 'read'
+                and cls._read_facts(result, response, record['streaming'])
+                and result['bytes'] > 0 and not result['closed'])
 
     @staticmethod
     def hop_headers(headers) -> set[str]:
@@ -495,6 +586,7 @@ class BrowserRelay:
                         and abort['at'] <= record.get('abort_shutdown_started', -1)
                         <= record.get('abort_shutdown', -1) <= record.get('abort_observed', -1) <= record['failure_at']
                         and record.get('abort_shutdown_operation') == record.get('upstream_operation')
+                        and self._cooperative_boundary(record)
                         and record.get('upstream_operation', {}).get('outcome') == 'returned'
                         and record['upstream_operation']['finished'] <= record['abort_shutdown_started']
                         and ('stream_read' not in record and record['upstream_operation']['read_id'] is None
@@ -518,6 +610,7 @@ class BrowserRelay:
                             and failure == 'ConnectionAbortedError'
                             and shutdown['finished'] <= record.get('shutdown_observed', -1) <= record['failure_at']
                             and shutdown.get('operation') == record.get('upstream_operation')
+                            and self._cooperative_boundary(record)
                             and record.get('upstream_operation', {}).get('outcome') == 'returned'
                             and record['upstream_operation']['finished'] <= shutdown['started']
                             and (not read and shutdown['read_id'] is None

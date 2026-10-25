@@ -1762,7 +1762,7 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                                   'request_sha256 request_bytes upstream_complete response_sha256 response_bytes content_type request '
                                   'invalid_request_json response commit committed held release_observed error client_disconnected failure_operation '
                                   'failure_at browser_abort abort_shutdown_started abort_shutdown abort_shutdown_error abort_observed '
-                                  'context_shutdown shutdown_observed stream_read upstream_operation abort_shutdown_operation '
+                                  'context_shutdown shutdown_observed stream_read upstream_operation abort_shutdown_operation response_outcome '
                                   'response_close_error connection_close_error').split())
               and not any(k in proxied for k in ('response_close_error','connection_close_error','abort_shutdown_error')),
               'R2 closed proxy evidence grammar; failed ownership never exempt')
@@ -1777,9 +1777,33 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                        or type(read.get('bytes')) is int and 0 <= read['bytes'] <= 65536),
                   'R2 closed original upstream stream read evidence')
         operation = proxied.get('upstream_operation')
+        response = proxied.get('response_outcome')
+        if response is not None:
+            check(type(response) is dict
+                  and set(response) == {'status','transfer_encoding','content_length','content_type','chunked','length'}
+                  and type(response['status']) is int and 200 <= response['status'] <= 599
+                  and type(response['chunked']) is bool
+                  and all(type(response[k]) is list and len(response[k]) <= 1
+                          and all(type(v) is str for v in response[k])
+                          for k in ('transfer_encoding','content_length','content_type')),
+                  'R2 original safe response status/header facts, not a validation Boolean')
+            transfer, lengths = response['transfer_encoding'], response['content_length']
+            check((not transfer or transfer[0].strip().lower() == 'chunked' and not lengths)
+                  and (not lengths or lengths[0].isascii() and lengths[0].isdecimal())
+                  and response['chunked'] == bool(transfer), 'R2 original unambiguous supported transfer framing')
+            length = (0 if proxied['method'] == 'HEAD' or response['status'] in {204,304}
+                      else int(lengths[0]) if lengths else None)
+            check((response['length'] is None if length is None else
+                   type(response['length']) is int and response['length'] == length)
+                  and type(proxied.get('status')) is int and proxied['status'] == response['status']
+                  and proxied.get('streaming') is ((response['content_type'][0] if response['content_type'] else '')
+                                                 .split(';')[0] == 'text/event-stream'),
+                  'R2 native response parser and retained status/content/length agree')
+        boundary = False
         if operation is not None:
-            check(set(operation) in ({'kind','read_id','started','finished','outcome'},
-                                     {'kind','read_id','started','finished','error'})
+            check(set(operation) in ({'kind','read_id','started','finished','outcome','result'},
+                                     {'kind','read_id','started','finished','error'},
+                                     {'kind','read_id','started','finished','error','result'})
                   and operation['kind'] in {'getresponse', 'read'}
                   and all(type(operation[k]) in (int, float) for k in ('started', 'finished'))
                   and proxied['forwarded'] <= operation['started'] <= operation['finished'] <= proxied['closed']
@@ -1788,6 +1812,36 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                   and (operation['kind'] != 'getresponse' or operation['read_id'] is None)
                   and (operation.get('outcome') == 'returned' or type(operation.get('error')) is str),
                   'R2 complete original upstream operation outcome, not later handler publication')
+            if operation.get('outcome') == 'returned':
+                check(response is not None and type(operation['result']) is dict,
+                      'R2 successful publication requires original validated response facts')
+                result = operation['result']
+                if operation['kind'] == 'getresponse':
+                    check(json.dumps(result, sort_keys=True, allow_nan=False)
+                          == json.dumps(response, sort_keys=True, allow_nan=False) and 'stream_read' not in proxied,
+                          'R2 no-first-read outcome retains actual status and framing')
+                    boundary = True
+                else:
+                    check(set(result) == {'bytes','remaining_before','remaining_after','closed','eof'}
+                          and type(result['bytes']) is int and result['bytes'] >= 0
+                          and type(result['closed']) is bool and type(result['eof']) is bool
+                          and result['eof'] == (result['bytes'] == 0)
+                          and all(v is None or type(v) is int and v >= 0
+                                  for v in (result['remaining_before'],result['remaining_after'])),
+                          'R2 original finite/stream read byte/EOF/remaining-length facts')
+                    before, after = result['remaining_before'], result['remaining_after']
+                    check((before is None and after is None if response['length'] is None else
+                           before is not None and after is not None and before <= response['length']
+                           and after == before-result['bytes'])
+                          and (not (result['closed'] or result['eof']) or after in (None,0))
+                          and (after != 0 or result['closed'])
+                          and (not result['eof'] or result['closed'])
+                          and (not proxied['streaming'] or not result['eof'] and not result['closed']),
+                          'R2 premature finite EOF and streaming EOF refuse before cancellation')
+                    if 'stream_read' in proxied:
+                        check(result['bytes'] == proxied['stream_read'].get('bytes'),
+                              'R2 retained stream bytes equal original operation outcome')
+                    boundary = result['bytes'] > 0 and not result['closed']
             if 'stream_read' in proxied:
                 read = proxied['stream_read']
                 check(operation['kind'] == 'read' and operation['read_id'] == read['id']
@@ -1806,6 +1860,17 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         if not failure:
             check('delivered' in proxied and 'context_shutdown' not in proxied and 'browser_abort' not in proxied,
                   'R2 complete original response delivery without contradictory cancellation')
+            check(response is not None and not proxied['streaming'] and operation is not None
+                  and operation.get('outcome') == 'returned'
+                  and (operation['kind'] == 'getresponse' and response['length'] == 0
+                       or operation['kind'] == 'read' and operation['result']['closed']
+                       and operation['result']['remaining_after'] in (None,0)),
+                  'R2 finite delivery requires completed body or original bodyless response, never progress alone')
+            if proxied['ordinal'] is not None:
+                check(operation['kind'] == 'read' and type(proxied.get('response_bytes')) is int
+                      and operation['result']['bytes'] == proxied['response_bytes']
+                      and operation['result']['remaining_before'] == response['length'],
+                      'R2 selected compose delivery retains original complete read outcome and byte count')
             continue
         check(('error' in proxied) != ('client_disconnected' in proxied)
               and ('client_disconnected' in proxied) == (failure in {'BrokenPipeError','ConnectionResetError','RemoteDisconnected'})
@@ -1825,8 +1890,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                       and all(type(read[k]) in (int, float) for k in ('started','finished'))
                       and proxied['forwarded'] <= read['started'] <= read['finished'] <= proxied['failure_at'],
                       'R2 settled original upstream read grammar/order')
-            check(failure == 'ConnectionAbortedError' and operation is not None
-                  and shutdown['operation'] == operation and operation.get('outcome') == 'returned'
+            check(failure == 'ConnectionAbortedError' and boundary and operation is not None
+                  and json.dumps(shutdown['operation'], sort_keys=True, allow_nan=False)
+                  == json.dumps(operation, sort_keys=True, allow_nan=False) and operation.get('outcome') == 'returned'
                   and operation['finished'] <= shutdown['started'] <= shutdown['finished']
                   <= proxied.get('shutdown_observed', -1) <= proxied['failure_at']
                   and (not read and shutdown['read_id'] is None and operation['kind'] == 'getresponse'
@@ -1847,8 +1913,9 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
         issued = [e for e in events if e['event'] == 'request' and e['request_id'] == abort['request_id']]
         check(len(issued) == 1 and issued[0]['url'] == abort['url'] and issued[0]['method'] == 'GET'
               and issued[0]['at'] <= abort['at'] and 'abort_shutdown_error' not in proxied
-              and failure == 'ConnectionAbortedError' and operation is not None
-              and proxied.get('abort_shutdown_operation') == operation and operation.get('outcome') == 'returned'
+              and failure == 'ConnectionAbortedError' and boundary and operation is not None
+              and json.dumps(proxied.get('abort_shutdown_operation'), sort_keys=True, allow_nan=False)
+              == json.dumps(operation, sort_keys=True, allow_nan=False) and operation.get('outcome') == 'returned'
               and operation['finished'] <= proxied.get('abort_shutdown_started', -1)
               and abort['at'] <= proxied['abort_shutdown_started'] <= proxied.get('abort_shutdown', -1)
               <= proxied.get('abort_observed', -1) <= proxied['failure_at']
