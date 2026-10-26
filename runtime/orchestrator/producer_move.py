@@ -806,17 +806,26 @@ def native_claim(db, agent_id):
 
 async def redeliver_native_jobs(org):
     import asyncio
-    from runtime.daemon.jobs_runner import register_runner_task
+    from runtime.daemon.jobs_runner import register_runner_task, require_job_admission
+    require_job_admission(org)
     admission = owner_for(org.db)
     if admission is None:
         return
     for job_id, retained in tuple(admission.deferred_jobs.items()):
+        require_job_admission(org)
         try:
-            owner = admission.reserve('job', job_id)
+            with admission.move.gate, org.db._lock:
+                require_job_admission(org)
+                owner = admission.reserve('job', job_id)
         except DeferredTeamMove:
             continue
         if owner is not None:
+            # A refusal after reservation retains that actual owner and the
+            # original callback; never clear it to manufacture redelivery.
+            require_job_admission(org)
+            owner.detached = True
             register_runner_task(job_id, asyncio.create_task(retained.callback(owner)),
                 db=org.db, org_slug=org.slug, move_owner=owner)
+            require_job_admission(org)
             if admission.deferred_jobs.get(job_id) is retained:
                 del admission.deferred_jobs[job_id]

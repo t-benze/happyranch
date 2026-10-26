@@ -1190,17 +1190,25 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
     if getattr(org.db, "_task_pause_store", None) is None or queue is None:
         return
     from runtime.daemon.routes.jobs import _run_job_core
+    from runtime.daemon.jobs_runner import require_job_admission
+    from runtime.daemon.startup_recovery import StartupUnavailable
     for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue):
         if not complete:
             continue
         if not held:
             for job_id, entry in _pending_pause_jobs(org, entries):
                 try:
+                    require_job_admission(org)
                     await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
                         trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
+                except StartupUnavailable:
+                    # Preserve the original release intent AND cursor. Native
+                    # P6 has its separate authenticated held outcome.
+                    raise
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
+            require_job_admission(org)
             _ack_pause_release(org, root_id, generation)
         org.db._task_pause_store._discovery_cursor = root_id
 

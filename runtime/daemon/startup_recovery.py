@@ -209,7 +209,8 @@ class StartupRecovery:
         from runtime.daemon.jobs_runner import jobs_resume_binding_matches
         jobs_bound = current is not None and current.jobs_bound
         if not jobs_resume_binding_matches(self._loop if jobs_bound else None,
-                                          self._jobs_resolver if jobs_bound else None):
+                                          self._jobs_resolver if jobs_bound else None,
+                                          self if jobs_bound else None):
             raise RuntimeError("startup_jobs_binding_changed")
 
     def _require_later_native(self, phase: str, org: Any = None, *, bound: bool = True) -> None:
@@ -312,7 +313,7 @@ class StartupRecovery:
                 binding.orgs_bound += 1
                 self._require_phase_attachments("returned", binding=binding)
             self._require_phase_attachments("returned", binding=binding)
-            attach_jobs_resume_main_loop(self._loop, self._jobs_resolver)
+            attach_jobs_resume_main_loop(self._loop, self._jobs_resolver, self)
             binding.jobs_bound = True
             self._require_phase_attachments("returned", binding=binding)
             return True

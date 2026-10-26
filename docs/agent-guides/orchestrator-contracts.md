@@ -4305,6 +4305,37 @@ This named thread source stage does not complete the feature or authorize a
 partial merge/activation. Runtime cases and sensitivity PROOF remain NOT RUN;
 maker0/3 QA0/3 and the root's final independent review/QA obligations are unchanged.
 
+Ordinary job submission, core/reservation, runner registration, output/scratch
+preparation, final native spawn and terminal-resume production now check the
+SAME daemon startup gate. Checks precede allocation and repeat after awaited
+locks; recovering/failed/stopping admission raises StartupUnavailable without
+inventing FAILED, a move deferral or successful no-op. Actual original state,
+org/DB/orchestrator, epoch, request loop and resolver must agree. Early reference
+attachment closes anonymous lower run_job admission even before P4; P4 binds
+and reads back its SAME gate/loop/resolver without I/O. Ready-only dynamic org
+attachment inherits these references before exposure. Explicit standalone
+construction keeps its offline contract; missing production attachment refuses.
+
+A final-admitted asynchronous spawn retains its original Task/registration and
+native attempt until actual creation is observed, even if its waiter is cancelled.
+The observed Process is captured before fallible accounting. Closure during
+creation suppresses script input and requests original owned termination/reap;
+cancellation retains its primary cause and any cleanup failure. The registration
+also occupies the org's existing native-user close barrier through its committed
+postcommit tail, or remains retained on uncertainty. Signals, output pumps,
+terminal CAS/first cause, registration release and native cleanup use identity
+validation independently of fresh admission. No closed gate proves quiescence.
+
+Job-terminal notification refusal is separate from execution/terminal COMMIT;
+original durable blocked-waiter intent and terminal evidence remain. Deferred
+native callbacks are removed only after real registration and renewed admission.
+Ordinary Pause pending-job rediscovery propagates startup refusal before release
+acknowledgement/cursor advancement. Native P6 discovery remains unchanged and
+holds pending jobs without launching. No new deferred queue or recovery exception.
+This named job SOURCE stage leaves whole-feature integration and final independent
+review/same-head behavioral QA with ROOT13137; runtime/proof NOT RUN, maker0/3
+QA0/3 unchanged, under10s UNVERIFIED. No partial merge or activation follows.
+
 P8 prepares every original normal consumer behind one unopened latch, records each
 actual handle immediately, and commits ready/releases without an await. All worker,
 scheduler, reaper, direct-connect/workspace-cleanup and dashboard bodies wait it.

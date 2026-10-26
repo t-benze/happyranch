@@ -86,6 +86,8 @@ class DaemonState:
         recovery = StartupRecovery(self, app)
         self._startup_recovery = recovery
         self._startup_reads = StartupReads(self, recovery)
+        from runtime.daemon.jobs_runner import bind_jobs_startup_references
+        bind_jobs_startup_references(self)
         from runtime.daemon.startup_recovery import _bind_task_admission
         _bind_task_admission(self.queue, self)
         if self.host_supervisor is not None:
@@ -127,6 +129,8 @@ class DaemonState:
         for owner in (org, org.orchestrator, org.sessions, org.thread_queue):
             _bind_task_admission(owner, self, org)
         org._startup_reads = self._startup_reads
+        from runtime.daemon.jobs_runner import bind_jobs_startup_references
+        bind_jobs_startup_references(self, org)
 
     async def _drain_startup(self, org=None) -> None:
         # Recovery may require request-loop queue acknowledgements to end. Join
