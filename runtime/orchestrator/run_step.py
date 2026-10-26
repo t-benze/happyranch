@@ -6509,6 +6509,8 @@ def _maybe_post_thread_escalation(
 
     Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
     """
+    from runtime.orchestrator.task_thread_posting import _require_thread_producer
+    _require_thread_producer(orch)
     if current_owner is not None and not current_owner():
         return
     db = orch._db
@@ -6659,8 +6661,8 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
-    from runtime.daemon.startup_publication import current_publication
-    publication = current_publication(orch)
+    from runtime.orchestrator.task_thread_posting import _require_thread_producer
+    publication = _require_thread_producer(orch)
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.

@@ -297,6 +297,46 @@ class Orchestrator:
         Boot P4 and dynamic attachment callers explicitly own returned
         notification; this public binder performs no recovery or I/O.
         """
+        from runtime.daemon.startup_recovery import _bind_task_admission, StartupUnavailable
+        try:
+            state, gate, org = self._startup_state, self._startup_recovery, self._startup_org
+        except AttributeError as exc:
+            raise StartupUnavailable("startup_gate_unbound") from exc
+        if state is None and (gate is not None or org is not None):
+            raise StartupUnavailable("startup_gate_unbound")
+        if state is not None:
+            if (org is None or org.orchestrator is not self
+                    or state.orgs.get(org.slug) is not org
+                    or org._startup_state is not state or org._startup_recovery is not gate
+                    or org.thread_queue is not thread_queue
+                    or not isinstance(org._startup_admission_refs, tuple)
+                    or len(org._startup_admission_refs) != 4
+                    or org._startup_admission_refs[0] is not self
+                    or org._startup_admission_refs[1] is not org.db
+                    or org._startup_admission_refs[2] is not org.sessions
+                    or org._startup_admission_refs[3] is not thread_queue
+                    or self._db is not org.db or self._slug != org.slug
+                    or self._queue is not state.queue or self._sessions is not org.sessions
+                    or self._host_supervisor is not state.host_supervisor
+                    or (self._thread_queue is not None and self._thread_queue is not thread_queue)):
+                raise StartupUnavailable("startup_attachment_changed")
+            if gate is None or (gate._loop is not None and main_loop is not gate._loop):
+                raise StartupUnavailable("startup_attachment_changed")
+            if gate.snapshot()["recovery_ready"]:
+                # Fresh dynamic attachment is ready-only but its thread refs
+                # are being assigned here for the first time.
+                state._require_startup_ready()
+            else:
+                # Only the already registered P4 binding coroutine may attach
+                # cold references. A direct public binder is not recovery.
+                import asyncio
+                binding = gate._binding
+                if (binding is None or binding.task is None
+                        or asyncio.current_task() is not binding.task
+                        or binding.task.get_coro() is not binding.coroutine):
+                    raise StartupUnavailable("startup_thread_binding_unavailable")
+                gate._require_phase_attachments("returned", binding=binding)
+            _bind_task_admission(thread_queue, self._startup_state, org)
         self._thread_queue = thread_queue
         self._main_loop = main_loop
 

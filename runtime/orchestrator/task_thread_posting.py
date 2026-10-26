@@ -1,10 +1,42 @@
 """Task thread posting helpers; facade exports preserve callable identity."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.orchestrator.orchestrator import Orchestrator
+
+
+def _require_thread_producer(orch: "Orchestrator") -> Any:
+    """Ordinary ready or the ORIGINAL selected native bookkeeping owner.
+
+    P2 has no bound thread queue yet: retain its required SYSTEM/cap/mint tail
+    under the existing sweep owner, for original recovered-token publication.
+    P4/P6 use their retained publication scope. Neither admits a direct launch.
+    """
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    if publication is not None:
+        return publication
+    from runtime.orchestrator.run_step import _startup_sweep_owner
+    owner = _startup_sweep_owner(orch)
+    if owner is not None and orch._startup_state is not None:
+        import threading
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        gate = orch._startup_recovery
+        if gate is None:
+            raise StartupUnavailable("startup_gate_unbound")
+        gate.require_attachment(orch)
+        if (gate._sweep_owner is not owner or owner.orch is not orch
+                or gate._phase != "sweep" or gate._native_thread != owner._body_thread
+                or orch._main_loop is not None or orch._thread_queue is not None
+                or (threading.get_ident() != owner._body_thread
+                    and threading.current_thread() not in owner._tails)):
+            raise StartupUnavailable("startup_thread_sweep_owner_changed")
+        owner.check()
+    else:
+        orch._require_startup_ready()
+    return None
 
 
 def _append_followup_system_and_reinvoke(
@@ -18,8 +50,7 @@ def _append_followup_system_and_reinvoke(
     reinvoke: bool = True,
 ) -> None:
     """Keep normal posting semantics; a native startup scope owns failures."""
-    from runtime.daemon.startup_publication import current_publication
-    publication = current_publication(orch)
+    publication = _require_thread_producer(orch)
     from contextlib import nullcontext
     try:
         with publication.attempt(orch, "thread_attempted") if publication is not None else nullcontext():
@@ -66,8 +97,7 @@ def _append_followup_system_and_reinvoke_owned(
     """
     db = orch._db
     audit = orch._audit
-    from runtime.daemon.startup_publication import current_publication
-    publication = current_publication(orch)
+    publication = _require_thread_producer(orch)
 
     # Append system message (separate from the atomic cap+mint below — the
     # system message ordering relative to concurrent system messages is not
@@ -142,6 +172,9 @@ def _append_followup_system_and_reinvoke_owned(
                 main_loop,
             )
         except Exception as exc:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable):
+                raise
             if publication is not None:
                 publication.fail(exc)
                 try:

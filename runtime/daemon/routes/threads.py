@@ -56,6 +56,14 @@ FOUNDER_LITERAL = "@founder"
 MAX_THREAD_ATTACHMENTS = 5
 
 
+def _require_thread_ready(org: Any, slug: str | None = None) -> None:
+    """Direct producer admission; request metadata confers no recovery path."""
+    from runtime.daemon.startup_recovery import _require_ordinary_ready, StartupUnavailable
+    _require_ordinary_ready(org)
+    if org._startup_state is not None and slug is not None and slug != org.slug:
+        raise StartupUnavailable("startup_attachment_changed")
+
+
 def _naming_http_error(exc: NamingError) -> HTTPException:
     code = exc.code
     status = 409 if code in ('former_name', 'naming_classification_changed') else 503
@@ -183,6 +191,7 @@ def _create_agent_thread_locked(
     thread) reuse the exact participant/turn/audit semantics without going
     through the authenticated compose route.
     """
+    _require_thread_ready(org)
     # This is also the actual non-HTTP dream compose boundary. All address
     # classification occurs before even thread-ID allocation, without awaits.
     recipients = _resolve_message_recipients(org, recipients, body_text)
@@ -482,11 +491,13 @@ async def _compose_thread_multipart(
     slug: str, org: OrgDep, request: Request, *, uploaded_by: str,
 ) -> dict:
     """Handle compose as multipart/form-data for thread-scoped attachment uploads."""
+    _require_thread_ready(org, slug)
     import json as _json
     from fastapi import UploadFile
 
     # Parse multipart form: expect a 'body' field with JSON, and optional 'files' fields.
     form = await request.form()
+    _require_thread_ready(org, slug)
     body_raw = form.get("body")
     if body_raw is None:
         raise HTTPException(
@@ -496,6 +507,7 @@ async def _compose_thread_multipart(
         body_data = _json.loads(
             body_raw if isinstance(body_raw, str) else await body_raw.read()
         )
+        _require_thread_ready(org, slug)
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=422, detail={"code": "invalid_body_json"},
@@ -562,6 +574,7 @@ async def _compose_thread_multipart(
         )
 
     uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+    _require_thread_ready(org, slug)
 
     for file_field, content in zip(file_fields, uploaded_contents):
         if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
@@ -573,6 +586,7 @@ async def _compose_thread_multipart(
         _normalize_message_body(body.body_markdown, shared_attachments)
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown, founder_recipients=body.recipients)
         addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
@@ -681,6 +695,7 @@ async def _compose_thread_multipart(
 async def compose_thread(
     slug: str, org: OrgDep, request: Request
 ) -> dict:
+    _require_thread_ready(org, slug)
     state: DaemonState = request.app.state.daemon
 
     # Support both JSON and multipart/form-data for thread-scoped attachments (TASK-1616).
@@ -691,6 +706,7 @@ async def compose_thread(
         )
     # JSON path (backward compatible).
     body_data = await request.json()
+    _require_thread_ready(org, slug)
     body = ComposeBody(**body_data)
 
     subject = body.subject.strip()
@@ -751,6 +767,7 @@ async def compose_thread(
     addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown, founder_recipients=body.recipients)
         addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
@@ -818,10 +835,12 @@ async def _compose_agent_thread_multipart(
     slug: str, org: OrgDep, request: Request,
 ) -> dict:
     """Handle compose-as-agent as multipart/form-data for thread-scoped attachment uploads."""
+    _require_thread_ready(org, slug)
     import json as _json
     from fastapi import UploadFile
 
     form = await request.form()
+    _require_thread_ready(org, slug)
     body_raw = form.get("body")
     if body_raw is None:
         raise HTTPException(
@@ -831,6 +850,7 @@ async def _compose_agent_thread_multipart(
         body_data = _json.loads(
             body_raw if isinstance(body_raw, str) else await body_raw.read()
         )
+        _require_thread_ready(org, slug)
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=422, detail={"code": "invalid_body_json"},
@@ -936,6 +956,7 @@ async def _compose_agent_thread_multipart(
     ]
 
     uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+    _require_thread_ready(org, slug)
 
     for file_field, content in zip(file_fields, uploaded_contents):
         if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
@@ -947,6 +968,7 @@ async def _compose_agent_thread_multipart(
         _normalize_message_body(body.body_markdown, shared_attachments)
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown)
         addressed_agents = [name for name in recipients if name != FOUNDER_LITERAL and name != body.composer]
@@ -1060,11 +1082,13 @@ async def _compose_agent_thread_multipart(
 async def compose_thread_as_agent(
     slug: str, org: OrgDep, request: Request,
 ) -> dict:
+    _require_thread_ready(org, slug)
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
         return await _compose_agent_thread_multipart(slug, org, request)
     # JSON path.
     body_data = await request.json()
+    _require_thread_ready(org, slug)
     body = ComposeAsAgentBody(**body_data)
     subject = body.subject.strip()
     if not subject:
@@ -1151,6 +1175,7 @@ async def compose_thread_as_agent(
     composed_from_task_id = body.task_id
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown)
         thread_id, seq, tokens_to_enqueue, wake_recipients = _create_agent_thread_locked(
@@ -1822,6 +1847,7 @@ class DispatchBody(BaseModel):
 async def dispatch_from_thread_endpoint(
     slug: str, thread_id: str, body: DispatchBody, org: OrgDep, request: Request,
 ) -> dict:
+    _require_thread_ready(org, slug)
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
     try:
@@ -1863,6 +1889,7 @@ async def dispatch_from_thread_endpoint(
 
         dispatcher = body.dispatcher
         async with org.teams_lock:
+            _require_thread_ready(org, slug)
             is_manager = org.teams.is_team_manager(dispatcher)
             dispatcher_team = (
                 org.teams.team_for_manager(dispatcher) if is_manager
@@ -1942,12 +1969,14 @@ async def dispatch_from_thread_endpoint(
                     detail={"code": "task_followup_dispatch_resolves_forbidden"},
                 )
             async with org.teams_lock:
+                _require_thread_ready(org, slug)
                 if not org.teams.is_team_manager(dispatcher):
                     raise HTTPException(
                         status_code=403,
                         detail={"code": "task_followup_dispatch_manager_required"},
                     )
                 async with org.db_lock:
+                    _require_thread_ready(org, slug)
                     task_id = org.db.next_task_id()
                     result = org.db.dispatch_task_followup_replacement(
                         token=body.invocation_token,
@@ -1966,6 +1995,7 @@ async def dispatch_from_thread_endpoint(
             family_closed = []
         else:
             async with org.db_lock:
+                _require_thread_ready(org, slug)
                 from runtime.orchestrator.task_pause import origin_guard
                 with origin_guard(org, resolves):
                     with org.db._lock:
@@ -2289,6 +2319,7 @@ async def _send_thread_message_inprocess(
     Returns the same response shape as POST /threads/{id}/send.
     Raises _SendThreadError on validation failures (route translates to HTTP).
     """
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise _SendThreadError(404, "not_found")
@@ -2341,6 +2372,7 @@ async def _send_thread_message_inprocess(
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         _validate_message_addresses(org, body_text, founder_recipients=[
             p.agent_name for p in org.db.list_thread_participants(thread_id)
         ])
@@ -2393,8 +2425,10 @@ async def _post_agent_message(
     the task/session binding is valid, the speaker is a participant, and
     `addressed` (participants to mint REPLY for) excludes the speaker.
     """
+    _require_thread_ready(org, slug)
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         _validate_message_addresses(org, body_text)
         seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
@@ -2431,6 +2465,7 @@ async def _post_agent_message(
 async def send_thread_endpoint(
     slug: str, thread_id: str, body: SendBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     try:
         return await _send_thread_message_inprocess(
             org, slug, thread_id,
@@ -2472,6 +2507,7 @@ async def post_thread_as_agent(
 ) -> dict:
     # Task binding — mirrors compose_thread_as_agent: task_id+session_id
     # required, task exists, composer owns it, active session matches.
+    _require_thread_ready(org, slug)
     if not body.task_id or not body.session_id:
         raise HTTPException(status_code=422, detail={"code": "binding_required"})
     try:
@@ -2533,6 +2569,7 @@ class InviteBody(BaseModel):
 async def invite_thread_endpoint(
     slug: str, thread_id: str, body: InviteBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2550,6 +2587,7 @@ async def invite_thread_endpoint(
     # but cap enforcement was removed per THR-046 msg86.
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         inserted = org.db.add_thread_participant(thread_id, body.agent_name, added_by="founder")
         if not inserted:
             raise HTTPException(status_code=409, detail={"code": "already_participant"})
@@ -2588,6 +2626,7 @@ class RemoveParticipantBody(BaseModel):
 async def remove_thread_participant_endpoint(
     slug: str, thread_id: str, body: RemoveParticipantBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2601,6 +2640,7 @@ async def remove_thread_participant_endpoint(
         raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         removed = org.db.remove_thread_participant(thread_id, body.agent_name)
         if not removed:
             raise HTTPException(status_code=409, detail={"code": "not_participant"})
@@ -2653,6 +2693,7 @@ class ExtendBody(BaseModel):
 async def extend_thread_endpoint(
     slug: str, thread_id: str, body: ExtendBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2665,6 +2706,7 @@ async def extend_thread_endpoint(
                     "current": t.turn_cap, "requested": body.new_cap},
         )
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         prior_cap = t.turn_cap
         org.db.set_thread_turn_cap(thread_id, new_cap=body.new_cap)
         sys_seq = org.db.append_thread_message(
@@ -2765,6 +2807,7 @@ async def archive_thread_endpoint(
 async def resume_thread_endpoint(
     slug: str, thread_id: str, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2780,6 +2823,7 @@ async def resume_thread_endpoint(
         t.archived_at.isoformat() if t.archived_at else None
     )
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
         # Re-activate per-pair reply delivery state (idempotent no-op for pairs
         # already cut over; seeds any pair still missing a row).
@@ -3072,6 +3116,7 @@ async def upload_thread_attachment(
     file: UploadFile = File(...),
     agent: str = Query(...),
 ) -> dict:
+    _require_thread_ready(org, slug)
     from fastapi import UploadFile
     t = org.db.get_thread(thread_id)
     if t is None:
@@ -3084,6 +3129,7 @@ async def upload_thread_attachment(
             raise HTTPException(status_code=403, detail={"code": "not_participant"})
 
     content = await file.read(MAX_THREAD_ATTACHMENT_BYTES + 1)
+    _require_thread_ready(org, slug)
     if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
         raise HTTPException(
             status_code=413,

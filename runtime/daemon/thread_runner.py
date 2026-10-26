@@ -59,6 +59,7 @@ from runtime.orchestrator.workspace_adapters import (
 
 from runtime.identities.registry import read_name_metadata
 from runtime.identities.presentation import identity_display, prompt_name_context
+from runtime.daemon.startup_recovery import _require_ordinary_ready, StartupUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,13 @@ class _InvokeResult:
 # (drain or cancellation) — the row is left for daemon-restart recovery rather
 # than settled, matching the pre-wiring shutdown semantics.
 _INTERRUPTED_TERMINALS = (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED)
+
+
+def _require_runner_ready(org_state: Any, host_supervisor: Any) -> None:
+    _require_ordinary_ready(org_state)
+    state = org_state._startup_state
+    if state is not None and host_supervisor is not None and host_supervisor is not state.host_supervisor:
+        raise StartupUnavailable("startup_attachment_changed")
 
 
 async def _publish_invocation_event(
@@ -985,6 +993,7 @@ async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
+    _require_runner_ready(org_state, host_supervisor)
     with org_state._runner_lifetime() as admitted:
         if not admitted:
             return
@@ -1007,6 +1016,12 @@ async def run_invocation(
                     settings=settings, host_supervisor=host_supervisor, move_owner=owner)
         except DeferredTeamMove:
             deferred = True
+            raise
+        except StartupUnavailable:
+            # A refused fresh attempt is not a terminal invocation failure.
+            # Existing open/uncertain effects still retain their native owner.
+            deferred = True
+            failed = owner.attempt_open
             raise
         except asyncio.CancelledError:
             # Shutdown can cancel the runner after its provider attempt already
@@ -1055,6 +1070,7 @@ async def _run_invocation_owned(
     """
     from runtime.orchestrator.team_move import DeferredTeamMove
     from runtime.orchestrator.thread_move import bind_thread_preparation
+    _require_runner_ready(org_state, host_supervisor)
     inv = org_state.db.get_pending_invocation(invocation_token)
     if inv is None:
         logger.info("run_invocation: token %s already non-pending", invocation_token[:8])
@@ -1210,6 +1226,7 @@ async def _run_invocation_owned(
     session_id = move_owner.session_id
     move_owner.executor, move_owner.model = executor_name, model_name
     move_owner.reasoning_effort = reasoning_effort
+    _require_runner_ready(org_state, host_supervisor)
     try:
         with move_owner.preparation_effects():
             skills_root = settings.project_root / "runtime" / "skills"
@@ -1234,7 +1251,7 @@ async def _run_invocation_owned(
                 agent_name=inv.agent_name,
                 task_id=inv.thread_id,
             )
-    except DeferredTeamMove:
+    except (DeferredTeamMove, StartupUnavailable):
         raise
     except (SystemContractMaterializationError, Exception) as e:
         decline_reason = str(e)
@@ -1252,9 +1269,12 @@ async def _run_invocation_owned(
     # Await the joined offload BEFORE executor launch, inside the SAME native
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
+    _require_runner_ready(org_state, host_supervisor)
     repo_refresh_results = await refresh_workspace_repos_async(workspace,
         preparation=move_owner, host_supervisor=host_supervisor,
         materialization=(settings, expected_specs))
+
+    _require_runner_ready(org_state, host_supervisor)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
@@ -1273,6 +1293,7 @@ async def _run_invocation_owned(
     resume_capable = executor_name in _RESUME_CAPABLE_EXECUTORS
     invocation_guard = _invocation_lock(org_state, inv.thread_id, inv.agent_name)
     async with invocation_guard:
+        _require_runner_ready(org_state, host_supervisor)
         stored_sid, last_seq = (
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
             if resume_capable else (None, 0)
@@ -1428,9 +1449,17 @@ async def _run_invocation_owned(
                     return _invoke_bound(run_prompt, resume)
                 finally:
                     if host_supervisor is None:
-                        move_owner.direct_terminal()
+                        import sys
+                        primary = sys.exception()
+                        try:
+                            move_owner.direct_terminal()
+                        except BaseException as settlement:
+                            if primary is None:
+                                raise
+                            primary.add_note(f"Thread direct terminal settlement failed: {settlement}")
 
         def _invoke_bound(run_prompt: str, resume: str | None) -> _InvokeResult:
+            _require_runner_ready(org_state, host_supervisor)
             launched = False
 
             def _on_started(_pid: int) -> None:
@@ -1452,6 +1481,7 @@ async def _run_invocation_owned(
                 ))
 
             def _pre_launch_validator() -> None:
+                _require_runner_ready(org_state, host_supervisor)
                 with move_owner.preparation_effects():
                     validate_workspace_skills_integrity(
                         workspace, expected_specs,
@@ -1460,6 +1490,7 @@ async def _run_invocation_owned(
                         agent_name=inv.agent_name,
                         task_id=inv.thread_id,
                     )
+                _require_runner_ready(org_state, host_supervisor)
             if host_supervisor is None:
                 # ── Self-launch with C2 final admission and unknown cleanup ──
                 run_kwargs = dict(
@@ -1475,7 +1506,7 @@ async def _run_invocation_owned(
                     run_kwargs["resume_session_id"] = resume
                 try:
                     return _InvokeResult(result=executor.run(**run_kwargs))
-                except DeferredTeamMove:
+                except (DeferredTeamMove, StartupUnavailable):
                     raise
                 except Exception as exc:
                     if launched:
@@ -1506,6 +1537,8 @@ async def _run_invocation_owned(
                     resume_session_id=resume, org_slug=org_state.slug,
                     timeout_seconds=timeout,
                 )
+            except StartupUnavailable:
+                raise
             except Exception as exc:
                 return _InvokeResult(
                     result=None, terminal_reason=TerminalReason.FAILURE,
@@ -1520,6 +1553,8 @@ async def _run_invocation_owned(
                 # internal 429 retry disabled so the supervisor owns the
                 # finish/release/sleep/reacquire lifecycle.
                 contained = running.process is not None
+                if not contained:
+                    _require_runner_ready(org_state, host_supervisor)
                 run_kwargs = dict(
                     workspace=Path(workspace), prompt=run_prompt,
                     session_id=session_id, timeout_seconds=timeout,
@@ -1535,7 +1570,7 @@ async def _run_invocation_owned(
                     run_kwargs["resume_session_id"] = resume
                 try:
                     res = executor.run(**run_kwargs)
-                except DeferredTeamMove:
+                except (DeferredTeamMove, StartupUnavailable):
                     raise
                 except Exception as exc:
                     # A real contained process is launched before launch_body;
@@ -1667,6 +1702,7 @@ async def _run_invocation_owned(
 
             if (resume_capable and resume_sid and not result.success
                     and _classify_session_evicted(executor_name, result, resume_sid)):
+                _require_runner_ready(org_state, host_supervisor)
                 # THR-200: the eviction audit AND the durable session-id
                 # invalidation commit in ONE transaction (see
                 # AuditLogger.log_agent_session_evicted_fallback /
@@ -1719,7 +1755,7 @@ async def _run_invocation_owned(
                     await _settle_no_launch(phase)
                     return
                 result = phase.result
-        except DeferredTeamMove:
+        except (DeferredTeamMove, StartupUnavailable):
             raise
         except Exception as exc:
             _settle_or_fail_reply(
@@ -1827,6 +1863,7 @@ async def _run_invocation_owned(
         # Do NOT fire after the session-not-found eviction fallback — that
         # is already a second chance, so a third would be excessive.
         if result.success and not fallback_executed:
+            _require_runner_ready(org_state, host_supervisor)
             nudge_prompt = (
                 "## URGENT — you ended without posting a reply or declining\n\n"
                 "You completed your analysis but exited the conversation "
@@ -1883,7 +1920,7 @@ async def _run_invocation_owned(
                 retry_phase = await loop.run_in_executor(
                     None, lambda: _invoke(retry_prompt, retry_resume_sid),
                 )
-            except DeferredTeamMove:
+            except (DeferredTeamMove, StartupUnavailable):
                 raise
             except Exception as exc:
                 logger.warning(

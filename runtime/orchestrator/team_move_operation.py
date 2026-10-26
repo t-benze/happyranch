@@ -802,6 +802,7 @@ class TeamMoveOperation:
 
     async def redeliver(self):
         """After durable release, existing deduplicating owners retain semantics."""
+        self.org.thread_queue._require_ready()
         self._require_redelivery()
         self.org.orchestrator.redeliver_team_move_tasks()
         await self.move.threads.redeliver_after_release(self.org.thread_queue)

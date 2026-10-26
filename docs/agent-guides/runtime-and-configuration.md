@@ -128,6 +128,34 @@ stop, failed epoch or changed ownership still refuses and reservations retire th
 the existing finally. This task-admission source stage is complete; whole-feature
 integration remains incomplete and must not activate or merge independently.
 
+Ordinary thread production now checks that SAME gate before new message,
+attachment, dispatch-task, SYSTEM/cap/token, queue insertion/dequeue and runner
+reservation/preparation/provider effects. Original per-attempt and final launch
+validators recheck; StartupUnavailable propagates without a synthetic FAILED or
+DECLINED invocation. Bound org/orchestrator/tracker/host and the original per-org
+thread queue must still agree; ready-only dynamic attachment inherits the same
+gate before exposure. Explicit offline constructors retain their existing contract.
+Queue-owned queued/in-flight dedup and the durable launch claim remain separate.
+The consumer checks before a nonblocking pop; it never waits across the gate and
+then pops a closed epoch. A later stop retains existing settlement/native ownership.
+
+Cold P2 mandatory thread bookkeeping keeps its actual retained sweep/context and
+body-or-registered-tail owner; no queue/session/provider bypass follows. Only the
+ORIGINAL P4/P6 thread handoff, registered before submission, may insert while
+recovery is closed. The actual real-loop put checks retained handle membership,
+org/orchestrator/queue/token/kind, epoch/phase/current native scope, actual Task,
+coroutine and Future. A private object by type, metadata or recovery purpose is
+insufficient. Native observation still drains outside DB/marker/move/queue/gate
+locks, with at most32 retained handoffs and genuine inserted/SAME pending outcomes.
+Breaker/exchange direct producers recheck before store-owned effects and after
+awaits. Existing callbacks, cleanup, cancellation and native retirement keep their
+original owners; closed fresh admission supplies no quiescence proof. Private
+thread-release service still requires actual serving AND recovery readiness,
+current native ownership and independent reviewer controls, with no new caller.
+This named thread source stage does not complete the feature or authorize a
+partial merge/activation. Runtime cases and sensitivity PROOF remain NOT RUN;
+maker0/3 QA0/3 and the root's final independent review/QA obligations are unchanged.
+
 The original startup lifecycle now owns one P2-P7 native operation. P0 validation
 remains pre-serving; lifespan binds the actual request loop and yields promptly.
 Each original org's settled sweep precedes its original v2 publication; actual

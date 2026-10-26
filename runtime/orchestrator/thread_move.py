@@ -634,6 +634,7 @@ class ThreadMoveAdmission:
 
     async def redeliver_after_release(self, queue: Any) -> None:
         from runtime.daemon.thread_queue import ThreadJob
+        queue._require_ready()
         for token in self.select_redelivery_tokens():
             await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))
 

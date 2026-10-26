@@ -119,11 +119,12 @@ class DaemonState:
         from runtime.daemon.startup_recovery import _bind_task_admission, StartupUnavailable
         originals = org._startup_admission_refs
         if originals is None:
-            org._startup_admission_refs = (org.orchestrator, org.db, org.sessions)
-        elif (org.orchestrator is not originals[0] or org.db is not originals[1]
-              or org.sessions is not originals[2]):
+            org._startup_admission_refs = (org.orchestrator, org.db, org.sessions, org.thread_queue)
+        elif (not isinstance(originals, tuple) or len(originals) != 4
+              or org.orchestrator is not originals[0] or org.db is not originals[1]
+              or org.sessions is not originals[2] or org.thread_queue is not originals[3]):
             raise StartupUnavailable("startup_attachment_changed")
-        for owner in (org, org.orchestrator, org.sessions):
+        for owner in (org, org.orchestrator, org.sessions, org.thread_queue):
             _bind_task_admission(owner, self, org)
         org._startup_reads = self._startup_reads
 

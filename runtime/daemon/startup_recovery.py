@@ -505,16 +505,23 @@ class StartupRecovery:
             attached = owner is state.queue or owner is state.host_supervisor
         else:
             refs = org._startup_admission_refs
-            attached = (refs is not None and org.orchestrator is refs[0]
+            attached = (isinstance(refs, tuple) and len(refs) == 4 and org.orchestrator is refs[0]
                         and org.db is refs[1] and org.sessions is refs[2]
+                        and org.thread_queue is refs[3]
+                        and org.thread_queue._startup_state is state
+                        and org.thread_queue._startup_org is org
+                        and org.thread_queue._startup_recovery is self
                         and state.orgs.get(org.slug) is org and org._startup_recovery is self
                         and org._startup_state is state
-                        and any(owner is original for original in (org, org.orchestrator, org.sessions))
+                        and any(owner is original for original in (org, org.orchestrator, org.sessions, org.thread_queue))
                         and org.orchestrator._db is org.db
                         and org.orchestrator._slug == org.slug
                         and org.orchestrator._queue is state.queue
                         and org.orchestrator._sessions is org.sessions
-                        and org.orchestrator._host_supervisor is state.host_supervisor)
+                        and org.orchestrator._host_supervisor is state.host_supervisor
+                        and (self._status != "ready" or (
+                            org.orchestrator._thread_queue is org.thread_queue
+                            and org.orchestrator._main_loop is self._loop)))
         if not attached or state.queue._startup_recovery is not self:
             raise StartupUnavailable("startup_attachment_changed")
 

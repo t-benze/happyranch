@@ -3,26 +3,40 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from runtime.config import THREAD_REPLY_BREAKER_COOLDOWN_SECONDS
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.daemon.thread_runner import _breaker_executor_key
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.prompt_loader import load_agent
+from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 
 logger = logging.getLogger(__name__)
 
 
+def _mint_due_probes(org: Any, keys: dict[tuple[str, str], str]) -> Any:
+    # Admission is checked in the actual native writer, after to_thread queued.
+    require_ready(org)
+    return org.db.mint_due_thread_reply_breaker_probes(
+        no_episode_executor_keys=keys,
+        cooldown_seconds=THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
+    )
+
+
 async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0) -> None:
     while True:
+        require_ready(state)
         for org in list(state.orgs.values()):
             try:
+                require_ready(org)
                 move = getattr(org.db, "_team_move_coordinator", None)
                 if move is not None:
                     for token in await asyncio.to_thread(move.threads.runnable_tokens):
                         await org.thread_queue.put_once(ThreadJob(org_slug=org.slug, invocation_token=token))
                 keys = {}
                 deliveries = await asyncio.to_thread(org.db.list_reply_delivery_states)
+                require_ready(org)
                 for delivery in deliveries:
                     if move is not None:
                         with org.db._lock:
@@ -37,14 +51,14 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
                         )
                     )
                 entries = await asyncio.to_thread(
-                    org.db.mint_due_thread_reply_breaker_probes,
-                    no_episode_executor_keys=keys,
-                    cooldown_seconds=THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
+                    _mint_due_probes, org, keys,
                 )
                 for entry in entries:
                     await org.thread_queue.put_once(ThreadJob(
                         org_slug=org.slug, invocation_token=entry.invocation_token,
                     ))
+            except StartupUnavailable:
+                raise
             except Exception:
                 logger.exception("thread breaker probe sweep failed for org %s", org.slug)
         await asyncio.sleep(interval_seconds)
