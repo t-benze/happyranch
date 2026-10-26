@@ -622,35 +622,38 @@ class WorkflowSubmissionStore:
 
     async def consume_completed_handoff(self, handoff_id: str) -> list[str]:
         capture = self.org.workflow_authority.capture_admission()
-        notifications = []
         async with self._lock:
             async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
-                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
-                    row = _record(conn, 'workflow_author_handoffs', handoff_id)
-                    proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
-                    intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
-                    try:
-                        context, binding, grant = self._authority(conn, intent, capture,
-                            source_actions(intent) | {'collect-review'})
-                    except WorkflowActivationError as exc:
-                        # A normal hold belongs to THIS reservation. Full H
-                        # validation above has already rejected corruption.
-                        if exc.code in {'workflow_author_handoff_action_not_authorized',
-                                        'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
-                            return []
-                        raise
-                    if self._projection(conn, row, capture, replayed=True)['current']['reason'] in (
-                            'source_failed', 'source_cancelled', 'source_uncertain', 'source_not_current',
-                            'authority_not_current', 'new_runs_disabled'):
-                        return []
-                    result = _source_result(conn, intent)
-                    if result is None:
-                        return []
-                    if validate_handoff_graph(conn, row, proof) is not None:
-                        return []
-                    notifications = self._graph(conn, row, proof, context, binding, grant, intent, result)
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                return self._consume_completed_handoff_core(handoff_id, capture)
+
+    def _consume_completed_handoff_core(self, handoff_id: str, capture: Any) -> list[str]:
+        notifications = []
+        with self.org.workflow_authority.admission_writer(capture) as conn:
+            require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+            row = _record(conn, 'workflow_author_handoffs', handoff_id)
+            proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
+            intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
+            try:
+                context, binding, grant = self._authority(conn, intent, capture,
+                    source_actions(intent) | {'collect-review'})
+            except WorkflowActivationError as exc:
+                # A normal hold belongs to THIS reservation. Full H
+                # validation above has already rejected corruption.
+                if exc.code in {'workflow_author_handoff_action_not_authorized',
+                                'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
+                    return []
+                raise
+            if self._projection(conn, row, capture, replayed=True)['current']['reason'] in (
+                    'source_failed', 'source_cancelled', 'source_uncertain', 'source_not_current',
+                    'authority_not_current', 'new_runs_disabled'):
+                return []
+            result = _source_result(conn, intent)
+            if result is None:
+                return []
+            if validate_handoff_graph(conn, row, proof) is not None:
+                return []
+            notifications = self._graph(conn, row, proof, context, binding, grant, intent, result)
+            validate_workflow_schema(conn, expected_org_slug=self.org.slug)
         return notifications
 
     def _graph(self, conn: sqlite3.Connection, row: dict, proof: dict, context: dict, binding: dict,
@@ -1044,13 +1047,19 @@ class WorkflowSubmissionStore:
                         self._select_request(conn, **selection)
                         return result
 
-    async def discover_completed_handoffs(self, queue: Any) -> None:
+    def _completed_handoff_ids(self) -> list[str] | None:
         with self.db._lock:
             if not self.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_author_handoffs'").fetchone():
                 return
             handoffs = [r[0] for r in self.db._conn.execute('SELECT h.id FROM workflow_author_handoffs h '
                 'JOIN workflow_draft_dispatch_intents d ON d.id=h.intent_id WHERE d.state=\'completed\' AND NOT EXISTS '
                 '(SELECT 1 FROM workflow_submission_operations o WHERE o.submission_id=h.submission_id)')]
+        return handoffs
+
+    async def discover_completed_handoffs(self, queue: Any) -> None:
+        handoffs = self._completed_handoff_ids()
+        if handoffs is None:
+            return
         from runtime.workflows.authority import WorkflowAuthorityError
         for handoff_id in handoffs:
             try:
@@ -1066,3 +1075,27 @@ class WorkflowSubmissionStore:
         await self.org.workflow_revisions.discover(queue)
         await self.org.workflow_review_receipts.discover_completed()
         await self.org.workflow_review_receipts.discover_collections()
+
+    def discover_completed_handoffs_native(self, queue: Any, recovery: Any) -> None:
+        recovery.require_native_owner()
+        if getattr(self.org, "_startup_recovery", None) is not recovery:
+            raise RuntimeError("startup_workflow_attachment_mismatch")
+        handoffs = self._completed_handoff_ids()
+        if handoffs is None:
+            return
+        from runtime.workflows.authority import WorkflowAuthorityError
+        for handoff_id in handoffs:
+            recovery.require_native_owner()
+            try:
+                tasks = self._consume_completed_handoff_core(handoff_id, self.org.workflow_authority.capture_admission())
+            except WorkflowAuthorityError as exc:
+                if exc.code != 'workflow_activation_authority_stale':
+                    raise
+                continue
+            for task_id in tasks:
+                queue.enqueue_if_absent(self.org.slug, task_id)
+        # Reuse lifespan/reaper discovery for result-before-consumption recovery.
+        # No new scheduler and no replay of an uncertain host launch.
+        self.org.workflow_revisions.discover_native(queue, recovery)
+        self.org.workflow_review_receipts.discover_completed_native(recovery)
+        self.org.workflow_review_receipts.discover_collections_native(recovery)

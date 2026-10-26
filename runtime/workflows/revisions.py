@@ -759,39 +759,42 @@ class WorkflowRevisionStore:
         store = self.org.workflow_submissions
         async with store._lock:
             async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
-                    row = _record(conn, 'workflow_document_revision_operations', operation_id)
-                    proof = validate_revision_record(conn, row, expected_org_slug=self.org.slug)
-                    intent = _record(conn, 'workflow_draft_dispatch_intents', row['draft_intent_id'])
-                    from runtime.workflows.review_join import HOLDS
-                    try:
-                        context = self._authority(conn, intent, capture)
-                    except WorkflowActivationError as exc:
-                        if exc.code in HOLDS:
-                            return []
-                        raise
-                    if not intent['is_current'] or intent['cancellation_requested']:
-                        return []
-                    stage = _stage(conn, row, intent)
-                    result = _source_result(conn, intent)
-                    if stage is None or result is None or result['decision_json'] is not None or result['waiting_on_job_ids'] is not None:
-                        return []
-                    subject = review_row(conn, row)
-                    if conn.execute('SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (subject['submission_id'],)).fetchone():
-                        validate_handoff_graph(conn, subject, proof)
-                        return []
-                    now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                    raw = canonical_bytes(result)
-                    _insert(conn, 'workflow_submission_result_links', dict(submission_id=subject['submission_id'], task_result_id=result['id'],
-                        source_task_id=intent['task_id'], source_session_id=intent['session_id'], result_bytes=raw,
-                        result_digest=digest(raw), accepted_at=now))
-                    contribution = dict(principal=intent['assigned_principal'], source_task_id=intent['task_id'],
-                        source_session_id=intent['session_id'], source_result_id=str(result['id']), contribution_kind='author')
-                    _insert(conn, 'workflow_submission_contributors', dict(submission_id=subject['submission_id'], **contribution))
-                    _insert(conn, 'workflow_instance_contributors', dict(instance_id=row['instance_id'], **contribution))
-                    tasks = self._review_graph(conn, subject, proof, context, intent, now)
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
-                    return tasks
+                return self._fulfill_core(operation_id, capture)
+
+    def _fulfill_core(self, operation_id: str, capture: Any) -> list[str]:
+        with self.org.workflow_authority.admission_writer(capture) as conn:
+            row = _record(conn, 'workflow_document_revision_operations', operation_id)
+            proof = validate_revision_record(conn, row, expected_org_slug=self.org.slug)
+            intent = _record(conn, 'workflow_draft_dispatch_intents', row['draft_intent_id'])
+            from runtime.workflows.review_join import HOLDS
+            try:
+                context = self._authority(conn, intent, capture)
+            except WorkflowActivationError as exc:
+                if exc.code in HOLDS:
+                    return []
+                raise
+            if not intent['is_current'] or intent['cancellation_requested']:
+                return []
+            stage = _stage(conn, row, intent)
+            result = _source_result(conn, intent)
+            if stage is None or result is None or result['decision_json'] is not None or result['waiting_on_job_ids'] is not None:
+                return []
+            subject = review_row(conn, row)
+            if conn.execute('SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (subject['submission_id'],)).fetchone():
+                validate_handoff_graph(conn, subject, proof)
+                return []
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            raw = canonical_bytes(result)
+            _insert(conn, 'workflow_submission_result_links', dict(submission_id=subject['submission_id'], task_result_id=result['id'],
+                source_task_id=intent['task_id'], source_session_id=intent['session_id'], result_bytes=raw,
+                result_digest=digest(raw), accepted_at=now))
+            contribution = dict(principal=intent['assigned_principal'], source_task_id=intent['task_id'],
+                source_session_id=intent['session_id'], source_result_id=str(result['id']), contribution_kind='author')
+            _insert(conn, 'workflow_submission_contributors', dict(submission_id=subject['submission_id'], **contribution))
+            _insert(conn, 'workflow_instance_contributors', dict(instance_id=row['instance_id'], **contribution))
+            tasks = self._review_graph(conn, subject, proof, context, intent, now)
+            validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+            return tasks
 
     def _review_graph(self, conn: sqlite3.Connection, subject: dict, proof: dict, context: dict, intent: dict, now: str) -> list[str]:
         from runtime.workflows.submissions import review_brief
@@ -869,15 +872,40 @@ class WorkflowRevisionStore:
             'successful terminal with Boolean host_quiescent=true can fulfill it under current authority. '
             'Use your actual task/session report-completion as the FINAL session action.\n')
 
-    async def discover(self, queue: Any) -> None:
+    def _completed_revision_ids(self) -> list[str] | None:
         with self.db._lock:
             if not exists(self.db._conn):
                 return
             ids = [r[0] for r in self.db._conn.execute('SELECT r.id FROM workflow_document_revision_operations r JOIN workflow_draft_dispatch_intents d ON d.id=r.draft_intent_id WHERE d.state=\'completed\'')]
+        return ids
+
+    async def discover(self, queue: Any) -> None:
+        ids = self._completed_revision_ids()
+        if ids is None:
+            return
         from runtime.workflows.authority import WorkflowAuthorityError
         for operation_id in ids:
             try:
                 tasks = await self.fulfill(operation_id)
+            except WorkflowAuthorityError as exc:
+                if exc.code != 'workflow_activation_authority_stale':
+                    raise
+                continue
+            for task_id in tasks:
+                queue.enqueue_if_absent(self.org.slug, task_id)
+
+    def discover_native(self, queue: Any, recovery: Any) -> None:
+        recovery.require_native_owner()
+        if getattr(self.org, "_startup_recovery", None) is not recovery:
+            raise RuntimeError("startup_workflow_attachment_mismatch")
+        ids = self._completed_revision_ids()
+        if ids is None:
+            return
+        from runtime.workflows.authority import WorkflowAuthorityError
+        for operation_id in ids:
+            recovery.require_native_owner()
+            try:
+                tasks = self._fulfill_core(operation_id, self.org.workflow_authority.capture_admission())
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise

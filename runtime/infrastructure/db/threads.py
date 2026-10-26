@@ -476,6 +476,9 @@ class ThreadsMixin:
         )
         out: dict[int, list[ThreadAttachment]] = {seq: [] for seq in seqs}
         for row in cursor.fetchall():
+            budget = getattr(self, "_startup_read_budget", None)
+            if budget is not None:
+                budget.attachment()
             out.setdefault(row["message_seq"], []).append(
                 ThreadAttachment(
                     artifact_name=row["artifact_name"],

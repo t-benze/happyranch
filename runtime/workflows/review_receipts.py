@@ -420,61 +420,75 @@ class WorkflowReviewReceiptStore:
                     return receipt
 
     async def admit_completed(self, task_id: str) -> str | None:
-        """Consume authentic terminal proof and all-current collection in the existing writer."""
+        """Consume authentic terminal proof under the original async locks."""
         store = self.org.workflow_submissions
+        bridge = self._completed_bridge(task_id)
+        capture = self.org.workflow_authority.capture_admission()
+        async with store._lock:
+            async with self.org.db_lock:
+                return self._admit_completed_core(task_id, capture, bridge)
+
+    def _completed_bridge(self, task_id: str) -> dict:
         # Native ownership selection precedes authority/schema/proof admission.
         with self.db._lock:
-            store._read_schema_presence(self.db._conn)
+            self.org.workflow_submissions._read_schema_presence(self.db._conn)
             bridges = _records(self.db._conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
             if len(bridges) != 1:
                 raise WorkflowActivationError('workflow_review_request_not_found')
             bridge = bridges[0]
-        capture = self.org.workflow_authority.capture_admission()
-        async with store._lock:
-            async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
-                    intent = self.org.workflow_reviews._intent(conn, task_id)
-                    from runtime.workflows.review_dispatch import _same_value
-                    if not _same_value(intent['bridge'], bridge) or intent['state'] != 'completed' or intent['cancellation_requested']:
-                        return None
-                    source = _record(conn, 'workflow_draft_dispatch_intents', intent['intent_id'])
-                    try:
-                        store._authority(conn, source, capture, {'collect-review'})
-                    except WorkflowActivationError as exc:
-                        if exc.code in {'workflow_author_handoff_action_not_authorized',
-                                        'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
-                            return None
-                        raise
-                    if (capture.ready.generation != intent['authority_generation']
-                            or capture.ready.snapshot_digest != intent['authority_digest']
-                            or conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled'):
-                        return None
-                    request = _record(conn, 'workflow_review_requests', intent['request_id'])
-                    scope = intent['scope']
-                    if scope['kind'] != 'agent':
-                        raise WorkflowActivationError('workflow_review_request_not_found')
-                    completed = _completed_proof(conn, request, scope)
-                    if completed is None:
-                        return None
-                    rows = _receipt_rows(request, scope, *completed)
-                    receipt = rows['workflow_review_receipts']
-                    if request['status'] == 'pending':
-                        for table, row in rows.items():
-                            _insert(conn, table, row)
-                        conn.execute('UPDATE workflow_review_requests SET status=? WHERE id=? AND status=?',
-                                     (receipt['outcome'], request['id'], 'pending'))
-                    validate_agent_receipt(conn, dict(request, status=receipt['outcome']), scope)
-                    self.org.workflow_reviews._intent(conn, task_id)
-                    from runtime.workflows.revisions import selected_subject
-                    subject, _ = selected_subject(conn, scope)
-                    from runtime.workflows.review_join import collect_in_writer
-                    collect_in_writer(store, conn, subject['id'], capture)
-                    return receipt['id']
+        return bridge
 
-    async def discover_completed(self) -> None:
+    def _admit_completed_core(self, task_id: str, capture: Any, bridge: dict) -> str | None:
+        store = self.org.workflow_submissions
+        with self.org.workflow_authority.admission_writer(capture) as conn:
+            intent = self.org.workflow_reviews._intent(conn, task_id)
+            from runtime.workflows.review_dispatch import _same_value
+            if not _same_value(intent['bridge'], bridge) or intent['state'] != 'completed' or intent['cancellation_requested']:
+                return None
+            source = _record(conn, 'workflow_draft_dispatch_intents', intent['intent_id'])
+            try:
+                store._authority(conn, source, capture, {'collect-review'})
+            except WorkflowActivationError as exc:
+                if exc.code in {'workflow_author_handoff_action_not_authorized',
+                                'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
+                    return None
+                raise
+            if (capture.ready.generation != intent['authority_generation']
+                    or capture.ready.snapshot_digest != intent['authority_digest']
+                    or conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled'):
+                return None
+            request = _record(conn, 'workflow_review_requests', intent['request_id'])
+            scope = intent['scope']
+            if scope['kind'] != 'agent':
+                raise WorkflowActivationError('workflow_review_request_not_found')
+            completed = _completed_proof(conn, request, scope)
+            if completed is None:
+                return None
+            rows = _receipt_rows(request, scope, *completed)
+            receipt = rows['workflow_review_receipts']
+            if request['status'] == 'pending':
+                for table, row in rows.items():
+                    _insert(conn, table, row)
+                conn.execute('UPDATE workflow_review_requests SET status=? WHERE id=? AND status=?',
+                             (receipt['outcome'], request['id'], 'pending'))
+            validate_agent_receipt(conn, dict(request, status=receipt['outcome']), scope)
+            self.org.workflow_reviews._intent(conn, task_id)
+            from runtime.workflows.revisions import selected_subject
+            subject, _ = selected_subject(conn, scope)
+            from runtime.workflows.review_join import collect_in_writer
+            collect_in_writer(store, conn, subject['id'], capture)
+            return receipt['id']
+
+    def _completed_review_tasks(self) -> list[str] | None:
         with self.db._lock:
             tasks = [r[0] for r in self.db._conn.execute("SELECT b.task_id FROM workflow_request_task_bridges b "
                 "JOIN workflow_review_requests q ON q.id=b.request_id WHERE b.state='completed' AND q.status='pending'")]
+        return tasks
+
+    async def discover_completed(self) -> None:
+        tasks = self._completed_review_tasks()
+        if tasks is None:
+            return
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
         for task_id in tasks:
@@ -484,20 +498,42 @@ class WorkflowReviewReceiptStore:
                 if exc.code not in HOLDS:
                     raise  # Corruption and unexpected failures remain visible.
 
+    def discover_completed_native(self, recovery: Any) -> None:
+        recovery.require_native_owner()
+        if getattr(self.org, "_startup_recovery", None) is not recovery:
+            raise RuntimeError("startup_workflow_attachment_mismatch")
+        tasks = self._completed_review_tasks()
+        if tasks is None:
+            return
+        from runtime.workflows.review_join import HOLDS
+        from runtime.workflows.authority import WorkflowAuthorityError
+        for task_id in tasks:
+            recovery.require_native_owner()
+            try:
+                bridge = self._completed_bridge(task_id)
+                self._admit_completed_core(task_id, self.org.workflow_authority.capture_admission(), bridge)
+            except (WorkflowActivationError, WorkflowAuthorityError) as exc:
+                if exc.code not in HOLDS:
+                    raise  # Corruption and unexpected failures remain visible.
+
     async def collection_current(self, handoff_id: str) -> dict | None:
         """Internal service view; public signed/owner projection is a following unit."""
+        # Preserve ordinary import-before-capture order; the core shares the
+        # same writer for native startup without acquiring persistent locks.
         from runtime.workflows.review_join import collect_in_writer
         store = self.org.workflow_submissions
         capture = self.org.workflow_authority.capture_admission()
         async with store._lock:
             async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
-                    return collect_in_writer(store, conn, handoff_id, capture)
+                return self._collection_current_core(handoff_id, capture)
 
-    async def discover_collections(self) -> None:
-        """Existing reaper recovers a committed last receipt with no service effect."""
-        from runtime.workflows.review_join import HOLDS
-        from runtime.workflows.authority import WorkflowAuthorityError
+    def _collection_current_core(self, handoff_id: str, capture: Any) -> dict | None:
+        store = self.org.workflow_submissions
+        from runtime.workflows.review_join import collect_in_writer
+        with self.org.workflow_authority.admission_writer(capture) as conn:
+            return collect_in_writer(store, conn, handoff_id, capture)
+
+    def _collection_handoffs(self) -> list[str] | None:
         with self.db._lock:
             handoffs = [r[0] for r in self.db._conn.execute(
                 'SELECT h.id FROM workflow_author_handoffs h JOIN workflow_rounds r '
@@ -505,9 +541,36 @@ class WorkflowReviewReceiptStore:
             from runtime.workflows.revisions import exists
             if exists(self.db._conn):
                 handoffs += [r[0] for r in self.db._conn.execute("SELECT v.id FROM workflow_document_revision_operations v JOIN workflow_rounds r ON r.instance_id=v.instance_id WHERE r.current_revision=2 AND r.state='reviewing'")]
+        return handoffs
+
+    async def discover_collections(self) -> None:
+        """Existing reaper recovers a committed last receipt with no service effect."""
+        from runtime.workflows.review_join import HOLDS
+        from runtime.workflows.authority import WorkflowAuthorityError
+        handoffs = self._collection_handoffs()
+        if handoffs is None:
+            return
         for handoff_id in handoffs:
             try:
                 await self.collection_current(handoff_id)
+            except (WorkflowActivationError, WorkflowAuthorityError) as exc:
+                if exc.code not in HOLDS:
+                    raise
+
+    def discover_collections_native(self, recovery: Any) -> None:
+        recovery.require_native_owner()
+        if getattr(self.org, "_startup_recovery", None) is not recovery:
+            raise RuntimeError("startup_workflow_attachment_mismatch")
+        """Existing reaper recovers a committed last receipt with no service effect."""
+        from runtime.workflows.review_join import HOLDS
+        from runtime.workflows.authority import WorkflowAuthorityError
+        handoffs = self._collection_handoffs()
+        if handoffs is None:
+            return
+        for handoff_id in handoffs:
+            recovery.require_native_owner()
+            try:
+                self._collection_current_core(handoff_id, self.org.workflow_authority.capture_admission())
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise

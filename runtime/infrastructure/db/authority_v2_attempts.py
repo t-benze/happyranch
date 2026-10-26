@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -166,6 +167,16 @@ class _V2StartupReads:
 
     def __init__(self, db: Any) -> None:
         self.db = db
+        # Fixed scalar event counters participate in the existing retention
+        # accounting. No scan, payload serialization or telemetry root set.
+        self._statistics = dict.fromkeys((
+            "history_hits", "history_misses", "history_fetches", "history_rows",
+            "history_payload_characters", "history_payload_size_unavailable",
+            "history_decode_attempts", "history_decodes",
+            "admissions", "retention_rejections", "invalidations", "uncached_reads",
+            "epoch_changes", "moving_read_fallbacks", "discovery_calls", "discovery_ns",
+            "exact_calls", "exact_ns", "failed_reads",
+        ), 0)
         # Values are (payload, charge); payload includes the actual root key,
         # complete raw scalar row tuples and private decoded history.
         # Accepted entries move to pending during a speculative closure; they
@@ -200,12 +211,18 @@ class _V2StartupReads:
     def invalidate(self) -> None:
         """Drop accepted AND speculative references before effects or escape."""
         with self.db._lock:
+            self._statistics["invalidations"] += 1
             self._memo.clear()
             self._pending.clear()
             self._epoch = None
             self._groups = ()
             self._position = -1
             self._window_end = 0
+
+    def statistics(self) -> dict[str, int | None]:
+        """Actual performed work; characters are not claimed as UTF8 bytes."""
+        with self.db._lock:
+            return {**self._statistics, "history_payload_bytes": None}
 
     def _retention_fits(
         self, pending: OrderedDict[str, _V2StartupEntry] | None = None,
@@ -270,12 +287,14 @@ class _V2StartupReads:
         while True:
             if self._retention_fits(trial):
                 self._pending = trial
+                self._statistics["admissions"] += 1
                 return
             victim = next(
                 (key for key in trial if key != root and not self._protected(key)),
                 None,
             )
             if victim is None:
+                self._statistics["retention_rejections"] += 1
                 return
             del trial[victim]
 
@@ -436,10 +455,12 @@ class _V2StartupReads:
             try:
                 opening = self._bookend()
                 if opening is None:
+                    self._statistics["uncached_reads"] += 1
                     self.invalidate()
                     with self._view():
                         return operation()
                 if opening != self._epoch:
+                    self._statistics["epoch_changes"] += 1
                     self.invalidate()
                     self._epoch = opening
                 # Keep the already-accounted equal epoch object on hits.
@@ -455,6 +476,7 @@ class _V2StartupReads:
                     return result
                 # Never release a speculative target, anchor, absence or hit.
                 del result
+                self._statistics["moving_read_fallbacks"] += 1
                 self.invalidate()
                 self.check()
                 # Exactly ONE uncached coherent fallback, after affirmative
@@ -462,12 +484,14 @@ class _V2StartupReads:
                 with self._view():
                     return operation()
             except BaseException:
+                self._statistics["failed_reads"] += 1
                 self.invalidate()
                 raise
 
     def _history(self, root: str) -> list[dict]:
         # Only called by _project inside _read's locked coherent closure.
         if root in self._pending:
+            self._statistics["history_hits"] += 1
             history = self._pending[root][0][2]
             try:
                 self._pending.move_to_end(root)
@@ -475,16 +499,25 @@ class _V2StartupReads:
             except Exception:
                 self.invalidate()
             return history
+        self._statistics["history_misses"] += 1
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (root,),
         ).fetchall()
+        self._statistics["history_fetches"] += 1
+        self._statistics["history_rows"] += len(rows)
         # Match get_audit_logs exactly, including truthy-payload decoding,
         # JSON scalar types, Unicode, empty payloads and malformed siblings.
         history = []
         for row in rows:
             item = dict(row)
             if item.get("payload"):
+                if isinstance(item["payload"], str):
+                    self._statistics["history_payload_characters"] += len(item["payload"])
+                else:
+                    self._statistics["history_payload_size_unavailable"] += 1
+                self._statistics["history_decode_attempts"] += 1
                 item["payload"] = json.loads(item["payload"])
+                self._statistics["history_decodes"] += 1
             history.append(item)
         if self._epoch is not None and rows and len(rows) <= _V2_STARTUP_ROW_CAP:
             try:
@@ -537,7 +570,12 @@ class _V2StartupReads:
                 raise
             self._clear_groups()
             return result
-        return self._read(project)
+        started = time.monotonic_ns()
+        self._statistics["discovery_calls"] += 1
+        try:
+            return self._read(project)
+        finally:
+            self._statistics["discovery_ns"] += time.monotonic_ns() - started
 
     def exact(
         self, target: AuthorityPolicyV2HousekeepingTarget,
@@ -551,7 +589,12 @@ class _V2StartupReads:
                  target.manager_session_id, target.result_id),
             ).fetchone()
             return (None, None) if row is None else self._project(row)
-        return self._read(project)
+        started = time.monotonic_ns()
+        self._statistics["exact_calls"] += 1
+        try:
+            return self._read(project)
+        finally:
+            self._statistics["exact_ns"] += time.monotonic_ns() - started
 
     def refuse(self, **identity: Any) -> AuthorityPolicyV2HousekeepingOutcome:
         with self.db._lock:
