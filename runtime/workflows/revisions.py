@@ -11,7 +11,7 @@ import json
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictBool, StrictInt, ValidationError
 
@@ -27,6 +27,10 @@ from runtime.workflows.artifacts import context_contract, review_family
 from runtime.workflows.draft_dispatch import append_event_uncommitted, canonical_bytes, digest
 from runtime.workflows.submissions import _hex, _insert, _record, _source_result, validate_handoff_graph, AuthorHandoffGraph
 from runtime.workflows.templates import WorkflowTemplatePrincipal
+
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome
 
 
 CODE = 'workflow_document_revision_storage_corrupt'
@@ -759,9 +763,12 @@ class WorkflowRevisionStore:
         store = self.org.workflow_submissions
         async with store._lock:
             async with self.org.db_lock:
-                return self._fulfill_core(operation_id, capture)
+                return self._fulfill_core(operation_id, capture)[0]
 
-    def _fulfill_core(self, operation_id: str, capture: Any) -> list[str]:
+    def _fulfill_core(self, operation_id: str, capture: Any, *, recovery: Any = None
+                      ) -> tuple[list[str], Literal['settled', 'local_hold']]:
+        if recovery is not None:
+            recovery.require_workflow_owner(self.org)
         with self.org.workflow_authority.admission_writer(capture) as conn:
             row = _record(conn, 'workflow_document_revision_operations', operation_id)
             proof = validate_revision_record(conn, row, expected_org_slug=self.org.slug)
@@ -771,18 +778,20 @@ class WorkflowRevisionStore:
                 context = self._authority(conn, intent, capture)
             except WorkflowActivationError as exc:
                 if exc.code in HOLDS:
-                    return []
+                    return [], 'local_hold'
                 raise
             if not intent['is_current'] or intent['cancellation_requested']:
-                return []
+                return [], 'local_hold'
             stage = _stage(conn, row, intent)
             result = _source_result(conn, intent)
             if stage is None or result is None or result['decision_json'] is not None or result['waiting_on_job_ids'] is not None:
-                return []
+                return [], 'local_hold'
             subject = review_row(conn, row)
             if conn.execute('SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (subject['submission_id'],)).fetchone():
                 validate_handoff_graph(conn, subject, proof)
-                return []
+                return [], 'settled'
+            if recovery is not None:
+                recovery.require_workflow_owner(self.org)
             now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
             raw = canonical_bytes(result)
             _insert(conn, 'workflow_submission_result_links', dict(submission_id=subject['submission_id'], task_result_id=result['id'],
@@ -794,7 +803,7 @@ class WorkflowRevisionStore:
             _insert(conn, 'workflow_instance_contributors', dict(instance_id=row['instance_id'], **contribution))
             tasks = self._review_graph(conn, subject, proof, context, intent, now)
             validate_workflow_schema(conn, expected_org_slug=self.org.slug)
-            return tasks
+            return tasks, 'settled'
 
     def _review_graph(self, conn: sqlite3.Connection, subject: dict, proof: dict, context: dict, intent: dict, now: str) -> list[str]:
         from runtime.workflows.submissions import review_brief
@@ -894,24 +903,33 @@ class WorkflowRevisionStore:
             for task_id in tasks:
                 queue.enqueue_if_absent(self.org.slug, task_id)
 
-    def discover_native(self, queue: Any, recovery: Any) -> None:
-        recovery.require_native_owner()
-        if getattr(self.org, "_startup_recovery", None) is not recovery:
-            raise RuntimeError("startup_workflow_attachment_mismatch")
+    def discover_native(self, queue: Any, recovery: Any) -> RecoveryOutcome:
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        recovery.require_workflow_owner(self.org)
+        if queue is not recovery.state.queue:
+            raise RuntimeError('startup_workflow_queue_owner_unavailable')
         ids = self._completed_revision_ids()
         if ids is None:
-            return
+            return RecoveryOutcome('settled', 'startup_revision_family_absent')
         from runtime.workflows.authority import WorkflowAuthorityError
+        held = False
         for operation_id in ids:
-            recovery.require_native_owner()
+            recovery.require_workflow_owner(self.org)
             try:
-                tasks = self._fulfill_core(operation_id, self.org.workflow_authority.capture_admission())
+                tasks, disposition = self._fulfill_core(
+                    operation_id, self.org.workflow_authority.capture_admission(), recovery=recovery)
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
+                held = True
                 continue
+            if disposition not in ('settled', 'local_hold'):
+                return RecoveryOutcome('unknown', 'startup_revision_outcome_unknown')
+            held |= disposition == 'local_hold'
             for task_id in tasks:
-                queue.enqueue_if_absent(self.org.slug, task_id)
+                recovery.publish_workflow_task(self.org, task_id)
+        recovery.require_workflow_owner(self.org)
+        return RecoveryOutcome('local_hold' if held else 'settled')
 
     def completed(self, task_id: str) -> None:
         with self.db._lock:

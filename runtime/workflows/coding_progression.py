@@ -580,6 +580,10 @@ async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
 
 
 def reconcile_run(dispatcher: Any, instance: str, queue: Any) -> None:
+    # Mounted coding capability and boot recovery readiness are independent.
+    # Refuse before returned-history notification OR creating a stage coroutine.
+    from runtime.daemon.startup_recovery import require_ready as require_startup_ready
+    require_startup_ready(dispatcher.org)
     if notify_returned(dispatcher, instance):
         return
     try:

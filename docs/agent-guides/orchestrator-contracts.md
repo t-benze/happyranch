@@ -4140,6 +4140,49 @@ the first BaseException, with bounded secondary observations. These R2/R3 source
 seams do not complete the separate serving/listener, R4 return-notification or
 whole-feature startup integration. Runtime/proof evidence remains NOT RUN.
 
+P2 workflow discrimination uses `recover_owned_task(..., startup_owner=owner)`
+with that actual retained sweep owner. `StartupRecovery.require_workflow_owner`
+checks the original org/DB/orchestrator/queue, epoch attachment, native thread,
+cold loop state and sweep ContextVar before effects. Complete classification
+still runs first; malformed/reconciliation-required ownership refuses instead
+of falling into legacy recovery. Coding source/carrier records remain held;
+an original queued attempt may notify only through its existing queue admission
+predicates. There is no `reconcile_run`, returned notification, stage claim,
+advancement, dispatch or `_on_loop` call on this branch. Draft/F5 reconciliation
+keeps its synchronous writer and claimed/running/live-owner fences; notification
+reuses current intent, authority, independent-role, capacity and Pause admission.
+Normal `reconcile_run` separately requires boot readiness before even its initial
+returned notification, in addition to mounted coding capability and all original
+progression predicates. Missing production binding refuses.
+
+The native P3 entry is
+`discover_completed_workflow_handoffs_native(state, recovery)` in daemon
+`__main__`. The later lifecycle coordinator must first settle the sweep phase
+for ALL attached orgs and discharge original v2 generation publication (keeping
+its attributable target-local pending holds). Call this entry once on the SAME
+native recovery operation; it owns the single `workflows` phase and invokes
+handoff, revision, completed review receipt, then collection discovery once per
+org in that order. It checks each actual result before the next producer and
+rechecks attachment/epoch/stop before and after. Shared private cores expose
+explicit settled/local_hold outcomes at their original eligibility branches;
+normal async wrappers preserve their public list/receipt/collection returns,
+capture timing and submission-lock -> org.db_lock -> admission_writer order.
+Receipt native-bridge selection still precedes capture and writer admission.
+Missing/unknown selected collection results and unexpected storage, authority
+or SQLite errors fail the phase; legitimate HOLDS remain local. Phase logging
+failure cannot replace the first BaseException.
+
+Graph COMMIT precedes original task notification. Native P2/P3 publication
+consumes actual insertion or the queue's positive SAME `(org, task)` pending
+observation; stopping, reservation-only or unknown/refused publication fails.
+No task/token is reminted or failed and no committed graph is undone on loss.
+These outcomes add no scan, executor or persistent asyncio primitive. P4's later
+publication scope is not a P2/P3 bypass. The source seam does not remove the old
+`_build_state` sweep, effectful thread binder or lifespan workflow discovery;
+all callers must migrate together in the later P0-P9 lifecycle integration.
+No serving/admission/consumer release is wired by this intermediate slice.
+Behavior/resource/performance and under10s acceptance remain UNVERIFIED.
+
 The bounded R4 publication core uses `StartupRecovery.publications(orch)` on
 that SAME epoch's native operation around the existing `rediscover_returned`
 call. After all P2 cold sweep/human boundaries, the coordinator must bind the

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictInt, ValidationError
 
@@ -13,6 +13,10 @@ from runtime.workflows.artifacts import document_from_submission, require_docume
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record
 from runtime.workflows.templates import WorkflowTemplatePrincipal
+
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome
 
 
 class HumanReviewCommand(ClosedRecord):
@@ -426,7 +430,7 @@ class WorkflowReviewReceiptStore:
         capture = self.org.workflow_authority.capture_admission()
         async with store._lock:
             async with self.org.db_lock:
-                return self._admit_completed_core(task_id, capture, bridge)
+                return self._admit_completed_core(task_id, capture, bridge)[0]
 
     def _completed_bridge(self, task_id: str) -> dict:
         # Native ownership selection precedes authority/schema/proof admission.
@@ -438,32 +442,37 @@ class WorkflowReviewReceiptStore:
             bridge = bridges[0]
         return bridge
 
-    def _admit_completed_core(self, task_id: str, capture: Any, bridge: dict) -> str | None:
+    def _admit_completed_core(self, task_id: str, capture: Any, bridge: dict, *, recovery: Any = None
+                              ) -> tuple[str | None, Literal['settled', 'local_hold', 'unknown']]:
+        if recovery is not None:
+            recovery.require_workflow_owner(self.org)
         store = self.org.workflow_submissions
         with self.org.workflow_authority.admission_writer(capture) as conn:
             intent = self.org.workflow_reviews._intent(conn, task_id)
             from runtime.workflows.review_dispatch import _same_value
             if not _same_value(intent['bridge'], bridge) or intent['state'] != 'completed' or intent['cancellation_requested']:
-                return None
+                return None, 'local_hold'
             source = _record(conn, 'workflow_draft_dispatch_intents', intent['intent_id'])
             try:
                 store._authority(conn, source, capture, {'collect-review'})
             except WorkflowActivationError as exc:
                 if exc.code in {'workflow_author_handoff_action_not_authorized',
                                 'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
-                    return None
+                    return None, 'local_hold'
                 raise
             if (capture.ready.generation != intent['authority_generation']
                     or capture.ready.snapshot_digest != intent['authority_digest']
                     or conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled'):
-                return None
+                return None, 'local_hold'
             request = _record(conn, 'workflow_review_requests', intent['request_id'])
             scope = intent['scope']
             if scope['kind'] != 'agent':
                 raise WorkflowActivationError('workflow_review_request_not_found')
             completed = _completed_proof(conn, request, scope)
             if completed is None:
-                return None
+                return None, 'local_hold'
+            if recovery is not None:
+                recovery.require_workflow_owner(self.org)
             rows = _receipt_rows(request, scope, *completed)
             receipt = rows['workflow_review_receipts']
             if request['status'] == 'pending':
@@ -476,8 +485,8 @@ class WorkflowReviewReceiptStore:
             from runtime.workflows.revisions import selected_subject
             subject, _ = selected_subject(conn, scope)
             from runtime.workflows.review_join import collect_in_writer
-            collect_in_writer(store, conn, subject['id'], capture)
-            return receipt['id']
+            collection = collect_in_writer(store, conn, subject['id'], capture)
+            return receipt['id'], self._collection_disposition(collection)
 
     def _completed_review_tasks(self) -> list[str] | None:
         with self.db._lock:
@@ -498,23 +507,31 @@ class WorkflowReviewReceiptStore:
                 if exc.code not in HOLDS:
                     raise  # Corruption and unexpected failures remain visible.
 
-    def discover_completed_native(self, recovery: Any) -> None:
-        recovery.require_native_owner()
-        if getattr(self.org, "_startup_recovery", None) is not recovery:
-            raise RuntimeError("startup_workflow_attachment_mismatch")
+    def discover_completed_native(self, recovery: Any) -> RecoveryOutcome:
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        recovery.require_workflow_owner(self.org)
         tasks = self._completed_review_tasks()
         if tasks is None:
-            return
+            return RecoveryOutcome('unknown', 'startup_receipt_selection_missing')
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
+        held = False
         for task_id in tasks:
-            recovery.require_native_owner()
+            recovery.require_workflow_owner(self.org)
             try:
                 bridge = self._completed_bridge(task_id)
-                self._admit_completed_core(task_id, self.org.workflow_authority.capture_admission(), bridge)
+                _, disposition = self._admit_completed_core(
+                    task_id, self.org.workflow_authority.capture_admission(), bridge, recovery=recovery)
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
-                    raise  # Corruption and unexpected failures remain visible.
+                    raise
+                held = True
+                continue
+            if disposition not in ('settled', 'local_hold'):
+                return RecoveryOutcome('unknown', 'startup_receipt_outcome_unknown')
+            held |= disposition == 'local_hold'
+        recovery.require_workflow_owner(self.org)
+        return RecoveryOutcome('local_hold' if held else 'settled')
 
     async def collection_current(self, handoff_id: str) -> dict | None:
         """Internal service view; public signed/owner projection is a following unit."""
@@ -525,13 +542,31 @@ class WorkflowReviewReceiptStore:
         capture = self.org.workflow_authority.capture_admission()
         async with store._lock:
             async with self.org.db_lock:
-                return self._collection_current_core(handoff_id, capture)
+                return self._collection_current_core(handoff_id, capture)[0]
 
-    def _collection_current_core(self, handoff_id: str, capture: Any) -> dict | None:
+    @staticmethod
+    def _collection_disposition(collection: dict | None) -> Literal['settled', 'local_hold', 'unknown']:
+        # Classify the actual validated collector return, never a second SQL
+        # pass. A selected operation without a collection outcome stays unknown.
+        if collection is None:
+            return 'unknown'
+        if collection['validity'] == 'held' or collection['state'] in ('held', 'collecting', 'needs_revision'):
+            return 'local_hold'
+        if collection['validity'] == 'current' and collection['state'] == 'approved':
+            return 'settled'
+        return 'unknown'
+
+    def _collection_current_core(self, handoff_id: str, capture: Any, *, recovery: Any = None
+                                 ) -> tuple[dict | None, Literal['settled', 'local_hold', 'unknown']]:
+        if recovery is not None:
+            recovery.require_workflow_owner(self.org)
         store = self.org.workflow_submissions
         from runtime.workflows.review_join import collect_in_writer
         with self.org.workflow_authority.admission_writer(capture) as conn:
-            return collect_in_writer(store, conn, handoff_id, capture)
+            if recovery is not None:
+                recovery.require_workflow_owner(self.org)
+            collection = collect_in_writer(store, conn, handoff_id, capture)
+            return collection, self._collection_disposition(collection)
 
     def _collection_handoffs(self) -> list[str] | None:
         with self.db._lock:
@@ -557,20 +592,28 @@ class WorkflowReviewReceiptStore:
                 if exc.code not in HOLDS:
                     raise
 
-    def discover_collections_native(self, recovery: Any) -> None:
-        recovery.require_native_owner()
-        if getattr(self.org, "_startup_recovery", None) is not recovery:
-            raise RuntimeError("startup_workflow_attachment_mismatch")
-        """Existing reaper recovers a committed last receipt with no service effect."""
+    def discover_collections_native(self, recovery: Any) -> RecoveryOutcome:
+        """Original collection selection, after native receipt admission."""
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        recovery.require_workflow_owner(self.org)
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
         handoffs = self._collection_handoffs()
         if handoffs is None:
-            return
+            return RecoveryOutcome('unknown', 'startup_collection_selection_missing')
+        held = False
         for handoff_id in handoffs:
-            recovery.require_native_owner()
+            recovery.require_workflow_owner(self.org)
             try:
-                self._collection_current_core(handoff_id, self.org.workflow_authority.capture_admission())
+                _, disposition = self._collection_current_core(
+                    handoff_id, self.org.workflow_authority.capture_admission(), recovery=recovery)
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise
+                held = True
+                continue
+            if disposition not in ('settled', 'local_hold'):
+                return RecoveryOutcome('unknown', 'startup_collection_outcome_unknown')
+            held |= disposition == 'local_hold'
+        recovery.require_workflow_owner(self.org)
+        return RecoveryOutcome('local_hold' if held else 'settled')

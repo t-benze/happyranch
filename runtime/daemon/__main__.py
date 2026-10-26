@@ -24,6 +24,10 @@ import socket
 import sys
 from datetime import datetime, timezone
 from types import FrameType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
 
 import uvicorn
 
@@ -82,6 +86,50 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
         except Exception:
             # A held source remains durable; it is never coerced or relaunched.
             logging.getLogger(__name__).exception('completed workflow handoff remains pending for %s', org.slug)
+
+
+def discover_completed_workflow_handoffs_native(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """P3 completed-document coordinator, called once by the native boot owner.
+
+    The caller owes P2 and original v2 generation publication first. This entry
+    owns only the workflows phase, never binds queues, releases readiness or
+    removes the old lifespan discovery obligation during serial integration.
+    """
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError('startup_workflow_state_owner_unavailable')
+    held = False
+    # phase() reserves before discovery, forbids repeat invocation in this epoch
+    # and records the first original BaseException instead of logging success.
+    with recovery.phase('workflows') as settle:
+        state._assert_attachments_unchanged(recovery._attachments)
+        for org in state.orgs.values():
+            recovery.require_workflow_owner(org)
+            # Invoke each existing selection once, in its original order. Read
+            # outcomes immediately: tuple construction would run later producers
+            # even after an earlier unknown/negative result.
+            discoveries = (
+                lambda: org.workflow_submissions.discover_completed_handoffs_native(state.queue, recovery),
+                lambda: org.workflow_revisions.discover_native(state.queue, recovery),
+                lambda: org.workflow_review_receipts.discover_completed_native(recovery),
+                lambda: org.workflow_review_receipts.discover_collections_native(recovery),
+            )
+            for index, discover in enumerate(discoveries):
+                recovery.require_workflow_owner(org)
+                outcome = discover()
+                if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+                    code = outcome.code if isinstance(outcome, RecoveryOutcome) else None
+                    raise RuntimeError(code or 'startup_workflow_outcome_unavailable')
+                held |= outcome.disposition == 'local_hold'
+                recovery.require_workflow_owner(org)
+                if index == 0 and outcome.code == 'startup_handoff_family_absent':
+                    # Preserve the original entry's absent-H early return.
+                    # P0 already validated the complete optional-family layout.
+                    break
+        state._assert_attachments_unchanged(recovery._attachments)
+        outcome = RecoveryOutcome('local_hold' if held else 'settled')
+        settle(outcome)
+    return outcome
 
 
 def _sweep_on_startup(
@@ -218,7 +266,8 @@ def _sweep_on_startup(
             if pause_deferred_owner(db, task_id):
                 continue
             from runtime.workflows.recovery import recover_owned_task
-            if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
+            if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator,
+                                  startup_owner=root_owner):
                 continue
             if v2_discovery_unavailable or task_id in v2_pre_final_roots:
                 root_owner.local_hold()

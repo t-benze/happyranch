@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Iterator, TYPE_CHECKING
 
 from runtime.platform.session_backend import CleanupStatus, TerminalReason
 from runtime.workflows.coding_bootstrap import encode_row, identity
@@ -18,6 +18,10 @@ from runtime.workflows.coding_start import CodingStartError, queued_storage, req
 from runtime.workflows._coding_settings_execution import _read_json
 from runtime.workflows.coding_start_history import rows, same
 from runtime.workflows.coding_authority_history import _Budget
+
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome
 
 
 _CANCELLATION_INSTRUCTION = (
@@ -231,7 +235,16 @@ class CodingDispatcher:
                     before_record=encode_row(before), after_record=encode_row(after), observed_at=now)
                 self.db.record_coding_heartbeat_uncommitted(task_id=task_id, before=before, after=after, payload=payload)
 
-    def notify_queued(self, task_id: str, queue: Any) -> None:
+    def notify_queued(self, task_id: str, queue: Any, *, recovery: Any = None,
+                      startup_owner: Any = None) -> RecoveryOutcome | None:
+        if recovery is not None:
+            from runtime.daemon.startup_recovery import RecoveryOutcome
+            recovery.require_workflow_owner(self.org, sweep_owner=startup_owner)
+            if queue is not recovery.state.queue or self.db is not self.org.db:
+                raise RuntimeError('startup_coding_queue_owner_unavailable')
+            if not self.queue_admission_allowed(task_id):
+                return RecoveryOutcome('local_hold', 'startup_coding_pointer_ineligible')
+            return recovery.publish_workflow_task(self.org, task_id, sweep_owner=startup_owner)
         if self.queue_admission_allowed(task_id):
             queue.enqueue_if_absent(self.org.slug, task_id)
 

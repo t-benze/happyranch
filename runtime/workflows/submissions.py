@@ -7,7 +7,7 @@ import json
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictBool, StrictInt, ValidationError
 
@@ -25,6 +25,10 @@ from runtime.workflows.artifacts import (
 )
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, _review_contract
+
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome
 
 
 class AuthorHandoffCommand(ClosedRecord):
@@ -624,9 +628,12 @@ class WorkflowSubmissionStore:
         capture = self.org.workflow_authority.capture_admission()
         async with self._lock:
             async with self.org.db_lock:
-                return self._consume_completed_handoff_core(handoff_id, capture)
+                return self._consume_completed_handoff_core(handoff_id, capture)[0]
 
-    def _consume_completed_handoff_core(self, handoff_id: str, capture: Any) -> list[str]:
+    def _consume_completed_handoff_core(self, handoff_id: str, capture: Any, *, recovery: Any = None
+                                        ) -> tuple[list[str], Literal['settled', 'local_hold']]:
+        if recovery is not None:
+            recovery.require_workflow_owner(self.org)
         notifications = []
         with self.org.workflow_authority.admission_writer(capture) as conn:
             require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
@@ -641,20 +648,22 @@ class WorkflowSubmissionStore:
                 # validation above has already rejected corruption.
                 if exc.code in {'workflow_author_handoff_action_not_authorized',
                                 'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
-                    return []
+                    return [], 'local_hold'
                 raise
             if self._projection(conn, row, capture, replayed=True)['current']['reason'] in (
                     'source_failed', 'source_cancelled', 'source_uncertain', 'source_not_current',
                     'authority_not_current', 'new_runs_disabled'):
-                return []
+                return [], 'local_hold'
             result = _source_result(conn, intent)
             if result is None:
-                return []
+                return [], 'local_hold'
             if validate_handoff_graph(conn, row, proof) is not None:
-                return []
+                return [], 'settled'
+            if recovery is not None:
+                recovery.require_workflow_owner(self.org)
             notifications = self._graph(conn, row, proof, context, binding, grant, intent, result)
             validate_workflow_schema(conn, expected_org_slug=self.org.slug)
-        return notifications
+        return notifications, 'settled'
 
     def _graph(self, conn: sqlite3.Connection, row: dict, proof: dict, context: dict, binding: dict,
                grant: dict, intent: dict, result: dict) -> list[str]:
@@ -1076,26 +1085,33 @@ class WorkflowSubmissionStore:
         await self.org.workflow_review_receipts.discover_completed()
         await self.org.workflow_review_receipts.discover_collections()
 
-    def discover_completed_handoffs_native(self, queue: Any, recovery: Any) -> None:
-        recovery.require_native_owner()
-        if getattr(self.org, "_startup_recovery", None) is not recovery:
-            raise RuntimeError("startup_workflow_attachment_mismatch")
+    def discover_completed_handoffs_native(self, queue: Any, recovery: Any) -> RecoveryOutcome:
+        """Only this discovery; the native coordinator owns the four-step order."""
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        recovery.require_workflow_owner(self.org)
+        if queue is not recovery.state.queue:
+            raise RuntimeError('startup_workflow_queue_owner_unavailable')
+        # P0's complete validated attachment precedes this native phase. Reuse
+        # the original presence/selection read; do not add another schema scan.
         handoffs = self._completed_handoff_ids()
         if handoffs is None:
-            return
+            return RecoveryOutcome('settled', 'startup_handoff_family_absent')
         from runtime.workflows.authority import WorkflowAuthorityError
+        held = False
         for handoff_id in handoffs:
-            recovery.require_native_owner()
+            recovery.require_workflow_owner(self.org)
             try:
-                tasks = self._consume_completed_handoff_core(handoff_id, self.org.workflow_authority.capture_admission())
+                tasks, disposition = self._consume_completed_handoff_core(
+                    handoff_id, self.org.workflow_authority.capture_admission(), recovery=recovery)
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
+                held = True
                 continue
+            if disposition not in ('settled', 'local_hold'):
+                return RecoveryOutcome('unknown', 'startup_handoff_outcome_unknown')
+            held |= disposition == 'local_hold'
             for task_id in tasks:
-                queue.enqueue_if_absent(self.org.slug, task_id)
-        # Reuse lifespan/reaper discovery for result-before-consumption recovery.
-        # No new scheduler and no replay of an uncertain host launch.
-        self.org.workflow_revisions.discover_native(queue, recovery)
-        self.org.workflow_review_receipts.discover_completed_native(recovery)
-        self.org.workflow_review_receipts.discover_collections_native(recovery)
+                recovery.publish_workflow_task(self.org, task_id)
+        recovery.require_workflow_owner(self.org)
+        return RecoveryOutcome('local_hold' if held else 'settled')

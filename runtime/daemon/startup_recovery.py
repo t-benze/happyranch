@@ -171,6 +171,63 @@ class StartupRecovery:
         if not allowed:
             raise StartupUnavailable("startup_owner_unavailable", self.snapshot())
 
+    def require_workflow_owner(self, org: Any, *, sweep_owner: Any = None) -> None:
+        """P2/P3 only: original native operation, attachment and cold sweep.
+
+        No caller Boolean grants this entry. P2 must carry the actually retained
+        sweep/context owner; P3 follows its settled boundary. Neither can use
+        the later returned-publication scope or a private asyncio loop.
+        """
+        self.require_native_owner()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("startup_workflow_requires_native_thread")
+        self.state._assert_attachments_unchanged(self._attachments)
+        with self._lock:
+            allowed = ((sweep_owner is not None and self._phase == "sweep"
+                        and self._sweep_owner is sweep_owner)
+                       or (sweep_owner is None and self._phase == "workflows"
+                           and self._sweep_owner is None
+                           and self._phases["sweep"].outcome in ("settled", "local_hold")))
+        orch = org.orchestrator
+        if (not allowed or self.state.orgs.get(org.slug) is not org
+                or org._startup_recovery is not self
+                or getattr(orch, "_startup_recovery", None) is not self
+                or orch._db is not org.db or orch._slug != org.slug
+                or orch._queue is not self.state.queue or orch._main_loop is not None):
+            raise RuntimeError("startup_workflow_phase_or_attachment_unavailable")
+        if sweep_owner is not None:
+            from runtime.orchestrator.run_step import _ROOT_WORKTREE_OWNER_EVENTS
+            if (sweep_owner.orch is not orch
+                    or _ROOT_WORKTREE_OWNER_EVENTS.get() is not sweep_owner.delivery
+                    or sweep_owner._body_thread != threading.get_ident()):
+                raise RuntimeError("startup_workflow_sweep_owner_unavailable")
+            sweep_owner.check()
+
+    def publish_workflow_task(self, org: Any, task_id: str, *, sweep_owner: Any = None) -> RecoveryOutcome:
+        """Acknowledge the original committed task, never its reservation alone.
+
+        These document/coding owners already select their authentic queued
+        pointer. Keep their original raw publication shape and pending identity;
+        no generation is minted and no committed graph is rolled back on loss.
+        """
+        self.require_workflow_owner(org, sweep_owner=sweep_owner)
+        from runtime.daemon.queue import TaskQueue
+        queue = self.state.queue
+        if not isinstance(queue, TaskQueue):
+            raise RuntimeError("startup_workflow_queue_unavailable")
+        inserted = queue.enqueue_if_absent(org.slug, task_id)
+        if type(inserted) is not bool:
+            raise RuntimeError("startup_workflow_queue_outcome_unknown")
+        if queue.pending_publication(org.slug, task_id) != "pending":
+            raise RuntimeError("startup_workflow_task_unacknowledged")
+        self.require_workflow_owner(org, sweep_owner=sweep_owner)
+        return RecoveryOutcome("settled", "startup_workflow_task_inserted" if inserted
+                               else "startup_workflow_task_already_pending")
+
     def fail(self, code: str, cause: BaseException) -> None:
         with self._lock:
             if self._first_cause is None:
@@ -203,6 +260,7 @@ class StartupRecovery:
             phase.started_ns = time.monotonic_ns()
             self._phase = name
         outcome: RecoveryOutcome | None = None
+        primary: BaseException | None = None
 
         def settle(value: RecoveryOutcome) -> None:
             nonlocal outcome
@@ -217,6 +275,7 @@ class StartupRecovery:
             if outcome is None or not outcome.positive:
                 raise RuntimeError(outcome.code if outcome is not None and outcome.code else "startup_outcome_unavailable")
         except BaseException as exc:
+            primary = exc
             self.fail("startup_" + name + "_failed", exc)
             with self._lock:
                 phase.outcome = "failed"
@@ -227,7 +286,14 @@ class StartupRecovery:
         finally:
             with self._lock:
                 phase.ended_ns = time.monotonic_ns()
-            _LOG.info("startup phase=%s outcome=%s epoch=%s", name, phase.outcome, self.epoch)
+            try:
+                _LOG.info("startup phase=%s outcome=%s epoch=%s", name, phase.outcome, self.epoch)
+            except BaseException as exc:
+                self.fail("startup_phase_observation_failed", exc)
+                with self._lock:
+                    phase.outcome = "failed"
+                if primary is None:
+                    raise
 
     def submit(self, operation: Callable[[StartupRecovery], RecoveryOutcome]) -> Future[RecoveryOutcome]:
         """Reserve before native start; this operation is never resubmitted."""
