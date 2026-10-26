@@ -18,6 +18,7 @@ from runtime.workflows.templates import WorkflowTemplatePrincipal
 
 if TYPE_CHECKING:
     from runtime.infrastructure.workflow_coding_schema import _CodingInventory
+    from runtime.workflows.coding_authority_history import _Budget
 
 
 class CodingReleaseImportError(ValueError):
@@ -63,11 +64,13 @@ class CodingImportSupport:
         # table ALTER chronology. Generic authority keeps whole-DB references.
         return ()
 
-    def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> _CodingInventory:
+    def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...], *,
+                 budget: _Budget | None = None) -> _CodingInventory:
+        """Reconstruct locally; supplied allowance retains all source/target work."""
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         if not conn.in_transaction:
             raise CodingReleaseImportError('coding_release_import_caller_transaction')
-        _, coding = _read_workflow_schema(conn, expected_org_slug=self.org.slug)
+        _, coding = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
         if coding is None:
             raise CodingReleaseImportError('coding_release_import_schema_required')
         return coding

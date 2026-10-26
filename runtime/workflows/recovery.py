@@ -5,8 +5,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Any
 
-from runtime.infrastructure.workflow_schema import validate_workflow_schema, _read_workflow_schema, _schema_snapshot
-from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, validate_coding_data
+from runtime.infrastructure.workflow_schema import _read_workflow_schema, _schema_snapshot
+from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, _read_coding_data
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,8 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None, budget=None) -
                 # either legacy return, under the same lock and exception fence.
                 tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
                           if row[0].startswith('workflow_')}
-                if has_coding_schema_objects(conn):
+                coding_present = has_coding_schema_objects(conn)
+                if coding_present:
                     if org_slug is None:
                         return WorkflowTaskOwnership("reconciliation_required")
                     # Unknown/case-changed tables, views, indexes and triggers must
@@ -43,8 +44,8 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None, budget=None) -
                 else:
                     # Absent coding storage cannot accept setup metadata, even if native
                     # coding metadata has no workflow root/draft/F5 alias.
-                    validate_coding_data(conn, layout='recovery', expected_org_slug=org_slug)
-                if has_coding_schema_objects(conn):
+                    _read_coding_data(conn, layout='recovery', expected_org_slug=org_slug, budget=budget)
+                if coding_present:
                     if inventory is None:
                         return WorkflowTaskOwnership("reconciliation_required")
                     saved = inventory.queued
@@ -61,7 +62,10 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None, budget=None) -
                     return WorkflowTaskOwnership("legacy")
                 if org_slug is None or (drafts and bridges) or len(drafts) > 1 or len(bridges) > 1:
                     return WorkflowTaskOwnership("reconciliation_required")
-                validate_workflow_schema(conn, expected_org_slug=org_slug)
+                if not coding_present:
+                    _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget)
+                # Coding inventory already includes complete document validation
+                # on this unchanged snapshot; do not reconstruct it again.
                 if drafts:
                     intent = drafts[0]
                     task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()

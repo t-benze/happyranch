@@ -12,8 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from runtime.workflows._coding_release_history import (
     NAMESPACE, PUBLISHER, ReleaseImportHistory,
-    parse_import_command, publication_rows, read_release_import,
+    parse_import_command, publication_rows,
 )
+from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows._coding_import_support import CodingImportSupport, CodingReleaseImportError, _capture
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
@@ -95,8 +96,7 @@ class CodingReleaseImportStore:
             replayed=replayed, current=self._current(conn, capture),
             release=coding_release_projection(history.template().definition_bytes))).model_dump()
 
-    def _replay(self, conn, raw: bytes, capture) -> dict | None:
-        history = read_release_import(conn, expected_org_slug=self.org.slug)
+    def _replay(self, conn, raw: bytes, capture, history: ReleaseImportHistory | None) -> dict | None:
         command = parse_import_command(raw)
         prior = conn.execute('SELECT template_identity_id FROM workflow_template_publish_operations '
             'WHERE org_slug=? AND principal=? AND operation_key=?',
@@ -121,8 +121,8 @@ class CodingReleaseImportStore:
             async with self.org.db_lock:
                 self._principal(principal)
                 with self._support._read(capture) as (conn, current_capture):
-                    self._support._storage(conn, references)
-                    history = read_release_import(conn, expected_org_slug=self.org.slug)
+                    inventory = self._support._storage(conn, references)
+                    history = inventory.imported
                     if history is None:
                         raise CodingReleaseImportError('coding_release_import_not_found')
                     receipt = self._receipt(conn, history, current_capture, replayed=False)
@@ -151,8 +151,8 @@ class CodingReleaseImportStore:
             async with self.org.db_lock:
                 self._principal(principal)
                 with self._support._read(capture) as (conn, current_capture):
-                    self._support._storage(conn, references)
-                    replay = self._replay(conn, raw, current_capture)
+                    inventory = self._support._storage(conn, references)
+                    replay = self._replay(conn, raw, current_capture, inventory.imported)
                     self._principal(principal)
                     if replay is not None:
                         return replay
@@ -161,10 +161,11 @@ class CodingReleaseImportStore:
                 if capture is None:
                     raise CodingReleaseImportError('coding_release_import_authority_unavailable')
                 try:
+                    budget = _Budget()  # Fresh writer snapshot; never reuse pre-read inventory.
                     with authority.admission_writer(capture) as conn:
                         self._principal(principal)
-                        self._support._storage(conn, references)
-                        replay = self._replay(conn, raw, capture)
+                        inventory = self._support._storage(conn, references, budget=budget)
+                        replay = self._replay(conn, raw, capture, inventory.imported)
                         if replay is not None:
                             self._principal(principal)
                             return replay
@@ -185,8 +186,8 @@ class CodingReleaseImportStore:
                             columns = ','.join(row)
                             placeholders = ','.join('?' for _ in row)
                             conn.execute(f'INSERT INTO {table} ({columns}) VALUES ({placeholders})', tuple(row.values()))
-                        self._support._storage(conn, references)  # Full cold closure before COMMIT.
-                        history = read_release_import(conn, expected_org_slug=self.org.slug)
+                        inventory = self._support._storage(conn, references, budget=budget)
+                        history = inventory.imported  # Fresh full target closure before COMMIT.
                         if history is None:
                             raise CodingReleaseImportError('coding_release_import_history_invalid')
                         receipt = self._receipt(conn, history, capture, replayed=False)
