@@ -158,8 +158,10 @@ Every admission, including permission repair and the one Git retry, requires:
   `/proc/self/mountinfo` containment below remains required.
 * A complete no-follow descendant scan, all entries at least3600s old by BOTH
   mtime and ctime; atime is excluded because observations may update it. Root
-  mtime alone never admits. Unreadable directories, special objects, external
-  hardlinks, identity drift and filesystem/mount boundaries retain. Exact own
+  mtime alone never admits. Unreadable directories, devices/unknown special
+  types, external hardlinks, identity drift and filesystem/mount boundaries
+  retain. Sockets/FIFOs are disposable only in Phase1 scratch (seq194);
+  worktrees and Git metadata keep strict special-object retention. Exact own
   chmod mode/ctime changes may be recognized on Git retry, with all other gates
   refreshed; unknown changes never receive that exception.
 
@@ -181,7 +183,16 @@ Only `<workspace>/.happyranch/task-tmp/TASK-*` is discoverable. The current
 artifacts**. The existing strict bounded manifest validator supplies additional
 classification/root evidence; it is never sole deletion authority. Missing or
 invalid manifest retains. Sibling manifests/locks are not candidates or repaired.
-Scratch containing `.git` evidence is retained unknown. `output/`, caches,
+Under Founder THR307 seq194 item2 approving seq193, nested Git repositories
+and `.git` files/directories are disposable scratch content after BOTH task and
+structural root have ended and all other gates pass. Unix sockets and FIFOs
+are measured with no-follow stat/allocated inode blocks and unlinked through
+verified parent descriptors. They are never opened for endpoint/content I/O,
+read, connected, drained or signaled; existing O_PATH descriptors observe only
+inode metadata. Devices and unknown special types still retain. Both admission
+scans and mutation explicitly select the scratch policy; shared defaults, Git
+metadata census and every worktree scan/revalidation/repair/remove stay strict.
+Internal symlinks remain link-only, with outside targets untouched. `output/`, caches,
 `.happyranch/scratch` and any other target are outside candidate discovery.
 
 An admitted scratch operation repairs its contained directory permissions and
@@ -269,6 +280,19 @@ Seven actual on-night records of attributable results, retained/unknown/eligible
 ~50GiB is provisional; output growth or operator deletions cannot determine PASS.
 
 ## Finite disposable verification
+
+TASK13199 / ROOT13198 uses the existing driver with `--cases 1 2 7 8 11 12
+16 19 20 21 22` and `--correction-cases 1 2 6` in separate invocations, under
+actual task-owned TMPDIR with Python3.14 after `uv sync --frozen --python 3.14`.
+Cases1/2 cover each scratch allowance separately and combined, independent
+lstat allocation, durable controls, outside links and active owner/root refusal.
+Cases7/8 cover strict ignored worktree endpoints and metadata, safe synthetic
+device/unknown-type observations (no mknod), and unchanged dry-run contents,
+permissions, Git refs/registrations and outside sentinel. Case16 includes literal
+root/ancestor link refusal; retained age, fresh jobs, registration, partial-error
+and deadline cases exercise shared-helper preservation. No historical namespace
+or mounted-boundary case is selected; those remain SKIPPED/UNEXECUTED. No new
+harness, retired Python-unit import/collection, integration or Product E2E run.
 
 Historical broader driver (not authorized for the current policy delivery):
 `.venv/bin/python scripts/verify_disk_sweeper.py` after `uv sync --frozen`.

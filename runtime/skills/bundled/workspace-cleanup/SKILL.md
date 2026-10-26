@@ -222,6 +222,13 @@ never fake completion. Filesystem mount containment remains in force.
 This grants no agent deletion authority or end-of-task deletion hook, replaces
 none of this skill's legacy gates, and disables none of the seven nightly agent
 sessions. Other cleanup owners' process gates and old flags remain unchanged.
+Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
+directories, Unix sockets and FIFOs inside admitted task scratch are disposable
+after both task and structural root end. Socket/FIFO handling uses no-follow
+stat/allocation and contained unlink with metadata-only O_PATH descriptors,
+never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+Git metadata keep strict special-object checks; all ownership/jobs/age/link/
+mount gates and durable manifest/lock/output exclusions remain.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
 in output. Do not run historical cleanup, change live configuration, deploy/

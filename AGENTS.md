@@ -1430,6 +1430,13 @@ cwd/root/exe/fd/environment inspection and the former four-name/zombie policy.
 JSON and org audit `process_scope` say usage is not checked; `process_exemptions`
 is an unused empty compatibility field. Filesystem `/proc/self/mountinfo`
 containment remains. Other cleanup owners retain their own process gates.
+Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
+directories, Unix sockets and FIFOs inside admitted task scratch are disposable
+after both task and structural root end. Socket/FIFO handling uses no-follow
+stat/allocation and contained unlink with metadata-only O_PATH descriptors,
+never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+Git metadata keep strict special-object checks; all ownership/jobs/age/link/
+mount gates and durable manifest/lock/output exclusions remain.
 Preserve manifests/locks/output, dirty worktrees and
 branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
