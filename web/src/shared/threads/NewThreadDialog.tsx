@@ -23,6 +23,7 @@ import {
 } from '@/lib/threadAttachments';
 import { useComposeThread } from '@/hooks/threads';
 import { useTranslation } from '@/hooks/i18n';
+import { useStartupStatus } from '@/hooks/health';
 import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 import type { AgentSummary } from '@/lib/api/types';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
@@ -59,6 +60,9 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const compose = useComposeThread();
   const recipientIdentityOptions = useIdentityOptions(agents, true);
   const preflight = usePreflightAddresses();
+  // THR-308: composing is new work, held until daemon startup is ready. The
+  // dialog's typed fields and selections are kept while held.
+  const startup = useStartupStatus();
   const knownAgentIds = useKnownAgentIds(agents);
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
@@ -158,6 +162,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     setUploading(true);
     let failedUpload: PendingAttachment | null = null;
     try {
+      startup.assertAdmittedNow();
       const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients, body, canonicalAgentIds: knownAgentIds, allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       // Run-owned snapshot; every read below uses this copy. Selection ids
@@ -165,6 +170,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       // an await could substitute a reopened dialog's selection (mirrors the
       // ThreadsPage repair).
       for (const pending of pendingAttachments) {
+        startup.assertAdmittedNow();
         failedUpload = pending;
         let ref = runRefs.get(pending.id);
         if (!ref) {
@@ -197,6 +203,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
         refs.push(ref);
       }
       failedUpload = null;
+      startup.assertAdmittedNow();
       const result = await compose.mutateAsync({
         subject: subject.trim(),
         recipients: resolved.recipients,
@@ -234,7 +241,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose, preflight, knownAgentIds]);
+  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose, preflight, knownAgentIds, startup]);
 
   const handleReflection = useCallback(async () => {
     if (submittingRef.current) return;
@@ -253,8 +260,10 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
 
     setUploading(true);
     try {
+      startup.assertAdmittedNow();
       const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients: [agentName], canonicalAgentIds: knownAgentIds });
       if (!isCurrent()) return;
+      startup.assertAdmittedNow();
       const result = await compose.mutateAsync({
         subject: `Reflection - ${agentName}`,
         recipients: resolved.recipients,
@@ -274,7 +283,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [reflection, compose, onCreated, onClose, slug, preflight, knownAgentIds]);
+  }, [reflection, compose, onCreated, onClose, slug, preflight, knownAgentIds, startup]);
 
   // The dialog's OWN run state owns pending presentation for the whole
   // upload+compose (and Reflection) lifecycle. The surviving mutation
@@ -383,19 +392,22 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
           {errorView !== null && (
             <p role="alert" className="text-feedback-danger text-xs">{renderThreadError(errorView, t)}</p>
           )}
+          {!startup.admitted && (
+            <p role="status" className="text-attention-text text-xs">{t('startup.action.paused')}</p>
+          )}
         </div>
         <DialogFooter>
           {reflection ? (
             <Button
               variant="secondary"
               onClick={handleReflection}
-              disabled={inFlight}
+              disabled={inFlight || !startup.admitted}
             >
               {inFlight ? t('threads.newThread.sending') : t('threads.newThread.reflection')}
             </Button>
           ) : null}
           <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-          <Button onClick={submit} disabled={inFlight}>
+          <Button onClick={submit} disabled={inFlight || !startup.admitted}>
             {inFlight ? t('threads.newThread.sending') : t('threads.newThread.send')}
           </Button>
         </DialogFooter>

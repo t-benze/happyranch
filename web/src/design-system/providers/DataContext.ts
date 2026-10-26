@@ -20,6 +20,7 @@
  */
 import { createContext, useContext } from 'react';
 import type { ReviewDetail } from '@/lib/workflowReviewSelection';
+import type { StartupAdmission } from '@/lib/startup';
 import type { HumanReviewCommand, HumanReviewReceipt, DocumentRevisionCommand, DocumentRevisionReceipt, WorkflowActivationReceipt } from '@/lib/api/types';
 import type {
   HealthResponse,
@@ -348,11 +349,14 @@ export interface OrgsApi {
 }
 
 // ---------------------------------------------------------------------------
-// HealthApi — minimal daemon liveness probe consumed by the Dashboard page.
+// HealthApi — daemon liveness probe plus the startup admission derived from
+// that SAME observation (THR-308). `useHealth` is the single polling owner
+// (mounted by the app shell); `useStartup` only reads it.
 // ---------------------------------------------------------------------------
 
 export interface HealthApi {
   useHealth: () => QueryLike<HealthResponse>;
+  useStartup: () => StartupAdmission;
 }
 
 // ---------------------------------------------------------------------------

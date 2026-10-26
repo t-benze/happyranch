@@ -3,7 +3,9 @@ import { useParams } from 'react-router-dom';
 import { identities } from '@/lib/api';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import type { AgentSummary, AgentEnrollment, IdentityList, IdentityView } from '@/lib/api/types';
+import { assertStartupAdmitted } from '@/lib/startup';
 import type { IdentitiesApi } from './DataContext';
+import { useRealStartup } from './_real-health';
 
 export const identityKey = (slug: string) => ['identities', slug] as const;
 function useSlug(): string {
@@ -29,15 +31,26 @@ function refreshSummaryMetadata(qc: ReturnType<typeof useQueryClient>, slug: str
 export const realIdentitiesApi: IdentitiesApi = {
   useIdentities: () => {
     const slug = useSlug();
-    return useQuery({
-      queryKey: identityKey(slug), queryFn: ({ signal }) => identities.listIdentities(slug, signal),
-      enabled: !!slug, staleTime: 30_000, refetchInterval: 30_000,
+    const qc = useQueryClient();
+    const { admitted } = useRealStartup();
+    const query = useQuery({
+      queryKey: identityKey(slug),
+      queryFn: ({ signal }) => {
+        assertStartupAdmitted(qc);
+        return identities.listIdentities(slug, signal);
+      },
+      enabled: !!slug && admitted, staleTime: 30_000, refetchInterval: 30_000,
     });
+    // THR-308: while startup is not positively ready, naming is held and a
+    // cached label from an earlier observation is not current. Present the
+    // canonical-ID fallback (no data, not loading, not an error).
+    return admitted ? query : { data: undefined, isLoading: false, isError: false, error: null };
   },
   useReadIdentities: () => {
     const qc = useQueryClient();
     return useMutation({
       mutationFn: async ({ slug }: { slug: string }) => {
+        assertStartupAdmitted(qc);
         await qc.cancelQueries({ queryKey: identityKey(slug), exact: true }, { revert: false });
         const observation = qc.getQueryState(identityKey(slug))?.dataUpdateCount;
         const fresh = await identities.listIdentities(slug);
@@ -56,6 +69,7 @@ export const realIdentitiesApi: IdentitiesApi = {
     const qc = useQueryClient();
     return useMutation({
       mutationFn: async ({ slug, kind, canonicalId, body }: Parameters<ReturnType<IdentitiesApi['useRenameIdentity']>['mutateAsync']>[0]) => {
+        assertStartupAdmitted(qc);
         await qc.cancelQueries({ queryKey: identityKey(slug), exact: true }, { revert: false });
         const result = kind === 'founder'
           ? await identities.renameFounder(slug, body)
@@ -70,5 +84,14 @@ export const realIdentitiesApi: IdentitiesApi = {
       }, retry: false,
     });
   },
-  usePreflightAddresses: () => useMutation({ mutationFn: identities.preflightAddresses, retry: false }),
+  usePreflightAddresses: () => {
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: (input: Parameters<typeof identities.preflightAddresses>[0]) => {
+        assertStartupAdmitted(qc);
+        return identities.preflightAddresses(input);
+      },
+      retry: false,
+    });
+  },
 };

@@ -40,6 +40,11 @@ interface MessageBubbleProps {
    *  passed so the handler can branch on thread_attachment_id vs artifact_name. */
   onAttachmentDownload?: (attachment: ThreadAttachment) => void;
   /**
+   * Downloads are held (THR-308 daemon startup not ready): attachment metadata
+   * stays visible, the download control is inert and titled with this text.
+   */
+  attachmentDownloadHeld?: string;
+  /**
    * Optional localized product copy (THR-118 W3a). Omitted fields keep the
    * historical English copy.
    */
@@ -93,6 +98,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
     declineReason,
     attachments,
     onAttachmentDownload,
+    attachmentDownloadHeld,
   } = props;
 
   return (
@@ -125,7 +131,9 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
                 type="button"
                 key={attachment.thread_attachment_id ?? attachment.artifact_name}
                 onClick={() => onAttachmentDownload?.(attachment)}
-                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 cursor-pointer"
+                disabled={attachmentDownloadHeld !== undefined}
+                title={attachmentDownloadHeld}
+                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <span className="max-w-64 truncate">{attachment.display_name}</span>
                 {formattedSize && (

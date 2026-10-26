@@ -9,6 +9,7 @@
 import type { MessageKey, MessageParams } from '@/lib/i18n';
 import { ApiError } from '@/lib/api/client';
 import { MAX_THREAD_ATTACHMENTS } from './threadAttachments';
+import { StartupHeldError } from './startup';
 
 /** Daemon error-code → human-friendly message for thread operations. */
 export const THREAD_ERROR_STRINGS: Record<string, string> = {
@@ -84,11 +85,33 @@ export interface ThreadErrorView {
 export type ThreadTranslator = (key: MessageKey, params?: MessageParams) => string;
 
 /**
+ * THR-308: catalog key for a startup refusal (client hold or daemon 503), or
+ * null. Such a request was NOT accepted; nothing is queued or retried.
+ */
+export function startupRefusalKey(err: unknown): MessageKey | null {
+  if (err instanceof StartupHeldError) {
+    return err.phase === 'recovering' ? 'startup.error.held'
+      : err.phase === 'failed' ? 'startup.error.failed' : 'startup.error.unavailable';
+  }
+  if (err instanceof ApiError && err.status === 503 && err.code) {
+    if (err.code === 'daemon_recovering') return 'startup.error.held';
+    if (err.code === 'daemon_recovery_failed') return 'startup.error.failed';
+    if (err.code === 'daemon_stopped' || err.code === 'startup_gate_unbound') return 'startup.error.unavailable';
+    if (err.code.startsWith('startup_reader_')) return 'startup.error.reader';
+  }
+  return null;
+}
+
+/**
  * Classify a thrown value exactly like the legacy
  * `err instanceof ApiError ? describeError(err.code, `HTTP ${status}`) : String(err)`
  * expression, but as a descriptor instead of an English string.
  */
 export function classifyThreadError(err: unknown): ThreadErrorDetail {
+  // THR-308: a startup refusal (client hold or daemon 503) means the request
+  // was not accepted. Say so actionably instead of a bare HTTP status.
+  const startupKey = startupRefusalKey(err);
+  if (startupKey) return { kind: 'mapped', key: startupKey };
   if (err instanceof ApiError) {
     const code = err.code;
     if (code && THREAD_ERROR_KEYS[code]) {

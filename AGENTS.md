@@ -36,10 +36,22 @@ actual matching serving AND accepted ready epoch, without stop/close/failure or
 missing owner; otherwise503 includes truthful startup disposition and guidance.
 No raw cause/path/native handle/task collection is public. Owner-to-serving time
 is not launcher duration; absent launcher evidence stays null. Ordinary TS API
-mapping is additive; absent startup on older servers means unknown. UI/launcher/
+mapping is additive; absent startup on older servers means unknown. Launcher/
 consumer instrumentation, finite behavioral verification and isolated OpenAPI
 snapshot synchronization remain root-owned. This is source only: runtime/proof
 NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED; no activation follows.
+
+Web recovery source (TASK13273): the app shell owns ONE shared `['health']`
+observation (2s while unavailable, 30s once ready); `web/src/lib/startup.ts`
+admits only a fresh successful state=ready+recovery_ready+serving, not stopping.
+Checking/error/malformed/missing/unknown/stopping/failed/stale stay held. Threads
+list/detail/messages stay mounted and readable; other org pages and onboarding
+mount behind a held-route gate (URL kept, Threads action). Held reads (dashboard,
+identities, agents, thread tasks, tokens) and inbox/tail SSE start only after
+ready; every effect is disabled and rechecked at operation time and after awaits.
+Drafts/selections/focus survive; startup503s map to "not accepted" copy and only
+refresh the observation, never retry/replay. Persisted queued/working rows are
+labelled recorded history while held. en+zh-CN; source only, behavior NOT RUN.
 
 On the same native thread, each original org's positively settled sweep/tails/
 human/bookkeeping/finally boundary precedes its original v2 publication. Actual

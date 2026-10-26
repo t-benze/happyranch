@@ -15,7 +15,33 @@ alone grants neither readiness, setup acceptance nor launch permission.
 
 The ordinary health API namespace exports getHealthReady and matching types;
 503 follows the ordinary ApiError boundary, retaining its response in detail.
-No UI, polling, retry/replay or launcher behavior is implemented by this mapping.
+The mapping itself adds no polling, retry/replay or launcher behavior.
+
+Web consumer (TASK13273 source). `AppShell` is the sole poller of the shared
+`['health']` query (2s while unavailable, 30s once ready); `useStartupStatus`
+and provider guards read it without polling. `web/src/lib/startup.ts` admits
+only a fresh successful observation with state=ready, recovery_ready, serving
+and not stopping; checking, request error, malformed/missing startup, unknown,
+stopped/stopping, recovery_failed and a >90s-old observation are held. A
+translated banner explains recovering ("threads can be read; new work is
+paused") or failed (stable error_code for engineering_manager); unknown/stopping
+never read as recovered. Threads routes stay mounted; every other org route and
+onboarding sit behind a pathless held-route gate that renders status plus a
+Threads action WITHOUT mounting the page (URL preserved; it mounts on ready).
+Root/org index go to Threads until ready. Held reads (dashboard summary,
+identities with canonical-ID fallback, agents, thread tasks, fresh tokens) are
+disabled and their queryFns recheck; inbox/tail SSE open only when admitted.
+Thread/identity/org mutations reject with StartupHeldError before network (pin
+before its optimistic write); pages also recheck before every effect and after
+each await. Controls, Enter-to-send and N/I/A/F shortcuts are inert while held;
+textarea drafts, attachment selections, focus/selection and selected org/thread
+remain mounted. Startup 503s (`daemon_*`, `startup_*`) map to "not accepted"
+copy and only invalidate `['health']`; nothing is queued, retried or replayed,
+and 401 bootstrap handling is unchanged. While held, persisted queued/working
+responder rows are labelled recorded history (no typing bubble, timer or abort)
+and attachment downloads are inert. Prototype sandbox reports a fixed ready
+fixture that is not daemon evidence. Source/static only; browser/backend
+behavior across both locales/viewports remains root-owned NOT RUN.
 Only original authenticated thread list/detail/messages are early content reads;
 SSE, task/workflow reads and attachment download stay held. Real DTOs, paging,
 totals, participants, attachments/responders and reply_delivery are preserved.

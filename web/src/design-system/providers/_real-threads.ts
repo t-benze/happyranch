@@ -8,6 +8,12 @@
  * `src/features/threads/hooks.ts`. The only change is that the `slug` is read
  * from `useRealOrgSlug()` (URL via react-router) instead of being passed as
  * an argument — that's how the public hook surface stays provider-agnostic.
+ *
+ * Startup admission (THR-308): while daemon startup is not positively ready,
+ * only the thread list/detail/messages reads run (the daemon's bounded early
+ * reader). Linked tasks, inbox/tail SSE and every mutation are held before any
+ * network work; mutations recheck admission when they actually start, so a
+ * stale callback after an await cannot reach the daemon.
  */
 import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import {
@@ -20,6 +26,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { subscribeSSE, threads as threadsApi } from '@/lib/api';
+import { assertStartupAdmitted, isStartupAdmittedIn, StartupHeldError } from '@/lib/startup';
+import { useRealStartup } from './_real-health';
 import type {
   ThreadInboxEvent,
   ThreadMessage,
@@ -300,10 +308,15 @@ function useThreadMessages(threadId: string | undefined) {
 
 function useThreadTasks(threadId: string | undefined) {
   const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  const { admitted } = useRealStartup();
   return useQuery({
     queryKey: ['thread-tasks', slug, threadId],
-    queryFn: () => threadsApi.listThreadTasks(slug, threadId as string),
-    enabled: !!slug && !!threadId,
+    queryFn: () => {
+      assertStartupAdmitted(qc);
+      return threadsApi.listThreadTasks(slug, threadId as string);
+    },
+    enabled: !!slug && !!threadId && admitted,
   });
 }
 
@@ -314,8 +327,11 @@ function useThreadTasks(threadId: string | undefined) {
 function useThreadsInboxSSE(): void {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
+  const { admitted } = useRealStartup();
   useEffect(() => {
-    if (!slug) return;
+    // Held while startup is unavailable; opens (and reconciles the list via
+    // onOpen) only after a positive ready observation.
+    if (!slug || !admitted) return;
     const ctl = new AbortController();
     subscribeSSE<ThreadInboxEvent>(threadsApi.threadInboxEventsPath(slug), {
       signal: ctl.signal,
@@ -329,7 +345,7 @@ function useThreadsInboxSSE(): void {
       /* swallow — fetch-event-source already retries transient errors */
     });
     return () => ctl.abort();
-  }, [slug, qc]);
+  }, [slug, qc, admitted]);
 }
 
 /**
@@ -355,9 +371,10 @@ function useThreadTailSSE(threadId: string | undefined): void {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   const sinceSeqRef = useRef(0);
+  const { admitted } = useRealStartup();
 
   useEffect(() => {
-    if (!slug || !threadId) return;
+    if (!slug || !threadId || !admitted) return;
     // Reset since_seq when threadId changes
     sinceSeqRef.current = 0;
 
@@ -426,7 +443,7 @@ function useThreadTailSSE(threadId: string | undefined): void {
       /* swallow */
     });
     return () => ctl.abort();
-  }, [slug, threadId, qc]);
+  }, [slug, threadId, qc, admitted]);
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +464,7 @@ function useComposeThread(): MutationLike<
     (variables as ComposeArgs & { destination?: { slug: string } }).destination;
   return useMutation({
     mutationFn: (variables: ComposeArgs) => {
+      assertStartupAdmitted(qc);
       const destination = destinationOf(variables);
       const { destination: _destination, ...body } = variables as ComposeArgs & {
         destination?: { slug: string };
@@ -474,6 +492,7 @@ function useSendFollowUp(threadId: string): MutationLike<
     (variables as SendFollowUpArgs & { destination?: Destination }).destination;
   return useMutation({
     mutationFn: (variables: SendFollowUpArgs) => {
+      assertStartupAdmitted(qc);
       const destination = destinationOf(variables);
       const { destination: _destination, ...body } = variables as SendFollowUpArgs & {
         destination?: Destination;
@@ -504,8 +523,10 @@ function useInviteAgent(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ destination, ...body }: InviteArgs) =>
-      threadsApi.inviteToThread(destination?.slug ?? slug, destination?.threadId ?? threadId, body),
+    mutationFn: ({ destination, ...body }: InviteArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.inviteToThread(destination?.slug ?? slug, destination?.threadId ?? threadId, body);
+    },
     onSuccess: (_result, args) => {
       qc.invalidateQueries({ queryKey: ['thread', args.destination?.slug ?? slug, args.destination?.threadId ?? threadId] });
       qc.invalidateQueries({ queryKey: ['threads', args.destination?.slug ?? slug] });
@@ -521,8 +542,10 @@ function useRemoveParticipant(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: RemoveParticipantArgs) =>
-      threadsApi.removeParticipantFromThread(slug, threadId, body),
+    mutationFn: (body: RemoveParticipantArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.removeParticipantFromThread(slug, threadId, body);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -537,8 +560,10 @@ function useArchiveThread(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: ArchiveArgs) =>
-      threadsApi.archiveThread(slug, threadId, body),
+    mutationFn: (body: ArchiveArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.archiveThread(slug, threadId, body);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -553,7 +578,10 @@ function useResumeThread(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => threadsApi.resumeThread(slug, threadId),
+    mutationFn: () => {
+      assertStartupAdmitted(qc);
+      return threadsApi.resumeThread(slug, threadId);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -568,7 +596,10 @@ function useAbortReplies(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => threadsApi.abortReplies(slug, threadId),
+    mutationFn: () => {
+      assertStartupAdmitted(qc);
+      return threadsApi.abortReplies(slug, threadId);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
@@ -584,8 +615,10 @@ function useRenameThread(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: RenameThreadArgs) =>
-      threadsApi.renameThread(slug, threadId, body),
+    mutationFn: (body: RenameThreadArgs) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.renameThread(slug, threadId, body);
+    },
     onSuccess: (data) => {
       // Patch the detail cache in place so the header shows the saved title
       // immediately; the list refetches so rows + pinned ranking stay fresh.
@@ -647,8 +680,10 @@ function useSetThreadPinned(threadId: string): MutationLike<
   const qc = useQueryClient();
   type ListCache = { threads: ThreadRecord[] } | InfiniteData<ThreadListPage, string | null>;
   const mutation = useMutation({
-    mutationFn: (variables: { body: SetThreadPinArgs; slug: string; threadId: string }) =>
-      threadsApi.setThreadPinned(variables.slug, variables.threadId, variables.body),
+    mutationFn: (variables: { body: SetThreadPinArgs; slug: string; threadId: string }) => {
+      assertStartupAdmitted(qc);
+      return threadsApi.setThreadPinned(variables.slug, variables.threadId, variables.body);
+    },
     onMutate: async ({ body, slug, threadId }) => {
       const pinKey = ['thread-list-pin', slug];
       qc.setQueryData<number>(pinKey, (n) => (n ?? 0) + 1);
@@ -697,7 +732,14 @@ function useSetThreadPinned(threadId: string): MutationLike<
       qc.setQueryData<number>(ctx.pinKey, (n) => Math.max(0, (n ?? 1) - 1));
     },
   });
-  return { mutateAsync: (body) => mutation.mutateAsync({ body, slug, threadId }), isPending: mutation.isPending };
+  // Admission is checked BEFORE the optimistic onMutate writes; a held pin
+  // never touches the cache or the paged-list fence.
+  return {
+    mutateAsync: (body) => isStartupAdmittedIn(qc)
+      ? mutation.mutateAsync({ body, slug, threadId })
+      : Promise.reject(new StartupHeldError()),
+    isPending: mutation.isPending,
+  };
 }
 
 // ---------------------------------------------------------------------------
