@@ -85,6 +85,30 @@ input. No GET owner or empty resource list is optional. Producer admission check
 the complete native Request census, required Responses and relay/document joins,
 including safety events, before P/W allocation.
 
+TASK13122 corrects three independent reader boundaries. Selected C/N/D command
+`python` is an absolute executable path, bound to `executable_manifest.python`;
+result `python` remains the independently measured3.12/3.14 minor label. Existing
+source/manifest/argv/callback/CLI-child joins and the actual cell version guard
+remain mandatory. Cleanup must complete within its unchanged original end and
+no later than admission; unused future allowance need not elapse. Original
+checkpoint/cleanup/admission chronology and full50s work reserve remain required.
+
+The native Request ledger now explicitly records main-frame and unredirected
+observations from the original Request object. Producer admission and the shared
+independent originals reader replay Requests and native main-frame commits in
+original order, validating pending snapshots and same-document lineage. A future
+or superseded document cannot own an earlier required Request; missing frame or
+redirect provenance refuses rather than inferring it. Compose and thread Responses
+both require their exact original Request <= Response <= successful terminal
+interval and ledger order. Full E05's navigation sequence/initialization/hold/race
+assertions remain separately mandatory. Existing full-window serialized controls
+include a prior real commit in their reader grammar, coherent negative inventories,
+future/superseded/nonGET/missing/mismatched/same-document/pending/frame/redirect
+counterexamples and both Response intervals. They establish reader sensitivity
+only; native producer/Chromium behavior is NOT RUN. Complete selected C/N/D and
+cleanup/admission fault proof remain PROOF NOT RUN without a genuine runnable
+prefix; empty pre-E05 controls do not cover those branches.
+
 A native read that returns a bounded prefix and then fails framing validation
 retains that prefix once and its first error/length/prefix digest. Native
 IncompleteRead.partial is used only when the read itself did not return. Such a

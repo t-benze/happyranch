@@ -8,6 +8,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import math
 import os
 import select
 import subprocess
@@ -552,6 +553,47 @@ def exercise(c: Controller) -> None:
               and len(required_requests) == len(responses) == len(c.browser.thread_responses)
               and list(c.browser.thread_responses.values()) == [dict(request_id=e['request_id'],response_id=e['response_id']) for e in responses],
               'every required native Request has one original Response')
+        # Reconstruct current main-frame ownership in ORIGINAL ledger order.
+        # A later document Request/commit cannot justify an earlier API Request.
+        check(all(type(e['at']) in (int,float) and math.isfinite(e['at']) for e in events)
+              and all(a['at'] <= b['at'] for a,b in zip(events,events[1:])),
+              'finite chronological native document ledger')
+        document_requests, committed_documents, pending_documents = {}, set(), set()
+        current_document = None
+        for event in events:
+            if event['event'] == 'request':
+                check(all(type(event.get(k)) is bool for k in ('navigation','main_frame','unredirected')),
+                      'original main-frame and redirect observations available')
+                expected_document = current_document if event['main_frame'] and event['unredirected'] else None
+                check(event['document_request_id'] is None if expected_document is None else
+                      type(event['document_request_id']) is int and event['document_request_id'] == expected_document,
+                      'original committed document at native Request issuance')
+                check(type(event['pending_documents']) is list
+                      and all(type(i) is int for i in event['pending_documents'])
+                      and event['pending_documents'] == sorted(pending_documents), 'original pending document inventory')
+                if event in required_requests:
+                    check(event['main_frame'] and event['unredirected'] and current_document is not None
+                          and not pending_documents, 'no required Request during ambiguous document transition')
+                document_requests[event['request_id']] = event
+                if event['main_frame'] and event['navigation']:
+                    pending_documents.add(event['request_id'])
+            elif event['event'] == 'navigation':
+                document_id = event['document_request_id']
+                check(type(event['new_document']) is bool and type(document_id) is int
+                      and event['url'].startswith(origin+'/'), 'typed same-origin actual document commit')
+                if event['new_document']:
+                    document = document_requests.get(document_id)
+                    check(document is not None and document_id in pending_documents and document_id not in committed_documents
+                          and document['main_frame'] and document['unredirected'] and document['navigation']
+                          and document['method'] == 'GET' and document['resource_type'] == 'document'
+                          and document['url'] == event['url'] and document['at'] <= event['at'],
+                          'earlier unredirected GET main-frame document commit')
+                    current_document = document_id
+                    committed_documents.add(document_id)
+                    pending_documents.remove(document_id)
+                else:
+                    check(current_document is not None and document_id == current_document and not pending_documents,
+                          'same-document retains actual committed lineage without pending navigation')
         for issued in required_requests:
             response = next(e for e in responses if e['request_id'] == issued['request_id'])
             terminal = [e for e in events if e['event'] in {'request-failed','request-finished'}
@@ -563,7 +605,9 @@ def exercise(c: Controller) -> None:
                   'required native Request has its actual unambiguous issuing document')
             check(len(terminal) == 1 and terminal[0]['event'] == 'request-finished'
                   and response['url'] == issued['url'] and response['method'] == issued['method'] and response['status'] == 200
-                  and issued['at'] <= response['at'] <= terminal[0]['at'], 'required native Response/terminal identity and status')
+                  and issued['at'] <= response['at'] <= terminal[0]['at']
+                  and events.index(issued) <= events.index(response) <= events.index(terminal[0]),
+                  'required native Response/terminal identity and status')
         check(events and events[-1]['event'] == 'context-closed' and proxy.context_closed == events[-1]
               and all(a['at'] <= b['at'] for a,b in zip(events,events[1:]))
               and [e['event'] for e in events if e['event'] in

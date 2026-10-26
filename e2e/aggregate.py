@@ -169,12 +169,13 @@ def original_controls() -> dict:
     # A full-window raw census control uses serialized observations only. This
     # does not manufacture a healthy E05/native fixture or run any transport.
     origin = 'http://127.0.0.1:4321'
-    events = [dict(event='request',request_id=0,url=origin+'/orgs/alpha/threads',method='GET',resource_type='document',navigation=True,document_request_id=None,pending_documents=[],at=0.),
-              dict(event='request',request_id=1,url=origin+record['target'],method='POST',resource_type='fetch',navigation=False,document_request_id=0,pending_documents=[],at=1.),
+    events = [dict(event='request',request_id=0,url=origin+'/orgs/alpha/threads',method='GET',resource_type='document',navigation=True,main_frame=True,unredirected=True,document_request_id=None,pending_documents=[],at=0.),
+              dict(event='navigation',url=origin+'/orgs/alpha/threads',new_document=True,document_request_id=0,at=0.5),
+              dict(event='request',request_id=1,url=origin+record['target'],method='POST',resource_type='fetch',navigation=False,main_frame=True,unredirected=True,document_request_id=0,pending_documents=[],at=1.),
               dict(event='compose-response',request_id=1,response_id=0,url=origin+record['target'],method='POST',status=200,browser_copy='UNAVAILABLE',body=None,sha256=None,bytes=None,at=6.),
               dict(event='request-finished',request_id=1,url=origin+record['target'],method='POST',at=8.)]
     reference = dict(original,origin='relay-original',relay_id=0,request_id=1,response_id=0)
-    observations = dict(capture_inventory=dict(refusals=[],closed=9.,retained_bytes=4096,retained_facts=100,requests=[dict(events[0],target='/orgs/alpha/threads'),dict(events[1],target=record['target'],terminals=[events[3]])]),thread_proxy=[record],thread_originals=[reference],
+    observations = dict(capture_inventory=dict(refusals=[],closed=9.,retained_bytes=4096,retained_facts=100,requests=[dict(events[0],target='/orgs/alpha/threads'),dict(events[2],target=record['target'],terminals=[events[4]])]),thread_proxy=[record],thread_originals=[reference],
                         durable=[dict(threads_cases=dict(transport=dict(browser_port=4321)))])
     with tempfile.TemporaryDirectory(prefix='aggregate-original-controls-') as tmp:
         directory = Path(tmp)
@@ -183,19 +184,19 @@ def original_controls() -> dict:
             return validate_e05_originals(obs,directory)
         assert read(observations,events)[1] == reference
         results['A04-full-window-reader'] = 'unique complete original join only; native behavior NOT RUN'
-        for name,predicate in (('duplicate-response','unique Response'),('boolean-response','unique Response'),('pending-document','issuing document'),
+        for name,predicate in (('duplicate-response','unique Response'),('boolean-response','unique Response'),('pending-document','pending document snapshot'),
                                ('wrong-query','unique bijection'),('missing-terminal','native terminal'),
                                ('late-member','every automatic'),('conflicting-window','every automatic')):
             obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
             if name == 'duplicate-response':
-                ledger.insert(3,copy.deepcopy(ledger[2]))
+                ledger.insert(4,copy.deepcopy(ledger[3]))
             elif name == 'boolean-response':
-                ledger[2]['response_id'] = False
+                ledger[3]['response_id'] = False
             elif name == 'pending-document':
-                ledger[1]['pending_documents'] = [2]
+                ledger[2]['pending_documents'] = [2]
             elif name == 'wrong-query':
-                ledger[1]['url'] += '?different=1'
-                ledger[2]['url'] = ledger[3]['url'] = ledger[1]['url']
+                ledger[2]['url'] += '?different=1'
+                ledger[3]['url'] = ledger[4]['url'] = ledger[2]['url']
             elif name == 'missing-terminal':
                 ledger.pop()
             elif name == 'late-member':
@@ -206,7 +207,7 @@ def original_controls() -> dict:
                 # Keep the serialized owner inventory coherent so the control
                 # reaches its original document/window/terminal predicate.
                 retained = obs['capture_inventory']['requests'][1]
-                retained.update(ledger[1],target=ledger[1]['url'][len(origin):])
+                retained.update(ledger[2],target=ledger[2]['url'][len(origin):])
                 if name == 'missing-terminal':
                     retained.pop('terminals')
                 else:
@@ -226,7 +227,7 @@ def original_controls() -> dict:
             if name == 'missing-request-inventory':
                 obs['capture_inventory']['requests'] = []
             elif name == 'missing-required-response':
-                issued = dict(ledger[1],request_id=2,url=origin+'/api/v1/orgs/alpha/threads/THR-007',method='GET',at=8.1)
+                issued = dict(ledger[2],request_id=2,url=origin+'/api/v1/orgs/alpha/threads/THR-007',method='GET',at=8.1)
                 terminal = dict(event='request-finished',request_id=2,url=issued['url'],method='GET',at=8.2)
                 ledger.extend([issued,terminal])
                 obs['capture_inventory']['requests'].append(dict(issued,target=issued['url'][len(origin):],terminals=[terminal]))
@@ -243,6 +244,102 @@ def original_controls() -> dict:
                 results['R3-R5-'+name] = str(exc)
             else:
                 raise AssertionError('incomplete census accepted: '+name)
+        def retain_inventory(obs, ledger):
+            obs['capture_inventory']['requests'] = []
+            for issued in (e for e in ledger if e['event'] == 'request'):
+                retained = dict(issued,target=issued['url'][len(origin):])
+                terminals = [e for e in ledger if e['event'] in {'request-finished','request-failed'}
+                             and e['request_id'] == issued['request_id']]
+                if terminals:
+                    retained['terminals'] = terminals
+                    if terminals[0]['event'] == 'request-failed':
+                        retained['failed'] = terminals[0]['at']
+                obs['capture_inventory']['requests'].append(retained)
+        document_cases = {
+            'future-document':'committed issuing document',
+            'superseded-document':'committed issuing document',
+            'nonGET-document':'GET document commit',
+            'missing-commit':'committed issuing document',
+            'mismatched-commit':'GET document commit',
+            'same-document-lineage':'same-document retains committed lineage',
+            'pending-transition':'unambiguous issuing document',
+            'pending-snapshot':'pending document snapshot',
+            'missing-frame-fact':'provenance available',
+            'non-main-frame':'GET document commit',
+            'redirected-document':'GET document commit',
+        }
+        for name,predicate in document_cases.items():
+            obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
+            if name == 'future-document':
+                ledger[2]['document_request_id'] = 2
+                ledger.append(dict(ledger[0],request_id=2,document_request_id=0,at=8.1))
+                ledger.append(dict(ledger[1],document_request_id=2,at=8.2))
+            elif name in {'superseded-document','pending-transition'}:
+                issued = dict(ledger[0],request_id=1,document_request_id=0,at=0.6)
+                # Request IDs remain contiguous in chronological issuance order.
+                for event in ledger[2:]:
+                    event['request_id'] = 2
+                obs['thread_originals'][0]['request_id'] = 2
+                ledger[2:2] = [issued]
+                if name == 'superseded-document':
+                    ledger.insert(3,dict(ledger[1],document_request_id=1,at=0.7))
+                else:
+                    ledger[3]['pending_documents'] = [1]
+            elif name == 'nonGET-document':
+                ledger[0]['method'] = 'PUT'
+            elif name == 'missing-commit':
+                ledger.pop(1)
+                ledger[1]['pending_documents'] = [0]
+            elif name == 'mismatched-commit':
+                ledger[1]['url'] += '/wrong'
+            elif name == 'same-document-lineage':
+                ledger.insert(2,dict(ledger[1],new_document=False,document_request_id=99,at=0.7))
+            elif name == 'pending-snapshot':
+                ledger[2]['pending_documents'] = [99]
+            elif name == 'missing-frame-fact':
+                ledger[0].pop('main_frame')
+            elif name == 'non-main-frame':
+                ledger[0]['main_frame'] = False
+            else:
+                ledger[0]['unredirected'] = False
+            retain_inventory(obs,ledger)
+            try:
+                read(obs,ledger)
+            except ValueError as exc:
+                assert predicate in str(exc), (name,str(exc))
+                results['F3-document-'+name] = str(exc)
+            else:
+                raise AssertionError('unsafe committed-document census accepted: '+name)
+        same_document = copy.deepcopy(events)
+        same_document.insert(2,dict(events[1],new_document=False,at=0.75))
+        assert read(observations,same_document)[1] == reference
+        results['F3-same-document-positive'] = 'serialized original committed lineage retained'
+        # Exercise compose AND thread Responses at this real reader boundary.
+        for kind in ('compose','thread'):
+            obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
+            if kind == 'thread':
+                for event in ledger[2:]:
+                    event['method'] = 'GET'
+                    event['url'] = origin+'/api/v1/orgs/alpha/threads/THR-007'
+                ledger[3]['event'] = 'thread-response'
+                wire = obs['thread_proxy'][0]
+                wire.update(method='GET',target='/api/v1/orgs/alpha/threads/THR-007',
+                            path='/api/v1/orgs/alpha/threads/THR-007',ordinal=None)
+                wire['original']['required_kind'] = 'detail'
+            retain_inventory(obs,ledger)
+            assert read(obs,ledger)[1] == reference
+            results['F3-'+kind+'-response-positive'] = 'serialized committed-document/Response interval only'
+            for name,at in (('before-request',0.75),('after-terminal',8.5)):
+                changed = copy.deepcopy(ledger)
+                changed[3]['at'] = at
+                changed.sort(key=lambda e:e['at'])
+                try:
+                    read(obs,changed)
+                except ValueError as exc:
+                    assert 'Request <= Response <= successful terminal interval' in str(exc), (kind,name,str(exc))
+                    results['F3-'+kind+'-'+name] = str(exc)
+                else:
+                    raise AssertionError('Response outside its original interval accepted: '+kind+' '+name)
         assert read(observations,events)[1] == reference
     # Serialized body-independent owner grammar at the SAME reader boundary.
     # These literal facts establish reader sensitivity only; no native owner is
@@ -258,7 +355,7 @@ def original_controls() -> dict:
                dict(event='checkpoint',at=3.6,**checkpoint)],
         operations=[dict(id=1,kind='getresponse',read_id=None,started=3.,finished=3.5,outcome='returned',result=header)],
         received=0,delivered=0,forced=None,terminal=None,mode=dict(original_blocking=False,duplicate_blocking=False,at=2.4),errors=[],finished=4.6)
-    request = dict(event='request',request_id=0,url=origin+'/asset.css',method='GET',resource_type='stylesheet',navigation=False,document_request_id=0,pending_documents=[],at=0.)
+    request = dict(event='request',request_id=0,url=origin+'/asset.css',method='GET',resource_type='stylesheet',navigation=False,main_frame=True,unredirected=True,document_request_id=0,pending_documents=[],at=0.)
     proxy = dict(relay_id=0,method='GET',path='/asset.css',target='/asset.css',ordinal=None,entered=1.,forwarded=2.,closed=5.,delivered=4.7,
                  browser_request_id=0,owner_generation=1,io_owner=owner,response_outcome=header,status=200,streaming=False,upstream_operation=owner['operations'][0])
     lifecycle = [dict(event='context-closing',request_ids=[],at=7.),dict(event='proxy-streams-shutdown',streams=[],at=7.1),
@@ -1522,6 +1619,47 @@ def validate_e05_originals(observations: dict, directory: Path) -> dict:
           and len({e['request_id'] for e in native}) == len(native) <= 512, 'exact unique Response objects')
     check({e['request_id'] for e in required_requests} == {e['request_id'] for e in native}
           and len(required_requests) == len(native), 'every required native Request has its own Response')
+    # Replay the ORIGINAL order, never search a future Request to establish an
+    # issuing document. Main-frame/unredirected facts come from native objects;
+    # the pinned main-frame commit callback supplies the commit observation.
+    check(all(type(e['at']) in (int,float) and math.isfinite(e['at']) for e in events)
+          and all(a['at'] <= b['at'] for a,b in zip(events,events[1:])), 'chronological native document ledger')
+    seen, committed, pending = {}, set(), set()
+    current_document = None
+    for event in events:
+        if event['event'] == 'request':
+            check(all(type(event.get(k)) is bool for k in ('navigation','main_frame','unredirected')),
+                  'native main-frame and redirect provenance available')
+            check(type(event['pending_documents']) is list
+                  and all(type(i) is int for i in event['pending_documents'])
+                  and event['pending_documents'] == sorted(pending), 'consistent original pending document snapshot')
+            expected_document = current_document if event['main_frame'] and event['unredirected'] else None
+            check(event['document_request_id'] is None if expected_document is None else
+                  type(event['document_request_id']) is int and event['document_request_id'] == expected_document,
+                  'actual committed issuing document at Request issuance')
+            if event in required_requests:
+                check(event['main_frame'] and event['unredirected'] and current_document is not None and not pending,
+                      'unambiguous issuing document at issue time')
+            seen[event['request_id']] = event
+            if event['navigation'] and event['main_frame']:
+                pending.add(event['request_id'])
+        elif event['event'] == 'navigation':
+            document_id = event['document_request_id']
+            check(type(event['new_document']) is bool and type(document_id) is int
+                  and event['url'].startswith(origin+'/'), 'typed same-origin native document commit lineage')
+            if event['new_document']:
+                document = seen.get(document_id)
+                check(document is not None and document_id not in committed and document_id in pending
+                      and document['navigation'] and document['main_frame'] and document['unredirected']
+                      and document['resource_type'] == 'document' and document['method'] == 'GET'
+                      and document['url'] == event['url'] and document['at'] <= event['at'],
+                      'actual earlier unredirected main-frame GET document commit')
+                committed.add(document_id)
+                pending.remove(document_id)
+                current_document = document_id
+            else:
+                check(current_document is not None and document_id == current_document and not pending,
+                      'same-document retains committed lineage without pending navigation')
     proxies = observations['thread_proxy']
     check(len(proxies) <= 512 and [r['relay_id'] for r in proxies] == list(range(len(proxies))), 'complete relay membership including late requests')
     def required(r):
@@ -1537,10 +1675,13 @@ def validate_e05_originals(observations: dict, directory: Path) -> dict:
           'complete retained membership has original byte/fact reservations')
     case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
     origin = 'http://127.0.0.1:' + str(case['transport']['browser_port'])
-    def candidates(e):
+    def candidates(e, response):
         terminal = [t for t in events if t['event'] in {'request-finished','request-failed'} and t['request_id'] == e['request_id']]
         check(len(terminal) == 1 and terminal[0]['event'] == 'request-finished'
               and terminal[0]['url'] == e['url'] and terminal[0]['method'] == e['method'], 'exact successful original native terminal')
+        check(e['at'] <= response['at'] <= terminal[0]['at']
+              and events.index(e) <= events.index(response) <= events.index(terminal[0]),
+              'exact Request <= Response <= successful terminal interval')
         return [r for r in members if r['method'] == e['method'] and origin+r['target'] == e['url']
                 and r['entered'] <= terminal[0]['at'] and r['closed'] >= e['at']]
     matches = {}
@@ -1549,9 +1690,7 @@ def validate_e05_originals(observations: dict, directory: Path) -> dict:
         check(len(issued) == 1 and issued[0]['url'] == response['url'] and issued[0]['method'] == response['method'], 'exact Response.request identity')
         issued = issued[0]
         check(type(issued.get('document_request_id')) is int and issued.get('pending_documents') == [], 'unambiguous issuing document at issue time')
-        document = [e for e in requests if e['request_id'] == issued['document_request_id']]
-        check(len(document) == 1 and document[0]['navigation'] is True and document[0]['resource_type'] == 'document', 'actual issuing native document')
-        options = candidates(issued)
+        options = candidates(issued, response)
         check(len(options) == 1 and options[0]['relay_id'] not in {r['relay_id'] for r in matches.values()}, 'full-window unique bijection; no URL/ordinal fallback')
         wire = options[0]
         check(response['status'] == wire['status'] == 200 and wire['original']['required_kind'] ==
@@ -1594,7 +1733,7 @@ def validate_e05_safety(observations: dict, events: list[dict]) -> None:
         return json.dumps(left,sort_keys=True,allow_nan=False) == json.dumps(right,sort_keys=True,allow_nan=False)
 
     event_fields = {
-        'request': 'request_id url method resource_type navigation document_request_id pending_documents',
+        'request': 'request_id url method resource_type navigation main_frame unredirected document_request_id pending_documents',
         'request-failed': 'request_id url method failure', 'request-finished': 'request_id url method',
         'stream-response': 'request_id url method status',
         'context-closing': 'request_ids', 'proxy-streams-shutdown': 'streams',
@@ -2376,7 +2515,7 @@ def validate_e05_operations(row: dict, observations: dict, point: dict, groups: 
     for cmd,a in zip(commands,attempts):
         keys = ("thread","token_sha256","agent","org","purpose","pid") if "thread" in a["provider"] else ("task","session","agent","org","pid")
         check(cmd["provider"] == {k:a["provider"][k] for k in keys} and a["provider"] in starts, "actual provider receipt identity")
-        check(cmd["source_sha"] == row["source_sha"] and cmd["python"] == row["python"] and cmd["timed_out"] is False and cmd["output_truncated"] is False and a["observed_start"] == a["provider"]["pid_start"]
+        check(cmd["source_sha"] == row["source_sha"] and cmd["timed_out"] is False and cmd["output_truncated"] is False and a["observed_start"] == a["provider"]["pid_start"]
               and a["entered"] <= cmd["entered"] <= cmd["finished"] <= a["finished"] < a["instruction"]["deadline"]
               <= a["entered"] + 10 and cmd["execution_deadline"] == a["instruction"]["deadline"] - 1, "original live owner/deadline")
         check(all(w in observations["relay"] and w["dropped"] is False for w in cmd["wire"]) and cmd["wire"], "actual complete relay references")
@@ -2963,8 +3102,12 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
     check(type(a['starts']) is int and type(a['host']) is int and (a['starts'],a['host']) == (S,H), 'source-selected checkpoint totals')
     case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
     point = case['checkpoints'][-1]
-    check(same(point,a['point']) and point['name'] == name and point['at'] <= a['entered'] < a['finished']
-          and case['cleanup_finished'] <= case['cleanup_deadline'] < a['finished'], 'original settled operation and original cleanup end')
+    check(all(type(t) in (int,float) and math.isfinite(t) for t in
+              (case['entered'],point['at'],case['cleanup_finished'],case['cleanup_deadline'],
+               a['entered'],a['finished'],observations['e07']['scenario_deadline']))
+          and same(point,a['point']) and point['name'] == name
+          and case['entered'] <= point['at'] <= case['cleanup_finished'] <= a['entered'] < a['finished']
+          and case['cleanup_finished'] <= case['cleanup_deadline'], 'original settled operation and original cleanup end')
     check(a['finished']+50 < observations['e07']['scenario_deadline'], 'full50s original work remains after admission')
     check(all(f['stage'] == 'controller-action' for f in observations['failures'] if f['at'] <= a['finished']), 'no pre-admission safety/teardown/export failure')
     boots = observations['boots']

@@ -1510,7 +1510,9 @@ class Browser:
         def request(req):
             self.controller.browser_relay.inventory_fact(req.url)
             observed = dict(event='request', request_id=len(requests), url=req.url, method=req.method,
-                            resource_type=req.resource_type, navigation=req.is_navigation_request(), at=time.monotonic())
+                            resource_type=req.resource_type, navigation=req.is_navigation_request(),
+                            main_frame=req.frame == page.main_frame,
+                            unredirected=req.redirected_from is None and req.redirected_to is None, at=time.monotonic())
             observed.update(document_request_id=self.thread_document if req.frame == page.main_frame and req.redirected_from is None and req.redirected_to is None else None,
                             pending_documents=sorted(self.thread_pending_documents))
             if req.is_navigation_request() and req.frame == page.main_frame:
