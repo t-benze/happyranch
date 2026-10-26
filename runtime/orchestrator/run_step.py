@@ -178,6 +178,203 @@ def _terminal_worktree_process_reference(
 _ROOT_WORKTREE_OWNER_EVENTS: ContextVar = ContextVar('root_worktree_owner_events', default=None)
 
 
+class _StartupSweepUnavailable(RuntimeError):
+    """An observed mandatory outcome was negative or remains unsettled."""
+
+
+class _StartupSweepOwner:
+    """Retain a cold sweep's native tails through its sole batch decision.
+
+    The context is explicitly installed in every tail before its coroutine is
+    constructed. No mutex is held during a DB operation, join or effect. An
+    admitted effect may finish after failure; failure prevents the NEXT effect
+    and suppresses the entire final batch, without undoing committed history.
+    """
+
+    def __init__(self, orch, transitions):
+        self.orch = orch
+        self.delivery = dict(orch=orch, events=transitions, active=True,
+                             teardown_incomplete=False, startup=self)
+        self._lock = threading.RLock()
+        self._body_thread = threading.get_ident()
+        self._body_open = True
+        self._sealed = False
+        self._tails: dict[threading.Thread, Future] = {}
+        self._first: BaseException | None = None
+        self._secondary: list[BaseException] = []
+        self.counts = dict(tails_started=0, tails_settled=0, effects_started=0,
+                           effects_settled=0, human_done=0, negative=0,
+                           secondary_overflow=0)
+
+    def fail(self, cause: BaseException) -> None:
+        with self._lock:
+            self.delivery['teardown_incomplete'] = True
+            if self._first is None:
+                self._first = cause
+            elif self._first is not cause:
+                if len(self._secondary) < 8:
+                    self._secondary.append(cause)
+                else:
+                    self.counts['secondary_overflow'] += 1
+
+    def negative(self, code: str) -> None:
+        with self._lock:
+            self.counts['negative'] += 1
+        self.fail(_StartupSweepUnavailable(code))
+
+    def check(self) -> None:
+        gate = getattr(self.orch, '_startup_recovery', None)
+        if gate is not None:
+            snapshot = gate.snapshot()
+            if snapshot['stopping'] or snapshot['state'] != 'recovering':
+                self.negative('startup_sweep_admission_closed')
+        with self._lock:
+            cause = self._first
+            sealed = self._sealed
+        if cause is not None:
+            raise _StartupSweepUnavailable('startup_sweep_unsettled') from cause
+        if sealed:
+            raise _StartupSweepUnavailable('startup_sweep_sealed')
+
+    @contextmanager
+    def effect(self):
+        # Admission and unsafe publication serialize on the same short lock.
+        self.check()
+        with self._lock:
+            if self._first is not None or self._sealed:
+                raise _StartupSweepUnavailable('startup_sweep_effect_closed')
+            self.counts['effects_started'] += 1
+        try:
+            yield
+        except BaseException as exc:
+            self.fail(exc)
+            raise
+        finally:
+            with self._lock:
+                self.counts['effects_settled'] += 1
+
+    def human_finished(self, disposition: str) -> None:
+        if disposition == 'done':
+            with self._lock:
+                self.counts['human_done'] += 1
+        else:
+            self.negative('startup_human_' + disposition)
+
+    def start_tail(self, operation: Callable[[], Any]) -> threading.Thread:
+        """Reserve BEFORE Thread.start; completion is consumed only after join."""
+        self.check()
+        future = Future()
+
+        def run() -> None:
+            token = _ROOT_WORKTREE_OWNER_EVENTS.set(self.delivery)
+            try:
+                operation()
+            except BaseException as exc:
+                self.fail(exc)
+                future.set_exception(exc)
+            else:
+                future.set_result(None)
+            finally:
+                try:
+                    _ROOT_WORKTREE_OWNER_EVENTS.reset(token)
+                except BaseException as exc:
+                    self.fail(exc)
+
+        thread = threading.Thread(target=run, name='startup-cleanup-tail', daemon=True)
+        with self._lock:
+            retained_caller = threading.current_thread() in self._tails
+            if ((not self._body_open and not retained_caller) or self._sealed
+                    or self._first is not None):
+                raise _StartupSweepUnavailable('startup_tail_registration_closed')
+            # Retire only positively ended Threads; Future.done alone is not
+            # native completion and never releases the live-tail allowance.
+            for ended, completed in tuple(self._tails.items()):
+                if ended.ident is not None and not ended.is_alive():
+                    self._tails.pop(ended)
+                    self._consume(completed)
+            if self._first is not None:
+                raise _StartupSweepUnavailable('startup_tail_registration_failed') from self._first
+            if len(self._tails) >= 16:
+                self.negative('startup_tail_capacity')
+                raise _StartupSweepUnavailable('startup_tail_capacity')
+            self._tails[thread] = future
+            self.counts['tails_started'] += 1
+            # Holding the short owner mutex through start closes the race with
+            # drain selecting an unstarted handle. No DB/native wait happens.
+            try:
+                thread.start()
+            except BaseException as exc:
+                self._tails.pop(thread)
+                self.fail(exc)
+                raise
+        return thread
+
+    def _consume(self, future: Future) -> None:
+        try:
+            future.result()
+        except BaseException as exc:
+            self.fail(exc)
+        self.counts['tails_settled'] += 1
+
+    def drain(self) -> None:
+        """Only the body owner drains, outside all DB/publisher locks."""
+        if threading.get_ident() != self._body_thread:
+            raise RuntimeError('startup_sweep_wrong_drain_owner')
+        db = getattr(self.orch, '_db', None)
+        if db is not None and db._lock._is_owned():
+            raise RuntimeError('startup_sweep_drain_under_database_lock')
+        org = getattr(getattr(self.orch, '_workflow_drafts', None), 'org', None)
+        if org is not None and org.workflow_authority._publisher_lock._is_owned():
+            raise RuntimeError('startup_sweep_drain_under_publisher_lock')
+        with self._lock:
+            self._body_open = False
+        while True:
+            with self._lock:
+                tails = tuple(self._tails.items())
+                if not tails:
+                    self._sealed = True
+                    break
+            for thread, future in tails:
+                # No timeout implies settlement. Wrapper cancellation cannot
+                # skip this original native handle or close beneath it.
+                thread.join()
+                with self._lock:
+                    if self._tails.pop(thread, None) is not None:
+                        self._consume(future)
+        with self._lock:
+            if self.counts['effects_started'] != self.counts['effects_settled']:
+                self.negative('startup_effects_incomplete')
+
+    def raise_if_failed(self) -> None:
+        with self._lock:
+            cause = self._first
+            secondary = tuple(self._secondary)
+        if cause is not None:
+            for failure in secondary:
+                try:
+                    cause.add_note('Secondary startup failure: ' + type(failure).__name__)
+                except BaseException:
+                    pass
+            raise cause
+
+
+def _startup_sweep_owner(orch):
+    delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
+    if delivery is not None and delivery['orch'] is orch and delivery['active']:
+        return delivery.get('startup')
+    return None
+
+
+@contextmanager
+def _startup_sweep_effect(orch):
+    owner = _startup_sweep_owner(orch)
+    if owner is None:
+        yield
+    else:
+        with owner.effect():
+            yield
+
+
 class _RootWorktreeTransitions(list):
     """Bounded owner manifest; overflow is an explicit audit-window frontier."""
     def __init__(self):
@@ -772,8 +969,19 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
     """One finite, synchronous owner batch; no continuation or replay retry."""
     delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
     if delivery is not None and delivery['orch'] is orch and delivery['active']:
-        delivery['events'].extend(transitions)
-        delivery['teardown_incomplete'] |= teardown_incomplete
+        startup = delivery.get('startup')
+        if startup is not None:
+            with startup._lock:
+                if startup._sealed:
+                    raise _StartupSweepUnavailable('startup_transition_after_seal')
+                if transitions is not delivery['events']:
+                    delivery['events'].extend(transitions)
+                delivery['teardown_incomplete'] |= teardown_incomplete
+                if teardown_incomplete:
+                    startup.negative('startup_tail_teardown_incomplete')
+        else:
+            delivery['events'].extend(transitions)
+            delivery['teardown_incomplete'] |= teardown_incomplete
         return _RootWorktreeBatchDisposition('deferred', 'outer_owner_retained')
     if orch is None:
         return _RootWorktreeBatchDisposition('unknown', 'cleanup_owner_unavailable')
@@ -1938,6 +2146,7 @@ class _HumanFailedRecoveryOperation:
     job_ids: tuple[str, ...] = ()
     bookkeeping: list[Callable[[], None]] = field(default_factory=list)
     parent_effect: Callable[[], None] | None = None
+    startup_owner: _StartupSweepOwner | None = None
 
     def matches_context(self, context: dict) -> bool:
         task, episode = context["task"], context["episode"]
@@ -1957,6 +2166,8 @@ class _HumanFailedRecoveryOperation:
             self.timer = None
         if not self.completion.done():
             self.completion.set_result(disposition)
+            if self.startup_owner is not None:
+                self.startup_owner.human_finished(disposition)
 
 
 def _is_human_failed_recovery(orch: "Orchestrator", task, report) -> bool:
@@ -2059,7 +2270,9 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
                     operation.bookkeeping.clear()
                     operation.finish("done")
                     return
-    except Exception:
+    except Exception as exc:
+        if operation.startup_owner is not None:
+            operation.startup_owner.fail(exc)
         logger.exception("human failed recovery requires next-start reconciliation task=%s phase=%s", operation.task_id, operation.phase)
         operation.finish("recovery_required")
     finally:
@@ -2123,8 +2336,11 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
                                  bookkeeping: Callable[[], None] | None = None,
                                  parent_effect: Callable[[], None] | None = None) -> _HumanFailedRecoveryOperation:
     """Retain selected identity before transferring a worker's finite tail."""
+    startup_owner = _startup_sweep_owner(orch)
+    if startup_owner is not None:
+        startup_owner.check()
     operation = _HumanFailedRecoveryOperation(task_id, agent, session_id, result_id,
-        parent_effect=parent_effect)
+        parent_effect=parent_effect, startup_owner=startup_owner)
     def install() -> None:
         operations = getattr(orch, "_human_failed_recovery_operations", None)
         if operations is None:
@@ -2174,6 +2390,8 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
     else:
         install()
         while not operation.completion.done():
+            if startup_owner is not None:
+                startup_owner.check()
             time.sleep(0.05)
             _drive_human_failed_recovery(orch, operation)
     return operation
@@ -4868,7 +5086,7 @@ def _kill_jobs_for_terminating_task(
     after_recovery_parent_effect: Callable[[], None] | None = None,
     human_recovery_operation: _HumanFailedRecoveryOperation | None = None,
     current_owner: Callable[[], bool] | None = None,
-) -> asyncio.Task | None:
+) -> asyncio.Task | threading.Thread | None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
@@ -4968,22 +5186,25 @@ def _kill_jobs_for_terminating_task(
             # termination, signals, or the runner's grace-period wait above.
             now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             if recovery_owner is None:
-                if current_owner is None:
-                    db.backstop_terminated_task_jobs(task_id, finished_at=now)
-                else:
-                    _attachment_owned_effect(orch, current_owner, lambda: db.backstop_terminated_task_jobs(task_id, finished_at=now))
+                with _startup_sweep_effect(orch):
+                    if current_owner is None:
+                        db.backstop_terminated_task_jobs(task_id, finished_at=now)
+                    else:
+                        _attachment_owned_effect(orch, current_owner, lambda: db.backstop_terminated_task_jobs(task_id, finished_at=now))
             else:
                 agent, session_id, result_row_id, terminal_status = recovery_owner
                 handed_off = False
                 if after_recovery_cleanup is not None:
-                    handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
-                        task_id=task_id, agent=agent,
-                        recovery_session_id=session_id, result_row_id=result_row_id,
-                        terminal_status=terminal_status,
-                        effect=after_recovery_cleanup,
-                    )
+                    with _startup_sweep_effect(orch):
+                        handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
+                            task_id=task_id, agent=agent,
+                            recovery_session_id=session_id, result_row_id=result_row_id,
+                            terminal_status=terminal_status,
+                            effect=after_recovery_cleanup,
+                        )
                 if handed_off and after_recovery_parent_effect is not None:
-                    after_recovery_parent_effect()
+                    with _startup_sweep_effect(orch):
+                        after_recovery_parent_effect()
         except BaseException:
             drain_failed = True
             raise
@@ -5001,6 +5222,9 @@ def _kill_jobs_for_terminating_task(
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        startup = _startup_sweep_owner(orch)
+        if startup is not None:
+            return startup.start_tail(lambda: asyncio.run(_kill_and_backstop()))
         # No event loop — run_step thread-pool worker. Spawn a daemon thread
         # that owns its own loop.
         threading.Thread(
@@ -5543,6 +5767,18 @@ def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord")
 
 
 def _enqueue_parent_if_waiting(
+    orch: "Orchestrator", task_id: str, *,
+    root_auto_revisit_spawned: bool = False,
+    current_owner: Callable[[], bool] | None = None,
+) -> None:
+    with _startup_sweep_effect(orch):
+        return _enqueue_parent_if_waiting_owned(
+            orch, task_id, root_auto_revisit_spawned=root_auto_revisit_spawned,
+            current_owner=current_owner,
+        )
+
+
+def _enqueue_parent_if_waiting_owned(
     orch: "Orchestrator",
     task_id: str,
     *,

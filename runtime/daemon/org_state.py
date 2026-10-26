@@ -134,6 +134,10 @@ class OrgState:
     # C is independent of diagnostic B and ordinary runner/task ownership.
     _thread_release_attachment: Any = field(init=False, default=None, repr=False)
     _thread_release_users: set[object] = field(init=False, default_factory=set, repr=False)
+    # Shared daemon boot owner; these references do not admit or launch work.
+    _startup_recovery: Any = field(init=False, default=None, repr=False)
+    _startup_reads: Any = field(init=False, default=None, repr=False)
+    _startup_read_revoked: bool = field(init=False, default=False, repr=False)
 
     def _acquire_thread_release(self, operation) -> bool:
         a = self._thread_release_attachment
@@ -492,6 +496,13 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        # Synchronous direct close cannot cancel/join a native reader. Refuse
+        # before touching any connection unless its actual owner has drained.
+        if self._startup_recovery is not None:
+            self._startup_recovery.assert_native_idle()
+        if self._startup_reads is not None:
+            self._startup_reads.revoke(self)
+            self._startup_reads.assert_idle(self)
         self._revoke_thread_releases()
         self._assert_thread_releases_idle()
         self._revoke_cleanup_diagnostics()

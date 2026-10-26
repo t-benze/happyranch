@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from runtime.daemon.team_move_service import TeamMoveService
     from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
     from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
+    from runtime.daemon.startup_recovery import StartupRecovery
+    from runtime.daemon.startup_reads import StartupReads
 
 from runtime.config import Settings
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
@@ -72,6 +74,42 @@ class DaemonState:
     _cleanup_diagnostics: _CleanupDiagnostics | None = field(init=False, default=None, repr=False)
 
     _thread_release_service: _ThreadDeliveryReleaseService | None = field(init=False, default=None, repr=False)
+    _startup_recovery: StartupRecovery | None = field(init=False, default=None, repr=False)
+    _startup_reads: StartupReads | None = field(init=False, default=None, repr=False)
+
+    def _bind_startup_owner(self, app) -> None:
+        """One boot owner; construction binds references without DB work."""
+        from runtime.daemon.startup_recovery import StartupRecovery
+        from runtime.daemon.startup_reads import StartupReads
+        if self._startup_recovery is not None or self._startup_reads is not None:
+            raise RuntimeError("startup_owner_already_bound")
+        recovery = StartupRecovery(self, app)
+        self._startup_recovery = recovery
+        self._startup_reads = StartupReads(self, recovery)
+        for org in self.orgs.values():
+            self._attach_startup_owner(org)
+
+    def _attach_startup_owner(self, org) -> None:
+        org._startup_recovery = self._startup_recovery
+        org._startup_reads = self._startup_reads
+        org.orchestrator._startup_recovery = self._startup_recovery
+
+    async def _drain_startup(self, org=None) -> None:
+        # Recovery may require request-loop queue acknowledgements to end. Join
+        # outside org/DB/publisher locks, before the first connection can close.
+        if self._startup_recovery is not None:
+            if org is None:
+                await self._startup_recovery.close()
+            else:
+                self._startup_recovery.assert_native_idle()
+        if self._startup_reads is not None:
+            await self._startup_reads.drain(org)
+
+    def _assert_startup_idle(self, org=None) -> None:
+        if self._startup_recovery is not None:
+            self._startup_recovery.assert_native_idle()
+        if self._startup_reads is not None:
+            self._startup_reads.assert_idle(org)
 
     def _revoke_thread_releases(self, org=None) -> None:
         if self._thread_release_service is not None:
@@ -119,6 +157,10 @@ class DaemonState:
 
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
+        if self._startup_recovery is not None:
+            self._startup_recovery.stop()
+        if self._startup_reads is not None:
+            self._startup_reads.revoke()
         self._runner_shutdown = True
         self.queue.close_admission()
         for org in self.orgs.values():
@@ -376,6 +418,7 @@ class DaemonState:
                 org.close()
                 raise
             # New/dynamic attachments never inherit a boot diagnostic pass.
+            self._attach_startup_owner(org)
             org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
             self.broken_orgs.pop(slug, None)
             if self.profile_coordinator is not None:
@@ -420,12 +463,17 @@ class DaemonState:
             current = self.orgs.get(slug)
             if current is not None:
                 current._assert_runners_idle(thread_releases=False)
+                if self._startup_recovery is not None:
+                    self._startup_recovery.assert_native_idle()
             captured = self._capture_attachments()
             if current is not None:
+                if self._startup_reads is not None:
+                    self._startup_reads.revoke(current)
                 self._revoke_thread_releases(current)
                 current._revoke_cleanup_diagnostics()
         # Never await a native scan under orgs/root/move/terminal locks.
         if current is not None:
+            await self._drain_startup(current)
             await self._drain_thread_releases(current)
             await self._drain_cleanup_diagnostics(current)
         async with self.orgs_lock:
@@ -438,6 +486,8 @@ class DaemonState:
     async def close_all(self) -> None:
         self._stop_runner_admission()
         captured = self._capture_attachments()
+        await self._drain_startup()
+        self._assert_attachments_unchanged(captured)
         await self._drain_thread_releases()
         self._assert_attachments_unchanged(captured)
         self._revoke_cleanup_diagnostics()
@@ -454,6 +504,7 @@ class DaemonState:
             # Lifespan joins the actual runners; cancellation is not that proof.
             self.queue.assert_native_idle()
             for org in self.orgs.values():
+                self._assert_startup_idle(org)
                 org._assert_runners_idle()
                 org._assert_cleanup_diagnostics_idle()
             for org in self.orgs.values():

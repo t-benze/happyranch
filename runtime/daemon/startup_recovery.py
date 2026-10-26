@@ -85,6 +85,7 @@ class StartupRecovery:
         self._ready_commits = 0
         self._created_ns = time.monotonic_ns()
         self._serving_ns: int | None = None
+        self._sweep_owner: Any | None = None
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind references only, on the actual request loop, before submission."""
@@ -273,6 +274,26 @@ class StartupRecovery:
         with self._lock:
             if self._native is not None and not self._native.done():
                 raise RuntimeError("startup_native_still_owned")
+            if self._sweep_owner is not None:
+                raise RuntimeError("startup_sweep_native_still_owned")
+
+    def retain_sweep(self, owner: Any) -> None:
+        self.require_native_owner()
+        with self._lock:
+            if self._sweep_owner is not None:
+                raise RuntimeError("startup_duplicate_sweep_owner")
+            self._sweep_owner = owner
+
+    def settle_sweep(self, owner: Any) -> None:
+        # A failed body may have positively joined every tail. Conversely a
+        # completed executor Future cannot erase an unjoined native handle.
+        with owner._lock:
+            if not owner._sealed or owner._tails:
+                raise RuntimeError("startup_sweep_drain_incomplete")
+        with self._lock:
+            if self._sweep_owner is not owner:
+                raise RuntimeError("startup_sweep_owner_changed")
+            self._sweep_owner = None
 
     async def close(self) -> None:
         self.stop()

@@ -1326,6 +1326,56 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
     return d
 
 
+def _thread_read_dto(db, build, *args, **kwargs):
+    budget = getattr(db, "_startup_read_budget", None)
+    if budget is not None:
+        budget.check()
+    value = build(*args, **kwargs)
+    if budget is not None:
+        budget.check()
+    return value
+
+
+async def _early_thread_read(request, org, projection, *, unbounded=False):
+    """Auth/OrgDep already ran. Keep canonical DB/DTO work off the request loop.
+
+    The complete encoded response is withheld until the worker proves its
+    connection closed. Disconnect cancels the waiter, never its native owner.
+    """
+    import asyncio
+    from runtime.daemon.startup_reads import StartupReadUnavailable
+    from runtime.daemon.startup_recovery import StartupRecovery
+    state = request.app.state.daemon
+    gate = getattr(state, "_startup_recovery", None)
+    if not isinstance(gate, StartupRecovery) or gate.snapshot()["recovery_ready"]:
+        return None
+    pool = getattr(state, "_startup_reads", None)
+    operation = None
+    try:
+        if unbounded:
+            raise StartupReadUnavailable("startup_reader_unbounded_request")
+        if pool is None or pool.recovery is not gate:
+            raise StartupReadUnavailable("startup_reader_unavailable")
+        operation = asyncio.create_task(pool.read(org, projection))
+        while not operation.done():
+            if await request.is_disconnected():
+                raise asyncio.CancelledError()
+            await asyncio.wait((operation,), timeout=0.05)
+        encoded = await operation
+        return Response(content=encoded, media_type="application/json")
+    except StartupReadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=exc.detail(gate.snapshot())) from exc
+    finally:
+        if operation is not None and not operation.done():
+            operation.cancel()
+            # pool.read's cancellation path retains its concurrent Future/slot
+            # until native finalization; observe the local waiter as well.
+            try:
+                await operation
+            except asyncio.CancelledError:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Task 20 — GET endpoints
 # ---------------------------------------------------------------------------
@@ -1347,20 +1397,35 @@ async def list_threads_endpoint(
 ) -> ThreadListResponse | ThreadListPageResponse:
     if (page_size is None and cursor is not None) or (page_size is not None and "limit" in request.query_params):
         raise HTTPException(status_code=422, detail={"code": "invalid_thread_pagination"})
+    early = await _early_thread_read(
+        request, org,
+        lambda db, budget: _project_thread_list(
+            db, slug=slug, status=status, limit=limit, page_size=page_size, cursor=cursor,
+        ).model_dump(mode="json"),
+        unbounded=page_size is None and limit < 0,
+    )
+    if early is not None:
+        return early
+    return _project_thread_list(
+        org.db, slug=slug, status=status, limit=limit, page_size=page_size, cursor=cursor,
+    )
+
+
+def _project_thread_list(db, *, slug, status, limit, page_size, cursor):
     if page_size is not None:
         if status not in (None, "open", "archived"):
             raise HTTPException(status_code=422, detail={"code": "invalid_thread_bucket"})
         try:
-            page = org.db.list_threads_page(org=slug, status=status, page_size=page_size, cursor=cursor)
+            page = db.list_threads_page(org=slug, status=status, page_size=page_size, cursor=cursor)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"code": "invalid_thread_cursor"}) from exc
         participants = page.pop("participants")
-        page["threads"] = [_thread_row_to_dict(t, participants=participants[t.id]) for t in page["threads"]]
+        page["threads"] = [_thread_read_dto(db, _thread_row_to_dict, t, participants=participants[t.id]) for t in page["threads"]]
         return ThreadListPageResponse(**page)
-    rows = org.db.list_threads(status=status, limit=min(limit, 500))
-    participants = org.db.list_thread_participant_names_for_threads([t.id for t in rows])
+    rows = db.list_threads(status=status, limit=min(limit, 500))
+    participants = db.list_thread_participant_names_for_threads([t.id for t in rows])
     return ThreadListResponse(
-        threads=[_thread_row_to_dict(t, participants=participants[t.id]) for t in rows]
+        threads=[_thread_read_dto(db, _thread_row_to_dict, t, participants=participants[t.id]) for t in rows]
     )
 
 
@@ -1414,6 +1479,7 @@ async def get_thread_endpoint(
     slug: str,
     thread_id: str,
     org: OrgDep,
+    request: Request,
 ) -> dict:
     """Return thread detail including authoritative ``reply_delivery``.
 
@@ -1421,12 +1487,21 @@ async def get_thread_endpoint(
     omission. Held requires an OPEN exchange plus matching HELD participant
     deferral; it is neutral waiting, never subprocess or fault evidence.
     """
-    t = org.db.get_thread(thread_id)
+    early = await _early_thread_read(
+        request, org, lambda db, budget: _project_thread_detail(db, thread_id),
+    )
+    if early is not None:
+        return early
+    return _project_thread_detail(org.db, thread_id)
+
+
+def _project_thread_detail(db, thread_id):
+    t = db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-    msgs = org.db.list_thread_messages(thread_id, limit=200)
-    responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
+    participants = [p.agent_name for p in db.list_thread_participants(thread_id)]
+    msgs = db.list_thread_messages(thread_id, limit=200)
+    responders_by_seq = db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
     # Pass responders unconditionally: the grouped query returns reply and
@@ -1436,12 +1511,12 @@ async def get_thread_endpoint(
     # REPLY). The blanket lookup surfaces the followup in-flight strip on its
     # system row without contaminating message rows.
     d["messages"] = [
-        _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
+        _thread_read_dto(db, _msg_to_dict, m, responders=responders_by_seq.get(m.seq))
         for m in msgs
     ]
     d["reply_delivery"] = [
         p.model_dump(mode="json")
-        for p in org.db.list_reply_delivery_projections(thread_id)
+        for p in db.list_reply_delivery_projections(thread_id)
     ]
     return d
 
@@ -1451,6 +1526,7 @@ async def list_thread_messages_endpoint(
     slug: str,
     thread_id: str,
     org: OrgDep,
+    request: Request,
     since_seq: int = 0,
     limit: int = 200,
 ) -> dict:
@@ -1460,30 +1536,41 @@ async def list_thread_messages_endpoint(
     omission. Terminal reason is historical metadata exposed only for a
     genuine current retry, never classification proof for held.
     """
-    t = org.db.get_thread(thread_id)
+    early = await _early_thread_read(
+        request, org,
+        lambda db, budget: _project_thread_messages(db, thread_id, since_seq, limit),
+        unbounded=limit < 0,
+    )
+    if early is not None:
+        return early
+    return _project_thread_messages(org.db, thread_id, since_seq, limit)
+
+
+def _project_thread_messages(db, thread_id, since_seq, limit):
+    t = db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     effective_limit = min(limit, 1000)
     fetch_limit = effective_limit + 1
-    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
+    msgs = db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
     has_more = len(msgs) > effective_limit
     if has_more:
         msgs = msgs[:effective_limit]
     next_since_seq = msgs[-1].seq if msgs else since_seq
-    responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
+    responders_by_seq = db.list_invocations_for_thread_grouped_by_seq(thread_id)
     # Unconditional responders lookup — see get_thread_endpoint: entries are
     # keyed by their own triggering_seq and carry the authoritative purpose on
     # the wire (TASK-5553), so a REPLY anchored on a system row stays a REPLY.
     return {
         "messages": [
-            _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
+            _thread_read_dto(db, _msg_to_dict, m, responders=responders_by_seq.get(m.seq))
             for m in msgs
         ],
         "has_more": has_more,
         "next_since_seq": next_since_seq,
         "reply_delivery": [
             p.model_dump(mode="json")
-            for p in org.db.list_reply_delivery_projections(thread_id)
+            for p in db.list_reply_delivery_projections(thread_id)
         ],
     }
 

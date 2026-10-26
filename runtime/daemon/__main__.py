@@ -135,12 +135,18 @@ def _sweep_on_startup(
     the caller enqueues them once the event loop is live.
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
-    from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
+    from runtime.orchestrator.run_step import (
+        _capture_root_worktree_transition, _root_worktree_batch,
+        _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS,
+        _StartupSweepOwner,
+    )
     from runtime.infrastructure.db.authority_v2_attempts import _V2StartupConnectionUnsafe
     root_transitions = _RootWorktreeTransitions()
-    root_tail_failed = False
-    startup_unsafe = None
-    root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
+    root_owner = _StartupSweepOwner(orchestrator, root_transitions)
+    root_delivery = root_owner.delivery
+    recovery_gate = getattr(orchestrator, '_startup_recovery', None)
+    if recovery_gate is not None:
+        recovery_gate.retain_sweep(root_owner)
     root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
         # A full sweep may commit in Pause/workflow/thread/batch consumers.
@@ -177,6 +183,11 @@ def _sweep_on_startup(
             db, orchestrator=orchestrator,
         )
         v2_discovery_unavailable = v2_pre_final_roots is None
+        if v2_discovery_unavailable:
+            # This normal-return negative is NOT an empty successful scan.
+            # Retain the source-local branch fences; the owner cannot activate
+            # or attempt a final cleanup batch on this observation.
+            root_owner.negative('startup_v2_discovery_unavailable')
 
         # Accepted recovery callbacks whose effects committed just before a crash
         # may now be terminal.  Include only the ledger's exact current-owner
@@ -523,35 +534,42 @@ def _sweep_on_startup(
             recovered_tokens.extend(move.threads.runnable_tokens())
         return list(dict.fromkeys(recovered_tokens))
     except _V2StartupConnectionUnsafe as exc:
-        startup_unsafe = exc
-        root_tail_failed = True
         # Keep an original interrupt/SystemExit as a BaseException, with the
         # unsafe disposition chained and the finally suppression already set.
         for cause in exc.causes:
             if not isinstance(cause, Exception):
+                root_owner.fail(cause)
                 raise cause from exc
+        root_owner.fail(exc)
         raise
-    except BaseException:
-        root_tail_failed = True
+    except BaseException as exc:
+        root_owner.fail(exc)
         raise
     finally:
+        # Keep context capture active until ALL original native tails end.
+        # No DB/publisher lock is retained here; the request loop remains free
+        # to acknowledge internal publications. A wrapper is not a native join.
+        try:
+            root_owner.drain()
+            if recovery_gate is not None:
+                recovery_gate.settle_sweep(root_owner)
+        except BaseException as exc:
+            root_owner.fail(exc)
         root_delivery['active'] = False
-        if startup_unsafe is not None:
-            # In-memory reset only. teardown_incomplete still permits DB work
-            # in the normal batch, so skip that ENTIRE batch on this path.
-            # A secondary reset/logging failure cannot hide the unsafe cause.
-            try:
-                _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-            except BaseException as exc:
-                startup_unsafe.causes = (*startup_unsafe.causes, exc)
-            try:
-                logger.error("startup aborted: connection unsafe; worktree cleanup incomplete")
-            except BaseException as exc:
-                startup_unsafe.causes = (*startup_unsafe.causes, exc)
-        else:
+        try:
             _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-            _root_worktree_batch(orchestrator, root_transitions,
-                teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
+        except BaseException as exc:
+            root_owner.fail(exc)
+        # Suppression is ZERO batch calls, including DB/report work which the
+        # normal teardown_incomplete argument would still perform.
+        root_owner.raise_if_failed()
+        if root_delivery['teardown_incomplete']:
+            root_owner.negative('startup_sweep_teardown_incomplete')
+            root_owner.raise_if_failed()
+        result = _root_worktree_batch(orchestrator, root_transitions)
+        if result.kind != 'safe':
+            root_owner.negative('startup_final_batch_' + result.kind)
+            root_owner.raise_if_failed()
 
 
 def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:

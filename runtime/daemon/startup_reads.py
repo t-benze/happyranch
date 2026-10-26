@@ -261,6 +261,7 @@ class StartupReads:
         lease.budget.check()
         if (self.state.orgs.get(lease.org.slug) is not lease.org
                 or _identity(lease.org) != lease.identity
+                or lease.org._startup_read_revoked
                 or self.recovery.snapshot()["stopping"]):
             lease.budget.refuse("startup_reader_unavailable")
         lease.budget.check()
@@ -270,7 +271,7 @@ class StartupReads:
         deadline = time.monotonic() + 2.0
         identity = _identity(org)
         with self._lock:
-            if self._closed or len(self._leases) >= 4:
+            if self._closed or org._startup_read_revoked or len(self._leases) >= 4:
                 self._counts["refused"] += 1
                 raise StartupReadUnavailable("startup_reader_busy")
             snapshot = self.recovery.snapshot()
@@ -371,6 +372,8 @@ class StartupReads:
         with self._lock:
             if org is None:
                 self._closed = True
+            else:
+                org._startup_read_revoked = True
             leases = [lease for lease in self._leases if org is None or lease.org is org]
             for lease in leases:
                 lease.budget.cancelled.set()
