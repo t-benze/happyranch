@@ -869,7 +869,7 @@ def main() -> int:
                 collection_window = "SCENARIO_DECODE"
                 result = json.loads(scenario_text)
                 collection_window = "SCENARIO_MERGE"
-                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07") if k in result})
+                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission") if k in result})
             collection_window = "RAW_ENUM"
             paths = iter((root / "raw").glob("*"))
             while True:

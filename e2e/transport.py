@@ -1,11 +1,13 @@
 """Real loopback HTTP relay; loss happens only AFTER independent commit proof."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import http.client
 import io
 import json
 import os
+import re
 import selectors
 import socket
 import sys
@@ -36,6 +38,12 @@ class BrowserRelay:
         self.context_closing: dict | None = None
         self.context_closed: dict | None = None
         self.browser_requests: list[dict] = []
+        # Private originals never enter ordinary record serialization. The sole
+        # worker owns capture/read/write; browser observers only inspect copies.
+        self.originals: dict[int, dict] = {}
+        self.capture_bytes = self.capture_facts = 0
+        self.capture_refusals: list[dict] = []
+        self.capture_closed: float | None = None
         self.arm_end: float | None = None
         self.proof = None
         self.matches = 0
@@ -122,7 +130,7 @@ class BrowserRelay:
                     self.state['registrations'].append(registration)
                     self.registrations.append((name, handle, registration))
                 raw = self.acquire('raw', Raw(self))
-                buffered = self.acquire('buffer', io.BufferedReader(raw))
+                buffered = self.acquire('buffer', io.BufferedReader(raw, buffer_size=8192))
                 self.file = self.acquire('file', File(self, buffered))
                 self.mark('before-response')
 
@@ -587,7 +595,9 @@ class BrowserRelay:
                 with relay.lock:
                     if self.command == 'GET' and not selected:
                         record['owner_generation'] = len(relay.records)+1
+                    record['relay_id'] = len(relay.records)
                     relay.records.append(record)
+                    relay._capture_begin(record, selected)
                     relay.operation_gates[id(record)] = threading.Lock()
                     pair_request(self.command, self.path)
                 try:
@@ -659,6 +669,7 @@ class BrowserRelay:
                                      content_type=value.headers.get_all('Content-Type', []),
                                      chunked=value.chunked, length=value.length)
                         outcome['result'] = facts
+                        relay._capture_headers(record, value)
                         if not relay._response_facts(facts, self.command):
                             raise ValueError('unsupported upstream response framing')
                         if io_owner is not None and facts['length'] == 0 and io_owner.received != io_owner.delivered:
@@ -673,6 +684,10 @@ class BrowserRelay:
                                          remaining_after=response.length, closed=response.isclosed(),
                                          eof=not value)
                             outcome['result'] = facts
+                            if selected and len(value) > capacity:
+                                with relay.lock:
+                                    relay._refuse(record, 'entity-cap')
+                                raise ValueError('E05 selected capture capacity exceeded')
                             if not relay._read_facts(facts, record['response_outcome'], streaming,
                                                      whole=whole):
                                 raise http.client.IncompleteRead(b'')
@@ -681,7 +696,17 @@ class BrowserRelay:
                         # The gate in upstream_call spans both this native read
                         # and validation; no other owner changes response.length.
                         before = response.length
-                        return upstream_call('read', call, validate_read, read)
+                        try:
+                            value = upstream_call('read', call, validate_read, read)
+                        except Exception as exc:
+                            if isinstance(exc, http.client.IncompleteRead):
+                                relay._capture_chunk(record, exc.partial)
+                            relay._capture_error(record, 'read', exc)
+                            raise
+                        relay._capture_chunk(record, value)
+                        if response.isclosed():
+                            relay._capture_seal(record)
+                        return value
 
                     self.connection.settimeout(remaining())
                     if self.headers.get("Transfer-Encoding") or self.headers.get("Upgrade"):
@@ -732,7 +757,9 @@ class BrowserRelay:
                     content = None
                     if selected:
                         upstream_socket.settimeout(remaining())
-                        content = read_response(response.read, whole=True)
+                        # One overflow-detection byte, never an unbounded whole read.
+                        capacity = relay._capture_capacity(record)
+                        content = read_response(lambda: response.read(capacity + 1), whole=True)
                         remaining()
                         record.update(upstream_complete=time.monotonic(), response_sha256=hashlib.sha256(content).hexdigest(),
                                       response_bytes=len(content), content_type=response.getheader("Content-Type"))
@@ -744,7 +771,7 @@ class BrowserRelay:
                             record["invalid_request_json"] = True
                         if ordinal == 1 and response.status == 200:
                             try:
-                                parsed = json.loads(content)
+                                parsed = relay._parse_original(record)
                                 record["response"] = parsed
                                 record["commit"] = relay.proof(parsed, end)
                                 record["committed"] = time.monotonic()
@@ -774,9 +801,12 @@ class BrowserRelay:
                     if self.command != "HEAD" and response.status not in {204, 304}:
                         if content is not None:
                             self.connection.settimeout(remaining())
-                            self.wfile.write(content)
+                            segment = relay._forward_start(record, content)
+                            written = self.wfile.write(content)
+                            relay._forward_return(record, segment, written)
                             self.connection.settimeout(remaining())
                             self.wfile.flush()
+                            relay._forward_flush(record, segment)
                             remaining()
                         else:
                             # read1 may close the response/socket while returning
@@ -799,14 +829,19 @@ class BrowserRelay:
                                     break
                                 operation = 'downstream'
                                 self.connection.settimeout(remaining())
-                                self.wfile.write(chunk)
+                                segment = relay._forward_start(record, chunk)
+                                written = self.wfile.write(chunk)
+                                relay._forward_return(record, segment, written)
                                 self.connection.settimeout(remaining())
                                 self.wfile.flush()
+                                relay._forward_flush(record, segment)
                                 remaining()
                             if response.length not in (None, 0):
                                 raise http.client.IncompleteRead(b'')
                             if streaming:
                                 raise ConnectionError('unexpected browser stream EOF')
+                    relay._capture_seal(record)
+                    relay._forward_seal(record)
                     record["delivered"] = time.monotonic()
                 except Stopped:
                     record.update(failure_at=time.monotonic(), error='Stopped', failure_operation=operation)
@@ -814,6 +849,7 @@ class BrowserRelay:
                     record['failure_at'] = time.monotonic()
                     record["client_disconnected"] = type(exc).__name__
                     record['failure_operation'] = operation
+                    relay._capture_error(record, operation, exc)
                     if selected:
                         relay.errors.append("original compose response disconnected")
                         relay.release.set()
@@ -823,6 +859,7 @@ class BrowserRelay:
                     # never export arbitrary headers/auth/bodies or raw exceptions.
                     record["error"] = type(exc).__name__
                     record['failure_operation'] = operation
+                    relay._capture_error(record, operation, exc)
                     if selected:
                         relay.errors.append(type(exc).__name__ + ": browser transport failed")
                         relay.release.set()
@@ -896,6 +933,281 @@ class BrowserRelay:
         self.port = self.server.server_port
         self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.05), daemon=True)
         self.thread.start()
+
+    def inventory_fact(self, text: str) -> None:
+        with self.lock:
+            size = len(text.encode('utf8'))
+            if size > 8192 or self.capture_facts >= 16384 or self.capture_bytes+size > 8*1024*1024:
+                if not any(r['relay_id'] is None for r in self.capture_refusals):
+                    self.capture_refusals.append(dict(reason='identity-cap',at=time.monotonic(),relay_id=None))
+                raise ValueError('E05 native identity inventory capacity refused')
+            self.capture_facts += 1
+            self.capture_bytes += size
+
+    @staticmethod
+    def required_kind(method: str, target: str, selected: bool = False) -> str | None:
+        path = target.split('?')[0]
+        if selected and method == 'POST' and path == '/api/v1/orgs/alpha/threads':
+            return 'compose'
+        if method == 'GET' and re.fullmatch(r'/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?', path):
+            return 'messages' if path.endswith('/messages') else 'detail'
+        return None
+
+    def _refuse(self, record: dict, reason: str) -> None:
+        original = record.get('original')
+        if original is not None and original['capture_refusal'] is None:
+            refusal = dict(reason=reason, at=time.monotonic(), relay_id=record['relay_id'])
+            original.update(capture_state='refused', capture_refusal=refusal)
+            self.capture_refusals.append(refusal)
+
+    def _charge(self, record: dict, size: int = 0, facts: int = 1) -> bool:
+        # Every retained increment is checked before its allocation. No eviction,
+        # per-view reset or reclassification as a protocol error on overflow.
+        if self.capture_bytes + size > 8*1024*1024 or self.capture_facts + facts > 16384:
+            self._refuse(record, 'aggregate-cap' if size else 'fact-cap')
+            return False
+        self.capture_bytes += size
+        self.capture_facts += facts
+        return True
+
+    def _capture_begin(self, record: dict, selected: bool) -> None:
+        # Caller holds relay.lock. Membership overflow remains sticky even when
+        # the actual owner must continue forwarding subsequent network requests.
+        kind = self.required_kind(record['method'], record['target'], selected)
+        if kind is None:
+            return
+        original = record['original'] = dict(schema=1, relay_id=record['relay_id'], required_kind=kind,
+            started=record['entered'], status=None, framing=None, header_bytes=None, finished=None,
+            outcome='pending', byte_length=0, sha256=None, first_error=None,
+            capture_state='open', capture_refusal=None)
+        record['forwarding'] = dict(segments=[], byte_length=None, sha256=None, finished=None)
+        if (len(self.originals) >= 512 or len(record['target'].encode()) > 8192
+                or self.capture_closed is not None):
+            self._refuse(record, 'membership-cap' if self.capture_closed is None else 'late-member')
+            return
+        if self._charge(record):
+            self.originals[record['relay_id']] = dict(data=bytearray(), headers=None, parsed=None, parsed_ready=False)
+
+    def _capture_headers(self, record: dict, response: http.client.HTTPResponse) -> None:
+        if 'original' not in record:
+            return
+        with self.lock:
+            o = record['original']
+            # getheaders() returns ordered parsed pairs, not raw wire octets.
+            size = sum(len(k.encode('utf8'))+len(v.encode('utf8')) for k,v in response.headers.items())
+            o['status'] = response.status
+            o['header_bytes'] = size
+            if size > 65536 or not self._charge(record, size):
+                self._refuse(record, 'header-cap')
+                return
+            private = self.originals.get(record['relay_id'])
+            if private is None or o['capture_state'] == 'refused':
+                return
+            private['headers'] = response.getheaders()
+            o['framing'] = dict(content_type=response.headers.get_all('Content-Type', []),
+                content_encoding=response.headers.get_all('Content-Encoding', []),
+                content_length=response.headers.get_all('Content-Length', []),
+                transfer_encoding=response.headers.get_all('Transfer-Encoding', []),
+                bodyless=record['method'] == 'HEAD' or response.status in {204,304})
+            if type(response.length) is int and response.length > 1024*1024:
+                self._refuse(record, 'entity-cap')
+
+    def _capture_capacity(self, record: dict) -> int:
+        with self.lock:
+            private = self.originals.get(record['relay_id'])
+            if private is None or record['original']['capture_state'] == 'refused':
+                raise ValueError('E05 selected capture refused before read')
+            return max(0, min(1024*1024-len(private['data']), 8*1024*1024-self.capture_bytes))
+
+    def _capture_chunk(self, record: dict, data: bytes) -> None:
+        if 'original' not in record:
+            return
+        with self.lock:
+            o = record['original']
+            private = self.originals.get(record['relay_id'])
+            if o['capture_state'] != 'open' or private is None:
+                return
+            if len(private['data'])+len(data) > 1024*1024:
+                self._refuse(record, 'entity-cap')
+            elif self._charge(record, len(data)*(2 if o['required_kind'] == 'compose' else 1)):
+                private['data'].extend(data)
+                o['byte_length'] += len(data)
+
+    def _capture_seal(self, record: dict) -> None:
+        if 'original' not in record:
+            return
+        with self.lock:
+            o = record['original']
+            if o['capture_state'] != 'open':
+                return
+            private = self.originals[record['relay_id']]
+            o.update(capture_state='sealed', finished=time.monotonic(),
+                     sha256=hashlib.sha256(private['data']).hexdigest(),
+                     outcome='bodyless' if o['framing']['bodyless'] else 'complete' if private['data'] else 'empty')
+
+    def _capture_error(self, record: dict, stage: str, error: Exception) -> None:
+        if 'original' not in record:
+            return
+        with self.lock:
+            o = record['original']
+            # A downstream failure cannot rewrite a sealed upstream original.
+            storage_error = type(error) is ValueError and error.args in {
+                ('E05 selected capture refused before read',), ('E05 selected capture capacity exceeded',)}
+            if stage != 'downstream' and o['capture_state'] != 'sealed' and not storage_error:
+                if o['first_error'] is None:
+                    o['first_error'] = dict(stage=stage, error=type(error).__name__, at=time.monotonic())
+                o.update(outcome='partial' if o['byte_length'] else 'error', finished=time.monotonic())
+
+    def _forward_start(self, record: dict, data: bytes) -> dict | None:
+        if 'original' not in record:
+            return None
+        with self.lock:
+            if not self._charge(record):
+                return None
+            segments = record['forwarding']['segments']
+            segment = dict(offset=sum(s['length'] for s in segments), length=len(data),
+                           sha256=hashlib.sha256(data).hexdigest(), write_started=time.monotonic(),
+                           write_returned=None, flush_returned=None, written=None)
+            segments.append(segment)
+            return segment
+
+    def _forward_return(self, record: dict, segment: dict | None, written: int) -> None:
+        if segment is not None:
+            with self.lock:
+                segment.update(write_returned=time.monotonic(), written=written)
+            if written != segment['length']:
+                raise OSError('E05 short downstream write')
+
+    def _forward_flush(self, record: dict, segment: dict | None) -> None:
+        if segment is not None:
+            with self.lock:
+                segment['flush_returned'] = time.monotonic()
+
+    def _forward_seal(self, record: dict) -> None:
+        if 'original' not in record:
+            return
+        with self.lock:
+            o, f = record['original'], record['forwarding']
+            if (o['capture_state'] == 'sealed' and sum(s['length'] for s in f['segments']) == o['byte_length']
+                    and all(s['flush_returned'] is not None and s['written'] == s['length'] for s in f['segments'])):
+                f.update(byte_length=o['byte_length'], sha256=o['sha256'], finished=time.monotonic())
+
+    @staticmethod
+    def _publishable_body(value: object, depth: int = 0) -> bool:
+        # E05 has finite public fixtures. Unknown fields or nonfixture strings
+        # stay private rather than leaking an unexpected error/credential body.
+        # This is publication selection, never a replacement content oracle.
+        keys = set(('thread_id subject status started_at archived_at forwarded_from_id forwarded_from_kind '
+                    'turn_cap turns_used summary transcript_path composed_by composed_from_task_id composed_from_dream_id '
+                    'last_speaker pinned pinned_at last_activity_at participants messages reply_delivery pending_replies '
+                    'has_more next_since_seq seq speaker kind body_markdown decline_reason system_payload attachments created_at '
+                    'responder_status agent_name purpose responded_at category state from_seq through_seq coalesced_message_count '
+                    'updated_at last_terminal_reason current_failure_category kind_tag task_id dispatcher target_agent team brief_preview '
+                    'original_task_id root_task_id final_output_summary final_output_dir cancelled revisit_chain_length revisit_task_id').split())
+        literals = {'case_manager','case_worker','founder','engineering','open','message','system','reply','task_followup',
+                    'working','queued','running','held','retry_required','replied','declined','completed','failed','cancelled',
+                    'no_callback','no_callback_after_reprompt','infra_fail','task_dispatched','task_completed',
+                    'E05 compose race','E05 denial venue','E05 dispatch','E05 opening\nliteral beta',
+                    'E05 reply\n@case_worker received','E05 denial anchor','E05 do one task','E05 task accepted',
+                    'E05 task complete','E05 one owned task','E05 initial observed','E05 reply observed','E05 denial venue observed'}
+        if depth > 16:
+            return False
+        if value is None or type(value) is bool:
+            return True
+        if type(value) is int:
+            return 0 <= value <= 9007199254740991
+        if type(value) is str:
+            return (value in literals or bool(re.fullmatch(r'(?:THR|TASK)-\d+',value))
+                    or len(value) <= 64 and bool(re.fullmatch(r'\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)?',value))
+                    or len(value) <= 4096 and bool(re.fullmatch(r'(?:/?[A-Za-z0-9_.-]+/)*threads/THR-\d+\.(?:md|jsonl)',value)))
+        if type(value) is list:
+            return len(value) <= 512 and all(BrowserRelay._publishable_body(v,depth+1) for v in value)
+        if type(value) is dict:
+            return set(value) <= keys and all(BrowserRelay._publishable_body(v,depth+1) for v in value.values())
+        return False
+
+    def _parse_original(self, record: dict, *, locked: bool = False):
+        # Callers either already hold relay.lock or are the selected sole worker.
+        if not locked:
+            with self.lock:
+                return self._parse_original(record, locked=True)
+        private = self.originals[record['relay_id']]
+        o = record['original']
+        if not private['parsed_ready']:
+            f = o['framing']
+            if f['content_encoding'] not in ([], ['identity']) or len(f['content_type']) != 1 or f['content_type'][0].split(';')[0] != 'application/json':
+                raise ValueError('E05 identity UTF8 JSON original required')
+            if not self._charge(record, len(private['data'])):
+                raise ValueError('E05 parsed copy capacity refused')
+            def pairs(items):
+                value = {}
+                for k,v in items:
+                    if k in value:
+                        raise ValueError('E05 duplicate original JSON key')
+                    value[k] = v
+                return value
+            def constant(_value):
+                raise ValueError('E05 nonfinite original JSON')
+            private['parsed'] = json.loads(private['data'].decode('utf8'), object_pairs_hook=pairs, parse_constant=constant)
+            private['parsed_ready'] = True
+        return private['parsed']
+
+    def original_for(self, request_id: int) -> dict:
+        # Full-window reconciliation is recomputed, never a sticky early URL
+        # singleton. Unknown/overlapping intervals refuse rather than guessing.
+        with self.lock:
+            issued = [e for e in self.browser_requests if e['request_id'] == request_id]
+            if len(issued) != 1:
+                raise ValueError('E05 original Request identity unavailable')
+            event = issued[0]
+            def candidates(e):
+                terminals = e.get('terminals', [])
+                if len(terminals) != 1 or terminals[0]['event'] != 'request-finished':
+                    return []
+                return [r for r in self.records if 'original' in r and r['method'] == e['method']
+                        and r['target'] == e['target'] and r['entered'] <= terminals[0]['at']
+                        and r.get('closed', float('inf')) >= e['at']]
+            matches = candidates(event)
+            if (len(matches) != 1 or sum(matches[0] in candidates(e) for e in self.browser_requests) != 1
+                    or event.get('document_request_id') is None or event.get('pending_documents')):
+                raise ValueError('E05 original complete-window/document join ambiguous')
+            record = matches[0]
+            o = record['original']
+            if o['capture_state'] != 'sealed' or o['outcome'] != 'complete' or o['status'] != 200:
+                raise ValueError('E05 complete original JSON unavailable')
+            private = self.originals[record['relay_id']]
+            self._parse_original(record, locked=True)
+            if not self._publishable_body(private['parsed']):
+                raise ValueError('E05 original public-field selection refused')
+            return dict(relay_id=record['relay_id'], request_id=request_id, origin='relay-original',
+                        body=private['parsed'], bytes=o['byte_length'], sha256=o['sha256'])
+
+    def snapshot(self, sanitize: Callable[[str], str]) -> list[dict]:
+        with self.lock:
+            records = copy.deepcopy(self.records)
+            for record in records:
+                if 'original' not in record:
+                    continue
+                o = record['original']
+                private = self.originals.get(record['relay_id'])
+                entity = dict(representation='unavailable', text=None, copy_bytes=None, copy_sha256=None,
+                              original_byte_check='unavailable')
+                if 'response' in record and not self._publishable_body(record['response']):
+                    record['response'] = None
+                if (private is not None and o['capture_state'] == 'sealed' and o['status'] == 200
+                        and private['parsed_ready'] and self._publishable_body(private['parsed'])):
+                    try:
+                        text = private['data'].decode('utf8')
+                    except UnicodeError:
+                        pass
+                    else:
+                        safe = sanitize(text)
+                        if self._charge(self.records[record['relay_id']], len(safe.encode('utf8'))):
+                            entity.update(representation='unchanged_utf8' if safe == text else 'sanitized_utf8', text=safe,
+                                copy_bytes=len(safe.encode('utf8')), copy_sha256=hashlib.sha256(safe.encode('utf8')).hexdigest(),
+                                original_byte_check='available' if safe == text else 'unavailable')
+                o['entity_copy'] = entity
+            return records
 
     @staticmethod
     def _response_facts(facts: dict, method: str) -> bool:
@@ -1038,6 +1350,8 @@ class BrowserRelay:
                           connections=len(self.connections), errors=errors)
         if result["workers_alive"] or result["listener_alive"] or result["connections"]:
             errors.append("browser proxy ownership did not close")
+        with self.lock:
+            self.capture_closed = time.monotonic()
         return result
 
 

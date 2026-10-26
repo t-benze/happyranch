@@ -1,6 +1,7 @@
 """Five finite E05 variants, after the complete 48-variant baseline/Pause/E04."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -280,8 +281,44 @@ def exercise(c: Controller) -> None:
          "web/src/design-system/patterns/MessageBubble.tsx", "web/src/design-system/patterns/Markdown.tsx",
          "web/src/design-system/patterns/AgentChip.tsx")}
     c.durable.append(dict(threads_cases=record))
+    record['checkpoints'] = []
+    record['processes'] = []
+    def observe(provider):
+        from late_transport import process_record
+        proc = process_record(provider['pid'])
+        require(proc['start'] == provider['pid_start'], 'E05 original provider generation/cgroup capture')
+        record['processes'].append(proc)
+        return provider
+    record['case_outcomes'] = {v:dict(status='UNKNOWN',error_ref=None) for v in VARIANTS}
+    active_variant = VARIANTS[0]
+    def checkpoint(name, anchor):
+        from e07 import frame as cancellation_frame
+        current, _ = cancellation_frame(c)
+        provider_groups = {}
+        for proc in record['processes']:
+            paths = [line[3:] for line in proc['cgroup'].splitlines() if line.startswith('0::')]
+            require(len(paths) == 1 and paths[0].rsplit('/',1)[-1].startswith('happyranch-')
+                    and paths[0].endswith(('.service','.scope')), 'E05 pinned actual containment group')
+            directory = Path('/sys/fs/cgroup') / paths[0].lstrip('/')
+            members = []
+            if directory.exists():
+                for file in [directory/'cgroup.procs',*directory.glob('**/cgroup.procs')]:
+                    try:
+                        members.extend(int(x) for x in file.read_text().split())
+                    except FileNotFoundError:
+                        continue
+            provider_groups[paths[0]] = dict(exists=directory.exists(),pids=sorted(set(members)),at=time.monotonic())
+        require(all(not g['pids'] for g in provider_groups.values()), 'E05 actual original groups empty before checkpoint')
+        point = dict(name=name, frame=current, thread_frame=frame(c),
+                     provider_groups=provider_groups, processes=copy.deepcopy(record['processes']),
+                     starts=copy.deepcopy(c.starts), command_count=len(c.commands),
+                     thread_command_count=len(c.thread_commands), thread_attempt_count=len(c.thread_attempts),
+                     anchor=copy.deepcopy(anchor), witnesses=witnesses(c), at=time.monotonic())
+        record['checkpoints'].append(point)
+        c.e05_checkpoint = point
     previous = next(d["jobs_anchor"] for d in c.durable if d.get("jobs_anchor", {}).get("name") == "final-drain-B")
     require(previous["total"] == 17 and previous["projection"]["receipts"]["window_size"] + 7 <= 64, "B17 capacity before E05")
+    checkpoint('pre-E05', previous)
     c.case_deadline = min(c.deadline, entered + 18)
     c.publish_end()
     if c.browser_relay:
@@ -320,6 +357,7 @@ def exercise(c: Controller) -> None:
         arm = time.monotonic()
         proxy.arm(proof, arm + c.remaining(5))
         group["armed"] = dict(at=arm, deadline=proxy.arm_end)
+        group['mutation_entered'] = time.monotonic()
         group["event_batch"] = browser.thread_event_batch()
         while not proxy.held.is_set() and time.monotonic() < proxy.arm_end:
             browser.thread_page.wait_for_timeout(10)
@@ -338,19 +376,22 @@ def exercise(c: Controller) -> None:
         require(proxy.matches == 1 and not proxy.errors, "original response delivered once")
         group["created"] = browser.thread_created(C)
         group["initial_view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "literal beta"], "compose")
-        first = start(c, C, {"case_manager", "case_worker"})
-        second = start(c, C, {"case_manager", "case_worker"} - {first["agent"]})
+        active_variant = VARIANTS[1]
+        first = observe(start(c, C, {"case_manager", "case_worker"}))
+        second = observe(start(c, C, {"case_manager", "case_worker"} - {first["agent"]}))
         manager, worker = (first, second) if first["agent"] == "case_manager" else (second, first)
         group["providers"] = [manager, worker]
         group["initial_decline"] = decline(c, worker, "E05 initial observed")
         # A process exit precedes host release and post-exit transcript work.
         group["worker_closed"] = live_boundary(c,19,18)
         group["reply"] = reply(c, manager, REPLY, 2)
-        worker2 = start(c, C, {"case_worker"})
+        worker2 = observe(start(c, C, {"case_worker"}))
         group["providers"].append(worker2)
         group["held_worker"] = dict(provider=worker2, before=identity(worker2["pid"]))
+        active_variant = VARIANTS[3]
         group["replay"] = negative(c, manager, "thread-reply", 409,
                                    payload=dict(body_markdown=REPLY, in_response_to_seq=1))
+        active_variant = VARIANTS[1]
         group["held_worker"]["after"] = identity(worker2["pid"])
         require(group["held_worker"]["before"] == group["held_worker"]["after"] == worker2["pid_start"], "W2 remains command-held during replay")
         require(group["reply"]["argv"] == group["replay"]["command"]["argv"]
@@ -360,6 +401,7 @@ def exercise(c: Controller) -> None:
         previous = anchor(c, "E05:C", 20, previous)
         group["anchor"] = previous
         group["settled"] = settled_thread(c, C, "E05 compose race", [(1,"founder","message",OPENING),(2,"case_manager","message",REPLY)], group["providers"], 2)
+        checkpoint('C', previous)
         group["view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "literal beta", "E05 reply", "@case_worker received"], "reply")
         group["finished"] = time.monotonic()
 
@@ -370,15 +412,18 @@ def exercise(c: Controller) -> None:
             c.browser_relay.deadline = c.effective_end()
         group = dict(name="N", entered=begin, deadline=c.case_deadline)
         record["groups"].append(group)
+        active_variant = None
+        group['mutation_entered'] = time.monotonic()
         group["compose"] = compose(c, "E05 denial venue", "case_worker", "E05 denial anchor")
         N = group["compose"]["response"]["thread_id"]
         group["thread"] = N
-        worker = start(c, N, {"case_worker"})
+        worker = observe(start(c, N, {"case_worker"}))
         group["providers"] = [worker]
         group["decline"] = decline(c, worker, "E05 denial venue observed")
         previous = anchor(c, "E05:N", 21, previous)
         group["anchor"] = previous
         group["settled"] = settled_thread(c, N, "E05 denial venue", [(1,"founder","message","E05 denial anchor")], [worker], 1)
+        checkpoint('N', previous)
         group["finished"] = time.monotonic()
 
         begin = time.monotonic()
@@ -388,25 +433,29 @@ def exercise(c: Controller) -> None:
             c.browser_relay.deadline = c.effective_end()
         group = dict(name="D", entered=begin, deadline=c.case_deadline)
         record["groups"].append(group)
+        active_variant = VARIANTS[2]
+        group['mutation_entered'] = time.monotonic()
         group["compose"] = compose(c, "E05 dispatch", "case_manager", "E05 do one task")
         D = group["compose"]["response"]["thread_id"]
         group["thread"] = D
-        d1 = start(c, D, {"case_manager"})
+        d1 = observe(start(c, D, {"case_manager"}))
         dispatch = command(c, d1, "thread-dispatch", payload=dict(brief="E05 one owned task", target_agent="case_manager", team="engineering"))
         group["dispatch"] = dispatch
         T = dispatch["selected_response"]["task_id"]
-        task = c.start("alpha", T, "case_manager")
+        task = observe(c.start("alpha", T, "case_manager"))
         group["task"] = task
         group["reply"] = reply(c, d1, "E05 task accepted", 3)
         release(c, d1)
         group["dispatcher_closed"] = live_boundary(c,23,22)
+        active_variant = VARIANTS[4]
         group["denial"] = negative(c, task, "thread-task-send", 403, thread=N, payload=dict(body_markdown="E05 forbidden post"))
+        active_variant = VARIANTS[2]
         group["callback"] = command(c, task, "thread-task-final", payload=dict(status="completed", confidence=90, summary="E05 task complete",
                                                                                  decision=dict(action="done", summary="E05 task complete")))
         c.payloads[task["session"]] = group["callback"]["payload"]
         release(c, task)
         c.finish("alpha", T)
-        d2 = start(c, D, {"case_manager"}, "task_followup")
+        d2 = observe(start(c, D, {"case_manager"}, "task_followup"))
         group["providers"] = [d1, d2]
         require(d2["triggering_seq"] == 4, "natural completion followup at seq4")
         group["read"] = command(c, d2, "thread-task-read", task=T)
@@ -419,6 +468,7 @@ def exercise(c: Controller) -> None:
             (2,"case_manager","system",None),(3,"case_manager","message","E05 task accepted"),
             (4,"case_manager","system",None),(5,"case_manager","message","E05 task complete")], [d1,d2], 3)
         group["tasks_projection"] = c.get(f"/api/v1/orgs/alpha/threads/{D}/tasks")
+        checkpoint('D', previous)
         group["view"] = browser.thread_view(D, "E05 dispatch", ["E05 do one task", "E05 task accepted", "E05 task complete"], "dispatch", T)
         group["finished"] = time.monotonic()
         record["final_entered"] = time.monotonic()
@@ -443,6 +493,20 @@ def exercise(c: Controller) -> None:
         record.update(witnesses=rows, final_anchor=anchor(c,"E05:final",24,previous))
         # This context owns long-lived SSE reads. Settle it and its proxy in
         # the existing final4, before E07 can leave their original ends behind.
+        # Q1: original entities and DOM do not provide independently measured
+        # browser bodies. Preserve every other available assertion above, then
+        # record this precise missing input BEFORE our own resource cleanup.
+        record['original_checkpoint'] = [browser._thread_original(response) for response in browser.thread_responses]
+        unavailable = [r['unavailable'] for r in record['original_checkpoint'] if r.get('unavailable') is not None]
+        require(not any(reason in {'invalid-json','invalid-utf8'} for reason in unavailable),
+                'E05 observed invalid original JSON entity')
+        if unavailable:
+            c.groups['E05']['state'] = 'unknown'
+            raise ValueError('E05 complete original response evidence unavailable before cleanup')
+        if any(e.get('browser_copy') != 'measured-browser' for e in browser.thread_events
+               if e['event'] in {'compose-response', 'thread-response', 'thread-view'}):
+            c.groups['E05']['state'] = 'unknown'
+            raise ValueError('E05 mandatory independent browser-copy evidence unavailable')
         browser.close_threads_context()
         closure = proxy.close(c.effective_end())
         c.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
@@ -453,6 +517,15 @@ def exercise(c: Controller) -> None:
         require(record["finished"] <= c.case_deadline, "E05 final evidence stays within shared allowance")
         for variant in VARIANTS:
             c.mark(variant, dict(threads=record))
+    except BaseException as exc:
+        # Original exception/traceback wins before close/export can fail.
+        index = len(c.failures)
+        c.record_error('controller-action', exc)
+        if active_variant is not None and isinstance(exc, AssertionError):
+            record['case_outcomes'][active_variant] = dict(status='FAIL',error_ref=index)
+        c.groups['E05'].update(first_error_ref=c.groups['E05']['first_error_ref'] if c.groups['E05']['first_error_ref'] is not None else index,
+            state='unknown' if c.groups['E05']['state'] == 'unknown' else 'failed')
+        raise
     finally:
         # Partial/error paths keep the SAME case/scenario end and retain all
         # failed teardown observations. Controller.close remains the fallback.
@@ -465,6 +538,8 @@ def exercise(c: Controller) -> None:
                 c.durable.append(dict(thread_proxy_closure=closure))
                 if closure['errors'] or closure['workers_alive'] or closure['listener_alive'] or closure['connections']:
                     c.record_error('thread-proxy-closure', RuntimeError('proxy closure/transport failure'))
+        record['cleanup_finished'] = time.monotonic()
+        record['cleanup_deadline'] = c.effective_end()
         if hasattr(c, "case_deadline"):
             del c.case_deadline
         c.publish_end()

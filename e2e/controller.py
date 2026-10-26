@@ -188,6 +188,12 @@ class Controller:
         self.relay = None
         self.browser = None
         self.browser_relay = None
+        self.groups = {name: dict(state='not_started', begin=None, end=None, first_error_ref=None,
+                                 variants=[v for v in completed.VARIANTS if v.startswith(name+'.')], checkpoint_ref=None, admission_ref=None)
+                       for name in ('E05','E07')}
+        self.interrupted = False
+        self.e05_checkpoint = None
+        self.e07_admission = None
         self.e07: dict = {}
         self.e07_commands: list[dict] = []
         self.late_transport = None
@@ -1216,6 +1222,7 @@ class Controller:
             return
         self._attempt("stage-scenario", lambda: self._atomic_json(self.root / "scenario.json",
                       dict(variants=self.results, scenario_phases=self.phases, failures=self.failures,
+                           groups=self.groups, e07_admission=self.e07_admission,
                            evidence_state="partial/unvalidated")), blocking=False)
         self._attempt("stage-browser-trace", self.stage_browser_trace, blocking=False)
         if self.primary_error is not None:
@@ -1368,7 +1375,7 @@ class Controller:
             failures.append(dict(reason="unexpected"))
         return records, failures
 
-    def evidence(self) -> None:
+    def evidence(self, *, require_success: bool = True) -> None:
         # cancellation_hold calls this nonterminally: do not stop/join observer.
         self.prepare_redaction()
         self.stage_small_evidence()
@@ -1379,7 +1386,7 @@ class Controller:
                     http=self.http, durable=self.durable, relay=list(self.relay.records) if self.relay else [],
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
                     provider_observer=observer, observer_error=self.observer_error, observer_state=state,
-                    failures=self.failures)
+                    failures=self.failures, groups=self.groups, e07_admission=self.e07_admission)
         if self.e07:
             def e07_evidence() -> None:
                 launches, failures = self.collect_e07_launches()
@@ -1388,7 +1395,11 @@ class Controller:
             self._attempt("export-e07", e07_evidence, blocking=False)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
-                    thread_proxy=list(self.browser_relay.records) if self.browser_relay else [])
+                    thread_proxy=self.browser_relay.snapshot(self.sanitize) if self.browser_relay else [],
+                    thread_originals=getattr(self.browser, 'thread_originals', []),
+                    capture_inventory=dict(refusals=list(self.browser_relay.capture_refusals),
+                        closed=self.browser_relay.capture_closed,
+                        requests=list(self.browser_relay.browser_requests)) if self.browser_relay else None)
         witness = self.root / "witness/identities.jsonl"
         if witness.exists():
             def witness_evidence() -> None:
@@ -1403,11 +1414,13 @@ class Controller:
         self._attempt("export-observations", lambda: self._atomic_json(self.root / "raw/observations.json", rows), blocking=False)
         self._attempt("export-scenario", lambda: self._atomic_json(self.root / "scenario.json",
             dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, failures=self.failures,
+                 groups=self.groups, e07_admission=self.e07_admission,
                  observer_state=state)), blocking=False)
         self._attempt("export-browser-trace", self.stage_browser_trace, blocking=False)
         # All available evidence attempts precede the existing final assertion.
         require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
-        require(not self.failures, "evidence/cleanup failed", self.failures)
+        if require_success:
+            require(not self.failures, "evidence/cleanup failed", self.failures)
 
 
 def cancellation_hold(controller: Controller) -> None:
@@ -1577,6 +1590,7 @@ def main(_terminal: dict | None = None) -> None:
     args._diagnostic_alarm_code = expired.__code__
     controller = Controller(args)
     def interrupted(signum: int, _frame: object) -> None:
+        controller.interrupted = True
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
         raise RuntimeError(f"controller interrupted by signal {signum}")
@@ -1600,14 +1614,47 @@ def main(_terminal: dict | None = None) -> None:
                 exercise_pause(controller)
                 exercise_jobs(controller)
                 from threads import exercise as exercise_threads
-                exercise_threads(controller)
-                from e07 import exercise as exercise_cancellation
-                exercise_cancellation(controller)
+                from threads import VARIANTS as thread_variants
+                controller.groups['E05'].update(state='running', begin=time.monotonic(), variants=list(thread_variants))
+                try:
+                    exercise_threads(controller)
+                except BaseException as exc:
+                    # Preserve failures even before E05's own try was entered.
+                    if controller.primary_error is None:
+                        index = len(controller.failures)
+                        controller.record_error('controller-action', exc)
+                        controller.groups['E05'].update(state='failed', first_error_ref=index)
+                    if (not isinstance(exc, Exception) or isinstance(exc, TimeoutError)
+                            or controller.interrupted or controller.browser.poisoned):
+                        raise
+                    # Ordinary assertion failure still needs the entire positive
+                    # admission conjunction below; no exception grants safety.
+                else:
+                    controller.groups['E05']['state'] = 'reported_pass'
+                finally:
+                    controller.groups['E05']['end'] = time.monotonic()
+                from e07 import exercise as exercise_cancellation, VARIANTS as cancellation_variants
+                controller.groups['E07'].update(state='running', begin=time.monotonic(), variants=list(cancellation_variants))
+                try:
+                    exercise_cancellation(controller)
+                except BaseException as exc:
+                    index = len(controller.failures)
+                    controller.record_error('controller-action', exc)
+                    controller.groups['E07'].update(state='failed' if controller.e07 else 'refused',
+                        first_error_ref=controller.groups['E07']['first_error_ref'] if controller.groups['E07']['first_error_ref'] is not None else index)
+                    raise
+                else:
+                    controller.groups['E07']['state'] = 'reported_pass'
+                finally:
+                    controller.groups['E07']['end'] = time.monotonic()
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException as exc:
         # Save the actual first exception/traceback before any cleanup/export.
         controller.record_error("controller-action", exc)
+        if controller.groups['E05']['state'] != 'not_started' and controller.groups['E07']['state'] == 'not_started':
+            controller.groups['E07'].update(state='refused', first_error_ref=len(controller.failures)-1,
+                                           begin=time.monotonic(), end=time.monotonic())
         try:
             controller._stage_failure_categories()
         finally:

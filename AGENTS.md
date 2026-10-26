@@ -2766,6 +2766,24 @@ ONE-run allocation to TASK-11897 remains history. No PR-branch/local E2E,
 blind same-source retry, new trigger/schedule or automatic retry is authorized.
 Scheduled runs38482572306 and38644465643 failed at their own sources; corrected
 behavior remains pending an authorized main run. Historical baseline is separate evidence.
+Current THR291seq495 / sole ROOT13112 bounded test-harness composition captures
+original E05 responses at BrowserRelay and admits E07 after failed E05 only from
+complete genuine same-runtime pre-E05/C/N/D checkpoints. Starts29/32/33/36 and
+current-host17/20/21/24 select exact source-owned memberships; the only suffix is
+two actual P/W starts/four commands/one P result, final31/34/35/38 starts. Healthy
+53/36/38/23tasks31results/B24→26 remains the strict original specification. Both
+real boots/index1, positive owner/resource/provider/cgroup closure, complete raw
+content/public/SQL/files/witness/source joins, safe export and a full50s remaining
+in ORIGINAL480 work are mandatory; unsafe/unknown/expired/poisoned states refuse
+before allocation, without reset or borrowed reserve. Separate producer groups
+and independent scoped readers preserve the first E05 error and later errors;
+full56/Health remains strict FAIL for failed/missing evidence. Known open item:
+independent browser-copy body/hash/length/full-projection proof is UNAVAILABLE;
+healthy E05/full56 remains unmet, never satisfied by relay/public/SQL/DOM copies.
+All56 BOTH3.12/3.14,31s/full1s/BOTH50ms/GC/content assertions, original budgets,
+TERM/INT/four archives/daily19UTC and lint-only checks remain. See e2e/README.md
+for the maintained current contract,26 cases/keeper/four-answer records and actual
+source/control evidence; historical observations and execution holds remain.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
 and complete owned cleanup; product cancellation remains uncovered.
 See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.

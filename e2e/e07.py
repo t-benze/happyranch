@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from controller import Controller
 
 VARIANTS = ["E07.cancel-cascade-browser", "E07.cancel-terminal-unchanged", "E07.cancelled-late-cli"]
-DESIGN = "5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7"
+DESIGN = "af66320ba7059a27e9b7a8a990fe3f544f043dcb687a4ca015add45df1ceb70d"
 
 
 def witnesses(c: Controller) -> tuple[bytes, list[dict]]:
@@ -266,8 +266,10 @@ def cancelled(c: Controller, value: dict, parent: dict, worker: dict, result: di
     tables = value["sql"]["alpha"]["tables"]
     tasks = {r["id"]:r for r in tables["tasks"]}
     p, w = tasks[parent["task"]], tasks[worker["task"]]
-    require(len(tasks) == 22 and len(tables["task_results"]) == 30
-            and sum(t["status"] == "completed" for t in tasks.values()) == 20, "E07 exact final alpha population")
+    # The finite operation identity, not a declared count, selects the old rows.
+    d = c.e07['admission']['checkpoint'] == 'D'
+    require(len(tasks) == (22 if d else 21) and len(tables["task_results"]) == (30 if d else 29)
+            and sum(t["status"] == "completed" for t in tasks.values()) == (20 if d else 19), "E07 exact final alpha population")
     for t, start in ((p,parent), (w,worker)):
         require(t["status"] == "cancelled" and t["block_kind"] is None
                 and t["note"] == "cancelled by founder: E07_CANCEL_TREE"
@@ -433,22 +435,157 @@ def terminal_cli(c: Controller, task: str, status: str, rationale: str) -> dict:
 
 
 def exercise(c: Controller) -> None:
-    # Archive the fully evaluated original53 before entering C. This is scenario
-    # work under the unchanged original end, never borrowed export reserve.
-    c.remaining()
-    c.evidence()
-    prefix_content = (c.root / "raw/observations.json").read_bytes()
-    (c.root / "raw/e07-prefix.json").write_bytes(prefix_content)
-    archived_prefix = json.loads(prefix_content)
-    c.remaining()
+    # Admission consumes the original scenario budget, before ANY P/W effect.
+    # A previous exception is neither permission nor evidence of safe isolation.
+    admission = c.e07_admission = dict(state='running', entered=time.monotonic(),
+                                       checks=[], checkpoint=None, finished=None, refusal=None)
+    def check(value, name):
+        if not value:
+            admission['refusal'] = name
+        require(value, 'E07 admission: ' + name)
+        admission['checks'].append(dict(name=name, at=time.monotonic()))
+    try:
+        prior = next(d['threads_cases'] for d in c.durable if 'threads_cases' in d)
+        point = c.e05_checkpoint
+        check(point is not None and point is prior['checkpoints'][-1], 'genuine last operation checkpoint')
+        name = point['name']
+        check(name in {'pre-E05','C','N','D'}, 'finite checkpoint identity')
+        S,H = {'pre-E05':(29,17),'C':(32,20),'N':(33,21),'D':(36,24)}[name]
+        admission['checkpoint'] = name
+        admission['starts'], admission['host'] = S,H
+        check(len(c.results) == 48 or len(c.results) == 53 and name == 'D', 'real sparse outcomes or strict original53')
+        check(all(f['stage'] == 'controller-action' for f in c.failures), 'no resource, redaction, export or safety failure')
+        check(c.browser is not None and not c.browser.poisoned and not c.timer_phases
+              and not c.browser._bridge_active and not c.interrupted, 'healthy original browser and no residual phase owner')
+        check(prior['cleanup_finished'] <= prior['cleanup_deadline'] and time.monotonic() < c.deadline,
+              'E05 resource cleanup inside its original end')
+        check(not c.holds and not select.select([c.server],[],[],0)[0]
+              and c.observer_error is None and c.observer_thread.is_alive(), 'no held or unknown peer/provider observer')
+        check(c.starts == point['starts'] and len(c.starts) == len({x['session'] for x in c.starts}) == S,
+              'complete immutable actual provider prefix')
+        check(all(identity(x['pid']) != x['pid_start'] for x in c.starts), 'positive original provider PID-generation closure')
+        check(len(point['processes']) == S-29
+              and {(p['pid'],p['start']) for p in point['processes']} == {(p['pid'],p['pid_start']) for p in c.starts[29:]},
+              'original provider generation and containment membership')
+        admission['provider_groups'] = {}
+        for path,old in point['provider_groups'].items():
+            directory = Path('/sys/fs/cgroup') / path.lstrip('/')
+            members = []
+            if directory.exists():
+                for file in [directory/'cgroup.procs',*directory.glob('**/cgroup.procs')]:
+                    try:
+                        members.extend(int(x) for x in file.read_text().split())
+                    except FileNotFoundError:
+                        continue
+            observed = dict(exists=directory.exists(),pids=sorted(set(members)),at=time.monotonic())
+            admission['provider_groups'][path] = observed
+            check(not old['pids'] and not observed['pids'], 'pinned actual provider group remains empty')
+        check(len(c.commands) == point['command_count'] and len(c.thread_commands) == point['thread_command_count']
+              and len(c.thread_attempts) == point['thread_attempt_count']
+              and all(a.get('command_index') == i and 'finished' in a for i,a in enumerate(c.thread_attempts)),
+              'no partial or later unclassified command')
+        group_names = {'pre-E05':[], 'C':['C'], 'N':['C','N'], 'D':['C','N','D']}[name]
+        check(not any('mutation_entered' in g for g in prior['groups'][len(group_names):]),
+              'no later started mutating operation without its complete genuine result')
+        groups = prior['groups'][:len(group_names)]
+        check([g['name'] for g in groups] == group_names and all('settled' in g and 'anchor' in g for g in groups),
+              'all selected operations have full settled content and genuine anchors')
+        expected = [p for g in groups for p in g['providers'] + ([g['task']] if g['name'] == 'D' else [])]
+        check({p['session'] for p in expected} == {p['session'] for p in c.starts[29:]} and len(expected) == S-29,
+              'full C/N/D source-owned provider membership')
+        closures = [d['thread_process_closed'] for d in c.durable if 'thread_process_closed' in d]
+        check(len(closures) == S-29 and {x['session'] for x in closures} == {p['session'] for p in expected}
+              and all(x['observed_start'] != x['start'] and all(not f['exists'] for f in x['private_files'])
+                      and all(ch['observed_start'] != ch['start'] for ch in x['children']) for x in closures),
+              'positive provider child and private-file closure')
+        raw, prefix = witnesses(c)
+        check(prefix == point['witnesses'] and sum(x['kind'] == 'stub' for x in prefix) == S
+              and sum(x['kind'] == 'callback' for x in prefix) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands),
+              'complete real witness and command inventory')
+        proxy = c.browser_relay
+        closed = [d['thread_proxy_closure'] for d in c.durable if 'thread_proxy_closure' in d]
+        check(proxy is not None and len(closed) == 1 and c.browser_relay_closed
+              and not any(closed[0][k] for k in ('workers_alive','listener_alive','connections','errors')),
+              'original proxy positive full closure')
+        events = c.browser.thread_events
+        check(len([e for e in events if e['event'] == 'context-close']) == 1
+              and len([e for e in events if e['event'] == 'context-closed']) == 1
+              and not hasattr(c.browser, 'thread_context') and proxy.context_closed is not None,
+              'actual context close event AND native close return')
+        check(not proxy.capture_refusals and proxy.capture_closed is not None
+              and not proxy.io_owners and not proxy.active_streams and not proxy.active_responses
+              and not proxy.operation_gates, 'no capture refusal or unresolved I/O owner')
+        for record in proxy.records:
+            owner = record.get('io_owner')
+            check('closed' in record and (owner is None or owner.get('finished') is not None
+                  and not owner['errors'] and owner['forced'] is None
+                  and all('closed' in r and 'error' not in r for r in owner['resources'])
+                  and all('unregistered' in r and 'error' not in r for r in owner['registrations'])),
+                  'every original resource and registration retired')
+            if 'original' in record:
+                check(record['original']['capture_state'] == 'sealed'
+                      and record['original']['outcome'] == 'complete'
+                      and record['original']['first_error'] is None
+                      and record['forwarding']['byte_length'] == record['original']['byte_length']
+                      and record['forwarding']['sha256'] == record['original']['sha256'], 'complete original and actual forwarding')
+        try:
+            for response in c.browser.thread_responses:
+                c.browser_relay.original_for(c.browser.thread_responses[response]['request_id'])
+        except (ValueError,UnicodeError):
+            check(False, 'complete required original Request/document/window/JSON join')
+        check(len(c.boots) == 2 and c.boots[1]['pid'] == c.daemon.pid
+              and c.boots[1]['start'] == identity(c.daemon.pid), 'same two actual boots and current daemon generation')
+        check(all(hashlib.sha256((c.source/n).read_bytes()).hexdigest() == digest
+                  for n,digest in prior['source_hashes'].items()), 'unchanged original source files')
+        current, _ = frame(c)
+        check(content(current) == content(point['frame']), 'stable full checkpoint SQL/files/public content')
+        from threads import frame as thread_frame
+        check(thread_frame(c) == point['thread_frame'], 'stable complete operation state')
+        check(not groups or point['thread_frame'] == groups[-1]['settled']['content'],
+              'complete checkpoint content equals source-owned last settled operation')
+        for org in ('alpha','beta'):
+            old = next(d['snapshot'] for d in c.durable if d.get('jobs_final_org') == org)
+            tables = current['sql'][org]['tables']
+            tasks, results = tables['tasks'],tables['task_results']
+            extra = groups[-1]['task']['task'] if name == 'D' and org == 'alpha' else None
+            check([t for t in tasks if t['id'] != extra] == old['tasks']
+                  and [r for r in results if r['task_id'] != extra] == old['results']
+                  and len(tasks) == len(old['tasks'])+bool(extra) and len(results) == len(old['results'])+bool(extra)
+                  and all(t['status'] == 'completed' for t in tasks), 'source-owned complete task/result membership ' + org)
+            if extra:
+                callback = groups[-1]['callback']
+                result = next(r for r in results if r['task_id'] == extra)
+                check(result['session_id'] == groups[-1]['task']['session']
+                      and result['output_summary'] == callback['payload']['summary']
+                      and result['status'] == callback['payload']['status'], 'genuine D callback result content')
+        host(current,H,H,0,point['anchor']['projection']['receipts'])
+        admission.update(frame=current, point=point, ports=json.loads((c.root/'ports.json').read_text()),
+                         boots=c.boots, source_sha=c.revision, python=c.python)
+        check(all(p in admission['ports'] for p in (c.port,c.relay.port,proxy.port)), 'original D/L/P registry retained')
+        failures = len(c.failures)
+        c.evidence(require_success=False)
+        check(c.redaction_ready and len(c.failures) == failures, 'safe prepared checkpoint export without new failure')
+        prefix_content = (c.root / 'raw/observations.json').read_bytes()
+        c._atomic_text(c.root / 'raw/e07-prefix.json', prefix_content.decode())
+        archived_prefix = json.loads(prefix_content)
+        check(not archived_prefix['capture_inventory']['refusals']
+              and all(r['original']['entity_copy']['original_byte_check'] == 'available'
+                      for r in archived_prefix['thread_proxy'] if 'original' in r), 'complete safely exported unchanged originals')
+        check(time.monotonic()+50 < c.deadline, 'full50s remains after admission in original work budget')
+        admission.update(state='accepted', finished=time.monotonic())
+        c.groups['E07'].update(checkpoint_ref=name, admission_ref='e07_admission')
+    except BaseException as exc:
+        if admission['refusal'] is None:
+            admission['refusal'] = 'unavailable admission input: '+type(exc).__name__
+        admission.update(state='refused', finished=time.monotonic())
+        raise
     begin = time.monotonic()
-    prior = next(d["threads_cases"] for d in c.durable if "threads_cases" in d)
-    raw, prefix = witnesses(c)
-    require(len(c.results) == 53 and len(c.starts) == 36 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
+    require(begin+50 < c.deadline, 'E07 full original50s admission before allocation')
     c.e07 = dict(variants=VARIANTS, design_sha256=DESIGN, source_sha=c.revision, python=c.python,
                  entered=begin, scenario_deadline=c.deadline, end=min(begin+50,c.deadline),
                  prefix=dict(witness_bytes=len(raw), witness_records=len(prefix), witness_sha256=hashlib.sha256(raw).hexdigest(),
-                             observer_end=len(archived_prefix["provider_observer"]), archive_sha256=hashlib.sha256(prefix_content).hexdigest(), command_count=len(c.commands), e05_finished=prior["finished"], variants=list(c.results)),
+                             observer_end=len(archived_prefix["provider_observer"]), archive_sha256=hashlib.sha256(prefix_content).hexdigest(), command_count=len(c.commands), e05_finished=prior.get("finished"), variants=list(c.results)),
+                 admission=admission,
                  phases=[], anchors=[], owned=[], frames=[])
     c.e07["commands"] = c.e07_commands
     c.e07["source_files"] = {name:hashlib.sha256((c.source/name).read_bytes()).hexdigest() for name in (
@@ -472,8 +609,8 @@ def exercise(c: Controller) -> None:
             phase("capture",16)
             baseline, _ = frame(c)
             c.e07["baseline"] = baseline
-            host(baseline,24,24,0,prior["final_anchor"]["projection"]["receipts"])
-            c.e07["anchors"].append(dict(name="E05-end-B24",samples=[baseline]))
+            host(baseline,H,H,0,point['anchor']['projection']['receipts'])
+            c.e07["anchors"].append(dict(name='E05-end-B24' if len(c.results) == 53 else f'E05-checkpoint-{name}-B{H}',samples=[baseline]))
             P = c.create("alpha","E07_CANCEL_PARENT")
             parent = c.start("alpha",P,"case_manager")
             c.e07["parent"] = parent
@@ -497,15 +634,15 @@ def exercise(c: Controller) -> None:
                 require(t[P]["status"] == t[W]["status"] == "in_progress" and t[W]["parent_task_id"] == P
                         and t[W]["brief"] == "E07_CANCEL_CHILD" and t[W]["block_kind"] is None, "E07 genuine delegated tree")
                 a = snap["metrics"]["host_sessions"]["admission"]
-                if a["released_total"] != 25:
+                if a["released_total"] != H+1:
                     return None
-                host(snap,26,25,1,prior["final_anchor"]["projection"]["receipts"])
+                host(snap,H+2,H+1,1,point['anchor']['projection']['receipts'])
                 return snap
             live = c.poll(parked,"E07 P released, W sole live")
             second, _ = frame(c,P,W)
-            require(host(second,26,25,1,prior["final_anchor"]["projection"]["receipts"]) == host(live,26,25,1,prior["final_anchor"]["projection"]["receipts"]), "E07 two live projections")
+            require(host(second,H+2,H+1,1,point['anchor']['projection']['receipts']) == host(live,H+2,H+1,1,point['anchor']['projection']['receipts']), "E07 two live projections")
             c.e07["live"] = [live,second]
-            c.e07["anchors"].append(dict(name="P-success-W-live-B25",samples=[live,second]))
+            c.e07["anchors"].append(dict(name=f"P-success-W-live-B{H+1}",samples=[live,second]))
             new = second["metrics"]["host_sessions"]["receipts"]["recent"][0]
             require(new["terminal_reason"] == "success" and new["invocation_kind"] == "task", "E07 P success receipt")
             wire_payload = dict(session_id=worker["session"],agent="case_worker",status="completed",confidence=90,
@@ -561,15 +698,15 @@ def exercise(c: Controller) -> None:
                 audits = snap["sql"]["alpha"]["tables"]["audit_log"]
                 if not any(a["task_id"] == W and a["action"] == "session_end" for a in audits):
                     return None
-                if snap["metrics"]["host_sessions"]["admission"]["released_total"] != 26:
+                if snap["metrics"]["host_sessions"]["admission"]["released_total"] != H+2:
                     return None
                 cancelled(c,snap,parent,worker,result)
-                host(snap,26,26,0,second["metrics"]["host_sessions"]["receipts"])
+                host(snap,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"])
                 return snap, snap_content
             freeze, freeze_content = c.poll(closed,"E07 product closure before rescue")
             freeze2, freeze2_content = frame(c,P,W)
             require(freeze_content == freeze2_content
-                    and host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
+                    and host(freeze2,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"]) == host(freeze,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"]), "E07 settled cancellation frame")
             receipt = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
             require(receipt["terminal_reason"] == "cancelled" and receipt["invocation_kind"] == "task", "E07 one active cancellation receipt")
             c.e07["freeze"] = [freeze,freeze2]
@@ -592,10 +729,10 @@ def exercise(c: Controller) -> None:
             cancelled(c,freeze,parent,worker,result)
             cancellation_transition(second,freeze,P,W)
             require(freeze_content == freeze2_content
-                    and host(freeze,26,26,0,second["metrics"]["host_sessions"]["receipts"])
-                    == host(freeze2,26,26,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
+                    and host(freeze,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"])
+                    == host(freeze2,H+2,H+2,0,second["metrics"]["host_sessions"]["receipts"]), "E07 Fcancel after all product closure")
             c.e07["freeze"] = [freeze,freeze2]
-            c.e07["anchors"].append(dict(name="cancelled-B26",samples=[freeze,freeze2]))
+            c.e07["anchors"].append(dict(name=f"cancelled-B{H+2}",samples=[freeze,freeze2]))
             connection, stream = c.holds.pop(worker["session"])
             connection.settimeout(c.remaining())
             c.e07["provider_eof"] = dict(bytes=len(stream.read(1)),at=time.monotonic())
@@ -647,7 +784,7 @@ def exercise(c: Controller) -> None:
                     sample["closure"] = closure(c,tree,held["launch"]["child"])
                     window["samples"].append(sample)
                     require(sample_content == freeze_content and sample["witnesses"] == after["witnesses"],"E07 bounded full content/launch absence")
-                    host(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
+                    host(sample,H+2,H+2,0,freeze["metrics"]["host_sessions"]["receipts"])
                     require(not any(p["start"] == p["observed_start"] for p in sample["closure"]["processes"])
                             and not any(g["pids"] for g in sample["closure"]["groups"].values()) and not sample["closure"]["pending"],"E07 product stays closed")
                     previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
@@ -672,14 +809,14 @@ def exercise(c: Controller) -> None:
             phase("archive",50)
             final, final_content = frame(c,P,W)
             c.e07["final"] = final
-            c.e07["anchors"].append(dict(name="final-B26",samples=[final]))
+            c.e07["anchors"].append(dict(name=f"final-B{H+2}",samples=[final]))
             cancellation_transition(second,final,P,W)
             cancelled(c,final,parent,worker,result)
             require(final_content == freeze_content and final["sql"]["beta"] == baseline["sql"]["beta"],"E07 final immutable tree/beta")
             raw, rows = witnesses(c)
-            require(len(c.starts) == 38 and len({s["session"] for s in c.starts}) == 38 and not c.holds
-                    and sum(w["kind"] == "stub" for w in rows) == 38
-                    and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact38 starts and every CLI accounted")
+            require(len(c.starts) == S+2 and len({s["session"] for s in c.starts}) == S+2 and not c.holds
+                    and sum(w["kind"] == "stub" for w in rows) == S+2
+                    and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact checkpoint plus two starts and every CLI accounted")
             relay.deadline = c.case_deadline
             c.e07["transport_closure"] = relay.close(c.case_deadline)
             c.late_transport = None
@@ -690,6 +827,8 @@ def exercise(c: Controller) -> None:
             for variant in VARIANTS:
                 c.mark(variant,dict(e07_file="e07.json",source_sha=c.revision))
         except BaseException as exc:
+            if c.groups['E07']['first_error_ref'] is None:
+                c.groups['E07']['first_error_ref'] = len(c.failures)
             c.record_error("controller-action", exc)
             raise
         finally:
@@ -698,6 +837,8 @@ def exercise(c: Controller) -> None:
         # Reserve the combined body/final-save outgoing before recording or release.
         outgoing, outgoing_tb = exc, exc.__traceback__
         try:
+            if c.groups['E07']['first_error_ref'] is None:
+                c.groups['E07']['first_error_ref'] = len(c.failures)
             c.record_error("controller-action", exc)
         finally:
             raise outgoing.with_traceback(outgoing_tb)
