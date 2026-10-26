@@ -2982,9 +2982,16 @@ worker drain is added; other synchronous DB callers retain their limitations.
 
 When a task dispatched from a thread reaches true terminal state, `_maybe_post_thread_followup` appends a system message and mints a `TASK_FOLLOWUP` invocation. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
 
-An ordinary followup optionally permits only a team manager to dispatch a
-self-targeted, same-team replacement for an unfinished goal already covered by
-existing authority, using the ordinary dispatch payload without `resolves`.
+Only a team manager may use the bounded self-targeted, same-team replacement path
+from an ordinary followup. If the source task failed from infrastructure (launch
+refusal, session crash or timeout), the goal remains unfinished and authorized,
+history and effects have been reconciled, and existing one-replacement eligibility
+holds, dispatch that one replacement in this turn, then report what was done. If
+effects or authority remain uncertain, reconcile them or name the actual blocker.
+Failure type alone is not safe-retry proof. This direction does not apply after
+accepted successful completion; other unfinished goals retain only the existing
+bounded permission to replace under current authority. Use the ordinary dispatch
+payload without `resolves`.
 Admission validates the pending open-thread invocation, terminal event/source status
 agreement, lineage and original dispatch provenance. The DB terminal source set is
 `completed`/`failed`/`cancelled`/`superseded`/`escalated`; mechanical eligibility does
@@ -3000,7 +3007,10 @@ no launch or cleanup. Cancellation, explicit holds, exhausted allowances (includ
 external run allowances) and reserved founder decisions remain binding, with no new
 authority or budget. An escalated followup still requires the precise founder
 decision or a decline, never repair dispatch; autonomous escalation continuation
-remains retired. The optional replacement guidance does not override that boundary.
+remains retired. The replacement guidance does not override that boundary.
+Legitimate budget, provenance, hold or authorization refusals remain binding;
+diagnose unexpected refusals only within existing authority, without bypass,
+replay, budget reset or a new run.
 
 Traps:
 
