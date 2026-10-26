@@ -2354,9 +2354,21 @@ Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/
 
 ## Per-Agent Learnings
 
+Task-start consultation (THR-091 seq633) is defined by
+`runtime/skills/bundled/start-task/SKILL.md` step 2: before the first substantive
+decision, select and read up to two memories pertinent to the actual task and
+apply their relevant constraints. Zero is appropriate when none is relevant;
+bodies already in context, including full-body directives, need no reread.
+No ritual fetch/search or quota of two is required. Search is available for
+relevant missing recall. Task history, explicit referenced-task recall and KB
+obligations remain. The digest gives a short canonical `happyranch memory get`
+cue; this wording changes neither ranking nor packing. Copy length can change
+actual exposure at budget boundaries, so compare rendered pointer/full-body
+metadata rather than assuming identical shown sets.
+
 ### Memory telemetry guard (THR-091, TASK-7767)
 
-Task bootstrap retains text and item IDs from one actual `MemoryStore.render_memory_digest` pass; `build_memory_digest` remains a compatible string/None wrapper. Only appended full blocks or pointer lines contribute IDs. Directive fit is full-body exposure; budget fallback is pointer exposure. IDs merely mentioned in bodies, titles, header, or nudge are not item exposure. Scoring, ordering, salience, character budgets, prompt bytes and nudge behavior remain unchanged. A header/nudge-only result has no items and emits no impression. Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+Task bootstrap retains text and item IDs from one actual `MemoryStore.render_memory_digest` pass; `build_memory_digest` remains a compatible string/None wrapper. Only appended full blocks or pointer lines contribute IDs. Directive fit is full-body exposure; budget fallback is pointer exposure. IDs merely mentioned in bodies, titles, header, or nudge are not item exposure. Scoring, ordering, salience, character budgets and nudge placement remain unchanged; the task-start cue above changes intro/nudge wording only. A header/nudge-only result has no items and emits no impression. Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 

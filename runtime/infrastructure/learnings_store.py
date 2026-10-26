@@ -668,11 +668,11 @@ class MemoryStore:
 
     _DIGEST_HEADER = "=== MEMORY-DIGEST (system) ==="
     _DIGEST_INTRO = (
-        "Relevant memory (pointers only — "
-        "fetch bodies with `happyranch memory get <id>`):"
+        "Before deciding, read up to 2 relevant memories: "
+        "`happyranch memory get <id>`."
     )
     _DIGEST_NUDGE = (
-        'Pull the long tail: `happyranch memory search "<terms>"`.'
+        'Missing recall? `happyranch memory search "<terms>"`.'
     )
     _DIGEST_LINE_FMT = "- `{id}` — {title}  ({provenance}, salience {salience})"
 

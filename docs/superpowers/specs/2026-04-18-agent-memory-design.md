@@ -1,5 +1,18 @@
 # Agent Memory — Design
 
+> **Task-start activation guidance (THR-091 seq633).** Current canonical guidance
+> is `runtime/skills/bundled/start-task/SKILL.md` step 2: before the first
+> substantive decision, select/read up to two task-relevant memories and apply
+> their relevant constraints. Select zero when none is relevant; apply bodies
+> already in context (including full-body directives) without rereading. No
+> ritual fetch/search or quota of two; use canonical `happyranch memory get`
+> for selected missing bodies and search for relevant missing recall. Required
+> task history, referenced-task recall and KB consultation remain. Digest
+> intro/nudge wording changes only; ranking, packing, budgets and exact
+> render-time exposure accounting remain. Different copy lengths can change
+> shown sets. Historical plans/proofs and formal telemetry guards below remain
+> unchanged; this cue is not runtime-compliance or collection acceptance evidence.
+
 **Date:** 2026-04-18
 **Status:** Approved, ready for implementation plan
 
