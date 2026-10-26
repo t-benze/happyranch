@@ -61,7 +61,7 @@ def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> No
         _check(_settings_family(command))
         budget = _Budget()
         layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
-        _check(layout == 'J' and inventory is not None)
+        _check(inventory is not None)
         _resolve_start(command, inventory.mappings, inventory.imported, budget, fresh=True)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
         raise CodingStartError('coding_start_settings_unavailable') from None
@@ -145,18 +145,19 @@ class CodingStartStore:
         from runtime.workflows.coding_roles import CodingRoleError
         roles = self.org.workflow_coding_roles
         async with roles._access(principal) as (references, capture, _):
-            with roles._read(principal, capture, references) as (conn, current):
+            budget = _Budget()
+            with roles._read(principal, capture, references, budget=budget) as (conn, current):
                 selected = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?',
                                         (instance_id,)).fetchone()
                 if selected is None or selected[0] != principal.operation_principal:
                     raise CodingRoleError('coding_role_not_found')
-                inventory = self.support._storage(conn, references)
+                inventory = self.support._storage(conn, references, budget=budget)
                 entry = inventory.queued.runs.get(instance_id)
                 if entry is None or entry['source']['principal'] != principal.principal_id:
                     raise CodingRoleError('coding_role_not_found')
                 from runtime.workflows._coding_settings_execution import _settings_family
                 if not _settings_family(entry['command']):
-                    roles._current(conn, principal, current, entry['mapping'])
+                    roles._current(conn, principal, current, entry['mapping'], budget=budget)
                 effective = effective_mapping(entry['mapping'], entry['command'])
                 roles._current(conn, principal, current, effective,
                     command=entry['command'], budget=inventory.budget)
@@ -382,8 +383,8 @@ class CodingStartStore:
                 result_id=action_claim.causal_result_id)
             _check(ack.status == 'applied')
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-        layout, _ = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=inventory.budget)
-        _check(layout == 'J')
+        _, target = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=inventory.budget)
+        _check(target is not None)
         return instance
 
     def _claim_result_action_uncommitted(self, claim: RetryClaim) -> Any:
@@ -425,27 +426,17 @@ class CodingStartStore:
 
 
 def queued_storage(conn: sqlite3.Connection, org: str, *, budget: _Budget | None = None) -> Any:
-    """Compose one complete J snapshot and cumulative caller allowance.
+    """Compose one complete coding snapshot and cumulative caller allowance.
 
     Only internally reconstructed inventories are reused within this call.
     Caller-owned transactions are never ended; no schema recursion/cache.
     """
-    from runtime.workflows.coding_start_history import read_queued
-    from runtime.workflows._coding_mapping_admission import _MappingCaptures
-    from runtime.workflows.coding_authority_history import _SetupHistoryReader
-    from runtime.workflows.coding_mapping_history import _read_mapping_storage
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
     if budget is not None and type(budget) is not _Budget:
         raise CodingStartError('coding_start_history_invalid')
-    budget = _Budget() if budget is None else budget
-    owned = not conn.in_transaction
-    if owned:
-        conn.execute('BEGIN')
-    try:
-        captures = _MappingCaptures(conn, org, budget)
-        mappings, _ = _read_mapping_storage(conn, expected_org_slug=org, budget=budget,
-                                          setups=_SetupHistoryReader(conn, org, budget), captures=captures)
-        imported = read_release_import(conn, expected_org_slug=org, budget=budget)
-        return read_queued(conn, org, budget, mappings, imported)
-    finally:
-        if owned:
-            conn.rollback()
+    # Central reconstruction calls read_queued directly, never this composer.
+    # Cold/recovery/native callers therefore receive the same structural,
+    # shared-dependency and complete history validation without recursion.
+    _, inventory = _read_workflow_schema(conn, expected_org_slug=org, budget=budget)
+    _check(inventory is not None)
+    return inventory.queued

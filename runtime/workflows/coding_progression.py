@@ -350,8 +350,8 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
     # New state is independently reread on the SAME cumulative allowance after
     # the first mutation; no pre-write inventory is trusted as target closure.
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    layout, _ = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
-    _check(layout == 'J')
+    _, target = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
+    _check(target is not None)
     return task_id
 
 

@@ -666,10 +666,11 @@ class CodingDispatcher:
                 observation_digest=_hash(raw), recovery_owner=entry['native']['claim']['owner']), invocation=invocation)
         return True
 
-    def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str, payload: dict, capture: Any) -> bool:
+    def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str, payload: dict, capture: Any,
+                             budget: _Budget | None = None) -> bool:
         from runtime.infrastructure.database import completion_result_payload_matches
         conn = self.db._conn
-        entry = self._entry(conn, task_id)
+        entry = self._entry(conn, task_id, budget=budget)
         attempt = entry['attempt']
         result = entry['native']['callback']
         if result is not None:

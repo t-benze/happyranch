@@ -13,7 +13,7 @@ from typing import Annotated, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
-from runtime.infrastructure.workflow_schema import validate_workflow_schema
+from runtime.infrastructure.workflow_schema import _schema_snapshot, validate_workflow_schema
 from runtime.models import TaskRecord
 from runtime.orchestrator._paths import OrgPaths
 from runtime.workflows.draft_dispatch import append_event_uncommitted, canonical_bytes, digest
@@ -639,6 +639,27 @@ class WorkflowActivationStore:
         return self._project(receipt)
 
     def _closure(self, conn: sqlite3.Connection, activation_id: str, *, actor: str) -> dict:
+        """Standalone complete validation and semantic closure in one snapshot."""
+        with _schema_snapshot(conn):
+            # Preserve the private lookup boundary before complete validation.
+            operation = conn.execute("SELECT * FROM workflow_activation_operations WHERE activation_id=? AND org_slug=? AND principal=?",
+                                     (activation_id, self.org.slug, actor)).fetchone()
+            if operation is None:
+                raise WorkflowActivationError("workflow_activation_not_found")
+            try:
+                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                return self._closure_from_validated_schema(conn, activation_id, actor=actor)
+            except (ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError) as exc:
+                raise WorkflowActivationError("workflow_activation_storage_corrupt") from exc
+
+    def _closure_from_validated_schema(self, conn: sqlite3.Connection, activation_id: str, *, actor: str) -> dict:
+        """Semantic core; caller owns complete validation in this exact snapshot.
+
+        Only the standalone wrapper and recovery's immediate, write-free
+        composition use this core. No validation result survives this snapshot.
+        """
+        if not conn.in_transaction:
+            raise WorkflowActivationError("workflow_activation_storage_corrupt")
         # Caller authenticated before any receipt lookup. A foreign actor/org
         # receives no private record, even if it guesses an activation ID.
         operation = conn.execute("SELECT * FROM workflow_activation_operations WHERE activation_id=? AND org_slug=? AND principal=?",
@@ -646,7 +667,6 @@ class WorkflowActivationStore:
         if operation is None:
             raise WorkflowActivationError("workflow_activation_not_found")
         try:
-            validate_workflow_schema(conn, expected_org_slug=self.org.slug)
             activation = dict(conn.execute("SELECT * FROM workflow_activations WHERE id=?", (activation_id,)).fetchone())
             instance = dict(conn.execute("SELECT * FROM workflow_instances WHERE id=?", (activation["instance_id"],)).fetchone())
             intent = dict(conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE activation_id=? AND attempt_sequence=1", (activation_id,)).fetchone())

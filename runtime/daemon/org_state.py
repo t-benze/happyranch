@@ -30,7 +30,7 @@ from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
-    coding_migration_guidance, draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
+    draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
     author_handoff_migration_guidance,
 )
 from runtime.workflows.cutover import WorkflowCutoverStore
@@ -417,8 +417,6 @@ class OrgState:
                 ))
             if layout == "G":
                 logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
-            if layout == "I":
-                logger.warning("org %r: coding unavailable; %s", slug, coding_migration_guidance())
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
             install_pause_schema(db, org_slug=slug)
@@ -490,9 +488,12 @@ class OrgState:
                     slug,
                 )
             return state
-        except Exception:
+        except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.
-            db.close()
+            try:
+                db.close()
+            except BaseException as cleanup:
+                primary.add_note("unpublished org close failed: " + type(cleanup).__name__)
             raise
 
     def close(self) -> None:
