@@ -19,14 +19,16 @@ from runtime.workflows.coding_source_history import (
     _check, _inventory, _session_start, _task,
 )
 
-def native_owner(org: Any, principal: WorkflowTemplatePrincipal, conn: sqlite3.Connection) -> tuple:
+def native_owner(org: Any, principal: WorkflowTemplatePrincipal, conn: sqlite3.Connection, *,
+                 budget: _Budget | None = None) -> tuple:
     """Authenticate the actual nonallocating manager invocation in this snapshot."""
     principal.revalidate()
     _check(principal.principal_kind == 'agent' and principal.proof_kind == 'task_session'
            and principal.org_slug == org.slug and principal.principal_id != 'founder')
     issuer = dict(kind='agent', principal=principal.principal_id, task_id=principal.task_id,
                   session_id=principal.session_id, result_id=None)
-    budget = _Budget()
+    _check(budget is None or type(budget) is _Budget)
+    budget = _Budget() if budget is None else budget
     task = _task(conn, principal.task_id, budget)
     _check(task._text('assigned_agent') == principal.principal_id
            and task._text('team') == principal.team_slug
@@ -86,8 +88,9 @@ def _encode_record(record: NativeSourceRecord) -> dict:
 
 
 def capture_body(org: Any, principal: WorkflowTemplatePrincipal, conn: sqlite3.Connection, *,
-                 admission_id: str, mapping_id: str, raw: bytes, now: str, max_revise_rounds: int) -> dict:
-    issuer, chain, start, owner = native_owner(org, principal, conn)
+                 admission_id: str, mapping_id: str, raw: bytes, now: str, max_revise_rounds: int,
+                 budget: _Budget | None = None) -> dict:
+    issuer, chain, start, owner = native_owner(org, principal, conn, budget=budget)
     task = chain[0]
     return dict(format='workflow-coding-source-admission@1', phase='source', org_slug=org.slug,
         source_admission_id=admission_id, native_owner=dict(table='workflow_coding_mappings', id=mapping_id),

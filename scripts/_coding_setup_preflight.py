@@ -161,7 +161,9 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
     from runtime.runtime import RuntimeDir
     from runtime.orchestrator.team_move_startup import require_runtime_reader, diagnostic_move_orgs
     from scripts.migrate_workflow_submission_schema import resolve_org_database
-    from runtime.infrastructure.workflow_schema import validate_workflow_schema, _validate_release_database
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    from runtime.infrastructure.workflow_coding_schema import _validate_coding_dependencies
+    from runtime.identities.schema import validate_names
     frozen = registry(home)
     if str(selected) != frozen['active']:
         raise Hold('selected runtime must be the literal active registered runtime; no switching')
@@ -191,11 +193,12 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
             literal(org / 'org' / 'teams.yaml')
             path = resolve_org_database(root, org.name)
             with read_database(path) as conn:
-                layout = validate_workflow_schema(conn, expected_org_slug=org.name)
-                _validate_release_database(conn, layout, expected_org_slug=org.name)
+                layout, coding = _read_workflow_schema(conn, expected_org_slug=org.name)
+                _validate_coding_dependencies(conn)
+                validate_names(conn, org_slug=org.name)
                 inspect_org_owners(conn, layout, org.name)
             result['orgs'].append({'runtime': str(root), 'org': org.name, 'path': str(path),
-                                   'identity': identity(path), 'layout': layout})
+                                   'identity': identity(path), 'layout': layout, 'coding': coding is not None})
     return result
 
 
