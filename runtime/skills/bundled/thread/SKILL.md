@@ -306,14 +306,36 @@ knows), decline.
 **Escalation variant:** If the dispatched task **escalated** to the founder instead
 of finishing, the thread gets a `task_escalated` system message (with the escalation
 reason). Reply with the precise founder decision needed, or decline if there is nothing
-substantive to add.
+substantive to add. Do not dispatch repair work from this turn. Autonomous escalation
+continuation is retired; the replacement guidance below does not override
+these escalation restrictions or an unresolved founder decision.
 
-**Optional replacement dispatch:** A team manager may dispatch one self-targeted
-replacement from this turn before the terminal callback, using the ordinary dispatch
-payload and omitting `resolves`. The runtime validates the terminal event, its lineage
-and dispatch provenance, and the causal root's one-replacement budget; a fresh token
-does not create another replacement. This path does not end the turn: reply or decline
-afterwards as usual.
+**Bounded replacement dispatch:** Only a team manager may use the self-targeted,
+same-team replacement path from an ordinary task-followup turn. If the source task
+failed from infrastructure (launch refusal, session crash or timeout), the goal
+remains unfinished and authorized, history and effects have been reconciled, and
+existing one-replacement eligibility holds, dispatch that one replacement in this
+turn, then report what you did. If effects or authority remain uncertain, reconcile
+them or name the actual blocker. Failure type alone is not safe-retry proof. This
+direction does not apply after accepted successful completion; other unfinished
+goals retain only the existing bounded permission to replace under current authority.
+Workers gain no manager rights. Use the ordinary dispatch payload, omitting `resolves`.
+The runtime validates the terminal event/source status agreement, lineage and original
+dispatch provenance, and permits
+at most one persisted replacement per causal root; neither a new token nor a
+replacement task resets that limit. Mechanical terminal eligibility is not authority
+to continue cancelled or held work.
+
+Before replacing, inspect the original task details/history and existing artifacts,
+branch/PR, process and effect evidence as applicable. Reconcile uncertain previous
+effects, preserve failed history and lineage, and carry forward unchanged scope,
+allowances and holds. Never infer no launch or cleanup from a failed status, absent
+PID or missing callback. Explicit cancellation, holds, exhausted allowances (including
+external run allowances) and reserved founder decisions remain binding; this path
+grants no new authority or budget. Legitimate budget, provenance, hold or authorization
+refusals remain binding; diagnose unexpected refusals only within existing authority,
+without bypass, replay, budget reset or a new run. Dispatch does not end the turn:
+reply or decline afterwards as usual.
 
 Callback shapes are unchanged: same `reply` / `decline` payload schema as a normal
 reply turn.
