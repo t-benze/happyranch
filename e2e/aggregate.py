@@ -11,7 +11,7 @@ import signal
 from datetime import datetime, timedelta
 
 from cancellation import validate as validate_cancellation
-from run import BASELINE_ARTIFACTS, daily_admission, validate_admission, validate_timing
+from run import BASELINE_ARTIFACTS, daily_admission, validate_admission, validate_timing, scenario_fields
 from pathlib import Path
 import completed
 
@@ -95,12 +95,76 @@ def controls() -> dict:
     results.update(admission_controls())
     results.update(completed_controls())
     results.update(original_controls())
+    results.update(failure_result_controls())
+    return results
+
+
+def failure_result_controls() -> dict:
+    """Real detached projection only; native cleanup/export failure NOT RUN."""
+    secret = 'PRIVATE_SENTINEL"\n'
+    original = dict(variants={'E05.compose-race':dict(status='FAIL',error=secret)},
+        scenario_phases=[], e07=None,
+        groups={'E05':dict(state='unknown',first_error_ref=0),
+                'E07':dict(state='refused',first_error_ref=1)},
+        e07_admission=dict(state='refused',refusal='missing original owner'),
+        failures=[dict(stage='controller-action',error='ValueError',at=1.),
+                  dict(stage='controller-action',error='AssertionError',at=2.)],
+        finalization=[dict(stage='browser-close',error_ref=2)],
+        ignored=secret)
+    expected = dict(variants={'E05.compose-race':dict(status='FAIL',error='[REDACTED]')},
+        scenario_phases=[], e07=None,
+        groups={'E05':dict(state='unknown',first_error_ref=0),
+                'E07':dict(state='refused',first_error_ref=1)},
+        e07_admission=dict(state='refused',refusal='missing original owner'),
+        failures=[dict(stage='controller-action',error='ValueError',at=1.),
+                  dict(stage='controller-action',error='AssertionError',at=2.)],
+        finalization=[dict(stage='browser-close',error_ref=2)])
+    safe = scenario_fields(original, lambda text:text.replace(secret,'[REDACTED]'))
+    assert safe == expected and 'PRIVATE_SENTINEL' not in json.dumps(safe)
+    original['groups']['E05']['state'] = 'reported_pass'
+    original['failures'].clear()
+    assert safe == expected  # Original producer mutations cannot rewrite retained state.
+    assert scenario_fields({'variants':{}},lambda text:text) == {'variants':{}}
+    results = {'B09-B12-detached-failure-fields':'actual bounded redaction projection; native fallback NOT RUN'}
+    for name,result in (('absent',None),('missing-variants',{}),('non-object',[]),
+                         ('nonfinite',dict(variants={},failures=[float('nan')])),
+                         ('unsupported',dict(variants={},groups=object())),('byte-cap',dict(variants={},groups='x'*(8*1024*1024+1))),
+                         ('fact-cap',dict(variants={},groups=[None]*200001))):
+        try:
+            scenario_fields(result,lambda text:text)
+        except ValueError:
+            results['B09-B12-projection-'+name] = 'refused; no raw fallback'
+        else:
+            raise AssertionError('unsafe scenario projection accepted: '+name)
+    nested = None
+    for _ in range(65):
+        nested = [nested]
+    try:
+        scenario_fields(dict(variants={},groups=nested),lambda text:text)
+    except ValueError as exc:
+        assert 'capacity refused' in str(exc)
+    else:
+        raise AssertionError('deep scenario projection accepted')
+    def unavailable(_text):
+        raise ValueError('complete redaction context unavailable')
+    try:
+        scenario_fields(dict(variants={},groups={'E05':{}}),unavailable)
+    except ValueError as exc:
+        assert 'redaction context unavailable' in str(exc)
+    else:
+        raise AssertionError('scenario retained without redaction')
+    # The already returned object stays detached; this is not proof that a
+    # native final failure actually reached failure_receipt or was published.
+    assert safe == expected
+    results['B09-B12-redaction-refused'] = 'projection refuses; previous detached bytes unchanged'
     return results
 
 
 def original_controls() -> dict:
     """Extend the existing raw-reader controls; no native/browser fixture runs."""
     import tempfile
+    import threading
+    from transport import BrowserRelay
     results = {}
     text = '{"thread_id":"THR-007","pending_replies":["case_worker"]}'
     raw = text.encode()
@@ -116,6 +180,114 @@ def original_controls() -> dict:
                         byte_length=len(raw),sha256=digest,finished=5.7))
     expected = {'thread_id':'THR-007','pending_replies':['case_worker']}
     assert validate_original_member(record) == expected
+    # Actual capture/export methods on a bare test-harness owner: no constructor,
+    # server, socket, browser, HTTP parser or native ownership fixture is run.
+    # Literal bytes are independent finite scenario inputs to the real exporter.
+    def captured(data, outcome='complete', *, status=200, encoding=None):
+        relay = BrowserRelay.__new__(BrowserRelay)
+        relay.lock = threading.Lock()
+        relay.records = [dict(copy.deepcopy(record), method='GET',
+                             path='/api/v1/orgs/alpha/threads/THR-007',
+                             target='/api/v1/orgs/alpha/threads/THR-007',ordinal=None)]
+        relay.browser_requests, relay.originals, relay.capture_refusals = [], {}, []
+        relay.capture_bytes = relay.capture_facts = 0
+        relay.capture_closed = None
+        source = relay.records[0]
+        relay._capture_begin(source, False)
+        source['status'] = status
+        source['original'].update(status=status, framing=dict(content_type=['application/json'],
+            content_encoding=encoding or [], content_length=[str(len(data))],transfer_encoding=[],bodyless=outcome=='bodyless'),
+            header_bytes=64)
+        relay._capture_chunk(source,data)
+        if outcome in {'complete','empty','bodyless'}:
+            relay._capture_seal(source)
+        elif outcome in {'partial','error'}:
+            relay._capture_error(source,'read',OSError())
+        return relay
+    relay = captured(raw)
+    try:
+        relay.original_for(99)
+    except ValueError as exc:
+        assert 'Request identity unavailable' in str(exc)
+    else:
+        raise AssertionError('missing native Request accepted')
+    published = relay.snapshot(lambda value:value)[0]
+    entity = published['original']['entity_copy']
+    assert entity == dict(representation='unchanged_utf8',text=text,copy_bytes=len(raw),
+                          copy_sha256=digest,original_byte_check='available')
+    assert published['original']['sha256'] == digest and published['original']['byte_length'] == len(raw)
+    assert relay.browser_requests == []  # Export did not invent a browser join.
+    results['A03-A13-sealed-unpaired-export'] = 'actual capture/snapshot JSON seam; native forwarding NOT RUN'
+    safe_copy = captured(raw).snapshot(lambda value:value.replace('THR-007','THR-008'))[0]['original']['entity_copy']
+    assert safe_copy['representation'] == 'sanitized_utf8' and safe_copy['original_byte_check'] == 'unavailable'
+    assert safe_copy['copy_sha256'] == hashlib.sha256(safe_copy['text'].encode()).hexdigest() != digest
+    results['A13-sanitized-original-unavailable'] = 'sanitized copy cannot establish original equality'
+    for name,data,outcome in (('empty',b'','empty'),('bodyless',b'','bodyless'),
+                              ('partial',b'{','partial'),('error',b'','error'),('pending',b'','pending')):
+        relay = captured(data,outcome)
+        published = relay.snapshot(lambda value:value)[0]['original']
+        assert published['outcome'] == outcome
+        if outcome in {'empty','bodyless'}:
+            assert published['entity_copy']['text'] == '' and published['entity_copy']['copy_bytes'] == 0
+        else:
+            assert published['entity_copy']['representation'] == 'unavailable'
+        results['A03-A08-export-'+name] = 'explicit original outcome; never required JSON success'
+    for name,data,encoding in (('invalid-json',b'{',None),('invalid-utf8',b'\xff',None),
+                               ('duplicate-json',b'{"status":"open","status":"failed"}',None),
+                               ('nonfinite',b'{"seq":NaN}',None),('encoding',raw,['gzip']),
+                               ('sensitive',b'{"credential":"PRIVATE_SENTINEL"}',None)):
+        relay = captured(data,encoding=encoding)
+        assert relay.snapshot(lambda value:value)[0]['original']['entity_copy']['representation'] == 'unavailable'
+        before = relay.capture_bytes
+        assert relay.snapshot(lambda value:value)[0]['original']['entity_copy']['text'] is None
+        assert relay.capture_bytes == before  # Invalid parse never consumes a new copy allowance.
+        if relay.originals[0]['parse_error'] is not None:
+            counters = relay.capture_bytes,relay.capture_facts
+            for _ in range(2):
+                try:
+                    relay._parse_original(relay.records[0])
+                except (ValueError,UnicodeError,RecursionError):
+                    pass
+                else:
+                    raise AssertionError('previous parse refusal accepted')
+                assert (relay.capture_bytes,relay.capture_facts) == counters
+        results['A13-export-'+name] = 'unsafe/unparseable original withheld; parse work not repeated'
+    relay = captured(raw)
+    relay.capture_bytes = 8*1024*1024
+    refused = relay.snapshot(lambda value:value)[0]['original']
+    assert refused['capture_state'] == 'refused' and refused['capture_refusal'] is not None
+    assert refused['entity_copy']['representation'] == 'unavailable'
+    results['A07-A13-export-capacity'] = 'same snapshot retains sticky refusal and unavailable copy'
+    relay = captured(b'[' + b'0,'*17000 + b'0]')
+    assert relay.snapshot(lambda value:value)[0]['original']['entity_copy']['representation'] == 'unavailable'
+    assert relay.records[0]['original']['capture_state'] == 'refused'
+    assert relay.capture_refusals[0]['reason'] == 'fact-cap'
+    results['A07-A13-parse-fact-cap'] = 'parser facts reserved before retained JSON allocation'
+    relay = captured(raw)
+    relay.capture_facts = 16384
+    assert relay.snapshot(lambda value:value) == []
+    assert relay.capture_refusals[0]['reason'] == 'fact-cap'
+    assert relay.snapshot(lambda value:value) == [] and len(relay.capture_refusals) == 1
+    results['A07-A13-export-fact-cap'] = 'incomplete census; one sticky refusal'
+    relay = captured(b'{"status":"failed"}',status=503)
+    published = relay.snapshot(lambda value:value)[0]
+    assert published['original']['status'] == 503
+    assert published['original']['entity_copy']['text'] == '{"status":"failed"}'
+    try:
+        validate_original_member(published)
+    except ValueError as exc:
+        assert 'original status/timeline' in str(exc)
+    else:
+        raise AssertionError('non200 original became required success')
+    results['A03-A08-non200-original'] = 'safe original published; required success still refuses'
+    for outcome in ('partial','error','pending'):
+        relay = captured(b'{' if outcome == 'partial' else b'',outcome)
+        source = copy.deepcopy(relay.records[0]['original'])
+        published = relay.snapshot(lambda value:value)[0]['original']
+        assert all(published[k] == v for k,v in source.items())
+        assert published['entity_copy']['representation'] == 'unavailable'
+    results['A03-A08-prefix-identities'] = 'first error/status/framing/hash/length/outcome unchanged'
+
     results['A01-original-reader-consistency'] = 'accepted original only; browser evidence unavailable'
     mutations = {
         'unknown-field':('closed original grammar',lambda r:r['original'].update(extra=True)),

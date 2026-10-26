@@ -2784,6 +2784,13 @@ All56 BOTH3.12/3.14,31s/full1s/BOTH50ms/GC/content assertions, original budgets,
 TERM/INT/four archives/daily19UTC and lint-only checks remain. See e2e/README.md
 for the maintained current contract,26 cases/keeper/four-answer records and actual
 source/control evidence; historical observations and execution holds remain.
+TASK13130 additionally publishes safely selected sealed originals without requiring
+a browser join and retains bounded detached fully redacted scenario/group/first-
+cause/admission/finalization claims through later failure publication. Missing or
+refused inputs supply no raw rescue or manufactured artifacts; independent readers,
+full56 and global Health remain strict. Historical Request/document identity and
+positive GET/I/O stop closure remain UNKNOWN/refused, never inferred from callback
+timing, same-URL order, BrokenPipe or physical zero owners. Native proof is NOT RUN.
 The aggregate also requires real TERM/INT launcher diagnostics with non-success
 and complete owned cleanup; product cancellation remains uncovered.
 See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
