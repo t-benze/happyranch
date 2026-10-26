@@ -86,6 +86,39 @@ class StartupRecovery:
         self._created_ns = time.monotonic_ns()
         self._serving_ns: int | None = None
         self._sweep_owner: Any | None = None
+        from runtime.daemon.startup_publication import StartupPublications
+        self._publications = StartupPublications(self)
+
+    def publications(self, orch: Any):
+        """Native P4/P6 scope, after true-loop binding and cold P2 closure.
+
+        Wrap the existing rediscover_returned call, not an extra scan. Its
+        native producer drains after marker/DB locks unwind, before the phase
+        outcome. This does not bind an orchestrator or recover at attachment.
+        """
+        return self._publications.scope(orch)
+
+    def publication_outcome(self) -> RecoveryOutcome:
+        """After scope exit/drain, supply the explicit P4/P6 phase outcome."""
+        self.require_native_owner()
+        self._publications.assert_idle()
+        counts = self._publications.snapshot()
+        return RecoveryOutcome("local_hold" if counts["held"] or counts["preserved_marker"] else "settled")
+
+    def require_publication_owner(self, orch: Any) -> None:
+        """The native returned/P6 owner, after cold sweep/workflow closure."""
+        self.require_native_owner()
+        with self._lock:
+            allowed = (self._phase in ("returned", "redelivery", "producers")
+                       and self._phases["sweep"].outcome in ("settled", "local_hold")
+                       and self._phases["workflows"].outcome in ("settled", "local_hold"))
+        org = self.state.orgs.get(orch._slug)
+        if (not allowed or org is None or org.orchestrator is not orch
+                or org.db is not orch._db or orch._main_loop is not self._loop
+                or org._startup_recovery is not self
+                or getattr(orch, "_startup_recovery", None) is not self
+                or orch._thread_queue is not org.thread_queue):
+            raise RuntimeError("startup_publication_phase_or_attachment_unavailable")
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind references only, on the actual request loop, before submission."""
@@ -116,6 +149,7 @@ class StartupRecovery:
                     "stopping": self._stop.is_set(), "phase": self._phase,
                     "error_code": self._error_code,
                     "ready_commits": self._ready_commits,
+                    "publications": self._publications.snapshot(),
                     "launcher_duration_ns": None,
                     "owner_to_serving_ns": None if self._serving_ns is None
                     else self._serving_ns - self._created_ns,
@@ -153,6 +187,7 @@ class StartupRecovery:
         # Close new tail effects without interrupting their native termination.
         if sweep is not None:
             sweep.fail(cause)
+        self._publications.close_admission()
 
     @contextmanager
     def phase(self, name: str) -> Iterator[Callable[[RecoveryOutcome], None]]:
@@ -178,6 +213,7 @@ class StartupRecovery:
         try:
             yield settle
             self.require_native_owner()
+            self._publications.assert_idle()
             if outcome is None or not outcome.positive:
                 raise RuntimeError(outcome.code if outcome is not None and outcome.code else "startup_outcome_unavailable")
         except BaseException as exc:
@@ -211,6 +247,7 @@ class StartupRecovery:
             if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
                 raise RuntimeError("startup_native_outcome_unavailable")
             self.require_native_owner()
+            self._publications.assert_idle()
             with self._lock:
                 if any(phase.outcome not in ("settled", "local_hold") for phase in self._phases.values()):
                     raise RuntimeError("startup_native_phases_incomplete")
@@ -251,6 +288,7 @@ class StartupRecovery:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("startup_wrong_activation_loop")
         self.state._assert_attachments_unchanged(self._attachments)
+        self._publications.assert_idle()
         with self._lock:
             if (self._native is None or not self._native.done() or self._native.cancelled()
                     or self._closed or self._stop.is_set() or self._first_cause is not None
@@ -277,8 +315,10 @@ class StartupRecovery:
             sweep = self._sweep_owner
         if sweep is not None:
             sweep.negative('startup_sweep_stopped')
+        self._publications.close_admission()
 
     def assert_native_idle(self) -> None:
+        self._publications.assert_idle()
         with self._lock:
             if self._native is not None and not self._native.done():
                 raise RuntimeError("startup_native_still_owned")

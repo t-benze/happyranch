@@ -28,15 +28,16 @@ class ThreadQueue:
     async def put(self, job: ThreadJob) -> None:
         await self.put_once(job)
 
-    async def put_once(self, job: ThreadJob) -> None:
+    async def put_once(self, job: ThreadJob) -> str:
         # The queue is unbounded, so put_nowait cannot suspend between enqueue
         # and the ownership mark. Ownership spans queued + in-flight delivery;
         # the worker releases it after either acknowledgement or failure. The
         # durable invocation claim remains the exactly-once launch authority.
         if job.invocation_token in self._published_once_tokens:
-            return
+            return "already_pending"
         self._q.put_nowait(job)
         self._published_once_tokens.add(job.invocation_token)
+        return "inserted"
 
     async def get(self) -> ThreadJob:
         return await self._q.get()

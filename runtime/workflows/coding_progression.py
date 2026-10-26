@@ -478,23 +478,54 @@ def return_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
 
 def notify_returned(dispatcher: Any, instance: str) -> bool:
     """Read the committed return before idempotent native caller notifications."""
+    from runtime.daemon.startup_publication import current_publication
+    orch = dispatcher.org.orchestrator
+    publication = current_publication(orch)
+    if publication is None:
+        return _notify_returned_native(dispatcher, instance)
+    # Both history writes, original parent wake and serialized SYSTEM marker
+    # belong to this selection. Its finally observes actual queue outcomes only
+    # after _notify_returned_native has unwound every enclosing DB lock.
+    with publication.notification(orch):
+        return _notify_returned_native(dispatcher, instance)
+
+
+def _notify_returned_native(dispatcher: Any, instance: str) -> bool:
+    from runtime.daemon.startup_publication import current_publication
     from runtime.models import TaskStatus
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _maybe_post_thread_followup
+    orch = dispatcher.org.orchestrator
+    publication = current_publication(orch)
     with dispatcher.db._lock:
         entry = queued_storage(dispatcher.db._conn, dispatcher.org.slug).runs[instance]
         if not entry['native'].get('returned'):
+            if publication is not None:
+                publication.count('not_applicable')
             return False
         source_id = entry['source']['task_id']
         carrier_id = entry['tasks'][entry['attempt']['task_id']]['parent_task_id']
-    orch = dispatcher.org.orchestrator
-    orch._update_task_history(carrier_id)
-    orch._update_task_history(source_id)
+    if publication is not None:
+        # The ordinary helper silently skips a missing workspace/assignee.
+        # A selected authenticated return must actually publish BOTH histories.
+        for history_id in (carrier_id, source_id):
+            history_task = dispatcher.db.get_task(history_id)
+            _check(history_task is not None and bool(history_task.assigned_agent))
+            _check((orch._paths.workspaces_dir / history_task.assigned_agent).is_dir())
+    for history_id in (carrier_id, source_id):
+        orch._update_task_history(history_id)
+        if publication is not None:
+            history_task = dispatcher.db.get_task(history_id)
+            _check(history_task is not None and bool(history_task.assigned_agent))
+            _check((orch._paths.workspaces_dir / history_task.assigned_agent / 'task_history.md').is_file())
+            publication.count('histories_written')
     _enqueue_parent_if_waiting(orch, source_id)
     # The ordinary thread tail is not an idempotent API. Serialize its existing
     # stored SYSTEM marker with this coding-only rediscovery producer. A partial
     # native thread tail is retained, never repeated as a second notification.
     with dispatcher.db._lock:
         task = dispatcher.db.get_task(source_id)
+        if publication is not None:
+            _check(task is not None and task.status == TaskStatus.COMPLETED)
         if task.parent_task_id is None:
             chain = dispatcher.db.walk_revisit_chain(source_id, max_hops=200)
             original = chain[-1] if chain else task
@@ -506,7 +537,11 @@ def notify_returned(dispatcher: Any, instance: str) -> bool:
                         continue
                     payload = _read_json(row['system_payload_json'].encode('utf8'), budget)
                     _check(type(payload) is dict)
+                    if publication is not None and payload.get('task_id') == source_id:
+                        _check(payload.get('status') == 'completed')
                     if payload.get('task_id') == source_id and payload.get('status') == 'completed':
+                        if publication is not None:
+                            publication.count('preserved_marker')
                         return True
                 _maybe_post_thread_followup(orch, source_id, status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
     return True

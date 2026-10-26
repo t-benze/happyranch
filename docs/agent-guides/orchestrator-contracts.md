@@ -4140,6 +4140,42 @@ the first BaseException, with bounded secondary observations. These R2/R3 source
 seams do not complete the separate serving/listener, R4 return-notification or
 whole-feature startup integration. Runtime/proof evidence remains NOT RUN.
 
+The bounded R4 publication core uses `StartupRecovery.publications(orch)` on
+that SAME epoch's native operation around the existing `rediscover_returned`
+call. After all P2 cold sweep/human boundaries, the coordinator must bind the
+actual request-loop references, enter this scope, run native returned discovery
+and posting, exit/drain outside every DB/SYSTEM-marker lock, then consume
+`publication_outcome()` before settling the phase. P6 selected publications
+reuse this owner. The scope reserves at most32 real original-token handoffs
+BEFORE `run_coroutine_threadsafe`; the coroutine only calls the actual
+`ThreadQueue.put_once`. The native producer consumes the retained concurrent
+Future and its coroutine completion, with scalar retirement and no retired-ID
+backlog. Scheduling is not delivery; failure/cancellation/uncertain submission
+retains the original pending history and closes startup admission. A cancelled
+wrapper without positive coroutine completion remains an owned close barrier;
+neither DB nor loop may close underneath it. Stop/failure fences new submissions
+without claiming cancellation killed an already admitted put.
+
+Returned notification retains complete queued-storage/current source/carrier
+validation, both native history writes, original parent dedup/wake and the
+serialized SYSTEM-marker check. Only actual insertion or independently observed
+SAME `(org, parent)` TaskQueue pending ownership acknowledges a parent wake;
+stopping, reservation-only and refused generation publication do not. Queue
+classification/metadata and append -> atomic cap/mint -> audit -> put order stay
+unchanged. Newly attempted publication must drain after the marker lock unwinds;
+first BaseException survives secondary audit/observer failures. A matching old
+completed marker records `preserved_marker`/local hold, never earlier full-tail
+delivery, repair or remint. Newly partial/failed publication keeps the gate closed.
+Fixed event-local counters distinguish selected/not-applicable/held/preserved,
+attempted/submitted/acknowledged/inserted/already-pending/failed/partial and retained
+incomplete owners; unobserved scopes are explicitly labelled. Ordinary callers
+retain their returns and logging semantics. This source core deliberately leaves
+`Orchestrator.attach_thread_queue`'s owed recovery call intact: the NEXT serial
+integration must extract it into P4 AND explicitly discharge it for app/state
+runtime attachment callers before admission, then wire lifespan/P0-P9/P6,
+consumer gating and stop/close joins. No partial source may merge; behavior and
+sensitivity proof remain NOT RUN.
+
 Receipt-owned cleanup tails and startup Branch 2 can reach the same parent
 wake concurrently. They (and the already-bounded blocked-job startup producer)
 therefore use `TaskQueue.enqueue_if_absent`: the queue owns one thread-safe

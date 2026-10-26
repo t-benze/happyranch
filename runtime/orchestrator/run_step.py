@@ -1515,6 +1515,7 @@ def is_root(task: "TaskRecord") -> bool:
 def _enqueue_task_generation_aware(
     orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
     legacy: str = "put_nowait",
+    _observe: Callable[[str], None] | None = None,
 ) -> None:
     """Route a producer's enqueue through the common DB-aware boundary.
 
@@ -1542,10 +1543,12 @@ def _enqueue_task_generation_aware(
             raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata)
     else:
         raw = lambda: queue.put_nowait(orch._slug, task_id)
-    enqueue_task_generation_aware(
+    outcome = enqueue_task_generation_aware(
         orch, queue, orch._slug, task_id, metadata=metadata,
         ordinary_enqueue=raw,
     )
+    if _observe is not None:
+        _observe(outcome)
 
 
 def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
@@ -6027,11 +6030,18 @@ def _enqueue_parent_if_waiting(
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
 ) -> None:
-    with _startup_sweep_effect(orch):
-        return _enqueue_parent_if_waiting_owned(
-            orch, task_id, root_auto_revisit_spawned=root_auto_revisit_spawned,
-            current_owner=current_owner,
-        )
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    try:
+        with _startup_sweep_effect(orch):
+            return _enqueue_parent_if_waiting_owned(
+                orch, task_id, root_auto_revisit_spawned=root_auto_revisit_spawned,
+                current_owner=current_owner,
+            )
+    except BaseException as exc:
+        if publication is not None:
+            publication.fail(exc)
+        raise
 
 
 def _enqueue_parent_if_waiting_owned(
@@ -6074,6 +6084,10 @@ def _enqueue_parent_if_waiting_owned(
         return
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    if publication is not None and ownership.kind == 'reconciliation_required':
+        raise RuntimeError("startup_parent_source_ownership_unavailable")
     if ownership.kind != 'legacy':
         if ownership.kind != 'coding_source_waiting':
             return
@@ -6084,7 +6098,10 @@ def _enqueue_parent_if_waiting_owned(
             entry = queued_storage(orch._db._conn, orch._slug).runs[ownership.intent_id]
             if not entry['native'].get('returned') or entry['source']['task_id'] != task_id:
                 return
-    if classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None)).kind != 'legacy':
+    parent_ownership = classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None))
+    if publication is not None and parent_ownership.kind == 'reconciliation_required':
+        raise RuntimeError("startup_parent_ownership_unavailable")
+    if parent_ownership.kind != 'legacy':
         return
     parent = orch._db.get_task(task.parent_task_id)
     # Path B: a delegating parent is in_progress(delegated). The non-cascading
@@ -6098,7 +6115,33 @@ def _enqueue_parent_if_waiting_owned(
         """Keep a restart-reconstructed wake from duplicating a live tail."""
         if current_owner is not None and not current_owner():
             return
+        from runtime.daemon.startup_publication import current_publication
+        publication = current_publication(orch)
         queue = getattr(orch, "_queue", None)
+        if publication is not None:
+            from runtime.daemon.queue import TaskQueue
+            with publication.attempt(orch, "parent_attempted"):
+                if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
+                    raise RuntimeError("startup_parent_queue_owner_unavailable")
+
+                def observe(outcome: str) -> None:
+                    if outcome not in ("ordinary", "published"):
+                        raise RuntimeError("startup_parent_publication_" + outcome)
+
+                inserted = queue.enqueue_if_absent(
+                    orch._slug, parent.id,
+                    publisher=lambda: _enqueue_task_generation_aware(
+                        orch, parent.id, _observe=observe,
+                    ),
+                )
+                # False alone also means stopping or an in-progress reservation.
+                # Only the real queue's SAME (org, parent) pending owner is proof;
+                # its generation-aware publisher/metadata above remains unchanged.
+                if queue.pending_publication(orch._slug, parent.id) != "pending":
+                    raise RuntimeError("startup_parent_publication_unacknowledged")
+                publication.count("acknowledged")
+                publication.count("inserted" if inserted else "already_pending")
+            return
         if queue is None:
             return
         enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
@@ -6484,6 +6527,8 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
@@ -6503,6 +6548,8 @@ def _maybe_post_thread_followup(
     audit = orch._audit
     terminal_task = db.get_task(task_id)
     if terminal_task is None:
+        if publication is not None:
+            raise RuntimeError("startup_thread_terminal_task_missing")
         return
 
     # Re-read the persisted status. Site D's caller passes COMPLETED, but
@@ -6550,6 +6597,8 @@ def _maybe_post_thread_followup(
     # Thread-state guard.
     thread = db.get_thread(thread_id)
     if thread is None:
+        if publication is not None:
+            raise RuntimeError("startup_thread_missing")
         audit.log_thread_followup_skipped(
             thread_id, original_task_id=original.id, terminal_task_id=task_id,
             reason="thread_not_open", thread_status="missing",
@@ -6574,6 +6623,8 @@ def _maybe_post_thread_followup(
         and _payload_dict(r).get("task_id") == original.id
     ]
     if not dispatch_rows:
+        if publication is not None:
+            raise RuntimeError("startup_thread_dispatcher_unresolved")
         audit.log_thread_followup_skipped(
             thread_id, original_task_id=original.id, terminal_task_id=task_id,
             reason="dispatcher_unresolved",

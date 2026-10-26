@@ -17,6 +17,33 @@ def _append_followup_system_and_reinvoke(
     system_payload: dict,
     reinvoke: bool = True,
 ) -> None:
+    """Keep normal posting semantics; a native startup scope owns failures."""
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    from contextlib import nullcontext
+    try:
+        with publication.attempt(orch, "thread_attempted") if publication is not None else nullcontext():
+            _append_followup_system_and_reinvoke_owned(
+                orch, thread_id=thread_id, dispatcher=dispatcher,
+                original_id=original_id, source_task_id=source_task_id,
+                system_payload=system_payload, reinvoke=reinvoke,
+            )
+    except BaseException as exc:
+        if publication is not None:
+            publication.fail(exc)
+        raise
+
+
+def _append_followup_system_and_reinvoke_owned(
+    orch: "Orchestrator",
+    *,
+    thread_id: str,
+    dispatcher: str,
+    original_id: str,
+    source_task_id: str,
+    system_payload: dict,
+    reinvoke: bool = True,
+) -> None:
     """Append a SYSTEM message + optionally mint/enqueue a TASK_FOLLOWUP re-invocation.
 
     Shared tail for `_maybe_post_thread_followup` (terminal) and
@@ -39,6 +66,8 @@ def _append_followup_system_and_reinvoke(
     """
     db = orch._db
     audit = orch._audit
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
 
     # Append system message (separate from the atomic cap+mint below — the
     # system message ordering relative to concurrent system messages is not
@@ -49,6 +78,8 @@ def _append_followup_system_and_reinvoke(
         kind=_TMK.SYSTEM,
         system_payload=system_payload,
     )
+    if publication is not None:
+        publication.count("markers_written")
 
     if not reinvoke:
         # Historical legacy stored-payload compatibility path.
@@ -98,6 +129,11 @@ def _append_followup_system_and_reinvoke(
     main_loop = getattr(orch, "_main_loop", None)
     if thread_queue is not None and main_loop is not None:
         try:
+            if publication is not None:
+                publication.submit_thread(orch, thread_queue, main_loop, _ThreadJob(
+                    org_slug=orch._slug, invocation_token=inv.invocation_token,
+                ))
+                return
             _asyncio.run_coroutine_threadsafe(
                 thread_queue.put(_ThreadJob(
                     org_slug=orch._slug,
@@ -106,11 +142,32 @@ def _append_followup_system_and_reinvoke(
                 main_loop,
             )
         except Exception as exc:
+            if publication is not None:
+                publication.fail(exc)
+                try:
+                    audit.log_thread_followup_skipped(
+                        thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+                        reason="enqueue_failed", detail=str(exc),
+                    )
+                except BaseException as secondary:
+                    publication.fail(secondary)
+                raise
             audit.log_thread_followup_skipped(
                 thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
                 reason="enqueue_failed", detail=str(exc),
             )
     else:
+        if publication is not None:
+            exc = RuntimeError("startup_thread_enqueue_unavailable")
+            publication.fail(exc)
+            try:
+                audit.log_thread_followup_skipped(
+                    thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+                    reason="enqueue_unavailable",
+                )
+            except BaseException as secondary:
+                publication.fail(secondary)
+            raise exc
         # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
         # without daemon context). Invocation stays PENDING; audit so the
         # operator can detect it if needed. In production this path is never

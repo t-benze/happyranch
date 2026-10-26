@@ -167,6 +167,21 @@ class TaskQueue:
             with self._admission_lock:
                 self._admission_reservations.discard(key)
 
+    def pending_publication(self, slug: str, task_id: str) -> str:
+        """Observe this original task owner without treating a reservation as put.
+
+        The producer still owns generation classification/metadata. This exact
+        key is the existing queue dedup owner; no queue scan or DB read occurs
+        under the admission mutex. Stopping can never acknowledge delivery.
+        """
+        key = slug, task_id
+        with self._admission_lock:
+            if self._stopping:
+                return "stopping"
+            if key in self._admission_reservations:
+                return "reserved"
+            return "pending" if self._pending_counts[key] > 0 else "absent"
+
     @staticmethod
     async def _heartbeat(work: _NativeWork) -> None:
         """Keep attribution on the captured attachment until native return."""
