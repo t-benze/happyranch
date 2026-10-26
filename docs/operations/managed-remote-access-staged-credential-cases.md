@@ -1,6 +1,82 @@
 # PR800 staged credential and mode cases — THR228seq428
 
-**Current PR800 allocation — THR228seq648 / sole recovery ROOT TASK-13017.**
+**Current PR800 Stage1 LOCAL preparation — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
+The manager accepts only the unchanged installer-diagnostic/failed-install-cleanup
+subset of TASK13153 source-diagnosis (SHA256
+e479004e84aa3d1a2966b4e50353c9ffad6d5bfb5a667e5136044589ab5ffaed),
+retained by TASK13165 with cases/four answers in TASK13160 (SHA256
+a352dddd38b6730043f8a88a11f5c8680a77e1cd7c60ed91a4bc5220e085cbb8).
+Stage1 is PARTIAL/incomplete: the actual failing installer guard/root cause is
+UNKNOWN. Fixed secret-free per-guard Go refusal lines label only the selected
+call site; nested child reasons remain opaque. Python concurrently drains fd2
+under the original deadline and combined4096 retained-byte allowance. Only one
+exact full allowlisted line can be observed; partial/malformed/unallowlisted/
+overflow/multiple/contradictory output is loss, never retained raw stderr.
+Actual helper exit, elapsed deadline, forced kill/reap and outcome are distinct;
+unknown stays null. Exit0 plus a refusal is contradictory diagnosis and supplies
+no diagnostic acceptance. Public package errors/results, SAME-OFD locks,
+sealed descriptors3/4/5/6, effect order, exit78 and total deadlines stay unchanged.
+
+Every direct package call retains a bounded private installer receipt/status;
+cleanup retains original status, predicate refusals and actual fixture reap
+separately from overall cleanup. Existing always-upload covers failures and
+cancellation; abrupt runner loss remains missing evidence. NEVER-STARTED cleanup
+requires a positively empty initial isolated fixture and matching current boot,
+unit/invocation/jobs/PID/process/cgroup/path/listener observations plus successful
+Headscale absence and live SAME-peer inventory before/after removal. Flag0 or
+missingIP never proves absence. Actual/attempted/partial/unknown generations keep
+real SAME-instance Stop/dial/live-peer requirements; an already-stopped generation
+may reuse only its retained matching original Stop binding. Unknown transactions
+and foreign residue are preserved and fail cleanup. All independent teardown
+checks remain attempted, with one trap owner and original37/130/143 precedence.
+A never-created generation gains no virtual_admission_removed ledger row.
+Installed AND loaded authority remains required; an archive hash is insufficient.
+The manager's degraded/status1 preflight establishes availability only, never
+product READY or healthy dependencies.
+
+Shared ceiling at preparation: **publications0/3, automatic attempts0/3,
+reservations0; first effect UNALLOCATED** across this root/children/jobs/retries.
+This child spends ZERO: local normal commits and immutable bundle handoff only,
+no push (even for review), remote mutation, diagnostic run, installation/cleanup,
+new venue, reboot, merge or deployment. Fresh independent FULL candidate review
+then exact-candidate SOURCE/STATIC QA precede manager reconciliation and any
+separately reserved effect. Both existing CI guards PREPARE only the first future
+PR800 same-repository/task6475/main/synchronize/attempt1 update from public
+`527f760fea393b49ba24baed9a7f76ec1ff31286` to distinct canonical40hex
+after==PRhead==checkout==proof subject; no three-update list or new trigger.
+TASK13017 is COMPLETED and owes nothing; its spent seq648 attempt
+40210816942/1 FAILED at that public head, with managed_lifecycle_refused after
+EOF/reap, exact guard UNKNOWN and cleanup FAILED/UNPROVED. Older failures and
+exhausted grants remain historical evidence, without replenishment.
+
+Same-boot completion/scope_complete remains HELD on R1/R2: retained G4-reset
+trace needs at least1530s before cleanup in the unchanged1200s job, and quiet
+deferred readers emit no v2 terminal; private timing/sample attribution remains
+incomplete. No schedule/observer/quiet-reader/rate/backoff/cap/terminal change.
+Preserve strict v4/PHASES and unconditional campaign incomplete/nonzero. Actual
+installer/same-boot/cleanup and test-authoring fail/pass proof are NOT RUN /
+PROOF NOT RUN, never PASS. Go/suspended proof remains NOT RUN; Python units are
+RETIRED, integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
+Only Source Boundary Lint and Web Lint(Node24) are required PR/main checks;
+daily19UTC Product E2E stays unchanged/nonblocking, with no ad hoc execution.
+N3/N6 remote authorization, reboot and release acceptance remain open.
+
+
+Stage1 extends only these existing E1a/E6 cases from the accepted record. The
+existing shipping/live `virtual_removed` and `stop_completed` remain keepers;
+no case is waived and no second evidence format or test-only seam is added.
+
+| Existing case | Observable contract / input and expected result | Credible regression / nearest coverage gap | Test seam and attributable evidence |
+| --- | --- | --- | --- |
+| E1a.diag-exit | Actual nonzero helper reap before deadline retains the selected fixed guard reason or explicit loss; original package error remains. Every guard in TASK13153's map is selected only at its original predicate. | Wrong guard label, OR operand evaluated twice or skipped; existing E1a owns result/custody but lacked call-site diagnosis. Go guard risk differs from Python stream/artifact sanitation. | NO seam. Last actual refusal at public527f is baseline only; restored result NOT RUN / PROOF NOT RUN. |
+| E1a.diag-deadline/both | Original deadline only, with exit nullable before kill; actual reap_exit/kill_requested separated from helper_exit. Actual nonzero AND elapsed records both, with original error precedence. | Collapse OR facts or call timeout-induced SIGKILL a spontaneous helper failure; prior E1a result has neither independent fact. | NO deadline override/export. Natural timeout only if encountered in manager-owned run; NOT RUN / PROOF NOT RUN. |
+| E1a.diag-loss | Empty, partial/split, invalid UTF8/framing, unknown line, overflow, duplicate/conflicting lines and exit0+reason retain only closed loss. Complete single allowlisted line alone can be observed. Concurrent backpressure/writer closure/reap and all closes share original deadline/4096 allowance. | Accept partial/raw stderr, hold parent writer, deadlock on serial fd2 read, change body/kill/reap/close precedence. Existing capture/tail cases own other streams, not package fd2. | NO new export/hook. No extra diagnostic attempt or new test file. Parser/negative/backpressure proof NOT RUN / PROOF NOT RUN. |
+| E1a.subject/manager | Installed AND loaded authority remains mandatory; degraded/status1 means manager availability only. | Archive hash replaces loaded checks or preflight becomes product READY; existing E1a/E2/M13 deliberately leave unavailable internal gates unknown. | NO seam. Current readers/preflight inspected; runtime NOT RUN, historical failed receipts retained. |
+| E1a.failed-install / E6-final | Natural failed install before any generation requires affirmative owned-fixture, boot/unit/invocation/jobs/PID/process/cgroup/listener/path/Headscale and live SAME-peer absence before/after removal. Unknown ownership refuses; flag0/missingIP is insufficient. Attempted/live generation requires original Stop/dial/peer; already-stopped matching proof retained. | Always demand live binding, trust flag alone, delete unknown transaction, fabricate never-created virtual row, or overwrite previous Stop binding. Existing shipping cleanup lacked final-trap coverage; live removal remains keeper. | NO seam. Actual40210816942 cleanup FAILED/UNPROVED is baseline, restored cleanup NOT RUN / PROOF NOT RUN. No deliberate failed install for proof. |
+| E6.final-cleanup | Independent teardown failure does not suppress later unit/drop-in/reload/file/PID/ports/eight roots/CA/transaction/backup/stage/temp/scratch checks. Actual fixture reap separate; original37/130/143 preserved; installer/cleanup receipts always uploaded. | Re-enable errexit, skip later teardown, overwrite original status, equate overall cleanup failure with unreaped fixtures, lose failure receipts. Existing H18/H19/M13 retain adjacent mutation/signal/capture risks; extend this final transition. | NO seam. Execution/causal/keeper proof NOT RUN / PROOF NOT RUN; source inspection is no behavioral PASS. |
+
+
+**Historical PR800 seq648 recovery-intake snapshot — ROOT TASK-13017 (spent; superseded only by the current tranche above).**
 Founder seq655 authorizes supported recovery continuing FAILED TASK-12936 and
 failed partial TASK-13004 under the SAME seq648 allocation, without replenishment.
 All original failed tasks, preparations, jobs and custody remain preserved.
@@ -200,7 +276,7 @@ behavioral/red-green/mutation/repetition/executable proof is UNEXECUTED/SUSPENDE
 | H35 stale or PID-reused receipt | Bind active current tuple; journal contains older boot/invocation/phase receipts with matching PID | Boot, current InvocationID and pre-stop cutoff exclude stale rows; decoder rechecks consumed context; no-match refuses | PID-only, unbounded or mismatched consumed context admits old receipts; saved status/all cleanup retained; SOURCE/STATIC only, executable proof UNEXECUTED/SUSPENDED |
 | H36 mismatched phase or activation | Bind fails/changes tuple, zero/malformed identity, another phase binding or replacement MainPID | Binding cleared before acquisition; mismatched phase/instance/context refuses; replacement MainPID refuses | Prior binding reused after failure or running replacement passes old Stop; saved status/all cleanup retained; SOURCE/STATIC only, executable proof UNEXECUTED/SUSPENDED |
 | H37 reachable negative peer | Current Stop receipts complete but real peer nc succeeds | Refuse all six virtual assertions and affected success/aggregate records | Stop proof overrides actual reachability; source/static only |
-| H38 valid initial NEVER-STARTED | First reset after file-only install, before any start; exact unit/PID and owned-file/process/path/host-port/Headscale queries all succeed and prove absence | Shipping cleanup passes without a target or Stop receipt and emits no peer observation; full conjunction excludes owned virtual listener | Missing IP or process-only substituted for conjunction; source/static only |
+| H38 valid initial NEVER-STARTED | First reset after file-only install, before any start; exact unit/PID and owned-file/process/path/host-port/Headscale queries all succeed and prove absence | Shipping/final cleanup passes without a live-generation Stop receipt only with successful live SAME-peer inventory and Headscale absence before/after removal; emits no never-created virtual ledger row | Missing IP or process-only substituted for conjunction; source/static only |
 | H39 illegal later no-address | A start was requested, including failed or background start; sidecar_ip missing | NEVER-STARTED permanently revoked before invocation; known path cannot pass missing target and cannot fabricate Stop | Re-enter initial exception after failed start/address query or reset start flag; source/static only |
 | H40 peer liveness or identity query failure | Final and other known phases, plus first negative start: process exited/zombie/PID reused or status/parser fails with valid-looking ID | Checked process-start identity before and after consumed status refuses; first negative inventory must itself contain current Running/Self identity | Separate good status blesses malformed consumed inventory or missing peer accepts records; saved status/all cleanup retained; SOURCE/STATIC only, executable proof UNEXECUTED/SUSPENDED |
 | H41 barrier acquisition refusal | StopPost latch entered; bind/journal/decoder/current identity fails, including malformed MESSAGE framing | No Stop-barrier record or new queued start; EXIT releases both latches before remaining stop/disable/reset/delete/query attempts | Latch treated as Stop receipt or refusal strands barriers/replaces original exit; SOURCE/STATIC only, executable proof UNEXECUTED/SUSPENDED |

@@ -3693,15 +3693,34 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	}
 	return nil
 }
+
+// lifecyclePackageRefusal emits only the closed call-site vocabulary. Nested
+// child stderr stays discarded; no dynamic error or operand value is exposed.
+func lifecyclePackageRefusal(reason string) int {
+	switch reason {
+	case "entry_context", "effective_uid", "operation", "incoming_image",
+		"admission_deadline", "executable_open", "bootstrap_operation",
+		"bootstrap_pair", "open_pair", "admission_current", "admission_child",
+		"inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair",
+		"stopped_admission_deadline", "stopped_current", "stopped_admission_child",
+		"retire_policy", "package_body", "final_refresh", "final_current":
+		_, _ = io.WriteString(os.Stderr, "managed_package_refusal:"+reason+"\n")
+	}
+	return 78
+}
+
 func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	entry := time.Now()
 	ctx, cancel, request, err := lifecycleEntryContext(input, 180*time.Second)
 	if err != nil {
-		return 78
+		return lifecyclePackageRefusal("entry_context")
 	}
 	defer cancel()
-	if os.Geteuid() != 0 || !lifecycleOneOf(request.Operation, "package-install", "package-uninstall") {
-		return 78
+	if os.Geteuid() != 0 {
+		return lifecyclePackageRefusal("effective_uid")
+	}
+	if !lifecycleOneOf(request.Operation, "package-install", "package-uninstall") {
+		return lifecyclePackageRefusal("operation")
 	}
 	// A includes input authentication, bootstrap/acquisition and source/loaded
 	// admission, never ten new seconds after a blocked OpenLifecycle.
@@ -3710,43 +3729,52 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	incoming := os.NewFile(3, "fixed-incoming-package")
 	connector := os.NewFile(4, "fixed-incoming-connector")
 	if request.Operation == "package-install" && lifecycleIncoming(incoming, connector) != nil {
-		return 78
+		return lifecyclePackageRefusal("incoming_image")
 	}
 	if a.Err() != nil {
-		return 78
+		return lifecyclePackageRefusal("admission_deadline")
 	}
 	executable, err := os.Open("/proc/self/exe")
 	if err != nil {
-		return 78
+		return lifecyclePackageRefusal("executable_open")
 	}
 	defer executable.Close()
 	var p *LifecyclePair
 	if _, e := os.Lstat(ManagedMainDirectory + "/" + managedRecord); os.IsNotExist(e) {
 		if request.Operation != "package-install" {
-			return 78
+			return lifecyclePackageRefusal("bootstrap_operation")
 		}
 		p, err = BootstrapLifecycle(a)
+		if err != nil {
+			return lifecyclePackageRefusal("bootstrap_pair")
+		}
 	} else {
 		p, err = OpenLifecycle(a)
-	}
-	if err != nil {
-		return 78
+		if err != nil {
+			return lifecyclePackageRefusal("open_pair")
+		}
 	}
 	defer func() {
 		if p != nil {
 			p.Close()
 		}
 	}()
-	if !lifecyclePackageCurrent(a, p, false) || lifecyclePackageChild(a, p, incoming, connector, executable, request, true, io.Discard) != nil {
-		return 78
+	if !lifecyclePackageCurrent(a, p, false) {
+		return lifecyclePackageRefusal("admission_current")
+	}
+	if lifecyclePackageChild(a, p, incoming, connector, executable, request, true, io.Discard) != nil {
+		return lifecyclePackageRefusal("admission_child")
 	}
 	if !p.stopped() {
 		err = p.policyChange("stopped", p.Main.Policy.Enabled, lifecycleInhibitID(request.OperationID))
 		p.Close()
 		p = nil
 		cancelA()
-		if err != nil || ctx.Err() != nil {
-			return 78
+		if err != nil {
+			return lifecyclePackageRefusal("inhibit_policy")
+		}
+		if ctx.Err() != nil {
+			return lifecyclePackageRefusal("inhibit_deadline")
 		}
 		// A is released before handler progress; this intentional gap is
 		// followed by a fresh B acquisition and complete independent proof.
@@ -3754,30 +3782,36 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 		err = lifecycleManager(manager, "stop")
 		cancelManager()
 		if err != nil {
-			return 78
+			return lifecyclePackageRefusal("manager_stop")
 		}
 		p, err = OpenLifecycle(ctx)
 		if err != nil {
-			return 78
+			return lifecyclePackageRefusal("reacquire_pair")
 		}
 	} else {
 		if a.Err() != nil {
-			return 78
+			return lifecyclePackageRefusal("stopped_admission_deadline")
 		}
 		cancelA()
 	}
 	p.deadline, _ = ctx.Deadline()
-	if !lifecyclePackageCurrent(ctx, p, true) || lifecyclePackageChild(ctx, p, incoming, connector, executable, request, true, io.Discard) != nil {
-		return 78
+	if !lifecyclePackageCurrent(ctx, p, true) {
+		return lifecyclePackageRefusal("stopped_current")
+	}
+	if lifecyclePackageChild(ctx, p, incoming, connector, executable, request, true, io.Discard) != nil {
+		return lifecyclePackageRefusal("stopped_admission_child")
 	}
 	if request.Operation == "package-uninstall" && p.policyChange("retired", false, request.OperationID) != nil {
-		return 78
+		return lifecyclePackageRefusal("retire_policy")
 	}
 	if lifecyclePackageChild(ctx, p, incoming, connector, executable, request, false, output) != nil {
-		return 78
+		return lifecyclePackageRefusal("package_body")
 	}
-	if p.Refresh() != nil || !lifecyclePackageCurrent(ctx, p, true) {
-		return 78
+	if p.Refresh() != nil {
+		return lifecyclePackageRefusal("final_refresh")
+	}
+	if !lifecyclePackageCurrent(ctx, p, true) {
+		return lifecyclePackageRefusal("final_current")
 	}
 	return 0
 }

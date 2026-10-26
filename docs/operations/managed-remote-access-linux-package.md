@@ -1,6 +1,67 @@
 # Managed remote access: Linux package operations (N3)
 
-**Current PR800 allocation — THR228seq648 / sole recovery ROOT TASK-13017.**
+**Current PR800 Stage1 LOCAL preparation — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
+The manager accepts only the unchanged installer-diagnostic/failed-install-cleanup
+subset of TASK13153 source-diagnosis (SHA256
+e479004e84aa3d1a2966b4e50353c9ffad6d5bfb5a667e5136044589ab5ffaed),
+retained by TASK13165 with cases/four answers in TASK13160 (SHA256
+a352dddd38b6730043f8a88a11f5c8680a77e1cd7c60ed91a4bc5220e085cbb8).
+Stage1 is PARTIAL/incomplete: the actual failing installer guard/root cause is
+UNKNOWN. Fixed secret-free per-guard Go refusal lines label only the selected
+call site; nested child reasons remain opaque. Python concurrently drains fd2
+under the original deadline and combined4096 retained-byte allowance. Only one
+exact full allowlisted line can be observed; partial/malformed/unallowlisted/
+overflow/multiple/contradictory output is loss, never retained raw stderr.
+Actual helper exit, elapsed deadline, forced kill/reap and outcome are distinct;
+unknown stays null. Exit0 plus a refusal is contradictory diagnosis and supplies
+no diagnostic acceptance. Public package errors/results, SAME-OFD locks,
+sealed descriptors3/4/5/6, effect order, exit78 and total deadlines stay unchanged.
+
+Every direct package call retains a bounded private installer receipt/status;
+cleanup retains original status, predicate refusals and actual fixture reap
+separately from overall cleanup. Existing always-upload covers failures and
+cancellation; abrupt runner loss remains missing evidence. NEVER-STARTED cleanup
+requires a positively empty initial isolated fixture and matching current boot,
+unit/invocation/jobs/PID/process/cgroup/path/listener observations plus successful
+Headscale absence and live SAME-peer inventory before/after removal. Flag0 or
+missingIP never proves absence. Actual/attempted/partial/unknown generations keep
+real SAME-instance Stop/dial/live-peer requirements; an already-stopped generation
+may reuse only its retained matching original Stop binding. Unknown transactions
+and foreign residue are preserved and fail cleanup. All independent teardown
+checks remain attempted, with one trap owner and original37/130/143 precedence.
+A never-created generation gains no virtual_admission_removed ledger row.
+Installed AND loaded authority remains required; an archive hash is insufficient.
+The manager's degraded/status1 preflight establishes availability only, never
+product READY or healthy dependencies.
+
+Shared ceiling at preparation: **publications0/3, automatic attempts0/3,
+reservations0; first effect UNALLOCATED** across this root/children/jobs/retries.
+This child spends ZERO: local normal commits and immutable bundle handoff only,
+no push (even for review), remote mutation, diagnostic run, installation/cleanup,
+new venue, reboot, merge or deployment. Fresh independent FULL candidate review
+then exact-candidate SOURCE/STATIC QA precede manager reconciliation and any
+separately reserved effect. Both existing CI guards PREPARE only the first future
+PR800 same-repository/task6475/main/synchronize/attempt1 update from public
+`527f760fea393b49ba24baed9a7f76ec1ff31286` to distinct canonical40hex
+after==PRhead==checkout==proof subject; no three-update list or new trigger.
+TASK13017 is COMPLETED and owes nothing; its spent seq648 attempt
+40210816942/1 FAILED at that public head, with managed_lifecycle_refused after
+EOF/reap, exact guard UNKNOWN and cleanup FAILED/UNPROVED. Older failures and
+exhausted grants remain historical evidence, without replenishment.
+
+Same-boot completion/scope_complete remains HELD on R1/R2: retained G4-reset
+trace needs at least1530s before cleanup in the unchanged1200s job, and quiet
+deferred readers emit no v2 terminal; private timing/sample attribution remains
+incomplete. No schedule/observer/quiet-reader/rate/backoff/cap/terminal change.
+Preserve strict v4/PHASES and unconditional campaign incomplete/nonzero. Actual
+installer/same-boot/cleanup and test-authoring fail/pass proof are NOT RUN /
+PROOF NOT RUN, never PASS. Go/suspended proof remains NOT RUN; Python units are
+RETIRED, integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
+Only Source Boundary Lint and Web Lint(Node24) are required PR/main checks;
+daily19UTC Product E2E stays unchanged/nonblocking, with no ad hoc execution.
+N3/N6 remote authorization, reboot and release acceptance remain open.
+
+**Historical PR800 seq648 recovery-intake snapshot — ROOT TASK-13017 (spent; superseded only by the current tranche above).**
 Founder seq655 authorizes supported recovery continuing FAILED TASK-12936 and
 failed partial TASK-13004 under the SAME seq648 allocation, without replenishment.
 All original failed tasks, preparations, jobs and custody remain preserved.

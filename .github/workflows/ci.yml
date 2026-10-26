@@ -51,19 +51,18 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed N3 PARTIAL installer + same-boot diagnostic (Ubuntu 24.04)
-    # THR228seq648 / recovery ROOT13017: ONE publication + ONE automatic PARTIAL
-    # installer + same-boot diagnostic attempt1; SAME allocation0/1 at intake.
-    # Founder655 continues FAILED12936/failed partial13004; no replenishment.
-    # Preserve their tasks/preparations/jobs/custody; manager rechecks before effects.
-    # Seq641's publication/run1/1 FAILED40153837361 at7b1038df is exhausted.
-    # Seq621 FAILED40056485462 and all older grants remain exhausted.
-    # Manager owns publication/collection: report before repair/publication/rerun;
-    # no retry. Exactly ONE PR800 synchronization from public 7b1038df after
-    # fresh FULL final-head review and same-head SOURCE/STATIC QA.
-    # Preserve incomplete failure/full-N3 obligations; reboot/venue DEFERRED
-    # until a working flow is demonstrated, not waived. Static is no runtime proof.
-    # Later updates, reopen/main/manual/rerun events
-    # cannot renew this allocation. before/after belong to synchronize payloads.
+    # Founder THR327seq5/7 / sole ROOT13151: Stage1 LOCAL preparation only.
+    # Shared publications0/3, automatic attempts0/3, reservations0; first effect
+    # UNALLOCATED. No child push/run, including a review-only push. Manager alone
+    # may later reserve an effect after FULL local review + exact-head static QA
+    # and fresh custody/effect reconciliation. Preparation spends neither.
+    # First future single update only: public527f760f -> distinct40hex after
+    # == PRhead == checkout == proof subject, same repo/PR800/task6475/main,
+    # synchronize/attempt1. No list of three future updates or retry allocation.
+    # TASK13017's seq648 FAILED40210816942/1 and every older grant stay spent.
+    # PARTIAL remains unconditionally incomplete/nonzero. R1/R2/scope_complete
+    # HELD; unchanged20min, observer, schedule, quiet readers and recovery rules.
+    # No venue/reboot/merge/deploy; static source is no installer/cleanup proof.
     if: >-
       ${{ github.event_name == 'pull_request' &&
           github.event.action == 'synchronize' &&
@@ -72,7 +71,7 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.head.ref == 'task/TASK-6475' &&
           github.event.pull_request.base.ref == 'main' &&
-          github.event.before == '7b1038df750245b25018b7af0be41dceebbfc94c' &&
+          github.event.before == '527f760fea393b49ba24baed9a7f76ec1ff31286' &&
           github.event.after != '' &&
           github.event.after != github.event.before &&
           github.event.after == github.event.pull_request.head.sha &&
@@ -105,7 +104,7 @@ jobs:
               and head.get("ref") == "task/TASK-6475"
               and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
               and base.get("ref") == "main"
-              and event.get("before") == "7b1038df750245b25018b7af0be41dceebbfc94c"
+              and event.get("before") == "527f760fea393b49ba24baed9a7f76ec1ff31286"
               and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
               and after != event["before"] and after == head.get("sha")
           )

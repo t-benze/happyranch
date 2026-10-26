@@ -105,6 +105,8 @@ _MANAGED_DEADLINE: ContextVar[int | None] = ContextVar("managed_deadline", defau
 _MANAGED_FRESH: ContextVar[bool] = ContextVar("managed_fresh", default=False)
 _MANAGED_PACKAGE: ContextVar[bool] = ContextVar("managed_package", default=False)
 _MANAGED_LOCK: ContextVar[int | None] = ContextVar("managed_lock", default=None)
+# Private direct-package receipt custody; never serialized by public APIs.
+_MANAGED_PACKAGE_DIAGNOSTIC: ContextVar[dict[str, object] | None] = ContextVar("managed_package_diagnostic", default=None)
 _MANAGED_DECLARATION: ContextVar[dict[str, int] | None] = ContextVar("managed_declaration", default=None)
 
 
@@ -156,7 +158,8 @@ def _require_managed_package_context() -> None:
 
 
 def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, object],
-                           descriptor_map: Mapping[int, int]) -> bytes:
+                           descriptor_map: Mapping[int, int], *,
+                           _package_diagnostic: dict[str, object] | None = None) -> bytes:
     """Closed executable entry and internal descriptors, with actual child reap.
 
     Expiry refuses; it never unlocks a borrowed flock. A surviving package
@@ -180,7 +183,30 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     raw = json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
     if len(raw) > 4096 or time.monotonic_ns() >= deadline:
         raise PackageError("managed_lifecycle_refused")
+    diagnostic = (_package_diagnostic if _package_diagnostic is not None else {}) if operation == "managed-package" else None
+    # Exact full lines only. A nested child remains an opaque call-site reason.
+    reasons = {
+        "entry_context", "effective_uid", "operation", "incoming_image",
+        "admission_deadline", "executable_open", "bootstrap_operation",
+        "bootstrap_pair", "open_pair", "admission_current", "admission_child",
+        "inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair",
+        "stopped_admission_deadline", "stopped_current", "stopped_admission_child",
+        "retire_policy", "package_body", "final_refresh", "final_current",
+    }
+    lines = {b"managed_package_refusal:" + reason.encode("ascii") + b"\n": reason
+             for reason in reasons}
+    frame_limit = max(map(len, lines))
+    frame = bytearray()
+    diagnostic_bytes = diagnostic_lines = 0
+    diagnostic_eof = False
+    diagnostic_loss: str | None = None
+    frame_overflow = False
+    if diagnostic is not None:
+        diagnostic.update(reason=None, diagnostic_state="unavailable", helper_exit=None,
+                          deadline_elapsed=None, reaped=False, outcome="refused",
+                          kill_requested=False, reap_exit=None)
     source_read = source_write = output_read = output_write = null = -1
+    error_read = error_write = -1
     duplicates: list[int] = []
     child: int | None = None
     unwinding = False
@@ -188,7 +214,10 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
         source_read, source_write = os.pipe2(os.O_CLOEXEC)
         output_read, output_write = os.pipe2(os.O_CLOEXEC)
         null = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)
-        mapping = {0: source_read, 1: output_write, 2: null, **descriptor_map}
+        if diagnostic is not None:
+            error_read, error_write = os.pipe2(os.O_CLOEXEC)
+        mapping = {0: source_read, 1: output_write,
+                   2: error_write if diagnostic is not None else null, **descriptor_map}
         actions = []
         for target, source in mapping.items():
             duplicate = fcntl.fcntl(source, fcntl.F_DUPFD_CLOEXEC, 10)
@@ -202,6 +231,9 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
             os.close(duplicates.pop())
         descriptor, output_write = output_write, -1
         os.close(descriptor)
+        if error_write >= 0:
+            descriptor, error_write = error_write, -1
+            os.close(descriptor)
         if time.monotonic_ns() >= deadline or os.write(source_write, raw) != len(raw):
             raise PackageError("managed_lifecycle_refused")
         descriptor, source_write = source_write, -1
@@ -210,47 +242,111 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
         result = bytearray()
         with selectors.DefaultSelector() as selector:
             selector.register(output_read, selectors.EVENT_READ)
-            while True:
+            if diagnostic is not None:
+                os.set_blocking(error_read, False)
+                selector.register(error_read, selectors.EVENT_READ)
+            while selector.get_map():
                 remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
                 if remaining <= 0:
                     raise PackageError("managed_lifecycle_deadline")
-                if not selector.select(remaining):
+                ready = selector.select(remaining)
+                if not ready:
                     raise PackageError("managed_lifecycle_deadline")
-                piece = os.read(output_read, 4097 - len(result))
-                if not piece:
-                    break
-                result.extend(piece)
-                if len(result) > 4096:
-                    raise PackageError("managed_lifecycle_response_invalid")
+                for key, _events in ready:
+                    is_output = key.fd == output_read
+                    piece = os.read(key.fd, 4097 - len(result) if is_output else 256)
+                    if not piece:
+                        selector.unregister(key.fd)
+                        if not is_output:
+                            diagnostic_eof = True
+                            if frame or frame_overflow:
+                                diagnostic_loss = diagnostic_loss or "malformed"
+                        continue
+                    if is_output:
+                        result.extend(piece)
+                        if len(result) > 4096:
+                            raise PackageError("managed_lifecycle_response_invalid")
+                    else:
+                        diagnostic_bytes += len(piece)
+                        if diagnostic_bytes + len(result) > 4096:
+                            diagnostic_loss = "truncated"
+                            diagnostic["reason"] = None
+                            frame.clear()
+                        # Transient input only; never retain arbitrary stderr.
+                        for byte in piece:
+                            if diagnostic_loss == "truncated":
+                                break
+                            if len(frame) < frame_limit:
+                                frame.append(byte)
+                            else:
+                                frame_overflow = True
+                            if byte == 10:
+                                diagnostic_lines += 1
+                                if frame_overflow:
+                                    diagnostic_loss = diagnostic_loss or "malformed"
+                                elif bytes(frame) not in lines:
+                                    state = ("unallowlisted" if all(32 <= c <= 126 for c in frame[:-1])
+                                             else "malformed")
+                                    diagnostic_loss = diagnostic_loss or state
+                                elif diagnostic_lines == 1 and diagnostic_loss is None:
+                                    diagnostic["reason"] = lines[bytes(frame)]
+                                else:
+                                    diagnostic_loss = diagnostic_loss or "contradictory"
+                                frame.clear()
+                                frame_overflow = False
+                    if diagnostic is not None and diagnostic_bytes + len(result) > 4096:
+                        diagnostic_loss = "truncated"
+                        diagnostic["reason"] = None
+                        frame.clear()
         while True:
             reaped, status = os.waitpid(child, os.WNOHANG)
             if reaped:
                 child = None
-                if os.waitstatus_to_exitcode(status) != 0 or time.monotonic_ns() >= deadline:
+                helper_exit = os.waitstatus_to_exitcode(status)
+                elapsed = time.monotonic_ns() >= deadline
+                if diagnostic is not None:
+                    diagnostic.update(helper_exit=helper_exit, deadline_elapsed=elapsed,
+                                      reaped=True, reap_exit=helper_exit)
+                if helper_exit != 0 or elapsed:
                     raise PackageError("managed_lifecycle_refused")
+                if diagnostic is not None:
+                    diagnostic["outcome"] = "success"
                 return bytes(result)
             if time.monotonic_ns() >= deadline:
                 raise PackageError("managed_lifecycle_deadline")
             time.sleep(max(0, min(0.01, (deadline - time.monotonic_ns()) / 1_000_000_000)))
-    except BaseException:
+    except BaseException as exc:
         unwinding = True
+        if diagnostic is not None:
+            if diagnostic["deadline_elapsed"] is None:
+                diagnostic["deadline_elapsed"] = time.monotonic_ns() >= deadline
+            if isinstance(exc, PackageError):
+                diagnostic["outcome"] = {
+                    "managed_lifecycle_deadline": "deadline",
+                    "managed_lifecycle_response_invalid": "response_invalid",
+                }.get(str(exc), "refused")
         raise
     finally:
         try:
             if child is not None:
                 # This is our unreaped child, not a rediscovered service PID.
                 try:
+                    if diagnostic is not None:
+                        diagnostic["kill_requested"] = True
                     os.kill(child, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 # No detached success or timed unlock. If kernel exit lags, the
                 # caller remains the original owner until this actual reap.
-                os.waitpid(child, 0)
+                _pid, status = os.waitpid(child, 0)
+                if diagnostic is not None:
+                    diagnostic.update(reaped=True, reap_exit=os.waitstatus_to_exitcode(status))
         except BaseException:
             unwinding = True
             raise
         finally:
-            remaining = [source_read, source_write, output_read, output_write, null, *duplicates]
+            remaining = [source_read, source_write, output_read, output_write,
+                         error_read, error_write, null, *duplicates]
             duplicates.clear()
             close_error: OSError | None = None
             while remaining:
@@ -263,6 +359,21 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         # other owned closes, including after kill/reap errors.
                         if close_error is None:
                             close_error = exc
+            if diagnostic is not None:
+                if diagnostic["deadline_elapsed"] is None:
+                    diagnostic["deadline_elapsed"] = time.monotonic_ns() >= deadline
+                if frame or frame_overflow:
+                    diagnostic_loss = diagnostic_loss or "malformed"
+                if not diagnostic_eof:
+                    diagnostic_loss = diagnostic_loss or "unavailable"
+                if diagnostic["helper_exit"] == 0 and diagnostic["reason"] is not None:
+                    diagnostic_loss = diagnostic_loss or "contradictory"
+                if diagnostic_loss is not None:
+                    diagnostic.update(reason=None, diagnostic_state=diagnostic_loss)
+                else:
+                    diagnostic["diagnostic_state"] = "observed" if diagnostic["reason"] is not None else "absent"
+                if close_error is not None and not unwinding:
+                    diagnostic["outcome"] = "refused"
             if close_error is not None and not unwinding:
                 raise PackageError("managed_lifecycle_refused") from close_error
 
@@ -447,10 +558,17 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             mapping = {3: incoming, 4: connector, 5: executable}
             path = "/proc/self/fd/5"
         request = {"version": 2, "operation": operation, "operation_id": secrets.token_hex(16), "deadline_ns": deadline}
-        raw = _spawn_fixed_lifecycle(path, "managed-package", request, mapping)
-        result = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-        if not isinstance(result, dict):
-            raise PackageError("managed_lifecycle_response_invalid")
+        raw = _spawn_fixed_lifecycle(path, "managed-package", request, mapping,
+                                     _package_diagnostic=_MANAGED_PACKAGE_DIAGNOSTIC.get())
+        try:
+            result = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+            if not isinstance(result, dict):
+                raise PackageError("managed_lifecycle_response_invalid")
+        except BaseException:
+            diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
+            if diagnostic is not None:
+                diagnostic["outcome"] = "response_invalid"
+            raise
         return result
     except BaseException:
         unwinding = True
@@ -467,6 +585,9 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
                 if close_error is None:
                     close_error = exc
         if close_error is not None and not unwinding:
+            diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
+            if diagnostic is not None:
+                diagnostic["outcome"] = "refused"
             raise PackageError("managed_lifecycle_refused") from close_error
 
 
