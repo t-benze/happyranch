@@ -664,8 +664,9 @@ class ProducerMoveAdmission:
     def select_redelivery(self, *, _observe=None):
         """Shared native selection; yield original keys with no locks retained.
 
-        One original cursor per family, no second census/side backlog. Every
-        cursor step and history/current predicate uses the same gate/DB owner.
+        One original release/history read and cursor per family; no second
+        census/side backlog. Row predicates use the same gate/DB owner. Final
+        execution admission still rechecks any later move, as for thread tokens.
         """
         with self.move.gate, self.db._lock:
             if self.move.active_uncommitted() is not None:
@@ -674,15 +675,11 @@ class ProducerMoveAdmission:
         for kind in ('dream', 'wake', 'schedule'):
             status = 'firing' if kind == 'schedule' else 'pending'
             with self.move.gate, self.db._lock:
-                if self.move.active_uncommitted() is not None:
-                    raise DeferredTeamMove('team_move_release_not_committed')
                 cursor = self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]}')
             primary = None
             try:
                 while True:
                     with self.move.gate, self.db._lock:
-                        if self.move.active_uncommitted() is not None:
-                            raise DeferredTeamMove('team_move_release_not_committed')
                         row = cursor.fetchone()
                         if row is None:
                             break
