@@ -295,7 +295,13 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     raise PackageError("managed_lifecycle_deadline")
                 for key, _events in ready:
                     is_output = key.fd == output_read
-                    piece = os.read(key.fd, 4097 - len(result) if is_output else 256)
+                    # One allowance across both streams and readiness batches.
+                    # Keep one overflow sentinel, including at the exact cap;
+                    # after fd2 overflow, never acquire more stdout bytes.
+                    available = 4096 - len(result) - diagnostic_bytes
+                    if available < 0:
+                        raise PackageError("managed_lifecycle_response_invalid")
+                    piece = os.read(key.fd, available + 1 if is_output else min(256, available + 1))
                     if not piece:
                         selector.unregister(key.fd)
                         if not is_output:
@@ -305,7 +311,11 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         continue
                     if is_output:
                         result.extend(piece)
-                        if len(result) > 4096:
+                        if len(result) + diagnostic_bytes > 4096:
+                            if diagnostic is not None:
+                                diagnostic_loss = "truncated"
+                                diagnostic.update(reason=None, child=None)
+                                frame.clear()
                             raise PackageError("managed_lifecycle_response_invalid")
                     else:
                         diagnostic_bytes += len(piece)
@@ -345,10 +355,6 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                                         diagnostic_loss = diagnostic_loss or "contradictory"
                                 frame.clear()
                                 frame_overflow = False
-                    if diagnostic is not None and diagnostic_bytes + len(result) > 4096:
-                        diagnostic_loss = "truncated"
-                        diagnostic.update(reason=None, child=None)
-                        frame.clear()
         while True:
             reaped, status = os.waitpid(child, os.WNOHANG)
             if reaped:
