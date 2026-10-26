@@ -495,6 +495,9 @@ class BrowserRelay:
 
         def browser_request(event: dict) -> None:
             with relay.lock:
+                if len(relay.browser_requests) >= 512 or not relay._charge(None):
+                    relay._overflow('membership-cap')
+                    raise ValueError('E05 native Request membership capacity refused')
                 relay.browser_requests.append(dict(event))
                 pair_request(event['method'], event['target'])
         self.browser_request = browser_request
@@ -503,6 +506,8 @@ class BrowserRelay:
             with relay.lock:
                 for issued in relay.browser_requests:
                     if issued['request_id'] == event['request_id']:
+                        if not relay._charge(None):
+                            raise ValueError('E05 native terminal capacity refused')
                         issued.setdefault('terminals', []).append(dict(event))
         self.browser_terminal = browser_terminal
 
@@ -596,8 +601,16 @@ class BrowserRelay:
                     if self.command == 'GET' and not selected:
                         record['owner_generation'] = len(relay.records)+1
                     record['relay_id'] = len(relay.records)
-                    relay.records.append(record)
-                    relay._capture_begin(record, selected)
+                    # Reserve inventory BEFORE retaining this worker's record.
+                    # Overflow keeps one sticky marker. Later traffic still has
+                    # its sole local read/forward/close owner, without a retained
+                    # per-request original/forwarding/refusal tail.
+                    if (len(relay.records) >= 512 or len(self.path.encode()) > 8192
+                            or relay.capture_closed is not None):
+                        relay._overflow('late-member' if relay.capture_closed is not None else 'membership-cap')
+                    elif relay._charge(None):
+                        relay.records.append(record)
+                        relay._capture_begin(record, selected)
                     relay.operation_gates[id(record)] = threading.Lock()
                     pair_request(self.command, self.path)
                 try:
@@ -679,7 +692,13 @@ class BrowserRelay:
                                       .split(';')[0] == 'text/event-stream')
 
                     def read_response(call: Callable, read: dict | None = None, whole: bool = False) -> bytes:
+                        returned = None
                         def validate_read(value, outcome: dict) -> None:
+                            nonlocal returned
+                            # Retain the actual native return even if its framing
+                            # validation fails. IncompleteRead.partial is used
+                            # only when the native call itself did not return.
+                            returned = value
                             facts = dict(bytes=len(value), remaining_before=before,
                                          remaining_after=response.length, closed=response.isclosed(),
                                          eof=not value)
@@ -699,8 +718,8 @@ class BrowserRelay:
                         try:
                             value = upstream_call('read', call, validate_read, read)
                         except Exception as exc:
-                            if isinstance(exc, http.client.IncompleteRead):
-                                relay._capture_chunk(record, exc.partial)
+                            partial = returned if returned is not None else exc.partial if isinstance(exc, http.client.IncompleteRead) else b''
+                            relay._capture_chunk(record, partial)
                             relay._capture_error(record, 'read', exc)
                             raise
                         relay._capture_chunk(record, value)
@@ -936,13 +955,15 @@ class BrowserRelay:
 
     def inventory_fact(self, text: str) -> None:
         with self.lock:
+            # This gate precedes every native request/response/terminal retained
+            # allocation. A refusal never starts a second uncharged inventory.
+            if self.capture_closed is not None:
+                self._overflow('late-member')
             size = len(text.encode('utf8'))
-            if size > 8192 or self.capture_facts >= 16384 or self.capture_bytes+size > 8*1024*1024:
-                if not any(r['relay_id'] is None for r in self.capture_refusals):
-                    self.capture_refusals.append(dict(reason='identity-cap',at=time.monotonic(),relay_id=None))
+            if size > 8192:
+                self._overflow('identity-cap')
+            if not self._charge(None, size):
                 raise ValueError('E05 native identity inventory capacity refused')
-            self.capture_facts += 1
-            self.capture_bytes += size
 
     @staticmethod
     def required_kind(method: str, target: str, selected: bool = False) -> str | None:
@@ -953,17 +974,22 @@ class BrowserRelay:
             return 'messages' if path.endswith('/messages') else 'detail'
         return None
 
-    def _refuse(self, record: dict, reason: str) -> None:
-        original = record.get('original')
-        if original is not None and original['capture_refusal'] is None:
-            refusal = dict(reason=reason, at=time.monotonic(), relay_id=record['relay_id'])
-            original.update(capture_state='refused', capture_refusal=refusal)
-            self.capture_refusals.append(refusal)
+    def _overflow(self, reason: str, relay_id: int | None = None) -> None:
+        # One pre-reserved constant-size emergency slot, outside the ordinary
+        # budget. It makes the census incomplete and never grows per request.
+        if not self.capture_refusals:
+            self.capture_refusals.append(dict(reason=reason, at=time.monotonic(), relay_id=relay_id))
 
-    def _charge(self, record: dict, size: int = 0, facts: int = 1) -> bool:
-        # Every retained increment is checked before its allocation. No eviction,
-        # per-view reset or reclassification as a protocol error on overflow.
-        if self.capture_bytes + size > 8*1024*1024 or self.capture_facts + facts > 16384:
+    def _refuse(self, record: dict | None, reason: str) -> None:
+        self._overflow(reason, record['relay_id'] if record is not None else None)
+        original = record.get('original') if record is not None else None
+        if original is not None and original['capture_refusal'] is None:
+            # Each admitted member reserved this fixed refusal slot at begin.
+            original.update(capture_state='refused', capture_refusal=self.capture_refusals[0])
+
+    def _charge(self, record: dict | None, size: int = 0, facts: int = 1) -> bool:
+        if (self.capture_refusals or self.capture_bytes + size > 8*1024*1024
+                or self.capture_facts + facts > 16384):
             self._refuse(record, 'aggregate-cap' if size else 'fact-cap')
             return False
         self.capture_bytes += size
@@ -971,22 +997,22 @@ class BrowserRelay:
         return True
 
     def _capture_begin(self, record: dict, selected: bool) -> None:
-        # Caller holds relay.lock. Membership overflow remains sticky even when
-        # the actual owner must continue forwarding subsequent network requests.
+        # Caller holds relay.lock. Reserve original/forwarding/error/refusal
+        # slots before retaining any of them, in addition to the record slot.
         kind = self.required_kind(record['method'], record['target'], selected)
         if kind is None:
             return
-        original = record['original'] = dict(schema=1, relay_id=record['relay_id'], required_kind=kind,
+        if len(self.originals) >= 512 or self.capture_closed is not None:
+            self._overflow('late-member' if self.capture_closed is not None else 'membership-cap',record['relay_id'])
+            return
+        if not self._charge(record, facts=4):
+            return
+        record['original'] = dict(schema=1, relay_id=record['relay_id'], required_kind=kind,
             started=record['entered'], status=None, framing=None, header_bytes=None, finished=None,
             outcome='pending', byte_length=0, sha256=None, first_error=None,
             capture_state='open', capture_refusal=None)
         record['forwarding'] = dict(segments=[], byte_length=None, sha256=None, finished=None)
-        if (len(self.originals) >= 512 or len(record['target'].encode()) > 8192
-                or self.capture_closed is not None):
-            self._refuse(record, 'membership-cap' if self.capture_closed is None else 'late-member')
-            return
-        if self._charge(record):
-            self.originals[record['relay_id']] = dict(data=bytearray(), headers=None, parsed=None, parsed_ready=False)
+        self.originals[record['relay_id']] = dict(data=bytearray(), headers=None, parsed=None, parsed_ready=False)
 
     def _capture_headers(self, record: dict, response: http.client.HTTPResponse) -> None:
         if 'original' not in record:
@@ -995,14 +1021,14 @@ class BrowserRelay:
             o = record['original']
             # getheaders() returns ordered parsed pairs, not raw wire octets.
             size = sum(len(k.encode('utf8'))+len(v.encode('utf8')) for k,v in response.headers.items())
-            o['status'] = response.status
-            o['header_bytes'] = size
             if size > 65536 or not self._charge(record, size):
                 self._refuse(record, 'header-cap')
                 return
             private = self.originals.get(record['relay_id'])
             if private is None or o['capture_state'] == 'refused':
                 return
+            o['status'] = response.status
+            o['header_bytes'] = size
             private['headers'] = response.getheaders()
             o['framing'] = dict(content_type=response.headers.get_all('Content-Type', []),
                 content_encoding=response.headers.get_all('Content-Encoding', []),
@@ -1058,10 +1084,11 @@ class BrowserRelay:
             # A downstream failure cannot rewrite a sealed upstream original.
             storage_error = type(error) is ValueError and error.args in {
                 ('E05 selected capture refused before read',), ('E05 selected capture capacity exceeded',)}
-            if stage != 'downstream' and o['capture_state'] != 'sealed' and not storage_error:
-                if o['first_error'] is None:
-                    o['first_error'] = dict(stage=stage, error=type(error).__name__, at=time.monotonic())
-                o.update(outcome='partial' if o['byte_length'] else 'error', finished=time.monotonic())
+            if stage != 'downstream' and o['capture_state'] != 'sealed' and not storage_error and o['first_error'] is None:
+                o['first_error'] = dict(stage=stage, error=type(error).__name__, at=time.monotonic())
+                private = self.originals.get(record['relay_id'])
+                o.update(outcome='partial' if o['byte_length'] else 'error', finished=o['first_error']['at'],
+                         sha256=hashlib.sha256(private['data']).hexdigest() if private is not None else None)
 
     def _forward_start(self, record: dict, data: bytes) -> dict | None:
         if 'original' not in record:
@@ -1189,6 +1216,12 @@ class BrowserRelay:
 
     def snapshot(self, sanitize: Callable[[str], str]) -> list[dict]:
         with self.lock:
+            # Snapshot metadata is bounded and reserved before copying; a failed
+            # reservation exports an incomplete census plus the sticky refusal.
+            facts = (len(self.records)+len(self.browser_requests)+sum(len(e.get('terminals',[])) for e in self.browser_requests)
+                     +sum(len(r.get('forwarding',{}).get('segments',[])) for r in self.records))
+            if not self._charge(None, facts=facts):
+                return []
             records = copy.deepcopy(self.records)
             for record in records:
                 if 'original' not in record:
@@ -1201,13 +1234,15 @@ class BrowserRelay:
                     record['response'] = None
                 if (private is not None and o['capture_state'] == 'sealed' and o['status'] == 200
                         and private['parsed_ready'] and self._publishable_body(private['parsed'])):
+                    if not self._charge(self.records[record['relay_id']], len(private['data'])):
+                        continue
                     try:
                         text = private['data'].decode('utf8')
                     except UnicodeError:
                         pass
                     else:
                         safe = sanitize(text)
-                        if self._charge(self.records[record['relay_id']], len(safe.encode('utf8'))):
+                        if self._charge(self.records[record['relay_id']], max(0,len(safe.encode('utf8'))-len(private['data'])), facts=0):
                             entity.update(representation='unchanged_utf8' if safe == text else 'sanitized_utf8', text=safe,
                                 copy_bytes=len(safe.encode('utf8')), copy_sha256=hashlib.sha256(safe.encode('utf8')).hexdigest(),
                                 original_byte_check='available' if safe == text else 'unavailable')

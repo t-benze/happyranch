@@ -1398,6 +1398,7 @@ class Controller:
                     thread_proxy=self.browser_relay.snapshot(self.sanitize) if self.browser_relay else [],
                     thread_originals=getattr(self.browser, 'thread_originals', []),
                     capture_inventory=dict(refusals=list(self.browser_relay.capture_refusals),
+                        retained_bytes=self.browser_relay.capture_bytes, retained_facts=self.browser_relay.capture_facts,
                         closed=self.browser_relay.capture_closed,
                         requests=list(self.browser_relay.browser_requests)) if self.browser_relay else None)
         witness = self.root / "witness/identities.jsonl"

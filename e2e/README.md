@@ -75,6 +75,29 @@ EACH3.12/3.14 and stays FAIL/nonzero for any failed/missing/refused required cas
 artifact/provenance/diagnostic/export/cleanup result. Missing unrelated E05 PNGs
 cannot suppress otherwise complete E07 inspection. No Boolean or marker earns PASS.
 
+The TASK13120 source correction reuses the complete body-independent native
+GET-owner/stop and selected C/N/D operation readers for E07 admission. Ten exact
+resources, two registrations, original generations, parser/read checkpoints,
+received/delivered/buffered counters, original command/instruction/argv/wire/source
+witnesses, derived child/private-file membership and the genuine D INTEGER
+result/lifecycle/public projections are required even when E05 lacks browser-copy
+input. No GET owner or empty resource list is optional. Producer admission checks
+the complete native Request census, required Responses and relay/document joins,
+including safety events, before P/W allocation.
+
+A native read that returns a bounded prefix and then fails framing validation
+retains that prefix once and its first error/length/prefix digest. Native
+IncompleteRead.partial is used only when the read itself did not return. Such a
+digest describes retained incomplete bytes; it never seals, parses or forwards
+them as a valid response. Capture reserves member/forwarding/refusal metadata
+before retention. One constant-size sticky overflow makes membership incomplete;
+later traffic keeps its original local forwarding/closure owner without an
+uncharged per-request capture tail. Native inventory callbacks, snapshots and
+exports consume the same lifetime allowance. The closed capture inventory
+publishes retained_bytes/retained_facts, which the reader checks against the
+8MiB/16384 limits and the retained membership's minimum reservations. These are
+cooperative evidence bounds, not hard RSS or native execution certification.
+
 All five E05/three E07 variants and original first48 remain. Preserve480/240/720/
 60/120/900,31s cache, C16/28/36/42/50, full1s/BOTH50ms, all content/closure/liveness/
 GC assertions, TERM3.12/INT3.14, four archives and daily19UTC. Source Boundary Lint

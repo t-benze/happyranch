@@ -508,20 +508,86 @@ def exercise(c: Controller) -> None:
               and not any(closed[0][k] for k in ('workers_alive','listener_alive','connections','errors')),
               'original proxy positive full closure')
         events = c.browser.thread_events
+        unsafe = {'origin-bypass','pageerror','context-shutdown-error','context-native-close-error',
+                  'context-detach-error','context-export-error'}
+        for event in events:
+            check(event['event'] not in unsafe, 'native browser safety event: '+event['event'])
         check(len([e for e in events if e['event'] == 'context-close']) == 1
               and len([e for e in events if e['event'] == 'context-closed']) == 1
               and not hasattr(c.browser, 'thread_context') and proxy.context_closed is not None,
               'actual context close event AND native close return')
+        allowed_events = {
+            'request','request-failed','request-finished','stream-response','context-closing','proxy-streams-shutdown',
+            'context-close','context-closed','compose-request','compose-response','compose-created','navigation',
+            'deliberate-revisit','snapshot','event-batch','thread-response','thread-view'}
+        check(all(e['event'] in allowed_events for e in events), 'unclassified native browser event')
+        requests = [e for e in events if e['event'] == 'request']
+        check([e['request_id'] for e in requests] == list(range(len(requests)))
+              and all(type(e['request_id']) is int for e in requests)
+              and list(c.browser.thread_requests.values()) == requests,
+              'complete unique native Request census')
+        origin = c.browser.thread_base
+        check(len(requests) == len(proxy.browser_requests) <= 512,
+              'complete original native Request inventory')
+        for issued,retained in zip(requests,proxy.browser_requests):
+            check(issued['url'].startswith(origin+'/'), 'native Request origin safety')
+            terminals = [e for e in events if e['event'] in {'request-failed','request-finished'}
+                         and e['request_id'] == issued['request_id']]
+            check(len(terminals) <= 1 and all(e['url'] == issued['url'] and e['method'] == issued['method']
+                  and issued['at'] <= e['at'] for e in terminals), 'native Request exact terminal identity')
+            expected_request = dict(issued,target=issued['url'][len(origin):])
+            if terminals:
+                expected_request['terminals'] = terminals
+                if terminals[0]['event'] == 'request-failed':
+                    expected_request['failed'] = terminals[0]['at']
+            check(retained == expected_request, 'exact original Request/terminal inventory')
+            owners = [r for r in proxy.records if r.get('browser_request_id') == issued['request_id']]
+            check(len(owners) == 1 and owners[0]['method'] == issued['method']
+                  and owners[0]['target'] == expected_request['target'], 'every native Request has one original relay owner')
+        required_requests = [e for e in requests if proxy.required_kind(e['method'],e['url'][len(origin):],e['method'] == 'POST')]
+        responses = [e for e in events if e['event'] in {'compose-response','thread-response'}]
+        check([e['response_id'] for e in responses] == list(range(len(responses)))
+              and all(type(e['response_id']) is int and type(e['request_id']) is int for e in responses)
+              and {e['request_id'] for e in required_requests} == {e['request_id'] for e in responses}
+              and len(required_requests) == len(responses) == len(c.browser.thread_responses)
+              and list(c.browser.thread_responses.values()) == [dict(request_id=e['request_id'],response_id=e['response_id']) for e in responses],
+              'every required native Request has one original Response')
+        for issued in required_requests:
+            response = next(e for e in responses if e['request_id'] == issued['request_id'])
+            terminal = [e for e in events if e['event'] in {'request-failed','request-finished'}
+                        and e['request_id'] == issued['request_id']]
+            document = [e for e in requests if e['request_id'] == issued['document_request_id']]
+            check(type(issued['document_request_id']) is int and issued['pending_documents'] == []
+                  and len(document) == 1 and document[0]['navigation'] is True and document[0]['resource_type'] == 'document'
+                  and document[0]['method'] == 'GET' and document[0]['at'] <= issued['at'],
+                  'required native Request has its actual unambiguous issuing document')
+            check(len(terminal) == 1 and terminal[0]['event'] == 'request-finished'
+                  and response['url'] == issued['url'] and response['method'] == issued['method'] and response['status'] == 200
+                  and issued['at'] <= response['at'] <= terminal[0]['at'], 'required native Response/terminal identity and status')
+        check(events and events[-1]['event'] == 'context-closed' and proxy.context_closed == events[-1]
+              and all(a['at'] <= b['at'] for a,b in zip(events,events[1:]))
+              and [e['event'] for e in events if e['event'] in
+                   {'context-closing','proxy-streams-shutdown','context-close','context-closed'}]
+                   == ['context-closing','proxy-streams-shutdown','context-close','context-closed'],
+              'chronological native ledger and full original context lifecycle')
         check(not proxy.capture_refusals and proxy.capture_closed is not None
               and not proxy.io_owners and not proxy.active_streams and not proxy.active_responses
               and not proxy.operation_gates, 'no capture refusal or unresolved I/O owner')
+        generations = set()
         for record in proxy.records:
             owner = record.get('io_owner')
-            check('closed' in record and (owner is None or owner.get('finished') is not None
+            check('closed' in record and (owner is None and record['method'] != 'GET' or owner is not None and owner.get('finished') is not None
                   and not owner['errors'] and owner['forced'] is None
+                  and len(owner['resources']) == 10 and {r['name'] for r in owner['resources']}
+                      == {'connection','original','duplicate','wake_read','wake_write','selector','raw','buffer','file','response'}
+                  and len(owner['registrations']) == 2 and {r['name'] for r in owner['registrations']} == {'duplicate','wake_read'}
                   and all('closed' in r and 'error' not in r for r in owner['resources'])
                   and all('unregistered' in r and 'error' not in r for r in owner['registrations'])),
                   'every original resource and registration retired')
+            if owner is not None:
+                check(type(record.get('owner_generation')) is int and record['owner_generation'] not in generations
+                      and owner['generation'] == record['owner_generation'], 'unique actual original GET owner generation')
+                generations.add(record['owner_generation'])
             if 'original' in record:
                 check(record['original']['capture_state'] == 'sealed'
                       and record['original']['outcome'] == 'complete'
@@ -529,8 +595,8 @@ def exercise(c: Controller) -> None:
                       and record['forwarding']['byte_length'] == record['original']['byte_length']
                       and record['forwarding']['sha256'] == record['original']['sha256'], 'complete original and actual forwarding')
         try:
-            for response in c.browser.thread_responses:
-                c.browser_relay.original_for(c.browser.thread_responses[response]['request_id'])
+            for issued in required_requests:
+                c.browser_relay.original_for(issued['request_id'])
         except (ValueError,UnicodeError):
             check(False, 'complete required original Request/document/window/JSON join')
         check(len(c.boots) == 2 and c.boots[1]['pid'] == c.daemon.pid

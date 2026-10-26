@@ -1574,6 +1574,7 @@ class Browser:
         lineage = None
         def navigated(payload):
             nonlocal lineage
+            self.controller.browser_relay.inventory_fact('navigation')
             require(isinstance(payload, dict) and set(payload) <= {'url', 'name', 'newDocument', 'error'}
                     and isinstance(payload.get('url'), str) and 'error' not in payload, 'E05 pinned native navigation payload')
             new = 'newDocument' in payload
@@ -1594,7 +1595,10 @@ class Browser:
                                            document_request_id=lineage, at=time.monotonic()))
         self.thread_navigation_listener = page.main_frame._impl_obj._channel, 'navigated', navigated
         self.thread_navigation_listener[0].on('navigated', navigated)
-        page.on("pageerror", lambda _error: self.thread_events.append(dict(event="pageerror", at=time.monotonic())))
+        def pageerror(_error):
+            self.controller.browser_relay.inventory_fact('pageerror')
+            self.thread_events.append(dict(event='pageerror', at=time.monotonic()))
+        page.on('pageerror', pageerror)
         page.goto(self.thread_base + "/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
         self.controller.remaining()
 
