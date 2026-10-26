@@ -1,8 +1,8 @@
 """Native admission support for fixed release import; no capability producer.
 
-Extracted from the former draft setup owner. Preserve Founder admission,
-independent whole-schema references and SELECT-only snapshot ordering. Central
-validation retains all supported historical families without requiring issuance.
+Preserve Founder admission and SELECT-only snapshot ordering. Central scoped
+storage validation retains supported historical families without requiring
+issuance. Generic authority keeps its independent whole-database references.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from runtime.workflows.templates import WorkflowTemplatePrincipal
 
 if TYPE_CHECKING:
     from runtime.infrastructure.workflow_coding_schema import _CodingInventory
+    from runtime.workflows.coding_authority_history import _Budget
 
 
 class CodingReleaseImportError(ValueError):
@@ -58,38 +59,20 @@ class CodingImportSupport:
         principal.revalidate()
 
     def _schema_references(self) -> tuple[str, ...]:
-        # Independent whole-native references may perform file/DB construction.
-        # Resolve them BEFORE either read snapshot or admission ownership.
-        from runtime.identities.schema import validate_names
-        from runtime.infrastructure.task_pause_controls import validate_pause_schema
-        from runtime.infrastructure.team_move_store import validate_team_move_schema
-        from runtime.orchestrator.authority import _WORKFLOW_RELEASE_REFERENCE_HISTORIES, _workflow_release_schema_digest
-        with self.db._lock:
-            conn = self.db._conn
-            names = validate_names(conn, org_slug=self.org.slug)
-            pause = validate_pause_schema(conn, org_slug=self.org.slug, allow_absent=True)
-            move = validate_team_move_schema(conn, org_slug=self.org.slug)
-        references = tuple(_workflow_release_schema_digest('J', history, names, pause_layout=pause,
-                           team_move_layout=move) for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
-        if 'unavailable' in references:
-            raise CodingReleaseImportError('coding_release_import_schema_reference_unavailable')
-        return references
+        # Retain the existing pre-admission call boundary. Coding storage is
+        # validated on the actual snapshot, independently of unrelated native
+        # table ALTER chronology. Generic authority keeps whole-DB references.
+        return ()
 
-    def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> _CodingInventory:
+    def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...], *,
+                 budget: _Budget | None = None) -> _CodingInventory:
+        """Reconstruct locally; supplied allowance retains all source/target work."""
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
-        # The private result is useful only to a local consumer that still owns
-        # this exact snapshot. Never return an inventory after ending its read.
         if not conn.in_transaction:
             raise CodingReleaseImportError('coding_release_import_caller_transaction')
-        layout, coding = _read_workflow_schema(conn, expected_org_slug=self.org.slug)
-        if layout != 'J' or coding is None:
+        _, coding = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
+        if coding is None:
             raise CodingReleaseImportError('coding_release_import_schema_required')
-        rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')
-        actual = hashlib.sha256('\n'.join(str(row[0]) for row in rows).encode()).hexdigest()
-        if actual not in references:
-            raise CodingReleaseImportError('coding_release_import_whole_schema_mismatch')
-        # Central validation above includes complete retained setup, import,
-        # mapping and source histories; no setup issuance is required.
         return coding
 
     @contextmanager

@@ -681,11 +681,22 @@ class Database(
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self._conn
-            except Exception:
-                self._conn.rollback()
-                raise
-            else:
                 self._conn.commit()
+            except BaseException as primary:
+                try:
+                    self._conn.rollback()
+                    if self._conn.in_transaction:
+                        raise RuntimeError("workflow_schema_rollback_incomplete")
+                except BaseException as cleanup:
+                    primary.add_note("workflow schema rollback failed: " + type(cleanup).__name__)
+                    try:
+                        self._conn.close()
+                    except BaseException as close_error:
+                        primary.add_note("workflow schema close failed: " + type(close_error).__name__)
+                    # Never return an unsafe connection to any later DB owner,
+                    # including when SQLite close itself was unsuccessful.
+                    self._conn = None
+                raise
         finally:
             self._lock.release()
 
@@ -1910,18 +1921,22 @@ class Database(
             self._conn.execute("BEGIN IMMEDIATE")
             from runtime.workflows.recovery import classify_task
             drafts = getattr(self, "_workflow_drafts", None)
-            ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None)
+            from runtime.workflows.coding_authority_history import _Budget
+            coding_budget = _Budget()
+            ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None,
+                                      budget=coding_budget)
             if ownership.kind == 'coding_attempt':
                 coding = getattr(self, '_workflow_coding_dispatch', None)
                 payload = dict(output_summary=output_summary, confidence_score=confidence_score, status=status,
                                risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
                                waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
                 if coding is None or v2_admission is not None or not coding.callback_uncommitted(
-                        task_id=task_id, agent=agent, session_id=session_id, payload=payload, capture=coding_admission):
+                        task_id=task_id, agent=agent, session_id=session_id, payload=payload, capture=coding_admission,
+                        budget=coding_budget):
                     self._conn.rollback()
                     return False
-                from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                validate_workflow_schema(self._conn, expected_org_slug=coding.org.slug)
+                from runtime.infrastructure.workflow_schema import _read_workflow_schema
+                _read_workflow_schema(self._conn, expected_org_slug=coding.org.slug, budget=coding_budget)
                 self._conn.commit()
                 return True
             if ownership.kind == 'f5':

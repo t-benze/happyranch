@@ -1,9 +1,9 @@
-"""Exact additive J definitions and closed per-family coding admission.
+"""Unchanged coding DDL beside supported document layouts and closed histories.
 
-K2b/K2c admit complete historical setup/import/mapping/source and agent-read
-role-default histories and K3a queued starts on unchanged J, including metadata-only schema reads.
-Each later producer must ship its own complete readers. No schema installation,
-repository resolution or current authority is provided by this module.
+Complete setup/import/mapping/settings/start/native/return/cancellation readers
+share their original allowance, including metadata paths. Structural recognition
+is separate from history reconstruction, with no recursive acceptance or live
+whole-org SQL equality. This module grants no repository or current authority.
 """
 from __future__ import annotations
 
@@ -128,6 +128,47 @@ def has_coding_schema_objects(conn: sqlite3.Connection) -> bool:
                or str(name).casefold() == 'workflow_coding'
                for row in conn.execute('SELECT name,tbl_name FROM sqlite_schema')
                for name in row)
+
+
+def _validate_coding_dependencies(conn: sqlite3.Connection) -> None:
+    """Needed native storage contracts, independent of unrelated native DDL.
+
+    Workflow parents and every transitive key/constraint are compared against
+    literal supported F/E/G/H/I/J definitions by _read_structure. Native rows
+    keep their existing typed/semantic ownership readers. Here even empty
+    storage must provide their real columns and parent keys; task ALTER order
+    and unrelated native tables are deliberately not a coding prerequisite.
+    """
+    from runtime.workflows.coding_source_history import (
+        _TASK_COLUMNS, _TASK_TYPES, _RESULT_COLUMNS, _RESULT_TYPES,
+        _AUDIT_COLUMNS, _AUDIT_TYPES,
+    )
+    contracts = {
+        'tasks': (_TASK_COLUMNS, _TASK_TYPES, 'id'),
+        'task_results': (_RESULT_COLUMNS, _RESULT_TYPES, 'id'),
+        'audit_log': (_AUDIT_COLUMNS, _AUDIT_TYPES, 'id'),
+        'org_settings': (('section', 'value_json', 'updated_at', 'updated_by'),
+                         (('text',), ('text',), ('text',), ('null', 'text')), 'section'),
+        'work_hours': (('agent_name', 'status'), (('text',), ('text',)), 'id'),
+    }
+    for table, (columns, types, primary) in contracts.items():
+        objects = [tuple(row) for row in conn.execute(
+            'SELECT type,name,sql FROM sqlite_schema WHERE lower(name)=?', (table,))]
+        if len(objects) != 1 or objects[0][:2] != ('table', table):
+            raise ValueError('workflow_coding_shared_schema_mismatch: ' + table)
+        metadata = {row[1]: tuple(row) for row in conn.execute(f'PRAGMA table_xinfo("{table}")')}
+        keys = [name for name, row in metadata.items() if row[5]]
+        if keys != [primary]:
+            raise ValueError('workflow_coding_shared_key_mismatch: ' + table)
+        for name, allowed in zip(columns, types, strict=True):
+            row = metadata.get(name)
+            declared = next(kind.upper() for kind in allowed if kind != 'null')
+            if (row is None or row[2].upper() != declared or row[6] != 0
+                    or ('null' not in allowed and name != primary and row[3] != 1)):
+                raise ValueError('workflow_coding_shared_column_mismatch: ' + table)
+        if table in ('task_results', 'audit_log'):
+            if metadata[primary][2].upper() != 'INTEGER' or 'AUTOINCREMENT' not in objects[0][2].upper():
+                raise ValueError('workflow_coding_shared_integer_key_required: ' + table)
 
 
 def _coding_scalar(key: str, value: object, *, incomplete: bool = False) -> bool:
@@ -369,7 +410,12 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     mappings = None
     mapping_rows = {}
     queued = None
-    if layout == 'J' and expected_org_slug is not None:
+    coding_present = has_coding_schema_objects(conn)
+    if coding_present:
+        from runtime.infrastructure.workflow_schema import _read_structure
+        _read_structure(conn)
+        _validate_coding_dependencies(conn)
+    if coding_present and expected_org_slug is not None:
         from runtime.workflows.coding_authority_history import (
             _Budget, _SetupHistoryReader, _bounded_rows, _read_setup_storage,
         )
@@ -403,14 +449,14 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         # mappings/audits. Earlier layouts cannot silently treat it as absent.
         if 'org_settings' in tables and conn.execute(
                 "SELECT 1 FROM org_settings WHERE section='coding' LIMIT 1").fetchone() is not None:
-            raise ValueError('workflow_coding_settings_requires_complete_J_reader')
+            raise ValueError('workflow_coding_settings_requires_complete_reader')
         budget = None  # Preserve the preceding layouts' standalone discriminator.
     # Empty J is still a complete coding read: absence must not replenish or
     # bypass the allowance for the subsequent native typed-row discrimination.
     bounded_coding = budget is not None
     for table in CODING_TABLES:
         if table not in tables:
-            if layout == 'J':
+            if coding_present:
                 raise ValueError(f'workflow_coding_data_unsupported: missing {table}')
             continue
         if queued is not None and table != 'workflow_coding_mappings':

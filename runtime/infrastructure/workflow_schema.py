@@ -1,9 +1,10 @@
 """Installed U1A workflow schema and compatibility boundary.
 
-F is the unchanged inert version-one foundation. Existing OrgState.load installs
-only F and validates complete F/E/G/H/I/J (including closed queued coding); explicit new-org creation initializes I.
-The explicit operator scripts alone upgrade existing F/E. Generic Database construction,
-including runtime-audit.db, has no workflow side effect.
+F is the unchanged inert version-one foundation. OrgState.load atomically adds
+the unchanged four-table coding extension beside any supported document layout;
+fresh F and coding share the same transaction. I plus coding retains J identity.
+Explicit new-org creation still initializes I; only operator scripts upgrade
+document layouts. Generic Database/runtime-audit construction stays workflow-free.
 """
 from __future__ import annotations
 
@@ -434,8 +435,8 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=6)
-def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F") -> tuple[object, ...]:
+@lru_cache(maxsize=12)
+def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *, coding_extension: bool = False) -> tuple[object, ...]:
     expected = sqlite3.connect(":memory:")
     try:
         expected.execute("PRAGMA foreign_keys=ON")
@@ -450,7 +451,7 @@ def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F") -> tu
             _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
         if layout in ("I", "J"):
             _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
-        if layout == "J":
+        if layout == "J" or coding_extension:
             from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
             _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
         return _layout(expected)
@@ -610,19 +611,57 @@ def _schema_snapshot(conn: sqlite3.Connection):
             conn.rollback()
 
 
+def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], bool]:
+    """Independently recognize document layout plus the unchanged coding family.
+
+    Complete workflow objects/metadata are compared, including reserved aliases,
+    indexes/triggers and optional-family constraints. No observed SQL constructs
+    the reference, and this structural helper never enters history readers.
+    """
+    from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
+    actual = _layout(conn)
+    names = {row[1] for row in actual[0]}
+    coding = has_coding_schema_objects(conn)
+    layout = ('I' if 'workflow_document_revision_operations' in names else
+              'H' if 'workflow_author_handoffs' in names else
+              'G' if 'workflow_submission_schema_versions' in names else
+              'E' if 'workflow_draft_adapter_versions' in names else 'F')
+    # I plus the canonical extension IS the original J object set/identity.
+    if coding and layout == 'I':
+        layout = 'J'
+    expected = _canonical_layout(layout, coding_extension=coding)
+    if _object_keys(actual) != _object_keys(expected):
+        raise ValueError('workflow_schema_object_set_mismatch')
+    if actual != expected:
+        raise ValueError('workflow_schema_layout_mismatch')
+    return layout, coding
+
+
+def _coding_document_exclusions(conn: sqlite3.Connection) -> frozenset[str]:
+    """Positively absent optional families only; present ones stay canonical.
+
+    Caller owns the snapshot and complete data reader. This repeats only the
+    finite structural observation, never a history scan or allowance reset.
+    """
+    if not conn.in_transaction:
+        raise ValueError('workflow_coding_exclusion_requires_snapshot')
+    layout, _ = _read_structure(conn)
+    present = set()
+    if layout in ('E', 'G', 'H', 'I', 'J'):
+        present.add('workflow_draft_dispatch_intents')
+    if layout in ('H', 'I', 'J'):
+        present.add('workflow_author_handoffs')
+    if layout in ('I', 'J'):
+        present.add('workflow_document_revision_operations')
+    return frozenset(present)
+
+
 def _read_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
     validate_data: bool = True, budget: _Budget | None = None,
     advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
-    actual = _layout(conn)
-    names = {row[1] for row in actual[0]}
-    layout = "J" if any(name.startswith("workflow_coding_") for name in names) else "I" if "workflow_document_revision_operations" in names else "H" if "workflow_author_handoffs" in names else ("G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F"))
-    expected = _canonical_layout(layout)
-    if _object_keys(actual) != _object_keys(expected):
-        raise ValueError("workflow_schema_object_set_mismatch")
-    if actual != expected:
-        raise ValueError("workflow_schema_layout_mismatch")
+    layout, coding_extension = _read_structure(conn)
 
     from runtime.infrastructure.workflow_coding_schema import _read_coding_data
     coding = _read_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
@@ -633,7 +672,7 @@ def _read_installed(
     validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
     # J with complete setup closure still requires all retained I/document/native readers even
     # on cutover's metadata path. The flag never bypasses the new boundary.
-    if layout == "J":
+    if coding_extension:
         validate_data = True
         _validate_source_data(conn, coding=coding)
         from runtime.identities.schema import validate_names
@@ -690,16 +729,29 @@ class WorkflowCompatibilityStore:
         with self._database._lock:
             advances: list[tuple[tuple[int, int], int]] = []
             with self._database.workflow_schema_transaction() as conn:
+                from runtime.infrastructure.workflow_coding_schema import (
+                    CANONICAL_WORKFLOW_CODING_DDL, has_coding_schema_objects,
+                    _validate_coding_dependencies,
+                )
+                # Observe ALL reserved names/owners/kinds before even F DDL.
+                coding_present = has_coding_schema_objects(conn)
                 actual = _layout(conn)
-                if actual[0]:
+                if actual[0] or coding_present:
                     _validate_installed(conn, expected_org_slug=expected_org_slug,
                                         advances=advances)
                     result = "reopened"
                 else:
-                    _install_foundation(conn, expected_org_slug=expected_org_slug)
-                    if before_commit is not None:
-                        before_commit()
+                    _validate_coding_dependencies(conn)
+                    _install_foundation(conn, expected_org_slug=expected_org_slug,
+                                        advances=advances)
                     result = "installed_legacy_only"
+                if not coding_present:
+                    _validate_coding_dependencies(conn)
+                    _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+                    _validate_installed(conn, expected_org_slug=expected_org_slug,
+                                        advances=advances)
+                if before_commit is not None and result == "installed_legacy_only":
+                    before_commit()
             # No exception/interruption/failed COMMIT reaches publication.
             from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
             for file_key, last_id in advances:
@@ -713,13 +765,14 @@ def install_or_recover(
     before_commit: Callable[[], None] | None = None,
     expected_org_slug: str | None = None,
 ) -> Literal["installed_legacy_only", "reopened"]:
-    """Install or validate the inert v1 layout on an explicit org database."""
+    """Install/validate the inert foundation and coding on an explicit org DB."""
     return WorkflowCompatibilityStore(database).install_or_recover(
         before_commit=before_commit, expected_org_slug=expected_org_slug,
     )
 
 
-def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
+def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | None,
+                        advances: list[tuple[tuple[int, int], int]] | None = None) -> None:
     _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
     timestamp = datetime.now(timezone.utc).isoformat()
     conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
@@ -741,7 +794,7 @@ def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | No
             timestamp,
         ),
     )
-    _validate_installed(conn, expected_org_slug=expected_org_slug)
+    _validate_installed(conn, expected_org_slug=expected_org_slug, advances=advances)
 
 
 def draft_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:
@@ -1671,7 +1724,11 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expecte
     names = validate_names(conn, org_slug=expected_org_slug)
     from runtime.infrastructure.team_move_store import validate_team_move_schema
     team_move_layout = validate_team_move_schema(conn, org_slug=expected_org_slug)
-    expected = tuple(_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout)
+    observed_layout, coding = _read_structure(conn)
+    if observed_layout != layout:
+        raise ValueError('workflow_release_layout_mismatch')
+    expected = tuple(_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout,
+                                                     coding_extension=coding)
                      for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')
@@ -1849,7 +1906,7 @@ def coding_migration_guidance() -> str:
             'requires no closure certification; preserve original records and reserved storage. '
             'Observed path/file/lifecycle drift or unavailable observations refuse; direct same-user '
             'file/DB swapping is outside this cooperative guarantee. Migration behavior is unexecuted. '
-            'Startup/reopen/enable never installs J. Even empty J blocks pre-J downgrade; '
+            'Normal org startup adds inert coding beside its document foundation; enable does not upgrade documents. Even empty coding blocks old-reader downgrade; '
             'populated coding requires K2a2.')
 
 

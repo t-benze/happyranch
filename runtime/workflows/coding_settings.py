@@ -45,7 +45,7 @@ def resolve_coding_settings(conn: sqlite3.Connection, org_slug: str, *,
                             budget: _Budget, pinned=None) -> SettingsResolution:
     """SELECT-only complete current/pinned closure in the caller's snapshot.
 
-    Caller first admits the complete native/J schema. Current corruption always
+    Caller first admits the complete coding/shared schema. Current corruption always
     refuses; no old pin is substituted for healthy current state or new authority.
     No nested transaction, schema recursion, cache or per-component allowance.
     """
@@ -85,14 +85,9 @@ class CodingSettingsStore:
 
     def _state(self, conn, references, budget):
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
-        from runtime.workflows.coding_saved_records import _hash
         # Existing complete-schema API already accepts a caller allowance.
         # Compose directly rather than resetting CodingImportSupport._storage.
-        layout, inventory = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
-        rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')
-        actual = _hash('\n'.join(str(row[0]) for row in rows).encode())
-        if layout != 'J' or actual not in references:
-            raise CodingSettingsError('coding_settings_invalid')
+        _, inventory = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
         if inventory is None:
             raise CodingSettingsError('coding_settings_invalid')
         return project(inventory.mappings, inventory.budget), inventory

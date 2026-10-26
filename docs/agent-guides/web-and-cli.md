@@ -1,5 +1,61 @@
 # Web And CLI
 
+## Current coding storage and setup — ROOT13150 / THR320seq261/267
+
+Normal `OrgState.load` installs the unchanged four coding tables beside each
+normally admitted org's supported document foundation. Fresh F plus coding is
+one `Database.workflow_schema_transaction`; existing complete storage is
+validation-only. Before any workflow DDL, the entire reserved coding family is
+observed. Partial, extra, case-changed, wrong-kind or malformed objects and real
+shared dependency failures refuse without repair or adoption. Body/interruption
+and COMMIT failures preserve the primary cause and secondary cleanup errors;
+uncertain COMMIT is not success or proof of absence. Audit-watermark advances
+publish only after positive COMMIT under the same lock. Failed unpublished org
+construction closes/refuses before attachment; later installers are separate.
+
+Coding validates its canonical inventory and actual shared columns, keys, FKs,
+owner histories, template/authority/native dependencies and Pause/move/naming
+controls. Unrelated native ALTER chronology is not a coding-only whole-org SQL
+prerequisite. Nullable submission/request FKs and nonNULL owner checks remain.
+F/E/G/H plus coding keep their document identity; I plus coding retains literal
+J. Complete old F/E/G/H/I/J histories, original import/mapping/settings/run pins,
+INTEGER results, SIDs and UNKNOWN effects stay unchanged. Every cold/metadata/
+recovery/post-write/return/cancellation path retains the same complete readers
+and one original cumulative row/byte/step allowance, with no recursive admission.
+Only a successful same-snapshot canonical reserved-family observation makes
+absent E draft/H handoff/I revision exclusions empty; present families retain
+full validation and actual conflict queries. SQL/read/lock errors never mean
+absence. Mandatory F request bridges and other owners remain required.
+
+Historical F/E whole-reference constructors use literal foundation primitives,
+not operational startup. Independent coding companions and a private extension
+cache distinction reach both generic whole-reference consumers. Raw whole
+nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
+histories even after workflow's fifth-history cache fill, and authority-v2 stays
+observed-only. No reference preimage or saved pin is rewritten. Generic Database
+and runtime-audit remain workflow-free. Even empty F+coding requires compatible
+code at downgrade; document blockers and returned/live/held drain rules remain.
+
+The existing human setup coordinator retains present maintenance, backup,
+source/UI/loaded-object and original operation/receipt custody. Its normal run
+no longer invokes F/E→G→H→I→J migrations. The original supported deployment/start
+owns inert coding initialization; post-start revalidation requires complete
+coding storage on each normally admitted selected-runtime org, with document
+identity unchanged except I+coding=J. Existing explicit document migration tools
+remain separate. No old-folder or historical uncertainty settlement is a new
+initialization prerequisite. Missing settings projects Disabled; installation
+writes no settings, import, roles, grants or run and preserves Explicit settings.
+The twelve selected loaded-object producer/consumer bindings remain matched;
+health or disk HEAD alone is not loaded acceptance.
+
+This source contract supersedes earlier coding-only J/whole-org-equality and
+mandatory offline-chain instructions below, preserving attributed old evidence.
+Human deployment/restart, Founder original import/settings, independently loaded
+readiness and one genuine four-role scratch run remain separate root-owned
+acceptance. Source/static checks prove no workflow behavior. Python units are
+RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
+no ad-hoc Product E2E or new test/build merge gate follows.
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -7,7 +63,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete valid J/import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -3466,10 +3522,9 @@ and `sqlite_sequence(session_token_usage,0)` remain intact; observed/live schema
 is comparison only, never constructor input. Both old preimages remain literal.
 
 Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
-name before shared cache lookup even after workflow cache fill. Workflow and
-coding-import support use the same workflow helper; six indirect coding
-consumers retain their central reader/snapshot/admission contracts. Cache identity
-remains `(layout,history,naming,Pause,team_move)`; ANY unavailable reference refuses
+name before shared cache lookup even after workflow cache fill. Generic workflow reference consumers retain their whole-reference helper;
+coding import uses scoped storage validation. Cache identity includes
+`(layout,history,naming,Pause,team_move,coding_extension)`; ANY unavailable reference refuses
 even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
 name participates, without normalization or object filtering. Authority-v2 stays
 observed-only; generic Database/runtime-audit remain workflow-free.
@@ -3483,15 +3538,15 @@ The strict fresh-J initializer still requires empty native operational storage
 and valid remote markers; it correctly refuses this retained sequence row.
 Neither that guard nor any real migration changes; calling the real coding
 migration here would recurse through reference validation. Actual create-org
-still explicitly initializes I. Startup/reopen/
-enable validate, never install J; I remains usable for document work and gives
-actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
+still explicitly initializes I. Normal OrgState.load subsequently adds coding
+beside the actual document foundation; I plus coding is J. Enable performs no
+document upgrade. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
 
-Conditional operations remain on hold: separately accepted F/E→G→H→I→J
-transitions each require target inspection; submission/coding check3 differ from
+Historical offline document/coding transitions remain separately owned,
+with target inspection; normal coding setup no longer requires that chain; submission/coding check3 differ from
 exact handoff/revision migration-required1, and refused1 stops. The first three
 writers remove only --check; coding requires --confirm-cooperative-offline.
 Exact import absence is HTTP404 coding_release_import_not_found/CLI1, never

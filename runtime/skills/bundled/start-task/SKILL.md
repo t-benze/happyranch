@@ -69,6 +69,13 @@ never fake completion. Filesystem mount containment remains in force.
 This grants no agent deletion authority or end-of-task deletion hook, replaces
 none of this skill's legacy gates, and disables none of the seven nightly agent
 sessions. Other cleanup owners' process gates and old flags remain unchanged.
+Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
+directories, Unix sockets and FIFOs inside admitted task scratch are disposable
+after both task and structural root end. Socket/FIFO handling uses no-follow
+stat/allocation and contained unlink with metadata-only O_PATH descriptors,
+never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+Git metadata keep strict special-object checks; all ownership/jobs/age/link/
+mount gates and durable manifest/lock/output exclusions remain.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
 in output. Do not run historical cleanup, change live configuration, deploy/
@@ -153,8 +160,10 @@ Only the configured current executable agent manager composes start@2 for its
 OWN genuine callback. `workflows coding run-start --from-file ABS --emit-decision`
 validates and prints only; keep the original file/key. New callbacks/start actions
 require current canonical Explicit settings and matching release/mapping/settings
-pins, complete J/import and actual mounted native queue/host/authority. Missing,
-malformed and Disabled settings refuse before writes/spend/allocation. Default
+pins, complete coding/shared storage and import, and actual mounted native
+queue/host/authority. Normal org startup initializes inert coding storage without upgrading document
+layouts or changing settings; this is separate from loaded/admitted acceptance.
+Missing, malformed and Disabled settings refuse before writes/spend/allocation. Default
 Admission stays Disabled and ordinary routing stays legacy. Literal start@1 is
 historical/readable, not a fresh-start route. Later disable/default edits do not
 replace admitted pins or strand genuine callbacks/settlement.

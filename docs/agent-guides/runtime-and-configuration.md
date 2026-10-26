@@ -8,7 +8,7 @@ and the B1 shared-acquisition correction are LOCAL/unpublished candidates.
 Publications1/3 and automatic attempts1/3 are SPENT at that public head and
 run40321214462/attempt1. Remaining TWO publications and TWO attempts are
 UNALLOCATED across the whole root/children/jobs/retries/continuations.
-This documentation correction reserves/spends ZERO and grants no publication.
+This local composition reserves/spends ZERO and grants no publication.
 
 Actual installation FAILED at admission_child: helper_exit78/reap_exit78,
 reapedtrue/deadlinefalse/killfalse. The nested guard/root cause remains UNKNOWN;
@@ -18,9 +18,10 @@ NEVER-STARTED fixture; historical40210816942 installation/cleanup remains
 FAILED/UNPROVED, and live cleanup is unaccepted. Same-boot was NOT REACHED;
 R1/R2 remain OPEN and scope_complete HELD. All v4/PHASES, unconditional incomplete,
 recovery/architecture, N3/N6, reboot/release and proof limits in the current
-contract remain unchanged. Current-main composition/publication remains HELD;
-later authorized integration must preserve unrelated storage/setup/sweeper
-contributions and renew independent full-head review and exact-head scoped QA.
+contract remain unchanged. Current-main composition is prepared locally,
+preserving both the reviewed candidate and main storage/setup/sweeper
+contributions. Publication remains HELD pending renewed independent FULL
+review, exact-head scoped SOURCE/STATIC QA and manager effect reconciliation.
 
 **Historical PR800 seq648 recovery-intake snapshot — ROOT TASK-13017 (spent; superseded only by the current tranche above).**
 Founder seq655 authorizes supported recovery continuing FAILED TASK-12936 and
@@ -72,6 +73,62 @@ supersedes only the one publication/automatic-attempt hold stated here. No merge
 or deployment is authorized. Required lint/static gates and separate Product E2E
 policy remain unchanged. These banners describe the grant, not runtime success.
 
+## Current coding storage and setup — ROOT13150 / THR320seq261/267
+
+Normal `OrgState.load` installs the unchanged four coding tables beside each
+normally admitted org's supported document foundation. Fresh F plus coding is
+one `Database.workflow_schema_transaction`; existing complete storage is
+validation-only. Before any workflow DDL, the entire reserved coding family is
+observed. Partial, extra, case-changed, wrong-kind or malformed objects and real
+shared dependency failures refuse without repair or adoption. Body/interruption
+and COMMIT failures preserve the primary cause and secondary cleanup errors;
+uncertain COMMIT is not success or proof of absence. Audit-watermark advances
+publish only after positive COMMIT under the same lock. Failed unpublished org
+construction closes/refuses before attachment; later installers are separate.
+
+Coding validates its canonical inventory and actual shared columns, keys, FKs,
+owner histories, template/authority/native dependencies and Pause/move/naming
+controls. Unrelated native ALTER chronology is not a coding-only whole-org SQL
+prerequisite. Nullable submission/request FKs and nonNULL owner checks remain.
+F/E/G/H plus coding keep their document identity; I plus coding retains literal
+J. Complete old F/E/G/H/I/J histories, original import/mapping/settings/run pins,
+INTEGER results, SIDs and UNKNOWN effects stay unchanged. Every cold/metadata/
+recovery/post-write/return/cancellation path retains the same complete readers
+and one original cumulative row/byte/step allowance, with no recursive admission.
+Only a successful same-snapshot canonical reserved-family observation makes
+absent E draft/H handoff/I revision exclusions empty; present families retain
+full validation and actual conflict queries. SQL/read/lock errors never mean
+absence. Mandatory F request bridges and other owners remain required.
+
+Historical F/E whole-reference constructors use literal foundation primitives,
+not operational startup. Independent coding companions and a private extension
+cache distinction reach both generic whole-reference consumers. Raw whole
+nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
+histories even after workflow's fifth-history cache fill, and authority-v2 stays
+observed-only. No reference preimage or saved pin is rewritten. Generic Database
+and runtime-audit remain workflow-free. Even empty F+coding requires compatible
+code at downgrade; document blockers and returned/live/held drain rules remain.
+
+The existing human setup coordinator retains present maintenance, backup,
+source/UI/loaded-object and original operation/receipt custody. Its normal run
+no longer invokes F/E→G→H→I→J migrations. The original supported deployment/start
+owns inert coding initialization; post-start revalidation requires complete
+coding storage on each normally admitted selected-runtime org, with document
+identity unchanged except I+coding=J. Existing explicit document migration tools
+remain separate. No old-folder or historical uncertainty settlement is a new
+initialization prerequisite. Missing settings projects Disabled; installation
+writes no settings, import, roles, grants or run and preserves Explicit settings.
+The twelve selected loaded-object producer/consumer bindings remain matched;
+health or disk HEAD alone is not loaded acceptance.
+
+This source contract supersedes earlier coding-only J/whole-org-equality and
+mandatory offline-chain instructions below, preserving attributed old evidence.
+Human deployment/restart, Founder original import/settings, independently loaded
+readiness and one genuine four-role scratch run remain separate root-owned
+acceptance. Source/static checks prove no workflow behavior. Python units are
+RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
+no ad-hoc Product E2E or new test/build merge gate follows.
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -79,7 +136,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete valid J/import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -2057,8 +2114,15 @@ shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
 Actual task AND structural root must each be completed/failed/cancelled/superseded.
 Recognized finished jobs completed/failed/rejected are skipped before owner-lineage
 lookup; active jobs still require valid lineage and retain their structural root.
-Unknown job status/active lineage retains. Recursive
-mtime+ctime age of at least one hour and no-follow/same-filesystem containment
+Unknown job status/active lineage retains.
+Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
+directories, Unix sockets and FIFOs inside admitted task scratch are disposable
+after both task and structural root end. Socket/FIFO handling uses no-follow
+stat/allocation and contained unlink with metadata-only O_PATH descriptors,
+never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+Git metadata keep strict special-object checks; all ownership/jobs/age/link/
+mount gates and durable manifest/lock/output exclusions remain.
+Recursive mtime+ctime age of at least one hour and no-follow/same-filesystem containment
 apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
 branches/remotes; branches remain, ignored contents are disposable. Git removal
@@ -3230,10 +3294,9 @@ and `sqlite_sequence(session_token_usage,0)` remain intact; observed/live schema
 is comparison only, never constructor input. Both old preimages remain literal.
 
 Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
-name before shared cache lookup even after workflow cache fill. Workflow and
-coding-import support use the same workflow helper; six indirect coding
-consumers retain their central reader/snapshot/admission contracts. Cache identity
-remains `(layout,history,naming,Pause,team_move)`; ANY unavailable reference refuses
+name before shared cache lookup even after workflow cache fill. Generic workflow reference consumers retain their whole-reference helper;
+coding import uses scoped storage validation. Cache identity includes
+`(layout,history,naming,Pause,team_move,coding_extension)`; ANY unavailable reference refuses
 even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
 name participates, without normalization or object filtering. Authority-v2 stays
 observed-only; generic Database/runtime-audit remain workflow-free.
@@ -3247,15 +3310,15 @@ The strict fresh-J initializer still requires empty native operational storage
 and valid remote markers; it correctly refuses this retained sequence row.
 Neither that guard nor any real migration changes; calling the real coding
 migration here would recurse through reference validation. Actual create-org
-still explicitly initializes I. Startup/reopen/
-enable validate, never install J; I remains usable for document work and gives
-actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
+still explicitly initializes I. Normal OrgState.load subsequently adds coding
+beside the actual document foundation; I plus coding is J. Enable performs no
+document upgrade. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
 
-Conditional operations remain on hold: separately accepted F/E→G→H→I→J
-transitions each require target inspection; submission/coding check3 differ from
+Historical offline document/coding transitions remain separately owned,
+with target inspection; normal coding setup no longer requires that chain; submission/coding check3 differ from
 exact handoff/revision migration-required1, and refused1 stops. The first three
 writers remove only --check; coding requires --confirm-cooperative-offline.
 Exact import absence is HTTP404 coding_release_import_not_found/CLI1, never
@@ -4887,8 +4950,8 @@ selection. No force/yes/skip/resume/rollback/key/revision override exists.
 
 Managed invocation/workspace/native ancestry or unavailable attribution refuses
 before imports/credentials/effects. All registered runtimes and loaded/broken/
-partial orgs are inspected with raw RO connections and original complete F–J/
-whole-release/data/history/FK/lifecycle readers, without constructing product
+partial orgs are inspected with raw RO connections, original complete F–J
+document/coding/shared-data/history/FK/lifecycle readers, without constructing product
 Database/OrgState. Current admitted work, preparations, processes, automatically
 consumable pending work, result-processing and publication/profile/move/recovery
 conflicts hold. Repeated current exclusion and frozen identities supplement the
@@ -4920,9 +4983,9 @@ pre-J code must not boot J. Restore/rollback acceptance remains NOT RUN.
 
 Locked uv preparation selects the existing Python without downloads; Node24 and
 npm ci precede the matching original build_web profile. The actual selected served
-dist must equal that checkout's web/dist. Needed original migrations run singly,
-requiring exact needed exits/diagnostics, writer0, original post-check0 and full
-exact targets before the next step. A failed/uncertain step leaves last accepted
+dist must equal that checkout's web/dist. The coordinator runs no migration
+chain; original controlled start owns atomic coding storage and subsequent
+complete readiness validation beside each selected-runtime document foundation. A failed/uncertain step leaves last accepted
 layout/command evidence and original recovery owner; no automatic restart.
 
 Start prints the uv wrapper PID; daemon.pid contains its Python child PID.
