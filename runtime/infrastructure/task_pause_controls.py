@@ -12,7 +12,7 @@ import re
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
@@ -331,18 +331,32 @@ class TaskPauseStore:
         return root, row
 
     @contextmanager
-    def writer(self, task_id: str, *, commit_guard: Any = None, committed: Any = None, admission: bool = False) -> Iterator[tuple[dict, dict | None]]:
+    def writer(self, task_id: str, *, commit_guard: Any = None, committed: Any = None,
+               admission: bool = False, validate_admission: Any = None) -> Iterator[tuple[dict, dict | None]]:
         with self.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             root_id = self.root_uncommitted(task_id)["id"]
         move = getattr(self.db, "_team_move_coordinator", None)
         # Terminal/journal settlement deliberately does not acquire this gate.
         # Existing producer/root ownership precedes move gate, DB and terminal.
-        with self.gate(root_id), move.gate if admission and move is not None else nullcontext(), self.db._lock:
+        with ExitStack() as ownership:
+            ownership.enter_context(self.gate(root_id))
+            if validate_admission is not None:
+                validate_admission()
+            ownership.enter_context(move.gate if admission and move is not None else nullcontext())
+            if validate_admission is not None:
+                validate_admission()
+            ownership.enter_context(self.db._lock)
+            if validate_admission is not None:
+                validate_admission()
             if self.db._conn.in_transaction:
                 raise PauseControlError("pause_control_unavailable")
             self.db._conn.execute("BEGIN IMMEDIATE")
             with commit_guard if commit_guard is not None else nullcontext():
                 try:
+                    if validate_admission is not None:
+                        validate_admission()
                     root = self.root_uncommitted(task_id)
                     if root["id"] != root_id:
                         raise PauseControlError("pause_control_unavailable")
@@ -350,8 +364,13 @@ class TaskPauseStore:
                     self.db._conn.commit()
                     if committed is not None:
                         committed()
-                except BaseException:
-                    self.db._conn.rollback()
+                except BaseException as primary:
+                    try:
+                        self.db._conn.rollback()
+                    except BaseException as secondary:
+                        if validate_admission is None:
+                            raise
+                        primary.add_note(f"selected Pause rollback also failed: {secondary!r}")
                     raise
 
     def ensure_uncommitted(self, root_id: str) -> dict:

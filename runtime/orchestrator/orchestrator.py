@@ -297,7 +297,7 @@ class Orchestrator:
         Boot P4 and dynamic attachment callers explicitly own returned
         notification; this public binder performs no recovery or I/O.
         """
-        from runtime.daemon.startup_recovery import _bind_task_admission, StartupUnavailable
+        from runtime.daemon.startup_recovery import _bind_task_admission, StartupRecovery, StartupUnavailable
         try:
             state, gate, org = self._startup_state, self._startup_recovery, self._startup_org
         except AttributeError as exc:
@@ -305,22 +305,33 @@ class Orchestrator:
         if state is None and (gate is not None or org is not None):
             raise StartupUnavailable("startup_gate_unbound")
         if state is not None:
+            if not isinstance(gate, StartupRecovery):
+                raise StartupUnavailable("startup_gate_unbound")
+            gate.require_attachment(state)
             if (org is None or org.orchestrator is not self
                     or state.orgs.get(org.slug) is not org
                     or org._startup_state is not state or org._startup_recovery is not gate
                     or org.thread_queue is not thread_queue
                     or not isinstance(org._startup_admission_refs, tuple)
-                    or len(org._startup_admission_refs) != 4
+                    or len(org._startup_admission_refs) != 7
                     or org._startup_admission_refs[0] is not self
                     or org._startup_admission_refs[1] is not org.db
                     or org._startup_admission_refs[2] is not org.sessions
                     or org._startup_admission_refs[3] is not thread_queue
+                    or org._startup_admission_refs[4] is not org.dream_queue
+                    or org._startup_admission_refs[5] is not org.wake_queue
+                    or org._startup_admission_refs[6] is not org.schedule_queue
+                    or any(getattr(q, "_startup_state", None) is not state
+                           or getattr(q, "_startup_org", None) is not org
+                           or getattr(q, "_startup_recovery", None) is not gate
+                           for q in (org.dream_queue, org.wake_queue, org.schedule_queue))
                     or self._db is not org.db or self._slug != org.slug
                     or self._queue is not state.queue or self._sessions is not org.sessions
                     or self._host_supervisor is not state.host_supervisor
-                    or (self._thread_queue is not None and self._thread_queue is not thread_queue)):
+                    or (self._thread_queue is not None and self._thread_queue is not thread_queue)
+                    or (self._main_loop is not None and self._main_loop is not main_loop)):
                 raise StartupUnavailable("startup_attachment_changed")
-            if gate is None or (gate._loop is not None and main_loop is not gate._loop):
+            if main_loop is not gate._loop or main_loop is None:
                 raise StartupUnavailable("startup_attachment_changed")
             if gate.snapshot()["recovery_ready"]:
                 # Fresh dynamic attachment is ready-only but its thread refs

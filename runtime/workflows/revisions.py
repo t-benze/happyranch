@@ -15,7 +15,7 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictBool, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import publish_document_tasks, require_document_admission
+from runtime.daemon.startup_recovery import document_admission_validation, publish_document_tasks, require_document_admission
 from runtime.infrastructure.workflow_schema import (
     _DRAFT_MUTABLE, _handoff_json, _handoff_record, _records, _stored_json,
     require_document_revision_schema, validate_workflow_schema,
@@ -569,7 +569,7 @@ class WorkflowRevisionStore:
                     require_document_admission(self)
                     self._owner(principal, self.db._conn, command['instance_id'])
                     store._read_grant(self.db._conn, first[0], {'return-to-author'}, principal)
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                     require_document_admission(self)
                     instance = self._owner(principal, conn, command['instance_id'])
                     first = _record(conn, 'workflow_draft_dispatch_intents', first[0]['id'])
@@ -670,7 +670,7 @@ class WorkflowRevisionStore:
             async with self.org.db_lock:
                 task_agent = store._session(session_id) if session_id else None
                 with self.org.sessions.binding_lease(*task_agent) if task_agent else nullcontext():
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                         row, intent = self._select(conn, operation_id, **selection)
                         store._selected_authority(conn, intent, capture, {'return-to-author'})
                         validate_revision_record(conn, row, expected_org_slug=self.org.slug)
@@ -693,7 +693,7 @@ class WorkflowRevisionStore:
                 task, agent = store._session(session_id)
                 with self.org.sessions.binding_lease(task, agent):
                     require_document_admission(self)
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                         require_document_admission(self)
                         row, intent = self._select(conn, command['revision_operation_id'], principal=None, session_id=session_id)
                         context = self._authority(conn, intent, capture)
@@ -784,7 +784,7 @@ class WorkflowRevisionStore:
     def _fulfill_core(self, operation_id: str, capture: Any, *, recovery: Any = None
                       ) -> tuple[list[str], Literal['settled', 'local_hold']]:
         require_document_admission(self, recovery=recovery)
-        with self.org.workflow_authority.admission_writer(capture) as conn:
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
             require_document_admission(self, recovery=recovery)
             row = _record(conn, 'workflow_document_revision_operations', operation_id)
             proof = validate_revision_record(conn, row, expected_org_slug=self.org.slug)

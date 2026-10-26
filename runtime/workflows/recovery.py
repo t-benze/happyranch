@@ -167,7 +167,7 @@ def _publish_cold_document_task(dispatcher: Any, task_id: str, gate: Any,
     from runtime.workflows.review_join import HOLDS
     from runtime.infrastructure.task_pause_controls import PauseControlError
     org = dispatcher.org
-    from runtime.daemon.startup_recovery import require_document_admission
+    from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
     require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
     with dispatcher._live_lock:
         require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
@@ -180,7 +180,7 @@ def _publish_cold_document_task(dispatcher: Any, task_id: str, gate: Any,
                 return RecoveryOutcome('local_hold', 'startup_document_not_queued')
         capture = org.workflow_authority.capture_admission()
         sessions = tuple(org.sessions.iter_active())
-        with org.workflow_authority.admission_writer(capture) as conn:
+        with org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(dispatcher, recovery=gate, sweep_owner=startup_owner)) as conn:
             require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
             intent = dispatcher._intent(conn, task_id)
             if (intent['state'] != 'queued' or intent['host_launch_started']

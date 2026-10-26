@@ -191,31 +191,59 @@ class TaskInvocation:
     def store(self) -> TaskPauseStore:
         return self.orch._db._task_pause_store
 
-    def prepare(self) -> None:
+    def prepare(self, *, validate_admission: Callable[[], None] | None = None) -> None:
         if self.owner == "coding":
             self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
-        with self.store.writer(self.task.id, admission=True) as (root, row):
-            self.store.held_uncommitted(self.task.id)
-            self.orch._team_moves.check_task_uncommitted(self.task)
-            row = row or self.store.ensure_uncommitted(root["id"])
-            _observe_settled_producers(self.store, row)
-            entries = row["journal"]["entries"]
-            if any(e["task_id"] == self.task.id and e["owner"] != "job" and not e["context"].get("producer_settled") for e in entries):
-                raise DeferredRootPause("invocation already owned")
-            self.move_reservation = self.orch._team_moves.reserve_task_uncommitted(self)
-            entries.append({"id": self.identity, "org": self.store.org_slug, "root_task_id": root["id"],
-                            "task_id": self.task.id, "agent": self.agent, "session_id": self.session_id,
-                            "owner": self.owner, "owner_identity": {key: self.metadata[key] for key in
-                                ("authority_v2_generation", "trigger", "triggering_job_id") if key in self.metadata},
-                            "fingerprint": fingerprint(self.task), "generation": row["generation"],
-                            "phase": "prepared", "retry": {}, "context": {}, "started_at": None,
-                            "captured_generation": None})
-            self.store.save_journal_uncommitted(row)
-        with self.store.db._lock:
-            self.store._live[self.identity] = self
-            coding = getattr(self.orch, "_workflow_coding_dispatch", None)
-            if coding is not None:
-                coding.bind_queue_invocation(self)
+        store, move = self.store, self.orch._team_moves
+        committed = False
+
+        def record_commit() -> None:
+            nonlocal committed
+            committed = True
+
+        try:
+            with self.store.writer(self.task.id, admission=True, validate_admission=validate_admission,
+                                   committed=record_commit if validate_admission is not None else None) as (root, row):
+                self.store.held_uncommitted(self.task.id)
+                self.orch._team_moves.check_task_uncommitted(self.task)
+                row = row or self.store.ensure_uncommitted(root["id"])
+                _observe_settled_producers(self.store, row)
+                entries = row["journal"]["entries"]
+                if any(e["task_id"] == self.task.id and e["owner"] != "job" and not e["context"].get("producer_settled") for e in entries):
+                    raise DeferredRootPause("invocation already owned")
+                self.move_reservation = self.orch._team_moves.reserve_task_uncommitted(self)
+                entries.append({"id": self.identity, "org": self.store.org_slug, "root_task_id": root["id"],
+                                "task_id": self.task.id, "agent": self.agent, "session_id": self.session_id,
+                                "owner": self.owner, "owner_identity": {key: self.metadata[key] for key in
+                                    ("authority_v2_generation", "trigger", "triggering_job_id") if key in self.metadata},
+                                "fingerprint": fingerprint(self.task), "generation": row["generation"],
+                                "phase": "prepared", "retry": {}, "context": {}, "started_at": None,
+                                "captured_generation": None})
+                self.store.save_journal_uncommitted(row)
+            with self.store.db._lock:
+                if validate_admission is not None:
+                    validate_admission()
+                self.store._live[self.identity] = self
+                coding = getattr(self.orch, "_workflow_coding_dispatch", None)
+                if coding is not None:
+                    coding.bind_queue_invocation(self)
+        except BaseException as primary:
+            if validate_admission is not None and committed:
+                # No launch can precede prepare returning. This SAME committed
+                # preparation still owes its native no-launch journal/move tail
+                # when postcommit registry admission closes. Failed settlement
+                # retains uncertainty; it never replaces the admission error.
+                try:
+                    if self.store is not store or self.orch._team_moves is not move:
+                        if self.move_reservation is not None:
+                            self.move_reservation.failed_cleanup()
+                        raise RuntimeError("document_preparation_settlement_owner_changed")
+                    release_live(self)
+                except BaseException as secondary:
+                    if self.move_reservation is not None:
+                        self.move_reservation.failed_cleanup()
+                    primary.add_note(f"document preparation settlement also failed: {secondary!r}")
+            raise
 
     def _entry(self, row: dict) -> dict:
         entries = [e for e in row["journal"]["entries"] if e["id"] == self.identity]
@@ -374,7 +402,7 @@ class TaskInvocation:
             return drafts._on_loop(drafts._commit_pause_launch(self, ctx))
         return self._commit_local(ctx)
 
-    def _commit_local(self, ctx: Any = None) -> bool:
+    def _commit_local(self, ctx: Any = None, *, validate_admission: Callable[[], None] | None = None) -> bool:
         """One writer commits with the terminal lock last and still owned."""
         from contextlib import nullcontext
         sessions = self.orch._sessions
@@ -396,7 +424,8 @@ class TaskInvocation:
         cancelled_binding = None
         with lease:
             with self.store.writer(self.task.id,
-                    commit_guard=ctx._lock if ctx is not None else None, committed=record_commit, admission=True) as (_, row):
+                    commit_guard=ctx._lock if ctx is not None else None, committed=record_commit, admission=True,
+                    validate_admission=validate_admission) as (_, row):
                 if row is None:
                     raise PauseControlError("pause_control_unavailable")
                 try:

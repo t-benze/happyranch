@@ -957,6 +957,36 @@ def require_document_admission(owner: Any, *, recovery: Any = None,
         gate.require_ready()
 
 
+def document_admission_validation(owner: Any, *, recovery: Any = None,
+                                  sweep_owner: Any = None, publication: Any = None) -> Callable[[], None]:
+    """Carry the SAME selected admission through its original blocking owners.
+
+    Captured references grant no recovery authority: every recheck consumes the
+    existing full ordinary/P2/P3/P6 evidence, including stop and current phase.
+    The callable performs only reference/owner checks, never discovery or I/O.
+    """
+    require_document_admission(owner, recovery=recovery, sweep_owner=sweep_owner,
+                               publication=publication)
+    org, state, gate = owner.org, owner._startup_state, owner._startup_recovery
+    epoch, refs = gate.epoch, _document_references(org)
+    task_refs, loop = org._startup_admission_refs, gate._loop
+
+    def validate() -> None:
+        try:
+            same = (owner.org is org and owner._startup_state is state
+                    and owner._startup_recovery is gate and gate.epoch == epoch
+                    and org._startup_document_refs is refs
+                    and org._startup_admission_refs is task_refs and gate._loop is loop)
+        except AttributeError as exc:
+            raise StartupUnavailable("startup_document_attachment_changed") from exc
+        if not same:
+            raise StartupUnavailable("startup_document_attachment_changed")
+        require_document_admission(owner, recovery=recovery, sweep_owner=sweep_owner,
+                                   publication=publication)
+
+    return validate
+
+
 def publish_document_tasks(owner: Any, queue: Any, task_ids: list[str]) -> None:
     """Ordinary postcommit delivery, with the existing durable outbox as intent."""
     try:

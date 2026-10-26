@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import Field, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import require_document_admission
+from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked
 from runtime.workflows.draft_dispatch import DraftOwnershipError, WorkflowDraftDispatcher, canonical_bytes, digest
@@ -403,7 +403,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                         require_document_admission(self)
                         store._session(session_id)
                         store._select_request(self.db._conn, **selection)
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                         require_document_admission(self)
                         store._session(session_id)
                         request, _, source = store._select_request(conn, **selection)

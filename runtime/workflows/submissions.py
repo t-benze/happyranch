@@ -11,7 +11,7 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictBool, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import publish_document_tasks, require_document_admission
+from runtime.daemon.startup_recovery import document_admission_validation, publish_document_tasks, require_document_admission
 from runtime.infrastructure.workflow_schema import (
     _DRAFT_MUTABLE, _handoff_record, _records, _stored_json,
     require_author_handoff_schema, validate_workflow_schema,
@@ -493,7 +493,7 @@ class WorkflowSubmissionStore:
                 require_document_admission(self)
                 with self.org.sessions.binding_lease(task, agent):
                     require_document_admission(self)
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                         require_document_admission(self)
                         self._session(session_id)
                         intent = self.org.workflow_drafts._intent(conn, task)
@@ -647,7 +647,7 @@ class WorkflowSubmissionStore:
                                         ) -> tuple[list[str], Literal['settled', 'local_hold']]:
         require_document_admission(self, recovery=recovery)
         notifications = []
-        with self.org.workflow_authority.admission_writer(capture) as conn:
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
             require_document_admission(self, recovery=recovery)
             require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
             row = _record(conn, 'workflow_author_handoffs', handoff_id)
@@ -987,7 +987,7 @@ class WorkflowSubmissionStore:
                         if session_id is not None:
                             self._session(session_id)
                         self._select_handoff(self.db._conn, **selection)
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                         if owner is not None:
                             self.org.workflow_activations._principal(owner)
                         if session_id is not None:
@@ -1034,7 +1034,7 @@ class WorkflowSubmissionStore:
                         if principal is not None:
                             self.org.workflow_review_receipts._human_principal(principal)
                         self._select_request(self.db._conn, **selection)
-                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                         if session_id is not None:
                             self._session(session_id)
                         if principal is not None:

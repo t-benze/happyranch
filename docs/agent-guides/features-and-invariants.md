@@ -3136,14 +3136,24 @@ receipt/graph publication is held. Ordinary direct calls still raise
 StartupUnavailable. Postcommit publication refusal identifies the committed tasks;
 it supplies no delivery acknowledgement or synthetic execution failure.
 
-This document SOURCE slice is PARTIAL: the original authority admission lease and
-Pause preparation writers still need an admission recheck after their own blocking
-locks and before their first effect. Caller checks cannot close those excluded
-writer seams. ROOT13137 owns that exact radius resolution and the inherited P4
-four-versus-seven reference reader mismatch, plus remaining coding/maintenance/
-HTTP/UI/readiness/launcher/counter closure. No complete-stage, runtime or feature
-acceptance follows. Behavior/proof NOT RUN, maker0/3 QA0/3 unchanged, under10s
-UNVERIFIED; no partial merge or activation.
+Selected document admission now carries the same authenticated store/org/gate/
+epoch and captured references through the original profile, publisher and short
+DB lease/business writer boundaries. Pause preparation and final launch renew
+that validation after original root/move/DB/terminal ownership; postcommit registry
+admission checks precede insertion. A closed gate cannot strand an owed original
+no-launch settlement: the committed preparation keeps its journal/SID/reservation
+until native settlement succeeds, and failed settlement retains uncertainty and
+the primary error. Default authority/coding/Pause callers and owed release remain
+ungated. The reference-only P4 binder validates all seven captured identities and
+the three producer attachments, preserving its actual Task/coroutine/phase/loop
+owner and ready-only dynamic attachment. Genuine P2/P3/P6 document owners retain
+their existing complete validation; no caller flag grants recovery authority.
+
+These named source dependencies are corrected; the whole feature remains
+incomplete. ROOT13137 retains remaining coding/maintenance/HTTP/UI/readiness/
+launcher/counter closure, full independent final-source review and same-head QA.
+Behavior/proof NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED;
+no partial merge or activation.
 
 Ordinary dream/work-hour/schedule production now checks the same global gate
 at queue insertion and checked nonblocking dequeue, direct scheduler and runner

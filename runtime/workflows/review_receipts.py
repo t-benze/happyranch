@@ -7,7 +7,7 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import require_document_admission
+from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
 from runtime.workflows.artifacts import document_from_submission, require_document_subject, review_family
@@ -364,7 +364,7 @@ class WorkflowReviewReceiptStore:
                     require_document_admission(self)
                     self._human_principal(principal)
                     store._select_request(self.db._conn, **selection)
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                     require_document_admission(self)
                     self._human_principal(principal)
                     request, row, intent = store._select_request(conn, **selection)
@@ -457,7 +457,7 @@ class WorkflowReviewReceiptStore:
                               ) -> tuple[str | None, Literal['settled', 'local_hold', 'unknown']]:
         require_document_admission(self, recovery=recovery)
         store = self.org.workflow_submissions
-        with self.org.workflow_authority.admission_writer(capture) as conn:
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
             require_document_admission(self, recovery=recovery)
             intent = self.org.workflow_reviews._intent(conn, task_id)
             from runtime.workflows.review_dispatch import _same_value
@@ -575,7 +575,7 @@ class WorkflowReviewReceiptStore:
         require_document_admission(self, recovery=recovery)
         store = self.org.workflow_submissions
         from runtime.workflows.review_join import collect_in_writer
-        with self.org.workflow_authority.admission_writer(capture) as conn:
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
             require_document_admission(self, recovery=recovery)
             collection = collect_in_writer(store, conn, handoff_id, capture)
             return collection, self._collection_disposition(collection)

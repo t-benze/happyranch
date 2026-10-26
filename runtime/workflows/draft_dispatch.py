@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from runtime.daemon.startup_recovery import require_document_admission
+from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
 from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION, validate_workflow_schema
 
 if TYPE_CHECKING:
@@ -175,7 +175,7 @@ class WorkflowDraftDispatcher:
             require_document_admission(self)
             async with self.org.db_lock:
                 require_document_admission(self)
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                     require_document_admission(self)
                     from runtime.infrastructure.team_move_store import validate_team_move_schema
                     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -266,7 +266,7 @@ class WorkflowDraftDispatcher:
         invocation.draft_request_key = key
         try:
             require_document_admission(self)
-            invocation.prepare()
+            invocation.prepare(validate_admission=document_admission_validation(self))
         except PauseControlError as exc:
             if exc.detail["code"] == "root_paused":
                 return
@@ -312,7 +312,7 @@ class WorkflowDraftDispatcher:
         # Capture every external read before synchronous ownership. Async locks
         # are acquired before entering the original synchronous fence interval;
         # no synchronous lock/lease crosses an event-loop wait.
-        require_document_admission(self)
+        validate = document_admission_validation(self)
         capture = self.org.workflow_authority.capture_admission()
         active_sessions = tuple(self.org.sessions.iter_active())
         with self._live_lock:
@@ -324,13 +324,14 @@ class WorkflowDraftDispatcher:
             async with self.org.db_lock:
                 require_document_admission(self)
                 authority = self.org.workflow_authority
-                with authority._admission_ownership(capture):
+                with authority._admission_ownership(capture, validate_admission=validate):
                     require_document_admission(self)
                     invocation.draft_capture = capture
                     invocation.draft_sessions = active_sessions
-                    committed = invocation._commit_local(ctx)
+                    committed = invocation._commit_local(ctx, validate_admission=validate)
         if committed:
             with self._live_lock:
+                validate()
                 if invocation.task.id in self._live:
                     raise DraftOwnershipError("workflow_claim_stale")
                 self._live[invocation.task.id] = (invocation.draft_claim, invocation.session_id, None)
@@ -375,7 +376,7 @@ class WorkflowDraftDispatcher:
         from runtime.daemon.startup_publication import current_publication
         from runtime.daemon.startup_recovery import RecoveryOutcome
         publication = current_publication(self.org.orchestrator)
-        require_document_admission(self, publication=publication)
+        validate = document_admission_validation(self, publication=publication)
         if queue is not self._startup_state.queue:
             from runtime.daemon.startup_recovery import StartupUnavailable
             raise StartupUnavailable("startup_document_queue_changed")
@@ -397,7 +398,7 @@ class WorkflowDraftDispatcher:
                     return held("startup_document_not_queued")
             capture = self.org.workflow_authority.capture_admission()
             active_sessions = tuple(self.org.sessions.iter_active())
-            with self.org.workflow_authority.admission_writer(capture) as conn:
+            with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
                 require_document_admission(self, publication=publication)
                 intent = self._intent(conn, task_id)
                 if (intent["state"] != "queued" or intent["host_launch_started"]
@@ -424,6 +425,7 @@ class WorkflowDraftDispatcher:
                     raise
                 return held(code)
             return
+        validate()
         if publication is not None:
             from runtime.orchestrator.run_step import _publish_redelivery_task
             return _publish_redelivery_task(self.org.orchestrator, task_id,
@@ -463,7 +465,7 @@ class WorkflowDraftDispatcher:
             require_document_admission(self)
             async with self.org.db_lock:
                 require_document_admission(self)
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
                     require_document_admission(self)
                     intent = self._intent(conn, task_id)
                     if (live is None or live[:2] != (intent["claim_token"], session_id)
