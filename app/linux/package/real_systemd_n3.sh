@@ -137,12 +137,16 @@ except (ValueError, UnicodeError):
     print("parse_loss")
     raise SystemExit(1)
 print("observed")
-sys.stdout.write(value)
+# Preserve the existing shell payload (trailing LF removed after validation),
+# with a non-LF terminator so even empty success survives command substitution.
+sys.stdout.write(value.rstrip("\n"))
+sys.stdout.write("\ncomplete")
 PY_VIRTUAL_TEXT
 )" || status=$?
   case "$status" in
-    0) [[ "$result" == observed$'\n'* ]] || return 1
-       virtual_text_value="${result#*$'\n'}"; virtual_text_reason=observed ;;
+    0) [[ "$result" == observed$'\n'*$'\n'complete ]] || return 1
+       virtual_text_value="${result#observed$'\n'}"
+       virtual_text_value="${virtual_text_value%$'\n'complete}"; virtual_text_reason=observed ;;
     124|137) virtual_text_reason=timeout; return 1 ;;
     *) case "$result" in timeout|query_error|launch_failure|truncated|parse_loss|framing_invalid) virtual_text_reason="$result" ;; esac
        return 1 ;;
