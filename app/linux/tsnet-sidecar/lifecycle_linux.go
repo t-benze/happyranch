@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -3673,7 +3674,37 @@ func lifecyclePackageCurrent(ctx context.Context, p *LifecyclePair, stopped bool
 
 }
 
-func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, connector, executable *os.File, request lifecyclePackageRequest, admission bool, output io.Writer) error {
+type lifecyclePackageChildDiagnostic struct {
+	Reason          *string `json:"reason"`
+	DiagnosticState string  `json:"diagnostic_state"`
+	HelperExit      *int    `json:"helper_exit"`
+	DeadlineElapsed bool    `json:"deadline_elapsed"`
+	KillRequested   bool    `json:"kill_requested"`
+	Reaped          bool    `json:"reaped"`
+	ReapExit        *int    `json:"reap_exit"`
+}
+
+// Only private package guard/call boundaries, never exception text or operands.
+func lifecyclePackagePrivateReason(reason string) bool {
+	switch reason {
+	case "effective_uid", "deadline", "context_before", "entry_input",
+		"admission_contract", "admission_history", "admission_dropin",
+		"uninstall_prefix", "uninstall_images", "admission_context_after",
+		"body_guard_before", "body_history", "body_contract", "body_install",
+		"body_uninstall", "body_context_after", "body_guard_after", "body_response",
+		"context_release":
+		return true
+	}
+	return false
+}
+
+func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, connector, executable *os.File, request lifecyclePackageRequest, admission bool, output io.Writer) (diagnostic lifecyclePackageChildDiagnostic, failure error) {
+	diagnostic.DiagnosticState = "unavailable"
+	defer func() {
+		if deadline, bounded := ctx.Deadline(); bounded {
+			diagnostic.DeadlineElapsed = !time.Now().Before(deadline)
+		}
+	}()
 	// Always execute the authenticated, retained input image, including when
 	// recovery removed/replaced the active installed pathname.
 	cmd := exec.CommandContext(ctx, "/proc/self/fd/5", "managed-private", request.Operation)
@@ -3685,17 +3716,126 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	}
 	cmd.Stdin = strings.NewReader(body)
 	cmd.Stdout = output
-	cmd.Stderr = io.Discard
-	// Run joins the actual child and its owned standard-stream copies before
-	// returning. There is no detached success or extra cleanup allowance.
-	if cmd.Run() != nil || ctx.Err() != nil {
-		return ErrLifecycle
+	if output == io.Discard {
+		cmd.Stdout = nil // /dev/null, without an inherited copy pipe to join.
 	}
-	return nil
+	// Own the pipe explicitly: a descendant retaining stderr cannot detach a
+	// copy goroutine beyond the original context. No new timeout/reap allowance.
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return diagnostic, ErrLifecycle
+	}
+	deadline, bounded := ctx.Deadline()
+	if !bounded || reader.SetReadDeadline(deadline) != nil {
+		reader.Close()
+		writer.Close()
+		return diagnostic, ErrLifecycle
+	}
+	stopRead := context.AfterFunc(ctx, func() { reader.Close() })
+	defer stopRead()
+	cmd.Stderr = writer
+	var killRequested atomic.Bool
+	cmd.Cancel = func() error {
+		killRequested.Store(true)
+		return cmd.Process.Kill()
+	}
+	type observation struct{ reason, state string }
+	observed := make(chan observation, 1)
+	go func() {
+		result := observation{state: "absent"}
+		var frame [96]byte
+		used, total, lines := 0, 0, 0
+		var piece [128]byte
+		for {
+			n, readErr := reader.Read(piece[:])
+			total += n
+			if total > 4096 {
+				result = observation{state: "truncated"}
+				break
+			}
+			for _, value := range piece[:n] {
+				if used < len(frame) {
+					frame[used] = value
+					used++
+				} else {
+					result = observation{state: "malformed"}
+				}
+				if value == '\n' {
+					lines++
+					raw := string(frame[:used])
+					reason := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_private_refusal:"), "\n")
+					if lines != 1 {
+						result = observation{state: "contradictory"}
+					} else if result.state == "absent" && raw == "managed_private_refusal:"+reason+"\n" && lifecyclePackagePrivateReason(reason) {
+						result = observation{reason: reason, state: "observed"}
+					} else if result.state == "absent" {
+						result = observation{state: "unallowlisted"}
+					}
+					used = 0
+				}
+			}
+			if readErr != nil {
+				if readErr != io.EOF {
+					result = observation{state: "unavailable"}
+				} else if used != 0 {
+					result = observation{state: "malformed"}
+				}
+				break
+			}
+		}
+		reader.Close() // Closure completes before the joined observation returns.
+		observed <- result
+	}()
+	startErr := cmd.Start()
+	closeErr := writer.Close() // Relinquish the parent writer before waiting.
+	err = startErr
+	if startErr == nil {
+		err = cmd.Wait() // Actual owned child and stdout copies join here.
+	}
+	result := <-observed // Reader is joined even on launch/deadline/overflow.
+	diagnostic.KillRequested = killRequested.Load()
+	if state := cmd.ProcessState; state != nil {
+		diagnostic.Reaped = true
+		if status, ok := state.Sys().(syscall.WaitStatus); ok && (status.Exited() || status.Signaled()) {
+			code := status.ExitStatus()
+			if status.Signaled() {
+				code = -int(status.Signal())
+			}
+			diagnostic.HelperExit, diagnostic.ReapExit = &code, &code
+		}
+	}
+	if startErr != nil || closeErr != nil {
+		result = observation{state: "unavailable"}
+	} else if result.state == "observed" && (diagnostic.HelperExit == nil || *diagnostic.HelperExit != 78) {
+		result = observation{state: "contradictory"}
+	}
+	diagnostic.DiagnosticState = result.state
+	if result.state == "observed" {
+		diagnostic.Reason = &result.reason
+	}
+	if err != nil || closeErr != nil || ctx.Err() != nil {
+		return diagnostic, ErrLifecycle
+	}
+	return diagnostic, nil
+}
+
+func lifecyclePackageChildRefusal(reason string, diagnostic lifecyclePackageChildDiagnostic) int {
+	if lifecycleOneOf(reason, "admission_child", "stopped_admission_child", "package_body") {
+		// ONE complete closed record carries the original call site separately
+		// from the validated private reason and actual nested process facts.
+		raw, err := json.Marshal(struct {
+			Reason string                          `json:"reason"`
+			Child  lifecyclePackageChildDiagnostic `json:"child"`
+		}{reason, diagnostic})
+		if err == nil {
+			_, _ = fmt.Fprintf(os.Stderr, "managed_package_child_refusal:%s\n", raw)
+		}
+	}
+	return 78
 }
 
 // lifecyclePackageRefusal emits only the closed call-site vocabulary. Nested
-// child stderr stays discarded; no dynamic error or operand value is exposed.
+// child records use the separate closed serializer; no error/operand is exposed.
 func lifecyclePackageRefusal(reason string) int {
 	switch reason {
 	case "entry_context", "effective_uid", "operation", "incoming_image",
@@ -3762,8 +3902,8 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	if !lifecyclePackageCurrent(a, p, false) {
 		return lifecyclePackageRefusal("admission_current")
 	}
-	if lifecyclePackageChild(a, p, incoming, connector, executable, request, true, io.Discard) != nil {
-		return lifecyclePackageRefusal("admission_child")
+	if diagnostic, err := lifecyclePackageChild(a, p, incoming, connector, executable, request, true, io.Discard); err != nil {
+		return lifecyclePackageChildRefusal("admission_child", diagnostic)
 	}
 	if !p.stopped() {
 		err = p.policyChange("stopped", p.Main.Policy.Enabled, lifecycleInhibitID(request.OperationID))
@@ -3798,14 +3938,14 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	if !lifecyclePackageCurrent(ctx, p, true) {
 		return lifecyclePackageRefusal("stopped_current")
 	}
-	if lifecyclePackageChild(ctx, p, incoming, connector, executable, request, true, io.Discard) != nil {
-		return lifecyclePackageRefusal("stopped_admission_child")
+	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, true, io.Discard); err != nil {
+		return lifecyclePackageChildRefusal("stopped_admission_child", diagnostic)
 	}
 	if request.Operation == "package-uninstall" && p.policyChange("retired", false, request.OperationID) != nil {
 		return lifecyclePackageRefusal("retire_policy")
 	}
-	if lifecyclePackageChild(ctx, p, incoming, connector, executable, request, false, output) != nil {
-		return lifecyclePackageRefusal("package_body")
+	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, false, output); err != nil {
+		return lifecyclePackageChildRefusal("package_body", diagnostic)
 	}
 	if p.Refresh() != nil {
 		return lifecyclePackageRefusal("final_refresh")

@@ -52,11 +52,12 @@ jobs:
   managed-n3-real-systemd:
     name: Managed N3 PARTIAL installer + same-boot diagnostic (Ubuntu 24.04)
     # Founder THR327seq5/7 / sole ROOT13151: Stage1 LOCAL preparation only.
-    # Shared publications0/3, automatic attempts0/3, reservations0; first effect
-    # UNALLOCATED. No child push/run, including a review-only push. Manager alone
+    # Shared publications1/3, automatic attempts1/3; first reservation SPENT.
+    # Remaining TWO+TWO UNALLOCATED. No child push/run, including review-only.
+    # Manager alone
     # may later reserve an effect after FULL local review + exact-head static QA
     # and fresh custody/effect reconciliation. Preparation spends neither.
-    # First future single update only: public527f760f -> distinct40hex after
+    # Next single update preparation only: publicb3c22353 -> distinct40hex after
     # == PRhead == checkout == proof subject, same repo/PR800/task6475/main,
     # synchronize/attempt1. No list of three future updates or retry allocation.
     # TASK13017's seq648 FAILED40210816942/1 and every older grant stay spent.
@@ -71,7 +72,7 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.head.ref == 'task/TASK-6475' &&
           github.event.pull_request.base.ref == 'main' &&
-          github.event.before == '527f760fea393b49ba24baed9a7f76ec1ff31286' &&
+          github.event.before == 'b3c22353a13d662e2327d00dabd7e3c001251e61' &&
           github.event.after != '' &&
           github.event.after != github.event.before &&
           github.event.after == github.event.pull_request.head.sha &&
@@ -104,7 +105,7 @@ jobs:
               and head.get("ref") == "task/TASK-6475"
               and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
               and base.get("ref") == "main"
-              and event.get("before") == "527f760fea393b49ba24baed9a7f76ec1ff31286"
+              and event.get("before") == "b3c22353a13d662e2327d00dabd7e3c001251e61"
               and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
               and after != event["before"] and after == head.get("sha")
           )

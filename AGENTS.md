@@ -1,21 +1,41 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**Current PR800 Stage1 LOCAL preparation — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
+**Current PR800 Stage1 nested-diagnostic LOCAL candidate — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
 The manager accepts only the unchanged installer-diagnostic/failed-install-cleanup
 subset of TASK13153 source-diagnosis (SHA256
 e479004e84aa3d1a2966b4e50353c9ffad6d5bfb5a667e5136044589ab5ffaed),
 retained by TASK13165 with cases/four answers in TASK13160 (SHA256
 a352dddd38b6730043f8a88a11f5c8680a77e1cd7c60ed91a4bc5220e085cbb8).
-Stage1 is PARTIAL/incomplete: the actual failing installer guard/root cause is
-UNKNOWN. Fixed secret-free per-guard Go refusal lines label only the selected
-call site; nested child reasons remain opaque. Python concurrently drains fd2
-under the original deadline and combined4096 retained-byte allowance. Only one
-exact full allowlisted line can be observed; partial/malformed/unallowlisted/
-overflow/multiple/contradictory output is loss, never retained raw stderr.
-Actual helper exit, elapsed deadline, forced kill/reap and outcome are distinct;
-unknown stays null. Exit0 plus a refusal is contradictory diagnosis and supplies
-no diagnostic acceptance. Public package errors/results, SAME-OFD locks,
-sealed descriptors3/4/5/6, effect order, exit78 and total deadlines stay unchanged.
+Stage1 is PARTIAL/incomplete. Public PR800 is b3c22353a13d662e2327d00dabd7e3c001251e61;
+run40321214462/attempt1 FAILED installation at the observed admission_child
+call site (helper/reap78, reapedtrue, deadlinefalse, killfalse). The nested guard
+and root cause remain UNKNOWN. TASK13174/13177/13180 authenticate starting
+SOURCE/STATIC only. No functional fault or installer repair is established.
+The current manager brief authorizes only local nested diagnostic refinement.
+
+Private package entry labels its last entered guard/call boundary with one
+literal secret-free code. Helper internals and pre-Python/frozen-entry failures
+remain opaque. Go actively drains only that vocabulary from the actual owned
+child under its original context, with4096 bytes plus one128-byte overflow
+read and a96-byte frame. A dedicated pipe is closed on original cancellation
+or overflow and its reader is joined, with the original child actually waited;
+no detached pipe, replacement deadline or cleanup allowance. Only a complete
+single allowlisted code with actual exit78 is observed; all other text is loss.
+Go reserializes ONE closed record retaining the original admission_child,
+stopped_admission_child or package_body and separate child reason/loss,
+helper_exit, deadline_elapsed, kill_requested, reaped and reap_exit. Launch
+failure has unknown exit/reap facts; absent code does not prove Python entry.
+
+The outer Python reader accepts either the original single fixed Go reason or
+that closed nested record, with exact keys/types/enums, duplicate-key rejection,
+exit/reap consistency and exit78 for an observed private code. It retains no
+arbitrary stderr/exception text/class/message/operands. Its existing combined4096
+allowance bounds stdout plus fd2, with at most one256-byte fd2 overflow read;
+after overflow the owned fd2 reader closes. Frames are bounded to1024 bytes.
+Partial/malformed/unallowlisted/overflow/multiple/contradictory output refuses
+diagnosis. Known top-level reason and child observation loss remain separate;
+unknown child exits remain null. Public results/errors, exit78, SAME-OFD lock,
+sealed descriptors3/4/5/6, installed AND loaded checks and effect order remain.
 
 Every direct package call retains a bounded private installer receipt/status;
 cleanup retains original status, predicate refusals and actual fixture reap
@@ -34,28 +54,36 @@ Installed AND loaded authority remains required; an archive hash is insufficient
 The manager's degraded/status1 preflight establishes availability only, never
 product READY or healthy dependencies.
 
-Shared ceiling at preparation: **publications0/3, automatic attempts0/3,
-reservations0; first effect UNALLOCATED** across this root/children/jobs/retries.
+Shared ledger is **publications1/3, automatic attempts1/3; reservation1 SPENT**
+at b3c22353/run40321214462/1. Remaining TWO publications and TWO attempts are
+UNALLOCATED across the whole root/children/jobs/retries/continuations.
 This child spends ZERO: local normal commits and immutable bundle handoff only,
-no push (even for review), remote mutation, diagnostic run, installation/cleanup,
-new venue, reboot, merge or deployment. Fresh independent FULL candidate review
-then exact-candidate SOURCE/STATIC QA precede manager reconciliation and any
-separately reserved effect. Both existing CI guards PREPARE only the first future
+no push (even for review), PR mutation, run/rerun/dispatch, installation/cleanup,
+new venue, reboot, merge or deployment. Fresh independent FULL local candidate
+review then exact-candidate SOURCE/STATIC QA precede manager reconciliation and
+any separately reserved effect. Both CI guards PREPARE only a single future
 PR800 same-repository/task6475/main/synchronize/attempt1 update from public
-`527f760fea393b49ba24baed9a7f76ec1ff31286` to distinct canonical40hex
-after==PRhead==checkout==proof subject; no three-update list or new trigger.
-TASK13017 is COMPLETED and owes nothing; its spent seq648 attempt
-40210816942/1 FAILED at that public head, with managed_lifecycle_refused after
-EOF/reap, exact guard UNKNOWN and cleanup FAILED/UNPROVED. Older failures and
-exhausted grants remain historical evidence, without replenishment.
+`b3c22353a13d662e2327d00dabd7e3c001251e61` to distinct canonical40hex
+after==PRhead==checkout==proof subject; preparation grants no execution.
+
+For this first attempt's never-started fixture ONLY, cleanup-status records
+original_status1/fixtures_reaped1/cleanup_failed0/never_started1; v4 sequences1/2
+record all_residue_absent/task_work_removed. Terminalnull and empty
+virtual-removal.log prove no live-removal/startup/recovery acceptance.
+Manager degraded/reasonready/query_status1 was available and did not abort
+before admission_child; underlying dependency/property health remains unknown.
+TASK13017 is COMPLETED and owes nothing. Its historical40210816942/1 cleanup
+remains FAILED/UNPROVED; old ownership/custody, failures and spent grants remain.
 
 Same-boot completion/scope_complete remains HELD on R1/R2: retained G4-reset
 trace needs at least1530s before cleanup in the unchanged1200s job, and quiet
 deferred readers emit no v2 terminal; private timing/sample attribution remains
 incomplete. No schedule/observer/quiet-reader/rate/backoff/cap/terminal change.
-Preserve strict v4/PHASES and unconditional campaign incomplete/nonzero. Actual
-installer/same-boot/cleanup and test-authoring fail/pass proof are NOT RUN /
-PROOF NOT RUN, never PASS. Go/suspended proof remains NOT RUN; Python units are
+Preserve strict v4/PHASES and unconditional campaign incomplete/nonzero. New
+nested diagnostics and test-authoring fail/pass proof are NOT RUN / PROOF NOT
+RUN. Same-boot was NOT REACHED; the actual failed installer/scoped fixture cleanup
+receipt above is no behavioral or feature PASS. Go/suspended proof remains NOT
+RUN; Python units are
 RETIRED, integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
 Only Source Boundary Lint and Web Lint(Node24) are required PR/main checks;
 daily19UTC Product E2E stays unchanged/nonblocking, with no ad hoc execution.

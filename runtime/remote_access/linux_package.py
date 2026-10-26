@@ -184,7 +184,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     if len(raw) > 4096 or time.monotonic_ns() >= deadline:
         raise PackageError("managed_lifecycle_refused")
     diagnostic = (_package_diagnostic if _package_diagnostic is not None else {}) if operation == "managed-package" else None
-    # Exact full lines only. A nested child remains an opaque call-site reason.
+    # Exact full lines only; nested metadata is validated as one closed record.
     reasons = {
         "entry_context", "effective_uid", "operation", "incoming_image",
         "admission_deadline", "executable_open", "bootstrap_operation",
@@ -195,7 +195,48 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     }
     lines = {b"managed_package_refusal:" + reason.encode("ascii") + b"\n": reason
              for reason in reasons}
-    frame_limit = max(map(len, lines))
+    private_reasons = {
+        "effective_uid", "deadline", "context_before", "entry_input",
+        "admission_contract", "admission_history", "admission_dropin",
+        "uninstall_prefix", "uninstall_images", "admission_context_after",
+        "body_guard_before", "body_history", "body_contract", "body_install",
+        "body_uninstall", "body_context_after", "body_guard_after", "body_response",
+        "context_release",
+    }
+    def nested_record(raw: bytes) -> tuple[str, dict[str, object]] | None:
+        prefix = b"managed_package_child_refusal:"
+        if not raw.startswith(prefix) or not raw.endswith(b"\n"):
+            return None
+        try:
+            record = json.loads(raw[len(prefix):-1], object_pairs_hook=_reject_duplicate_keys)
+        except (ValueError, UnicodeError, PackageError, RecursionError):
+            return None
+        if (type(record) is not dict or set(record) != {"reason", "child"}
+                or type(record["reason"]) is not str
+                or record["reason"] not in {"admission_child", "stopped_admission_child", "package_body"}):
+            return None
+        child = record["child"]
+        if (type(child) is not dict or set(child) != {
+                "reason", "diagnostic_state", "helper_exit", "deadline_elapsed",
+                "kill_requested", "reaped", "reap_exit"}
+                or type(child["diagnostic_state"]) is not str
+                or child["diagnostic_state"] not in {
+                    "observed", "absent", "unavailable", "malformed", "unallowlisted", "truncated", "contradictory"}
+                or any(type(child[k]) is not bool for k in ("deadline_elapsed", "kill_requested", "reaped"))
+                or any(child[k] is not None and (type(child[k]) is not int or not -64 <= child[k] <= 255)
+                       for k in ("helper_exit", "reap_exit"))
+                or child["helper_exit"] != child["reap_exit"]
+                or not child["reaped"] and child["helper_exit"] is not None):
+            return None
+        if child["diagnostic_state"] == "observed":
+            if (type(child["reason"]) is not str or child["reason"] not in private_reasons
+                    or not child["reaped"] or child["helper_exit"] != 78):
+                return None
+        elif child["reason"] is not None:
+            return None
+        return record["reason"], child
+
+    frame_limit = 1024
     frame = bytearray()
     diagnostic_bytes = diagnostic_lines = 0
     diagnostic_eof = False
@@ -204,7 +245,7 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     if diagnostic is not None:
         diagnostic.update(reason=None, diagnostic_state="unavailable", helper_exit=None,
                           deadline_elapsed=None, reaped=False, outcome="refused",
-                          kill_requested=False, reap_exit=None)
+                          kill_requested=False, reap_exit=None, child=None)
     source_read = source_write = output_read = output_write = null = -1
     error_read = error_write = -1
     duplicates: list[int] = []
@@ -270,8 +311,14 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                         diagnostic_bytes += len(piece)
                         if diagnostic_bytes + len(result) > 4096:
                             diagnostic_loss = "truncated"
-                            diagnostic["reason"] = None
+                            diagnostic.update(reason=None, child=None)
                             frame.clear()
+                            # Stop after one bounded overflow read; no unlimited
+                            # stderr drain or detached pipe beyond the deadline.
+                            selector.unregister(error_read)
+                            descriptor, error_read = error_read, -1
+                            os.close(descriptor)
+                            continue
                         # Transient input only; never retain arbitrary stderr.
                         for byte in piece:
                             if diagnostic_loss == "truncated":
@@ -284,19 +331,23 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                                 diagnostic_lines += 1
                                 if frame_overflow:
                                     diagnostic_loss = diagnostic_loss or "malformed"
-                                elif bytes(frame) not in lines:
-                                    state = ("unallowlisted" if all(32 <= c <= 126 for c in frame[:-1])
-                                             else "malformed")
-                                    diagnostic_loss = diagnostic_loss or state
-                                elif diagnostic_lines == 1 and diagnostic_loss is None:
-                                    diagnostic["reason"] = lines[bytes(frame)]
                                 else:
-                                    diagnostic_loss = diagnostic_loss or "contradictory"
+                                    closed = nested_record(bytes(frame))
+                                    if bytes(frame) in lines:
+                                        closed = (lines[bytes(frame)], None)
+                                    if closed is None:
+                                        state = ("unallowlisted" if all(32 <= c <= 126 for c in frame[:-1])
+                                                 else "malformed")
+                                        diagnostic_loss = diagnostic_loss or state
+                                    elif diagnostic_lines == 1 and diagnostic_loss is None:
+                                        diagnostic.update(reason=closed[0], child=closed[1])
+                                    else:
+                                        diagnostic_loss = diagnostic_loss or "contradictory"
                                 frame.clear()
                                 frame_overflow = False
                     if diagnostic is not None and diagnostic_bytes + len(result) > 4096:
                         diagnostic_loss = "truncated"
-                        diagnostic["reason"] = None
+                        diagnostic.update(reason=None, child=None)
                         frame.clear()
         while True:
             reaped, status = os.waitpid(child, os.WNOHANG)
@@ -368,8 +419,10 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     diagnostic_loss = diagnostic_loss or "unavailable"
                 if diagnostic["helper_exit"] == 0 and diagnostic["reason"] is not None:
                     diagnostic_loss = diagnostic_loss or "contradictory"
+                if diagnostic["child"] is not None and diagnostic["helper_exit"] != 78:
+                    diagnostic_loss = diagnostic_loss or "contradictory"
                 if diagnostic_loss is not None:
-                    diagnostic.update(reason=None, diagnostic_state=diagnostic_loss)
+                    diagnostic.update(reason=None, child=None, diagnostic_state=diagnostic_loss)
                 else:
                     diagnostic["diagnostic_state"] = "observed" if diagnostic["reason"] is not None else "absent"
                 if close_error is not None and not unwinding:
@@ -2978,23 +3031,32 @@ def managed_private_entry(operation: str) -> int:
             if "token" in locals():
                 _MANAGED_DEADLINE.reset(token)
     if operation in {"package-install", "package-uninstall"}:
+        # Last entered guard/call boundary only: helper internals remain opaque.
+        # Never inspect or serialize an exception, operand, path or stderr body.
+        reason = "effective_uid"
         try:
             if os.geteuid() != 0:
-                return 78
+                raise PackageError("managed_package_context_required")
+            reason = "deadline"
             deadline = int(os.environ.get("HAPPYRANCH_LIFECYCLE_DEADLINE_NS", "0"))
             now = time.monotonic_ns()
             if not now < deadline <= now + 180_000_000_000:
-                return 78
+                raise PackageError("managed_lifecycle_deadline")
             deadline_token = _MANAGED_DEADLINE.set(deadline)
             lock_token = _MANAGED_LOCK.set(3)
             package_token = _MANAGED_PACKAGE.set(True)
             try:
+                reason = "context_before"
                 _require_managed_package_context()
                 import sys
+                reason = "entry_input"
                 entry = sys.stdin.buffer.read(64)
                 if entry == b"package-admission\n":
+                    reason = "admission_contract"
                     _installed_managed_contract(deadline_ns=deadline, _package=True)
+                    reason = "admission_history"
                     prefix, _units, _dropin, _empty_prior = _package_managed_history(deadline)
+                    reason = "admission_dropin"
                     if (operation == "package-install" and _dropin is not None
                             and stat.S_IMODE(_dropin.lstat().st_mode) != 0o644
                             and not Path("/etc/happyranch/enrollment.key").is_file()):
@@ -3003,34 +3065,53 @@ def managed_private_entry(operation: str) -> int:
                         # or call the resulting NEW normal-reader compatible.
                         raise PackageError("managed_lifecycle_incompatible")
                     if operation == "package-uninstall":
+                        reason = "uninstall_prefix"
                         if prefix is None:
                             raise PackageError("managed_lifecycle_incompatible")
+                        reason = "uninstall_images"
                         if (_sha((prefix / "bin/happyranch-connector").read_bytes()) != _sha(Path("/proc/self/exe").read_bytes())
                                 or _sha((prefix / "bin/happyranch-tsnet-sidecar").read_bytes()) != _sha(Path("/proc/self/fd/6").read_bytes())):
                             raise PackageError("managed_lifecycle_incompatible")
+                    reason = "admission_context_after"
                     _require_managed_package_context()
                     return 0
                 if entry:
                     raise PackageError("managed_package_context_required")
+                reason = "body_guard_before"
                 _managed_guard_probe("package", 3, deadline)
+                reason = "body_history"
                 prefix, _unit_sources, _selected_dropin, empty_prior = _package_managed_history(deadline)
                 fresh_token = _MANAGED_FRESH.set(prefix is None or empty_prior)
+                reason = "body_contract"
                 _installed_managed_contract(deadline_ns=deadline, _package=True)
                 if operation == "package-install":
+                    reason = "body_install"
                     result = install_linux_package(Path("/proc/self/fd/4"), Path("/"), system_service=True)
                 else:
+                    reason = "body_uninstall"
                     uninstall_linux_package(Path("/"))
                     result = {"state": "retired"}
+                reason = "body_context_after"
                 _require_managed_package_context()
+                reason = "body_guard_after"
                 _managed_guard_probe("package", 3, deadline)
+                reason = "body_response"
                 print(json.dumps(result, sort_keys=True, separators=(",", ":")))
                 return 0
             finally:
+                # Keep the original failing boundary through successful resets.
+                failed_reason = reason
+                reason = "context_release"
                 if "fresh_token" in locals():
                     _MANAGED_FRESH.reset(fresh_token)
                 _MANAGED_PACKAGE.reset(package_token)
                 _MANAGED_LOCK.reset(lock_token)
                 _MANAGED_DEADLINE.reset(deadline_token)
+                reason = failed_reason
         except (OSError, RuntimeError, ValueError):
+            try:
+                os.write(2, b"managed_private_refusal:" + reason.encode("ascii") + b"\n")
+            except OSError:
+                pass
             return 78
     return 78
