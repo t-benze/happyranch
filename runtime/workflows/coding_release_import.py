@@ -1,6 +1,8 @@
 """Explicit fixed coding release import, without coding allocation or activation."""
 from __future__ import annotations
 
+from runtime.daemon.startup_recovery import coding_admission_validation
+
 import base64
 import hashlib
 import sqlite3
@@ -67,12 +69,14 @@ class ImportReceipt(BaseModel):
 
 class CodingReleaseImportStore:
     def __init__(self, org) -> None:
-        self.org = org
-        self._support = CodingImportSupport(org)
+        self.org, self.db = org, org.db
+        self._startup_state = self._startup_org = self._startup_recovery = None
+        self._support = CodingImportSupport(org, self)
 
     def _principal(self, principal: WorkflowTemplatePrincipal) -> None:
         # Reuse the genuine Founder predicate. Manager/source imports stay
         # unavailable in this Founder-only unit.
+        coding_admission_validation(self)()
         self._support._principal(principal)
 
     def _current(self, conn, capture) -> dict:
@@ -113,23 +117,28 @@ class CodingReleaseImportStore:
         return None
 
     async def get(self, *, principal: WorkflowTemplatePrincipal) -> dict:
+        validate = coding_admission_validation(self)
         self._principal(principal)  # Entitlement before private lookup/decode.
         references = self._support._schema_references()
         capture = self._support._discover()
         async with self.org.workflow_authority._async_writer_lock:
+            validate()
             self._principal(principal)
             async with self.org.db_lock:
+                validate()
                 self._principal(principal)
-                with self._support._read(capture) as (conn, current_capture):
+                with self._support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, current_capture):
                     inventory = self._support._storage(conn, references)
                     history = inventory.imported
                     if history is None:
                         raise CodingReleaseImportError('coding_release_import_not_found')
                     receipt = self._receipt(conn, history, current_capture, replayed=False)
+                    validate()
                     self._principal(principal)
                     return receipt
 
     async def import_release(self, *, principal: WorkflowTemplatePrincipal, raw: bytes) -> dict:
+        validate = coding_admission_validation(self)
         self._principal(principal)
         try:
             parse_import_command(raw)
@@ -147,12 +156,15 @@ class CodingReleaseImportStore:
         capture = self._support._discover()
         authority = self.org.workflow_authority
         async with authority._async_writer_lock:
+            validate()
             self._principal(principal)
             async with self.org.db_lock:
+                validate()
                 self._principal(principal)
-                with self._support._read(capture) as (conn, current_capture):
+                with self._support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, current_capture):
                     inventory = self._support._storage(conn, references)
                     replay = self._replay(conn, raw, current_capture, inventory.imported)
+                    validate()
                     self._principal(principal)
                     if replay is not None:
                         return replay
@@ -162,11 +174,13 @@ class CodingReleaseImportStore:
                     raise CodingReleaseImportError('coding_release_import_authority_unavailable')
                 try:
                     budget = _Budget()  # Fresh writer snapshot; never reuse pre-read inventory.
-                    with authority.admission_writer(capture) as conn:
+                    with authority.admission_writer(capture, validate_admission=coding_admission_validation(self)) as conn:
+                        validate()
                         self._principal(principal)
                         inventory = self._support._storage(conn, references, budget=budget)
                         replay = self._replay(conn, raw, capture, inventory.imported)
                         if replay is not None:
+                            validate()
                             self._principal(principal)
                             return replay
                         now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
@@ -191,6 +205,7 @@ class CodingReleaseImportStore:
                         if history is None:
                             raise CodingReleaseImportError('coding_release_import_history_invalid')
                         receipt = self._receipt(conn, history, capture, replayed=False)
+                        validate()
                         self._principal(principal)
                         authority._validate_admission_uncommitted(conn, capture)
                         return receipt

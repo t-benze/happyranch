@@ -242,14 +242,28 @@ that validation after original root/move/DB/terminal ownership; postcommit regis
 admission checks precede insertion. A closed gate cannot strand an owed original
 no-launch settlement: the committed preparation keeps its journal/SID/reservation
 until native settlement succeeds, and failed settlement retains uncertainty and
-the primary error. Default authority/coding/Pause callers and owed release remain
+the primary error. Unselected default authority/Pause callers and owed release remain
 ungated. The reference-only P4 binder validates all seven captured identities and
 the three producer attachments, preserving its actual Task/coroutine/phase/loop
 owner and ready-only dynamic attachment. Genuine P2/P3/P6 document owners retain
 their existing complete validation; no caller flag grants recovery authority.
 
-These named source dependencies are corrected; the whole feature remains
-incomplete. ROOT13137 retains remaining coding/maintenance/HTTP/UI/readiness/
+Coding source admission separately captures original start/dispatch/roles/import
+owners, their support stores and authority references beside the unchanged task
+and document tuples. Request-created coding settings retain their own operation,
+org/DB/state/epoch/loop references. Ordinary starts, queue preparation, selected
+reads, settings/import/mapping writers, advancement and notifications renew
+startup admission through original awaited and authority/Pause/registry owners.
+Shared complete schema/source-readiness helpers remain available to P0.
+
+Original P2 selected task publication and P4/P6 acknowledged return/redelivery
+keep their actual native owners; no new stage or session exception follows.
+Genuine callback, terminal, cleanup and atomic performed-work return remain owed
+when startup closes. Fresh follow-on work stays pending without rewriting its
+source/carrier/results or calling a closed gate proof of native quiescence.
+
+These named document and coding source stages leave the whole feature
+incomplete. ROOT13137 retains remaining maintenance/HTTP/UI/readiness/
 launcher/counter closure, full independent final-source review and same-head QA.
 Behavior/proof NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED;
 no partial merge or activation.

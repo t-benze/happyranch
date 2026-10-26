@@ -3230,12 +3230,19 @@ def _consume_completion_report(
     decision = orch._parse_next_step(report) if task.task_type == "task" else None
     if decision is not None and decision.action == "workflow_start":
         from runtime.workflows.coding_start import CodingStartError
+        from runtime.daemon.startup_recovery import StartupUnavailable
         coding = getattr(orch, "_workflow_coding_start", None)
         if coding is None:
             logger.warning("coding start unavailable for %s", task_id)
             return
         try:
             coding.consume(RetryClaim.from_task(task, result_row_id=resolved_row_id), decision, report)
+        except StartupUnavailable as exc:
+            # Preserve this already committed original result and native tail.
+            # No result-action spend or graph allocation was admitted; the
+            # explicit held disposition is not callback consumption success.
+            logger.info("coding start pending startup for %s: %s", task_id, exc.code)
+            return "startup_held"
         except CodingStartError as exc:
             logger.warning("coding start held for %s: %s", task_id, exc.code)
         return

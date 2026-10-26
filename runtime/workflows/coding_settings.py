@@ -5,9 +5,13 @@ here. The native reservation and authority lease retain their own boundaries.
 """
 from __future__ import annotations
 
+from runtime.daemon.startup_recovery import (
+    StartupUnavailable, coding_admission_validation,
+)
+
 import sqlite3
-from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext
+from typing import TYPE_CHECKING, Any, Iterator
 
 from runtime.orchestrator.producer_move import native_writer
 from runtime.workflows._coding_import_support import CodingImportSupport
@@ -63,25 +67,48 @@ def resolve_coding_settings(conn: sqlite3.Connection, org_slug: str, *,
 class CodingSettingsStore:
     def __init__(self, org):
         self.org, self.db = org, org.db
-        self.support = CodingImportSupport(org)
+        self._startup_state = self._startup_org = self._startup_recovery = None
+        self.support = CodingImportSupport(org, self)
+        from runtime.daemon.startup_recovery import capture_coding_settings
+        capture_coding_settings(self)
 
     def _principal(self, principal):
+        coding_admission_validation(self)()
         self.support._principal(principal)
 
     @asynccontextmanager
     async def _access(self, principal):
+        validate = coding_admission_validation(self)
         self._principal(principal)
         references = self.support._schema_references()
         async with self.org.workflow_authority._async_writer_lock:
+            validate()
             self._principal(principal)
             async with self.org.teams_lock:
+                validate()
                 self._principal(principal)
                 async with self.org.db_lock:
                     # File/profile discovery follows the last awaited lock and
                     # precedes the short synchronous admission/DB writer.
+                    validate()
                     capture = self.support._discover()
+                    validate()
                     self._principal(principal)
                     yield references, capture
+
+    @contextmanager
+    def _writer(self) -> Iterator[Any]:
+        validate = coding_admission_validation(self)
+        from runtime.orchestrator.producer_move import owner_for
+        admission = owner_for(self.db)
+        # Enter the existing reservation under its original short move/DB
+        # ownership, then release both locks before any asynchronous wait.
+        with ExitStack() as reservation:
+            with admission.move.gate if admission is not None else nullcontext():
+                with self.db._lock:
+                    validate()
+                    writer = reservation.enter_context(native_writer(self.db, publisher='org_settings'))
+            yield writer
 
     def _state(self, conn, references, budget):
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
@@ -106,12 +133,14 @@ class CodingSettingsStore:
         budget = _Budget()
         try:
             async with self._access(principal) as (references, capture):
-                with self.support._read(capture) as (conn, _):
+                with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, _):
                     self._principal(principal)
                     state, _ = self._state(conn, references, budget)
                     result = self._view(state, operation_key=operation_key)
                     self._principal(principal)
                     return result
+        except StartupUnavailable:
+            raise
         except CodingSettingsError:
             raise
         except sqlite3.Error:
@@ -124,13 +153,15 @@ class CodingSettingsStore:
         budget = _Budget()
         try:
             async with self._access(principal) as (references, capture):
-                with self.support._read(capture) as (conn, admitted_capture):
+                with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, admitted_capture):
                     self._principal(principal)
                     _, inventory = self._state(conn, references, budget)
                     from runtime.workflows._coding_settings_options import project_options
                     result = project_options(self, conn, admitted_capture, inventory)
                     self._principal(principal)
                     return result
+        except StartupUnavailable:
+            raise
         except CodingSettingsError:
             raise
         except (sqlite3.Error, ValueError, TypeError, KeyError, RecursionError, OverflowError):
@@ -158,12 +189,12 @@ class CodingSettingsStore:
         account(command, budget)
         writer = None
         try:
-            with native_writer(self.db, publisher='org_settings') as writer:
+            with self._writer() as writer:
                 business_entered = False
                 try:
                     async with self._access(principal) as (references, capture):
                         # Original replay does not need fresh authority or CAS.
-                        with self.support._read(capture) as (conn, _):
+                        with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, _):
                             state, _ = self._state(conn, references, budget)
                             replay = self._replay(state, command, raw)
                             if replay is not None:
@@ -176,7 +207,7 @@ class CodingSettingsStore:
                         validation_error = None
                         try:
                             business_entered = True
-                            with self.org.workflow_authority.admission_writer(capture) as conn:
+                            with self.org.workflow_authority.admission_writer(capture, validate_admission=coding_admission_validation(self)) as conn:
                                 try:
                                     self._principal(principal)
                                     state, inventory = self._state(conn, references, budget)
@@ -211,6 +242,8 @@ class CodingSettingsStore:
                     if not business_entered and isinstance(exc, (ValueError, TypeError, KeyError)):
                         writer.no_effect_error = exc
                     raise
+        except StartupUnavailable:
+            raise
         except CodingSettingsError as exc:
             if getattr(exc, '__notes__', None):
                 raise CodingSettingsError('coding_settings_publication_uncertain', operation_key=key) from None

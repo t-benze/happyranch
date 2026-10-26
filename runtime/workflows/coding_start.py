@@ -1,6 +1,8 @@
 """Genuine result-owned K3a bootstrap. No pre-callback allocation or launcher."""
 from __future__ import annotations
 
+from runtime.daemon.startup_recovery import coding_admission_validation
+
 import sqlite3
 from typing import Any
 from dataclasses import asdict
@@ -73,7 +75,8 @@ def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> No
 class CodingStartStore:
     def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
-        self.support = CodingImportSupport(org)
+        self._startup_state = self._startup_org = self._startup_recovery = None
+        self.support = CodingImportSupport(org, self)
 
     def _native(self, conn: sqlite3.Connection, claim: RetryClaim, invocation: Any, *,
                 budget: _Budget | None = None) -> tuple:
@@ -140,6 +143,7 @@ class CodingStartStore:
         return source, result, decision, native
 
     async def get(self, *, principal: Any, instance_id: str) -> dict:
+        coding_admission_validation(self)()
         # Reuse current-manager native session transport and lock ownership.
         # Select the source owner before private run/context decoding.
         from runtime.workflows.coding_roles import CodingRoleError
@@ -165,6 +169,7 @@ class CodingStartStore:
                 return self.project(instance_id, entry)
 
     async def get_final(self, *, principal: Any, instance_id: str) -> dict:
+        coding_admission_validation(self)()
         return await self.org.workflow_coding_dispatch.selected_final(principal=principal, instance=instance_id)
 
     def guard_cancellation(self, task_id: str, *, cascade: bool, rationale: str,
@@ -188,10 +193,13 @@ class CodingStartStore:
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
+        validate = coding_admission_validation(self)
         with self.db._lock:
+            validate()
             require_start_ready(self.db._conn, self.org, decision.workflow)
         # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
+        validate()
         coroutine = self._start(claim, decision, report, owner)
         return self.org.workflow_drafts._on_loop(coroutine)
 
@@ -202,10 +210,11 @@ class CodingStartStore:
         _check(load_org_config(self.org.orchestrator._paths).max_revise_rounds == revise_limit)
 
     async def _start(self, claim: RetryClaim, decision: NextStep, report: CompletionReport, invocation: Any) -> str:
+        validate = coding_admission_validation(self)
         references = self.support._schema_references()
         authority = self.org.workflow_authority
         # Discovery/file I/O occurs before the synchronous bootstrap interval.
-        capture = self.support._discover()
+        capture = self.support._discover(validate_admission=validate)
         if capture is None:
             raise CodingStartError('coding_start_authority_unavailable')
         revise_limit = load_org_config(self.org.orchestrator._paths).max_revise_rounds
@@ -213,21 +222,27 @@ class CodingStartStore:
         checkpoints = []
 
         def checkpoint() -> None:
+            validate()
             with self.db._lock:
+                validate()
                 task, _, _, native = self._native(self.db._conn, claim, invocation)
                 checkpoints.append(dict(source=encode_row(task), ancestors=native['ancestors']))
 
         checkpoint()
         async with authority._async_writer_lock:
+            validate()
             self._policy(claim, revise_limit)
             checkpoint()
             async with self.org.teams_lock:
+                validate()
                 self._policy(claim, revise_limit)
                 checkpoint()
                 async with self.org.db_lock:
+                    validate()
                     self._policy(claim, revise_limit)
                     sessions = tuple(self.org.sessions.iter_active())
-                    with authority.admission_writer(capture) as conn:
+                    validate()
+                    with authority.admission_writer(capture, validate_admission=validate) as conn:
                         return self.start_in_writer(conn, claim=claim, decision=decision, report=report, invocation=invocation,
                             capture=capture, references=references, revise_limit=revise_limit, active_sessions=sessions,
                             checkpoints=checkpoints)
@@ -240,6 +255,7 @@ class CodingStartStore:
         No self-committing task/delegate helper, I/O, await or queue publication.
         Any refusal/error unwinds admission_writer and preserves the callback.
         """
+        coding_admission_validation(self)()
         _check(conn is self.db._conn and conn.in_transaction)
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         inventory = self.support._storage(conn, references)
@@ -388,6 +404,7 @@ class CodingStartStore:
         return instance
 
     def _claim_result_action_uncommitted(self, claim: RetryClaim) -> Any:
+        coding_admission_validation(self)()
         # Reuse the native owner's existing uncommitted spend/claim/ack seams.
         # Their exact evidence/CAS/limits stay unchanged; all writes now share
         # this bootstrap transaction instead of a prior self-committing call.

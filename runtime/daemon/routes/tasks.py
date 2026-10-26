@@ -1480,6 +1480,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                     if (ownership.kind == 'legacy' and decision_payload is not None
                             and decision_payload.get('action') == 'workflow_start'):
                         from runtime.workflows.coding_start import CodingStartError, require_start_ready
+                        from runtime.daemon.startup_recovery import coding_admission_validation
+                        coding_admission_validation(org.workflow_coding_start)()
                         try:
                             require_start_ready(org.db._conn, org, decision_payload['workflow'])
                         except CodingStartError as exc:

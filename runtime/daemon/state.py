@@ -135,6 +135,9 @@ class DaemonState:
         from runtime.daemon.startup_recovery import _document_references
         for owner in _document_references(org)[:5]:
             _bind_task_admission(owner, self, org)
+        from runtime.daemon.startup_recovery import _coding_references
+        for owner in _coding_references(org)[:4]:
+            _bind_task_admission(owner, self, org)
         org._startup_reads = self._startup_reads
         from runtime.daemon.jobs_runner import bind_jobs_startup_references
         bind_jobs_startup_references(self, org)

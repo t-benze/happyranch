@@ -259,11 +259,17 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
         return False
     if ownership.kind in ('coding_attempt', 'coding_source_waiting', 'coding_carrier'):
         coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
-        if coding is not None:
-            from runtime.workflows.coding_progression import reconcile_run
-            reconcile_run(coding, ownership.intent_id, queue)
-            if ownership.kind == 'coding_attempt':
-                coding.notify_queued(task_id, queue)
+        from runtime.daemon.startup_recovery import StartupUnavailable, coding_admission_validation
+        if (coding is None or coding.db is not db or coding.org.slug != slug
+                or coding.org.orchestrator is not orchestrator):
+            raise StartupUnavailable('startup_coding_attachment_changed')
+        coding_admission_validation(coding)()
+        if queue is not coding._startup_state.queue:
+            raise StartupUnavailable('startup_coding_queue_changed')
+        from runtime.workflows.coding_progression import reconcile_run
+        reconcile_run(coding, ownership.intent_id, queue)
+        if ownership.kind == 'coding_attempt':
+            coding.notify_queued(task_id, queue)
     elif ownership.kind in ('draft', 'f5') and ownership.state == "queued":
         # This is discovery of the committed intent, not reinsertion or host
         # launch. All ownership effects occur at the dispatcher claim seam.
@@ -296,8 +302,11 @@ def rediscover_returned(coding: Any) -> None:
     from runtime.workflows.coding_progression import notify_returned
     from runtime.daemon.startup_publication import current_publication
     publication = current_publication(coding.org.orchestrator)
+    from runtime.daemon.startup_recovery import coding_admission_validation
+    validate = coding_admission_validation(coding, publication=publication)
     db = coding.db
     with db.coherent_read_view() as conn:
+        validate()
         if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
             if publication is not None:
                 publication.count('not_applicable')
@@ -312,6 +321,7 @@ def rediscover_returned(coding: Any) -> None:
         if not returned and publication is not None:
             publication.count('not_applicable')
     for instance in returned:
+        validate()
         result = notify_returned(coding, instance)
         if publication is not None and type(result) is not bool:
             raise RuntimeError('startup_returned_notification_outcome_unknown')

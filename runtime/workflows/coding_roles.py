@@ -5,6 +5,8 @@ carry identity only; agents use their existing authorized repository tools.
 """
 from __future__ import annotations
 
+from runtime.daemon.startup_recovery import coding_admission_validation
+
 import base64
 import json
 import sqlite3
@@ -42,9 +44,11 @@ class CodingRoleError(ValueError):
 class CodingRoleStore:
     def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
-        self.support = CodingImportSupport(org)
+        self._startup_state = self._startup_org = self._startup_recovery = None
+        self.support = CodingImportSupport(org, self)
 
     def _principal(self, principal: WorkflowTemplatePrincipal) -> None:
+        coding_admission_validation(self)()
         principal.revalidate()
         if (principal.org_slug != self.org.slug or principal.principal_kind != 'agent'
                 or principal.proof_kind != 'task_session' or principal.principal_id == 'founder'
@@ -83,18 +87,23 @@ class CodingRoleStore:
         their awaited bootstrap/compensation retain their authority-first owner.
         Neither direct callers nor routes may enter with teams/authority held.
         """
+        validate = coding_admission_validation(self)
         self._principal(principal)
         references = self.support._schema_references()
         async with self.org.workflow_authority._async_writer_lock:
+            validate()
             self._principal(principal)
             # Native checks keep DB -> binding ordering even at the first
             # checkpoint. Release DB before waiting for teams; existing team
             # writers may need it while finishing their authority interval.
             async with self.org.db_lock:
+                validate()
                 self._checkpoint(principal, references)
             async with self.org.teams_lock:
+                validate()
                 self._principal(principal)
                 async with self.org.db_lock:
+                    validate()
                     capture, revise_limit = self._checkpoint(principal, references)
                     yield references, capture, revise_limit
 
@@ -112,7 +121,7 @@ class CodingRoleStore:
         # Never hold the native threading binding lease across an await.
         with self.org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
             self._principal(principal)
-            with self.support._read(capture) as (conn, current):
+            with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, current):
                 self._structure(conn, references)
                 native_owner(self.org, principal, conn, budget=budget)  # Before private decoding.
                 yield conn, current
@@ -266,7 +275,7 @@ class CodingRoleStore:
             with self.org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
                 try:
                     budget = _Budget()  # New snapshot; source/target share this allowance.
-                    with authority.admission_writer(capture) as conn:
+                    with authority.admission_writer(capture, validate_admission=coding_admission_validation(self)) as conn:
                         self._principal(principal)
                         self._structure(conn, references)
                         native_owner(self.org, principal, conn, budget=budget)

@@ -193,6 +193,15 @@ class TaskInvocation:
 
     def prepare(self, *, validate_admission: Callable[[], None] | None = None) -> None:
         if self.owner == "coding":
+            from runtime.daemon.startup_recovery import coding_admission_validation
+            coding_validate = coding_admission_validation(self.orch._workflow_coding_dispatch)
+            previous_validation = validate_admission
+
+            def validate_admission() -> None:
+                coding_validate()
+                if previous_validation is not None:
+                    previous_validation()
+
             self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
         store, move = self.store, self.orch._team_moves
         committed = False
@@ -405,6 +414,16 @@ class TaskInvocation:
     def _commit_local(self, ctx: Any = None, *, validate_admission: Callable[[], None] | None = None) -> bool:
         """One writer commits with the terminal lock last and still owned."""
         from contextlib import nullcontext
+        if self.owner == "coding":
+            from runtime.daemon.startup_recovery import coding_admission_validation
+            coding_validate = coding_admission_validation(self.orch._workflow_coding_dispatch)
+            previous_validation = validate_admission
+
+            def validate_admission() -> None:
+                coding_validate()
+                if previous_validation is not None:
+                    previous_validation()
+
         sessions = self.orch._sessions
         lease = sessions.binding_lease(self.task.id, self.agent) if sessions else nullcontext()
         won = False

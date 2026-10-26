@@ -1,6 +1,10 @@
 """Coding stages through the native queue, host, callback and settlement owners."""
 from __future__ import annotations
 
+from runtime.daemon.startup_recovery import (
+    StartupUnavailable, coding_admission_validation, coding_settlement_validation,
+)
+
 import asyncio
 import base64
 import json
@@ -9,7 +13,7 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Iterator, TYPE_CHECKING
+from typing import Any, Callable, Iterator, TYPE_CHECKING
 
 from runtime.platform.session_backend import CleanupStatus, TerminalReason
 from runtime.workflows.coding_bootstrap import encode_row, identity
@@ -66,10 +70,16 @@ def terminal_observation(outcome: Any) -> dict | None:
 class CodingDispatcher:
     def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
+        self._startup_state = self._startup_org = self._startup_recovery = None
         self._queue_live: dict[str, dict] = {}
         self.producer = 'coding-dispatcher:' + org.slug
 
     def _on_loop(self, coroutine: Any) -> Any:
+        try:
+            coding_admission_validation(self)()
+        except BaseException:
+            coroutine.close()
+            raise
         loop = self.org.orchestrator._main_loop
         if loop is None or not loop.is_running():
             coroutine.close()
@@ -110,12 +120,19 @@ class CodingDispatcher:
                 raise
 
     def require_task_ready(self, task_id: str) -> None:
+        validate = coding_admission_validation(self)
         require_ready(self.org)
         with self.db._lock:
+            validate()
             entry = self._entry(self.db._conn, task_id)
             _check(entry['command']['format'] == 'workflow-coding-start@2')
 
     def queue_admission_allowed(self, task_id: str) -> bool:
+        validate = coding_admission_validation(self)
+        return self._queue_eligible(task_id, validate)
+
+    def _queue_eligible(self, task_id: str, validate: Callable[[], None]) -> bool:
+        validate()
         # This check precedes generation, SID, Pause preparation, counter and
         # host effects. It has no caller/config readiness Boolean.
         try:
@@ -123,6 +140,7 @@ class CodingDispatcher:
         except CodingStartError:
             return False
         with self.db._lock:
+            validate()
             entry = self._entry(self.db._conn, task_id)
             return (entry['command']['format'] == 'workflow-coding-start@2'
                     and task_id == entry['attempt']['task_id'] and entry['attempt']['state'] == 'queued'
@@ -134,15 +152,19 @@ class CodingDispatcher:
     def queue_started(self, task_id: str) -> dict:
         # The queue calls this before scheduling its first heartbeat. A coding
         # worker owns the actual native preparation, not a generated stand-in.
+        validate = coding_admission_validation(self)
         from runtime.workflows.recovery import classify_task
         from runtime.orchestrator.task_pause import TaskInvocation
         with self.db._lock:
+            validate()
             coding = classify_task(self.db, task_id, org_slug=self.org.slug).kind == 'coding_attempt'
         if coding:
             require_ready(self.org)  # Before creating a SID or preparing any owner.
             with self.db._lock:
+                validate()
                 entry = self._entry(self.db._conn, task_id)
                 task = self.db.get_task(task_id)
+            validate()
             invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
                 self.org.orchestrator._build_session_id(), owner='coding')
             invocation.workflow_dispatcher = self
@@ -152,14 +174,20 @@ class CodingDispatcher:
         else:
             owner = dict(invocation=None, binding=None)
         with self.db._lock:
+            validate()
             self._queue_live.setdefault(task_id, {})[id(owner)] = owner
         if coding:
             try:
-                invocation.prepare()
+                invocation.prepare(validate_admission=validate)
             except BaseException as exc:
                 owner['invocation'] = None
                 self.queue_finished(task_id, owner)
-                if invocation.move_reservation is not None:
+                reservation = invocation.move_reservation
+                move = self.org.orchestrator._team_moves
+                with self.db._lock:
+                    retained = (reservation is not None
+                                and move._reservations.get(reservation.owner_id) is reservation)
+                if retained:
                     # A failed prepare may already own a move reservation even
                     # when the journal COMMIT or live publication failed.
                     from runtime.orchestrator.task_pause import release_live
@@ -188,7 +216,10 @@ class CodingDispatcher:
                 release_live(invocation, failed=True)
 
     def bind_queue_invocation(self, invocation: Any) -> None:
+        validate = coding_admission_validation(self) if invocation.owner == 'coding' else None
         with self.db._lock:
+            if validate is not None:
+                validate()
             owners = self._queue_live.get(invocation.task.id, {})
             candidates = [o for o in owners.values() if o['invocation'] is invocation]
             if not candidates and len(owners) == 1:
@@ -238,29 +269,42 @@ class CodingDispatcher:
     def notify_queued(self, task_id: str, queue: Any, *, recovery: Any = None,
                       startup_owner: Any = None) -> RecoveryOutcome | None:
         if recovery is not None:
+            validate = coding_admission_validation(self, recovery=recovery, sweep_owner=startup_owner)
             from runtime.daemon.startup_recovery import RecoveryOutcome
             recovery.require_workflow_owner(self.org, sweep_owner=startup_owner)
             if queue is not recovery.state.queue or self.db is not self.org.db:
                 raise RuntimeError('startup_coding_queue_owner_unavailable')
-            if not self.queue_admission_allowed(task_id):
+            if not self._queue_eligible(task_id, validate):
                 return RecoveryOutcome('local_hold', 'startup_coding_pointer_ineligible')
+            validate()
             return recovery.publish_workflow_task(self.org, task_id, sweep_owner=startup_owner)
         from runtime.daemon.startup_publication import current_publication
         publication = current_publication(self.org.orchestrator)
         if publication is not None:
+            validate = coding_admission_validation(self, publication=publication)
             from runtime.daemon.startup_recovery import RecoveryOutcome
             from runtime.orchestrator.run_step import _publish_redelivery_task
             publication.gate.require_redelivery_owner(self.org)
             if queue is not publication.gate.state.queue:
                 raise RuntimeError('startup_coding_queue_changed')
-            if not self.queue_admission_allowed(task_id):
+            if not self._queue_eligible(task_id, validate):
                 publication.count('held')
                 return RecoveryOutcome('local_hold', 'startup_coding_pointer_ineligible')
+            validate()
             return _publish_redelivery_task(self.org.orchestrator, task_id, generation_aware=False)
-        if self.queue_admission_allowed(task_id):
-            queue.enqueue_if_absent(self.org.slug, task_id)
+        validate = coding_admission_validation(self)
+        if queue is not self._startup_state.queue:
+            raise StartupUnavailable('startup_coding_queue_changed')
+        if self._queue_eligible(task_id, validate):
+            validate()
+            try:
+                queue.enqueue_if_absent(self.org.slug, task_id)
+            except StartupUnavailable as exc:
+                exc.detail['committed_task_ids'] = [task_id]
+                raise
 
     def dispatch(self, task_id: str) -> None:
+        validate = coding_admission_validation(self)
         require_ready(self.org)  # Direct owned routing cannot bypass native queue denial.
         from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint
         with self.db._lock:
@@ -274,6 +318,7 @@ class CodingDispatcher:
             invocation = owners[0]['invocation']
             _check(invocation is invocation.store._live.get(invocation.identity)
                    and invocation.task.id == task_id and fingerprint(invocation.task) == fingerprint(task))
+        validate()
         token = _invocation.set(invocation)
         failed = False
         try:
@@ -440,45 +485,59 @@ class CodingDispatcher:
 
     @asynccontextmanager
     async def callback_admission(self, task_id: str):
+        # Original running callback admission is owed work. The existing
+        # current authority/native principal/INTEGER/result predicates remain;
+        # it cannot allocate a successor and does not use fresh readiness.
+        validate = coding_settlement_validation(self)
         with self.db._lock:
+            validate()
             entry = self._entry(self.db._conn, task_id)
         if entry['native']['callback'] is not None:
             # Still-tracked exact transport retries are read-only too. The
             # synchronized DB writer compares all bytes before returning.
             async with self.org.db_lock:
+                validate()
                 yield None
             return
         require_ready(self.org)
         capture = self.org.workflow_authority.capture_admission()
         self._policies(entry)
         async with self.org.workflow_authority._async_writer_lock:
+            validate()
             self._policies(entry)
             async with self.org.teams_lock:
+                validate()
                 self._policies(entry)
                 async with self.org.db_lock:
+                    validate()
                     self._policies(entry)
-                    with self.org.workflow_authority._admission_ownership(capture):
+                    with self.org.workflow_authority._admission_ownership(capture, validate_admission=validate):
                         # No awaits are permitted in the route's yielded block.
                         yield capture
 
     async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
+        validate = coding_admission_validation(self)
         require_ready(self.org)  # Alternate native TaskInvocation.commit remains closed.
         with self.db._lock:
             entry = self._entry(self.db._conn, invocation.task.id)
         self._policies(entry)
         capture = self.org.workflow_authority.capture_admission()
         async with self.org.workflow_authority._async_writer_lock:
+            validate()
             self._policies(entry)
             async with self.org.teams_lock:
+                validate()
                 self._policies(entry)
                 async with self.org.db_lock:
+                    validate()
                     self._policies(entry)
                     sessions = tuple(self.org.sessions.iter_active())
-                    with self.org.workflow_authority._admission_ownership(capture):
+                    with self.org.workflow_authority._admission_ownership(capture, validate_admission=validate):
                         invocation.coding_capture, invocation.coding_sessions = capture, sessions
-                        return invocation._commit_local(ctx)
+                        return invocation._commit_local(ctx, validate_admission=validate)
 
     def _claim_launch_uncommitted(self, invocation: Any) -> None:
+        coding_admission_validation(self)()
         require_ready(self.org)
         conn = self.db._conn
         entry = self._entry(conn, invocation.task.id)
@@ -609,6 +668,7 @@ class CodingDispatcher:
             (after['run']['cas_version'], after['run']['current_revision'], after['run']['state'], event_id, instance))
 
     def _session_bound_uncommitted(self, invocation: Any) -> None:
+        coding_admission_validation(self)()
         conn = self.db._conn
         entry = invocation.coding_before
         audits = list(rows(conn, 'audit_log', entry['_budget'], where="task_id=? AND action='session_start'", args=(invocation.task.id,)))
@@ -694,6 +754,7 @@ class CodingDispatcher:
     def callback_uncommitted(self, *, task_id: str, agent: str, session_id: str, payload: dict, capture: Any,
                              budget: _Budget | None = None) -> bool:
         from runtime.infrastructure.database import completion_result_payload_matches
+        coding_settlement_validation(self)()
         conn = self.db._conn
         entry = self._entry(conn, task_id, budget=budget)
         attempt = entry['attempt']
@@ -887,7 +948,13 @@ class CodingDispatcher:
         # current-authority allocation, with no await or enqueue in that writer.
         from runtime.workflows.coding_progression import reconcile_run
         if entry['native'].get('cancellation') is None:
-            reconcile_run(self, entry['run']['instance_id'], self.org.orchestrator._queue)
+            try:
+                reconcile_run(self, entry['run']['instance_id'], self.org.orchestrator._queue)
+            except StartupUnavailable:
+                # The original outer/return transaction has committed. Holding
+                # fresh progression is not native cleanup failure or an ack.
+                import logging
+                logging.getLogger(__name__).info('coding follow-on held by startup: %s', entry['run']['instance_id'])
 
     def _selected_final_owner(self, conn: Any, principal: Any, instance: str) -> Any:
         """Own original running coding leaf BEFORE any private history decoding.
@@ -943,6 +1010,7 @@ class CodingDispatcher:
         from runtime.workflows.coding_bootstrap import effective_bindings
         from runtime.workflows.coding_progression import final_selection
         org = self.org
+        validate = coding_admission_validation(self)
         principal.revalidate()
         policy = prompt_loader.load_agent(org.orchestrator._paths, principal.principal_id)
         _check(policy is not None and policy.role == 'manager' and policy.executor and policy.team == principal.team_slug)
@@ -950,12 +1018,15 @@ class CodingDispatcher:
         references = support._schema_references()
         capture = org.workflow_authority.capture_admission()
         async with org.workflow_authority._async_writer_lock:
+            validate()
             principal.revalidate()
             async with org.teams_lock:
+                validate()
                 principal.revalidate()
                 async with org.db_lock:
+                    validate()
                     with org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
-                        with support._read(capture) as (conn, current):
+                        with support._read(capture, validate_admission=validate) as (conn, current):
                             self._selected_final_owner(conn, principal, instance)
                             _check(current is not None)
                             org.workflow_authority._validate_admission_uncommitted(conn, current)

@@ -197,6 +197,7 @@ class StartupRecovery:
         if self.state.queue is not queue:
             raise RuntimeError("startup_phase_queue_changed")
         for index, (org, orch, thread, dream, wake, schedule) in enumerate(originals):
+            _coding_references(org)
             bound = current is not None and index < current.orgs_bound
             if (self.state.orgs.get(org.slug) is not org or org.orchestrator is not orch
                     or orch._db is not org.db or orch._slug != org.slug or orch._queue is not queue
@@ -889,6 +890,114 @@ def require_ready(owner: Any) -> None:
     except AttributeError as exc:
         raise StartupUnavailable("startup_attachment_changed") from exc
     gate.require_ready()
+
+
+def _coding_references(org: Any) -> tuple:
+    """Separate original coding owners; never change the task/document tuples."""
+    try:
+        refs = org._startup_coding_refs
+        current = (org.workflow_coding_start, org.workflow_coding_dispatch,
+                   org.workflow_coding_roles, org.workflow_coding_release_import,
+                   org.workflow_authority, org.workflow_activations,
+                   org.workflow_coding_start.support, org.workflow_coding_roles.support,
+                   org.workflow_coding_release_import._support)
+        valid = (isinstance(refs, tuple) and len(refs) == len(current)
+                 and all(a is b for a, b in zip(refs, current, strict=True))
+                 and all(owner.org is org and owner.db is org.db for owner in refs[:4])
+                 and org.orchestrator._workflow_coding_start is refs[0]
+                 and org.orchestrator._workflow_coding_dispatch is refs[1]
+                 and org.db._workflow_coding_start is refs[0]
+                 and org.db._workflow_coding_dispatch is refs[1]
+                 and refs[4]._db is org.db and refs[4]._org_slug == org.slug
+                 and refs[5].org is org and refs[5].db is org.db
+                 and all(support.org is org and support.db is org.db and support.owner is owner
+                         for support, owner in zip(refs[6:], (refs[0], refs[2], refs[3]), strict=True)))
+    except (AttributeError, TypeError) as exc:
+        raise StartupUnavailable("startup_coding_attachment_changed") from exc
+    if not valid:
+        raise StartupUnavailable("startup_coding_attachment_changed")
+    return refs
+
+
+def capture_coding_settings(owner: Any) -> None:
+    """Capture this actual request-created operation, without a singleton."""
+    org = owner.org
+    owner._startup_state, owner._startup_org = org._startup_state, org
+    owner._startup_recovery = org._startup_recovery
+    owner._startup_coding_operation = owner
+    owner._startup_coding_refs = org._startup_coding_refs
+    owner._startup_coding_epoch = None if org._startup_recovery is None else org._startup_recovery.epoch
+    owner._startup_coding_loop = None if org._startup_recovery is None else org._startup_recovery._loop
+
+
+def require_coding_attachment(owner: Any) -> StartupRecovery:
+    """Identity only: authentic native callback/settlement remains owed at stop."""
+    try:
+        org, state, gate = owner.org, owner._startup_state, owner._startup_recovery
+        refs = _coding_references(org)
+        selected = any(owner is original for original in refs[:4])
+        if not selected:
+            selected = (owner._startup_coding_operation is owner
+                        and owner._startup_coding_refs is refs and owner.db is org.db
+                        and owner._startup_coding_epoch == gate.epoch
+                        and owner._startup_coding_loop is gate._loop
+                        and owner.support.owner is owner and owner.support.org is org
+                        and owner.support.db is org.db)
+        valid = (selected and owner._startup_org is org and org._startup_state is state
+                 and isinstance(gate, StartupRecovery) and org._startup_recovery is gate
+                 and gate.state is state
+                 and all(original._startup_state is state and original._startup_org is org
+                         and original._startup_recovery is gate for original in refs[:4]))
+    except AttributeError as exc:
+        raise StartupUnavailable("startup_coding_attachment_changed") from exc
+    if not valid:
+        raise StartupUnavailable("startup_coding_attachment_changed")
+    gate.require_attachment(org)
+    return gate
+
+
+def coding_admission_validation(owner: Any, *, recovery: Any = None,
+                                sweep_owner: Any = None, publication: Any = None) -> Callable[[], None]:
+    """Renew the SAME ordinary or original P2/P4/P6 publication selection."""
+    validate_identity = coding_settlement_validation(owner)
+    gate, org = owner._startup_recovery, owner.org
+
+    def validate() -> None:
+        validate_identity()
+        if recovery is not None:
+            if recovery is not gate or publication is not None:
+                raise StartupUnavailable("startup_coding_owner_changed")
+            gate.require_workflow_owner(org, sweep_owner=sweep_owner)
+        elif publication is not None:
+            from runtime.daemon.startup_publication import current_publication
+            if (sweep_owner is not None or publication.gate is not gate
+                    or current_publication(org.orchestrator) is not publication):
+                raise StartupUnavailable("startup_coding_owner_changed")
+            publication.require_producer(org.orchestrator)
+        else:
+            if sweep_owner is not None:
+                raise StartupUnavailable("startup_coding_owner_changed")
+            gate.require_ready()
+
+    validate()
+    return validate
+
+
+def coding_settlement_validation(owner: Any) -> Callable[[], None]:
+    """Reference capture only; callers still prove original native ownership."""
+    gate = require_coding_attachment(owner)
+    org, db, state = owner.org, owner.db, owner._startup_state
+    refs, tasks, epoch, loop = _coding_references(org), org._startup_admission_refs, gate.epoch, gate._loop
+
+    def validate() -> None:
+        if (owner.org is not org or owner.db is not db or owner._startup_state is not state
+                or owner._startup_recovery is not gate or gate.epoch != epoch
+                or org._startup_coding_refs is not refs or org._startup_admission_refs is not tasks
+                or gate._loop is not loop):
+            raise StartupUnavailable("startup_coding_attachment_changed")
+        require_coding_attachment(owner)
+
+    return validate
 
 
 def _document_references(org: Any) -> tuple:
