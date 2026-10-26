@@ -85,6 +85,8 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
         org._cleanup_diagnostic_unavailable = "runtime_attachment_unsupported"
     state.broken_orgs = new_state.broken_orgs
     state.profile_coordinator = new_state.profile_coordinator
+    from runtime.daemon.direct_connect_projection_sweep import bind_startup_references
+    bind_startup_references(state)
     # No live owner can cross the switch (checked above). Keep diagnostic
     # trackers/errors scoped to this runtime rather than the reused org slug.
     from runtime.daemon.team_move_service import TeamMoveService

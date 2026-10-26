@@ -1058,8 +1058,17 @@ def restore_pause_preparations(orch: Any) -> None:
             store.save_journal_uncommitted(row)
 
 
-def _discover_pause_roots(org: Any, queue: Any):
+def _discover_pause_roots(org: Any, queue: Any, *, validate_admission=None):
     """Bounded durable rediscovery through the existing owner publishers."""
+    from runtime.orchestrator.run_step import _task_followon_validation
+    selected = _task_followon_validation(org.orchestrator)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+    if queue is not org.orchestrator._queue:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        raise StartupUnavailable("startup_attachment_changed")
     store = getattr(org.db, "_task_pause_store", None)
     if store is None or queue is None:
         return
@@ -1071,16 +1080,20 @@ def _discover_pause_roots(org: Any, queue: Any):
     # Release intent is acknowledged only for a fully inspected actual root.
     cursor = getattr(store, "_discovery_cursor", "")
     with org.db._lock:
+        validate()
         roots = org.db._conn.execute("SELECT root_task_id,generation FROM task_pause_controls "
                                     "WHERE root_task_id>? ORDER BY root_task_id LIMIT 32", (cursor,)).fetchall()
     if not roots:
+        validate()
         store._discovery_cursor = ""
         return
     for root_id, generation in roots:
+        validate()
         if publication is not None:
             publication.gate.require_redelivery_owner(org)
         held_before = publication.snapshot()["held"] if publication is not None else 0
         with org.db.coherent_read_view() as conn:
+            validate()
             root = store.root_uncommitted(root_id)
             row = store.row_uncommitted(root_id)
             held = row["held"] and root["status"] not in {"completed", "failed", "cancelled", "superseded"}
@@ -1092,8 +1105,10 @@ def _discover_pause_roots(org: Any, queue: Any):
         # A pending job rejected without ever committing launch is closed by
         # that actual row. A terminal record for possible/unknown launch is
         # not a quiescence receipt and is deliberately retained.
-        with store.writer(root_id) as (_, current):
+        with store.writer(root_id, validate_admission=validate) as (_, current):
+            validate()
             _observe_settled_producers(store, current)
+            validate()
             retained = []
             root_unknown = False
             for entry in current["journal"]["entries"]:
@@ -1108,6 +1123,7 @@ def _discover_pause_roots(org: Any, queue: Any):
                     retained.append(entry)
                     root_unknown |= entry["phase"] == "unknown" or bool(entry["context"].get("execution_unknown"))
             current["journal"]["entries"] = retained
+            validate()
             store.save_journal_uncommitted(current)
             entries = list(retained)
         if not complete:
@@ -1135,6 +1151,7 @@ def _discover_pause_roots(org: Any, queue: Any):
                             if publication is not None:
                                 raise  # Unproved original v2 owner is not delivery.
                             continue
+                    validate()
                     _publish_pause_task(org, queue, entry["task_id"], metadata=dict(entry["owner_identity"]),
                                         generation_aware=False)
         else:
@@ -1142,6 +1159,7 @@ def _discover_pause_roots(org: Any, queue: Any):
                         and not e["context"].get("producer_settled")
                         and e["phase"] in {"retry_deferred", "recovery_deferred"}}
             for (task_id,) in task_rows:
+                validate()
                 task = org.db.get_task(task_id)
                 # Retain unknown evidence, but terminal owners cannot launch
                 # or replay consumed callbacks through the deferred branch.
@@ -1189,6 +1207,7 @@ def _discover_pause_roots(org: Any, queue: Any):
                             enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
                     elif publication is not None:
                         raise RuntimeError("startup_pause_task_ownership_unavailable")
+        validate()
         if publication is not None and root_unknown:
             publication.count("held")  # Authenticated retained root-local uncertainty.
         task_hold = publication is not None and publication.snapshot()["held"] > held_before
@@ -1224,9 +1243,16 @@ def _pending_pause_jobs(org, entries):
                 yield job_id, entry
 
 
-def _ack_pause_release(org, root_id, generation):
+def _ack_pause_release(org, root_id, generation, *, validate_admission=None):
+    from runtime.orchestrator.run_step import _task_followon_validation
+    selected = _task_followon_validation(org.orchestrator)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
     store = org.db._task_pause_store
-    with store.writer(root_id) as (_, current):
+    with store.writer(root_id, validate_admission=validate) as (_, current):
+        validate()
         if current["generation"] == generation and not current["held"]:
             org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
             return True
@@ -1235,18 +1261,25 @@ def _ack_pause_release(org, root_id, generation):
 
 async def discover_pause_work(org: Any, queue: Any) -> None:
     """Original ordinary per-root publication -> job attempt -> release ack."""
+    from runtime.orchestrator.run_step import _task_followon_validation
+    validate = _task_followon_validation(org.orchestrator)
+    if queue is not org.orchestrator._queue:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        raise StartupUnavailable("startup_attachment_changed")
     if getattr(org.db, "_task_pause_store", None) is None or queue is None:
         return
     from runtime.daemon.routes.jobs import _run_job_core
     from runtime.daemon.jobs_runner import require_job_admission
     from runtime.daemon.startup_recovery import StartupUnavailable
-    for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue):
+    for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue, validate_admission=validate):
+        validate()
         if not complete:
             continue
         if not held:
             for job_id, entry in _pending_pause_jobs(org, entries):
                 try:
                     require_job_admission(org)
+                    validate()
                     await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
                         trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
                 except StartupUnavailable:
@@ -1257,7 +1290,8 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                     import logging
                     logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
             require_job_admission(org)
-            _ack_pause_release(org, root_id, generation)
+            _ack_pause_release(org, root_id, generation, validate_admission=validate)
+        validate()
         org.db._task_pause_store._discovery_cursor = root_id
 
 

@@ -127,8 +127,10 @@ def report_task_scratch(*, db: Database, sessions: SessionTracker | None, task_i
                         proc_root: Path | None = None,
                         daemon_started_monotonic: float | None = None,
                         coverage: object | None = None,
-                        deadline_ns: int | None = None) -> TaskScratchReport:
+                        deadline_ns: int | None = None, validate_admission=None) -> TaskScratchReport:
     """Append a fresh observation; supplied uncorrelated coverage is recollected."""
+    if validate_admission is not None:
+        validate_admission()
     start = time.time_ns()
     deadline = min(deadline_ns if deadline_ns is not None else time.monotonic_ns() + _SCAN_NS,
                    time.monotonic_ns() + _SCAN_NS)
@@ -203,12 +205,24 @@ def report_task_scratch(*, db: Database, sessions: SessionTracker | None, task_i
         else:
             decision, reasons = "would_reclaim", ("report_only_noop",)
     except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         reasons = _reasons(reasons, str(exc) if isinstance(exc, ValueError) else type(exc).__name__,
                            "observer_unavailable")
     payload.update(decision=decision, reasons=list(reasons), observed_at_ns=time.time_ns())
     try:
-        db.insert_audit_log(task_id, agent, AUDIT_ACTION, payload)
-    except Exception:
+        if validate_admission is None:
+            db.insert_audit_log(task_id, agent, AUDIT_ACTION, payload)
+        else:
+            validate_admission()
+            with db._lock:
+                validate_admission()
+                db.insert_audit_log(task_id, agent, AUDIT_ACTION, payload)
+    except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         logger.warning("task scratch report publication unavailable for %.80s", task_id)
         decision, reasons = "unavailable", _reasons(reasons, "publication_unavailable")
         payload.update(decision=decision, reasons=list(reasons))
@@ -217,8 +231,10 @@ def report_task_scratch(*, db: Database, sessions: SessionTracker | None, task_i
 
 def report_registered_agent_task_scratch(*, db: Database, sessions: SessionTracker | None,
                                          agent: str, workspace: Path,
-                                         proc_root: Path | None = None) -> tuple[TaskScratchReport, ...]:
+                                         proc_root: Path | None = None, validate_admission=None) -> tuple[TaskScratchReport, ...]:
     """Bound every discovery advance, including rejected names; isolate candidates."""
+    if validate_admission is not None:
+        validate_admission()
     deadline = time.monotonic_ns() + _SCAN_NS
     reports: list[TaskScratchReport] = []
     try:
@@ -234,6 +250,8 @@ def report_registered_agent_task_scratch(*, db: Database, sessions: SessionTrack
         try:
             with os.scandir(fd) as rows:
                 for _ in range(_MAX_DISCOVERY_ENTRIES):
+                    if validate_admission is not None:
+                        validate_admission()
                     _admit(deadline)
                     try:
                         row = next(rows)
@@ -248,13 +266,19 @@ def report_registered_agent_task_scratch(*, db: Database, sessions: SessionTrack
                         reports.append(report_task_scratch(
                             db=db, sessions=sessions, task_id=row.name[:-5], agent=agent,
                             workspace=workspace, source="weekly", observation_id="weekly",
-                            proc_root=proc_root, deadline_ns=deadline))
-                    except Exception:
+                            proc_root=proc_root, deadline_ns=deadline, validate_admission=validate_admission))
+                    except Exception as exc:
+                        from runtime.daemon.startup_recovery import StartupUnavailable
+                        if isinstance(exc, StartupUnavailable):
+                            raise
                         logger.warning("task scratch candidate observation unavailable for %.80s", row.name)
                 raise ValueError("discovery_entries_capped")
         finally:
             os.close(fd)
     except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         # No fabricated task scope when discovery cannot attribute a candidate.
         logger.warning("task scratch discovery unavailable for %.80s: %.160s", agent, str(exc))
     return tuple(reports)

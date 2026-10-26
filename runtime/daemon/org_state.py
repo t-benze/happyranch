@@ -516,6 +516,8 @@ class OrgState:
     def close(self) -> None:
         # Synchronous direct close cannot cancel/join a native reader. Refuse
         # before touching any connection unless its actual owner has drained.
+        if self._startup_state is not None:
+            self._startup_state._assert_startup_idle(self)
         if self._startup_recovery is not None:
             self._startup_recovery.assert_native_idle()
         if self._startup_reads is not None:

@@ -802,10 +802,23 @@ class TeamMoveOperation:
 
     async def redeliver(self):
         """After durable release, existing deduplicating owners retain semantics."""
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+        org, move, profiles = self.org, self.move, self.profiles
+        selected = ordinary_admission_validation(org)
+        def validate():
+            selected()
+            if (self.org is not org or self.move is not move or self.profiles is not profiles
+                    or org.db._team_move_coordinator is not move
+                    or org._startup_state is not None and org._startup_state.profile_coordinator is not profiles):
+                raise StartupUnavailable("startup_move_attachment_changed")
+        validate()
         self.org.thread_queue._require_ready()
         self._require_redelivery()
+        validate()
         self.org.orchestrator.redeliver_team_move_tasks()
+        validate()
         await self.move.threads.redeliver_after_release(self.org.thread_queue)
+        validate()
         self.move.producers.redeliver_after_release(self.org)
         # Armed schedules are intentionally not claimed here. The normal timer
         # alone decides due/missed/expiry using original persisted deadlines.

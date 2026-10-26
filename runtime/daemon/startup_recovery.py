@@ -1128,6 +1128,40 @@ def _require_ordinary_ready(owner: Any) -> None:
     require_ready(owner)
 
 
+def ordinary_admission_validation(owner: Any) -> Callable[[], None]:
+    """Capture one ordinary operation, retaining its original attachment/epoch."""
+    _require_ordinary_ready(owner)
+    state, gate, org = owner._startup_state, owner._startup_recovery, owner._startup_org
+    refs = None if org is None else org._startup_admission_refs
+    epoch = None if gate is None else gate.epoch
+    loop = None if gate is None else gate._loop
+
+    def validate() -> None:
+        if (owner._startup_state is not state or owner._startup_recovery is not gate
+                or owner._startup_org is not org
+                or org is not None and org._startup_admission_refs is not refs
+                or gate is not None and (gate.epoch != epoch or gate._loop is not loop)):
+            raise StartupUnavailable("startup_attachment_changed")
+        _require_ordinary_ready(owner)
+
+    return validate
+
+
+def maintenance_admission_validation(state: Any) -> Callable[[], None]:
+    """The actual daemon scheduler owner; no standalone scheduler bypass."""
+    state._require_startup_ready()
+    gate, runtime, queue = state._startup_recovery, state.runtime, state.queue
+    epoch, loop = gate.epoch, gate._loop
+
+    def validate() -> None:
+        if (state._startup_recovery is not gate or state.runtime is not runtime
+                or state.queue is not queue or gate.epoch != epoch or gate._loop is not loop):
+            raise StartupUnavailable("startup_attachment_changed")
+        state._require_startup_ready()
+
+    return validate
+
+
 def _bind_task_admission(owner: Any, state: Any, org: Any = None) -> None:
     """Bind an original native reference; never reset a bound production gate."""
     previous = owner._startup_state

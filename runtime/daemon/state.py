@@ -77,6 +77,20 @@ class DaemonState:
     _startup_recovery: StartupRecovery | None = field(init=False, default=None, repr=False)
     _startup_reads: StartupReads | None = field(init=False, default=None, repr=False)
 
+    _maintenance_workers: set[asyncio.Future] = field(init=False, default_factory=set, repr=False)
+
+    async def _await_maintenance_worker(self, worker):
+        """Keep an original submitted maintenance worker visible through cancellation."""
+        from runtime.orchestrator.producer_move import await_producer_worker
+        self._maintenance_workers.add(worker)
+        try:
+            return await await_producer_worker(worker)
+        finally:
+            if worker.done() and not worker.cancelled():
+                failure = worker.exception()
+                if failure is None or not getattr(failure, "maintenance_native_unsettled", False):
+                    self._maintenance_workers.remove(worker)
+
     def _bind_startup_owner(self, app) -> None:
         """One boot owner; construction binds references without DB work."""
         from runtime.daemon.startup_recovery import StartupRecovery
@@ -86,6 +100,8 @@ class DaemonState:
         recovery = StartupRecovery(self, app)
         self._startup_recovery = recovery
         self._startup_reads = StartupReads(self, recovery)
+        from runtime.daemon.direct_connect_projection_sweep import bind_startup_references
+        bind_startup_references(self)
         from runtime.daemon.jobs_runner import bind_jobs_startup_references
         bind_jobs_startup_references(self)
         from runtime.daemon.startup_recovery import _bind_task_admission
@@ -154,6 +170,8 @@ class DaemonState:
             await self._startup_reads.drain(org)
 
     def _assert_startup_idle(self, org=None) -> None:
+        if self._maintenance_workers:
+            raise _OrgBusyError("maintenance_native_in_flight")
         if self._startup_recovery is not None:
             self._startup_recovery.assert_native_idle()
         if self._startup_reads is not None:
@@ -580,6 +598,7 @@ class DaemonState:
             for org in self.orgs.values():
                 org.close()
             self.orgs.clear()
+        self._assert_startup_idle()
         if self.direct_connect_authority_store is not None:
             self.direct_connect_authority_store.close()
         self._shutdown_complete = True

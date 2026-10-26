@@ -21,22 +21,67 @@ if TYPE_CHECKING:
 logger = logging.getLogger("happyranch.daemon.direct_connect_projection_sweep")
 
 
+def bind_startup_references(state):
+    """Reference-only attachment for the selected periodic/direct sweep owner."""
+    store = state.direct_connect_authority_store
+    if store is None:
+        return
+    previous = getattr(store, "_projection_startup_refs", None)
+    if previous is not None and (previous[0] is not state or previous[1] is not state._startup_recovery):
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        raise StartupUnavailable("startup_projection_attachment_changed")
+    store._projection_startup_refs = (state, state._startup_recovery, store, state.profile_coordinator)
+
+
+def _selected_validation(store, profiles):
+    refs = getattr(store, "_projection_startup_refs", None)
+    if refs is None:
+        return lambda: None  # Explicit standalone store retains its contract.
+    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
+    state, gate, original, selected_profiles = refs
+    validate_state = maintenance_admission_validation(state)
+    def validate():
+        validate_state()
+        if (store._projection_startup_refs is not refs or state._startup_recovery is not gate
+                or original is not store or state.direct_connect_authority_store is not store
+                or profiles is not selected_profiles or state.profile_coordinator is not profiles):
+            raise StartupUnavailable("startup_projection_attachment_changed")
+    validate()
+    return validate
+
+
 def _sweep_once(
     store: DirectConnectAuthorityStore,
     profile_coordinator=None,
+    *, validate_admission=None,
 ) -> None:
     """Project only the latest accepted candidate per parent lifecycle."""
-    for operation_id in store.list_latest_operations_pending_projection():
+    selected = _selected_validation(store, profile_coordinator)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+    validate()
+    selected_kwargs = ({"validate_admission": validate}
+        if validate_admission is not None or getattr(store, "_projection_startup_refs", None) is not None else {})
+    pending = store.list_latest_operations_pending_projection()
+    validate()
+    for operation_id in pending:
+        validate()
         try:
             if profile_coordinator is None:
-                direct_connect_projection.project(store, operation_id)
+                direct_connect_projection.project(store, operation_id, **selected_kwargs)
             else:
                 direct_connect_projection.project(
                     store,
                     operation_id,
                     profile_coordinator=profile_coordinator,
+                    **selected_kwargs,
                 )
-        except Exception:
+        except Exception as exc:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable):
+                raise
             logger.exception("direct-connect projection sweep failed for operation %s", operation_id)
 
 
@@ -44,19 +89,27 @@ async def direct_connect_projection_sweep_loop(
     state: DaemonState, *, interval_seconds: int = 3,
 ) -> None:
     """Periodically project direct-connect receipts on the daemon's authority store."""
+    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
+    validate_state = maintenance_admission_validation(state)
     while True:
+        validate_state()
         t0 = time.monotonic()
-        store = state.direct_connect_authority_store
+        store, profiles = state.direct_connect_authority_store, state.profile_coordinator
+        def validate():
+            validate_state()
+            if state.direct_connect_authority_store is not store or state.profile_coordinator is not profiles:
+                raise StartupUnavailable("startup_projection_attachment_changed")
         if store is None:
             logger.error("direct-connect projection sweep skipped: authority store unavailable")
         else:
-            await asyncio.to_thread(
-                _sweep_once,
-                store,
-                state.profile_coordinator,
-            )
+            validate()
+            worker = asyncio.create_task(asyncio.to_thread(
+                _sweep_once, store, profiles, validate_admission=validate))
+            await state._await_maintenance_worker(worker)
+            validate()
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "direct_connect_projection_sweep", interval_seconds, duration,
         )
         await asyncio.sleep(interval_seconds)
+        validate_state()

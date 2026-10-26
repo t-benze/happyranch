@@ -378,11 +378,15 @@ class ProfileCoordinator:
 
     @staticmethod
     @contextmanager
-    def _transaction(org: OrgState) -> Iterator[sqlite3.Connection]:
+    def _transaction(org: OrgState, *, validate_admission=None) -> Iterator[sqlite3.Connection]:
         with org.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             conn = org.db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield conn
             except BaseException:
                 conn.rollback()
@@ -468,12 +472,13 @@ class ProfileCoordinator:
         operation: _ProfileOperation,
         *,
         coordinator_invocation: str,
+        validate_admission=None,
     ) -> None:
         members_json = _canonical_bytes(list(operation.members)).decode("utf-8")
         created_at = datetime.now(timezone.utc).isoformat()
         for slug in operation.members:
             org = self.orgs[slug]
-            with self._transaction(org) as conn:
+            with self._transaction(org, validate_admission=validate_admission) as conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO workflow_profile_operations("
                     "id,profile_name,operation_kind,captured_members,"
@@ -742,8 +747,11 @@ class ProfileCoordinator:
         *,
         operation_kind: str,
         publisher: str,
+        validate_admission=None,
     ) -> Iterator[None]:
         """Create the durable U1A claim after profile leases are held."""
+        validate = validate_admission or (lambda: None)
+        validate()
         coordinator_invocation = uuid.uuid4().hex
         operations = tuple(
             _ProfileOperation(
@@ -763,12 +771,13 @@ class ProfileCoordinator:
                 active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
             if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
                 raise ProfileCoordinatorError("profile_consumer_changed")
+        validate()
         with ExitStack() as move_writers:
             dispositions = []
             try:
                 for slug in members:
                     dispositions.append(move_writers.enter_context(native_writer(self.orgs[slug].db,
-                        publisher=f'profile:{publisher}')))
+                        publisher=f'profile:{publisher}', validate_admission=validate_admission)))
             except Exception as exc:
                 # Earlier acquired reservations have not entered any profile
                 # operation/fence/body. Only those completed reservations may
@@ -780,6 +789,7 @@ class ProfileCoordinator:
                 self._insert_operation_rows(
                     operation,
                     coordinator_invocation=coordinator_invocation,
+                    validate_admission=validate_admission,
                 )
             bindings: dict[str, ProfileFenceBinding] = {}
             with ExitStack() as org_stack:
@@ -788,11 +798,13 @@ class ProfileCoordinator:
                         self.orgs[slug].workflow_authority.profile_change_interval(
                             reason=f"profile:{','.join(names)}:{publisher}",
                             coordinator_invocation=coordinator_invocation,
+                            validate_admission=validate_admission,
                         )
                     )
                 for operation in operations:
                     self._set_operation_state(operation, "fenced")
                 try:
+                    validate()
                     yield
                 except BaseException:
                     try:
@@ -875,6 +887,7 @@ class ProfileCoordinator:
         operation_kind: str,
         publisher: str,
         terminal_check: Callable[[], bool],
+        validate_admission: Callable[[], None] | None = None,
     ) -> Iterator[bool]:
         """Claim a retryable writer once, before any U1A fence or mutation.
 
@@ -884,14 +897,18 @@ class ProfileCoordinator:
         A winner then records the existing U1A operation/lease claim before the
         caller can mutate adapter or profile state.
         """
+        validate = validate_admission or (lambda: None)
+        validate()
         if operation_kind not in {"register", "rebind", "remove"}:
             raise ProfileCoordinatorError("profile_operation_kind_invalid")
         with self._profile_leases(profile_names, wait=True) as names:
+            validate()
             for name in names or (None,):
                 self._assert_no_active_operation(name)
             if not names:
                 yield True
                 return
+            validate()
             if terminal_check():
                 yield False
                 return
@@ -899,6 +916,7 @@ class ProfileCoordinator:
                 names,
                 operation_kind=operation_kind,
                 publisher=publisher,
+                validate_admission=validate_admission,
             ):
                 yield True
 

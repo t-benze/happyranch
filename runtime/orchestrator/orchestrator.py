@@ -212,10 +212,19 @@ class Orchestrator:
     def redeliver_team_move_tasks(self) -> None:
         """Task-only release seam for D; no operation release or startup owner."""
         from runtime.orchestrator.authority import enqueue_task_generation_aware
+        from runtime.orchestrator.run_step import _task_followon_validation
+        selected = _task_followon_validation(self)
+        moves = self._team_moves
+        def validate():
+            selected()
+            if self._team_moves is not moves or moves.store.db is not self._db:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_move_attachment_changed")
         if self._queue is None:
             from runtime.orchestrator.team_move import DeferredTeamMove
             raise DeferredTeamMove("team_move_task_queue_unavailable")
         def publish(task_id: str, metadata: dict | None) -> bool:
+            validate()
             from runtime.daemon.startup_publication import current_publication
             if current_publication(self) is not None:
                 from runtime.orchestrator.run_step import _publish_redelivery_task
@@ -224,7 +233,7 @@ class Orchestrator:
             return self._queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
                 publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
                     task_id, metadata=metadata))
-        self._team_moves.redeliver_tasks(publish)
+        moves.redeliver_tasks(publish, validate_admission=validate)
 
     def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.

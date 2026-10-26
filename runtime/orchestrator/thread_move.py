@@ -626,17 +626,25 @@ class ThreadMoveAdmission:
             return tuple(inv.id for inv in self.db.list_pending_thread_invocations()
                 if self.preserve_recovery_uncommitted(inv))
 
-    def select_redelivery_tokens(self, *, _observe=None) -> tuple[str, ...]:
+    def select_redelivery_tokens(self, *, _observe=None, validate_admission=None) -> tuple[str, ...]:
+        if validate_admission is not None:
+            validate_admission()
         with self.move.gate, self.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             if self.move.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
             return self.runnable_tokens(_observe=_observe)
 
     async def redeliver_after_release(self, queue: Any) -> None:
         from runtime.daemon.thread_queue import ThreadJob
+        from runtime.daemon.startup_recovery import ordinary_admission_validation
+        validate = ordinary_admission_validation(queue)
         queue._require_ready()
-        for token in self.select_redelivery_tokens():
+        for token in self.select_redelivery_tokens(validate_admission=validate):
+            validate()
             await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))
+            validate()
 
     def runnable_tokens(self, *, _observe=None) -> tuple[str, ...]:
         """Durable release/redelivery census, no process-local defer list.

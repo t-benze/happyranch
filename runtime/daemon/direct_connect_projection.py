@@ -72,10 +72,14 @@ def project(
     *,
     now: float | None = None,
     profile_coordinator=None,
+    validate_admission=None,
 ) -> ProjectionOutcome:
     """Serialize same-process owners while durable planned rows stay retryable."""
+    validate = validate_admission or (lambda: None)
+    validate()
     claim = (id(store), operation_id)
     with _ACTIVE_PROJECTIONS_LOCK:
+        validate()
         if claim in _ACTIVE_PROJECTIONS:
             return _await_concurrent_outcome(store, operation_id)
         _ACTIVE_PROJECTIONS.add(claim)
@@ -85,6 +89,7 @@ def project(
             operation_id,
             now=now,
             profile_coordinator=profile_coordinator,
+            validate_admission=validate_admission,
         )
     finally:
         with _ACTIVE_PROJECTIONS_LOCK:
@@ -97,6 +102,7 @@ def _project_once(
     *,
     now: float | None = None,
     profile_coordinator=None,
+    validate_admission=None,
 ) -> ProjectionOutcome:
     """Drive one direct-connect receipt to COMMITTED, or fail closed.
 
@@ -114,7 +120,10 @@ def _project_once(
         save_adapter,
     )
 
+    validate = validate_admission or (lambda: None)
+    validate()
     existing = store.get_projection(operation_id)
+    validate()
     if existing is not None and existing.state == "committed":
         return ProjectionOutcome(
             state="committed", adapter_id=existing.adapter_id,
@@ -147,7 +156,11 @@ def _project_once(
             return _await_concurrent_outcome(store, active_other)
         return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
 
-    if existing is None and not store.plan_projection(operation_id, now=now):
+    validate()
+    with store._lock:
+        validate()
+        planned = existing is not None or store.plan_projection(operation_id, now=now)
+    if not planned:
         # Another caller won the plan race between our read of `existing`
         # and now. Terminalize from its durable result when possible. A
         # durable planned row is intentionally resumable: a previous owner may
@@ -160,6 +173,7 @@ def _project_once(
         if raced.state != "planned":
             return _await_concurrent_outcome(store, operation_id)
 
+    validate()
     adapter_id = custom_adapter_registry.generate_adapter_id(
         f"{artifacts.intended_profile_name}-adapter"
     )
@@ -167,14 +181,21 @@ def _project_once(
     try:
         probe_output = custom_adapter_registry.run_conformance_probe(
             str(artifacts.wrapper_path), adapter_id, require_prompt_delivery=True,
+            **({"validate_admission": validate_admission} if validate_admission is not None else {}),
         )
-    except Exception:
+    except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable) or getattr(exc, "maintenance_native_unsettled", False):
+            raise
         # The direct gate deliberately persists a category rather than any
         # candidate-controlled output, diagnostics, or per-probe canary.
         reason = "direct conformance probe failed"
-        store.mark_failed(operation_id, f"conformance_probe_failed: {reason}", now=now)
+        with store._lock:
+            validate()
+            store.mark_failed(operation_id, f"conformance_probe_failed: {reason}", now=now)
         return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=reason)
 
+    validate()
     entry = AdapterEntry(
         id=adapter_id,
         name=artifacts.intended_profile_name,
@@ -212,11 +233,14 @@ def _project_once(
             ),
             publisher="direct_connect_projection",
             terminal_check=projection_is_terminal,
+            **({"validate_admission": validate_admission} if validate_admission is not None else {}),
         )
         if profile_coordinator is not None
         else nullcontext(True)
     )
+    validate()
     with profile_span as owns_projection:
+        validate()
         if not owns_projection:
             # The cross-process winner terminalized while this caller waited
             # for the profile lease. Return its durable result without creating
@@ -230,7 +254,9 @@ def _project_once(
             return outcome
         acquire_store_lock()
         try:
+            validate()
             existing_adapter = get_adapter(adapter_id)
+            validate()
             if existing_adapter is None:
                 save_adapter(entry)
                 adapter_created = True
@@ -238,16 +264,21 @@ def _project_once(
                 save_adapter(entry)
                 replaced_adapter = existing_adapter
             try:
+                validate()
                 bind_result = custom_adapter_registry._perform_adapter_profile_binding(
                     adapter_id=adapter_id,
                     profile_name=artifacts.intended_profile_name,
                     workspace_adapter=artifacts.workspace_adapter_id,
+                    **({"validate_admission": validate_admission} if validate_admission is not None else {}),
                 )
-            except Exception:
+            except Exception as exc:
                 if adapter_created:
                     remove_adapter(adapter_id)
                 elif replaced_adapter is not None:
                     save_adapter(replaced_adapter)
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                if isinstance(exc, StartupUnavailable):
+                    raise
                 # The direct gate persists only a fixed category; arbitrary
                 # exception text, paths, hashes, or candidate output must never
                 # reach durable rows or the HTTP response.

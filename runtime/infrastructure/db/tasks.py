@@ -3038,6 +3038,7 @@ class TasksMixin:
         *,
         attachments: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
+        validate_admission=None,
     ) -> bool:
         """Atomically update parent active_chain + insert next child +
         attachment links/audit in a single explicit transaction.
@@ -3050,10 +3051,22 @@ class TasksMixin:
         attachments linked). Returns False and rolls back on any failure.
         """
         now_ts = datetime.now(timezone.utc).isoformat()
+        admission_error = None
+        def validate():
+            nonlocal admission_error
+            if validate_admission is not None:
+                try:
+                    validate_admission()
+                except BaseException as exc:
+                    admission_error = exc
+                    raise
+        validate()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            validate()
             self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             self._check_team_move_task_uncommitted(next_child)
+            validate()
             self._conn.execute(
                 "UPDATE tasks SET active_chain = ? WHERE id = ?",
                 (active_chain_json, parent_id),
@@ -3097,8 +3110,14 @@ class TasksMixin:
             return True
         except Exception as exc:
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if isinstance(exc, DeferredTeamMove):
-                self._conn.rollback()
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if exc is admission_error or isinstance(exc, (DeferredTeamMove, StartupUnavailable)):
+                try:
+                    self._conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    exc.add_note(f"selected chain rollback also failed: {secondary!r}")
                 raise
             self._conn.rollback()
             return False

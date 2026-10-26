@@ -122,6 +122,22 @@ def _sweep_org_zombies(
     loop, deferring only the existing child hooks and captured root cleanup.
     Synchronous callers retain the original inline hook behavior.
     """
+    from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+    if orchestrator is not None:
+        validate = ordinary_admission_validation(orchestrator)
+        if orchestrator._db is not db or (queue is not None and queue is not orchestrator._queue):
+            raise StartupUnavailable("startup_attachment_changed")
+    else:
+        refs = getattr(db, "_jobs_startup_refs", None)
+        validate = (lambda: None) if refs is None else ordinary_admission_validation(refs[2])
+    validate()
+
+    def write(function, *args, **kwargs):
+        validate()
+        with db._lock:
+            validate()
+            return function(*args, **kwargs)
+
     # Warm-up grace: don't trust staleness until daemon has been up >= 1
     # heartbeat interval. Prevents false-reaping freshly-spawned sessions
     # whose heartbeat hasn't been stamped yet after a boot.
@@ -136,8 +152,13 @@ def _sweep_org_zombies(
 
         audit = AuditLogger(db)
 
-        for task_id in db.get_nonterminal_task_ids():
+        validate()
+        task_ids = db.get_nonterminal_task_ids()
+        validate()
+        for task_id in task_ids:
+            validate()
             t = db.get_task(task_id)
+            validate()
             if t is None:
                 continue
 
@@ -152,7 +173,9 @@ def _sweep_org_zombies(
                 if ownership.kind == "f5":
                     drafts = getattr(orchestrator, "_workflow_reviews", None)
                 if ownership.kind in ("draft", "f5") and drafts is not None:
+                    validate()
                     drafts.reconcile(task_id)
+                    validate()
                     if queue is not None:
                         drafts.notify_queued(task_id, queue)
                 continue
@@ -173,8 +196,8 @@ def _sweep_org_zombies(
             if hb_age < STALE_HEARTBEAT_SECONDS:
                 # Heartbeat is fresh → healthy. If previously flagged, clear.
                 if t.zombie_flagged_at is not None:
-                    db.update_task(task_id, zombie_flagged_at=None)
-                    audit.log_zombie_cleared(
+                    write(db.update_task, task_id, zombie_flagged_at=None)
+                    write(audit.log_zombie_cleared,
                         task_id, t.assigned_agent or "unknown",
                     )
                 continue
@@ -185,8 +208,8 @@ def _sweep_org_zombies(
             if not _pid_is_dead(t.executor_pid):
                 # Pid is alive (or indeterminate). If previously flagged, clear.
                 if t.zombie_flagged_at is not None:
-                    db.update_task(task_id, zombie_flagged_at=None)
-                    audit.log_zombie_cleared(
+                    write(db.update_task, task_id, zombie_flagged_at=None)
+                    write(audit.log_zombie_cleared,
                         task_id, t.assigned_agent or "unknown",
                     )
                 continue
@@ -212,8 +235,8 @@ def _sweep_org_zombies(
 
             if t.zombie_flagged_at is None:
                 # ── FIRST DETECTION: FLAG only, do NOT cancel ──
-                db.update_task(task_id, zombie_flagged_at=now.isoformat())
-                audit.log_zombie_flagged(task_id, agent)
+                write(db.update_task, task_id, zombie_flagged_at=now.isoformat())
+                write(audit.log_zombie_flagged, task_id, agent)
             else:
                 # ── ALREADY FLAGGED ──
                 # If a task_result fingerprint appears on an already-flagged zombie,
@@ -225,6 +248,7 @@ def _sweep_org_zombies(
                 # dead-pid), so clear MUST be paired with consumption.
                 if fingerprint is not None:
                     if orchestrator is not None:
+                        validate()
                         consumption = _consume_zombie_fingerprint(
                             db, task_id, fingerprint, t, orchestrator,
                         )
@@ -268,7 +292,7 @@ def _sweep_org_zombies(
                         continue
                     if policy_family == "v2":
                         with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_org_zombies.v2', root_transitions):
-                            committed = db.cancel_zombie_without_fingerprint(
+                            committed = write(db.cancel_zombie_without_fingerprint,
                                 task_id=task_id,
                                 expected_agent=agent,
                                 expected_session_id=t.current_session_id or "",
@@ -280,11 +304,13 @@ def _sweep_org_zombies(
                                 _enqueue_parent_if_waiting,
                                 _reclaim_terminal_task_worktree,
                             )
-                            _enqueue_parent_if_waiting(orchestrator, task_id)
-                            if t.parent_task_id is not None and deferred_child_worktrees is not None:
-                                deferred_child_worktrees.append(t)
-                            else:
-                                _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
+                            try:
+                                _enqueue_parent_if_waiting(orchestrator, task_id)
+                            finally:
+                                if t.parent_task_id is not None and deferred_child_worktrees is not None:
+                                    deferred_child_worktrees.append(t)
+                                else:
+                                    _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
                         continue
                     # TTL expired — cancel.
                     # THR-079 ruling: no auto-revisit. Cancel via the existing
@@ -292,7 +318,7 @@ def _sweep_org_zombies(
                     # terminal side-effects so a delegated parent parked on
                     # this child is woken (code_reviewer FIX 2).
                     with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_org_zombies.legacy', root_transitions):
-                        db.update_task(
+                        write(db.update_task,
                             task_id,
                             status=TaskStatus.CANCELLED,
                             cancelled_at=now.isoformat(),
@@ -306,11 +332,13 @@ def _sweep_org_zombies(
                             _enqueue_parent_if_waiting,
                             _reclaim_terminal_task_worktree,
                         )
-                        _enqueue_parent_if_waiting(orchestrator, task_id)
-                        if t.parent_task_id is not None and deferred_child_worktrees is not None:
-                            deferred_child_worktrees.append(t)
-                        else:
-                            _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
+                        try:
+                            _enqueue_parent_if_waiting(orchestrator, task_id)
+                        finally:
+                            if t.parent_task_id is not None and deferred_child_worktrees is not None:
+                                deferred_child_worktrees.append(t)
+                            else:
+                                _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
     except BaseException:
         root_tail_failed = True
         raise
@@ -379,19 +407,28 @@ async def zombie_reaper_loop(
     metrics recording. Registered in runtime/daemon/app.py _lifespan alongside
     the existing scheduler tasks.
     """
+    from runtime.daemon.startup_recovery import maintenance_admission_validation, ordinary_admission_validation, StartupUnavailable
+    validate_state = maintenance_admission_validation(state)
     boot_time = _time.monotonic()
     warm_up_seconds = HEARTBEAT_INTERVAL_SECONDS  # 30s post-boot grace
 
     while True:
+        validate_state()
         t0 = _time.monotonic()
         now = datetime.now(timezone.utc)
         uptime = t0 - boot_time
 
         for org in list(state.orgs.values()):
             try:
+                validate_state()
+                validate_org = ordinary_admission_validation(org)
                 await org.workflow_submissions.discover_completed_handoffs(state.queue)
+                validate_state()
+                validate_org()
                 from runtime.orchestrator.task_pause import discover_pause_work
                 await discover_pause_work(org, state.queue)
+                validate_state()
+                validate_org()
                 from runtime.orchestrator.run_step import (
                     _defer_root_worktree_batches, _RootWorktreeTransitions,
                     _await_root_worktree_batch, _await_terminal_task_worktree,
@@ -416,6 +453,8 @@ async def zombie_reaper_loop(
                     if root_transitions:
                         await _await_root_worktree_batch(org.orchestrator, root_transitions,
                             teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
+            except StartupUnavailable:
+                raise
             except Exception:
                 logger.exception(
                     "zombie reaper sweep failed for org %s", org.slug,
@@ -426,3 +465,4 @@ async def zombie_reaper_loop(
             "zombie_reaper", interval_seconds, duration,
         )
         await asyncio.sleep(interval_seconds)
+        validate_state()

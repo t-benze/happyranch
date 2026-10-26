@@ -45,7 +45,7 @@ def _store_path() -> Path:
 
 
 @contextmanager
-def _store_mutation_lock() -> Iterator[None]:
+def _store_mutation_lock(*, validate_admission=None) -> Iterator[None]:
     """Serialize the shared YAML read/merge/replace critical section.
 
     Per-profile coordinator leases deliberately remain disjoint, while every
@@ -54,6 +54,8 @@ def _store_mutation_lock() -> Iterator[None]:
     already own profile/publication/adapter locks, but this helper never
     acquires any of them and releases the file lock before returning.
     """
+    if validate_admission is not None:
+        validate_admission()
     path = _store_path().with_name("executor_profiles.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
@@ -64,6 +66,8 @@ def _store_mutation_lock() -> Iterator[None]:
             raise OSError("executor profile store lock is not a regular file")
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
+        if validate_admission is not None:
+            validate_admission()
         yield
     finally:
         os.close(fd)
@@ -102,7 +106,7 @@ def load_runtime_profiles() -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
-def save_runtime_profile(name: str, entry: dict) -> None:
+def save_runtime_profile(name: str, entry: dict, *, validate_admission=None) -> None:
     """Atomically add or update a single runtime executor profile entry.
 
     ``name`` is the profile name (non-empty string).
@@ -110,7 +114,7 @@ def save_runtime_profile(name: str, entry: dict) -> None:
 
     Uses atomic temp-file + os.replace pattern (same as org-config writer).
     """
-    with _store_mutation_lock():
+    with _store_mutation_lock(validate_admission=validate_admission):
         path = _store_path()
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -118,12 +122,16 @@ def save_runtime_profile(name: str, entry: dict) -> None:
         current = load_runtime_profiles()
         current[name] = entry
 
+        if validate_admission is not None:
+            validate_admission()
         fd, tmp = tempfile.mkstemp(
             prefix=".executor-profiles.", suffix=".yaml", dir=str(path.parent)
         )
         try:
             with os.fdopen(fd, "w") as fh:
                 yaml.safe_dump(current, fh, sort_keys=False)
+            if validate_admission is not None:
+                validate_admission()
             os.replace(tmp, path)
         except Exception:
             try:

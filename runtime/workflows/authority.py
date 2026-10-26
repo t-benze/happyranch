@@ -665,6 +665,7 @@ class WorkflowAuthorityCoordinator:
         reason: str,
         publisher_invocation: str,
         increment_profile_fence: bool = False,
+        validate_admission: Callable[[], None] | None = None,
     ) -> str:
         """Fence and durably bind it to one publication invocation.
 
@@ -676,7 +677,7 @@ class WorkflowAuthorityCoordinator:
         leave recovery to complete the already-started publication.
         """
         self._require_move_publication_owner(publisher_invocation)
-        with self._transaction() as conn:
+        with self._transaction(validate_admission=validate_admission) as conn:
             active = self._active_journal(conn, self.namespace)
             if active is not None:
                 if str(active["publisher_invocation"]).startswith(
@@ -766,6 +767,7 @@ class WorkflowAuthorityCoordinator:
         coordinator_invocation: str,
         resume: bool = False,
         expected_revision: tuple | None = None,
+        validate_admission: Callable[[], None] | None = None,
     ) -> Iterator[ProfileFenceBinding]:
         """Hold the org publisher gate for one machine-profile operation.
 
@@ -775,7 +777,11 @@ class WorkflowAuthorityCoordinator:
         only while the profile fence is created; the process gate stays held
         through the caller's store mutation and bound republish.
         """
+        if validate_admission is not None:
+            validate_admission()
         with self._publisher_lock:
+            if validate_admission is not None:
+                validate_admission()
             publisher_invocation = f"profile-coordinator:{coordinator_invocation}"
             if resume:
                 with self._db._lock:
@@ -797,7 +803,7 @@ class WorkflowAuthorityCoordinator:
                     yield existing_binding
                     return
             owner = f"{publisher_invocation}:{uuid.uuid4().hex}"
-            self._acquire_lease(owner)
+            self._acquire_lease(owner, validate_admission=validate_admission)
             try:
                 if expected_revision is None:
                     with self._db._lock:
@@ -815,6 +821,7 @@ class WorkflowAuthorityCoordinator:
                     reason=reason,
                     publisher_invocation=publisher_invocation,
                     increment_profile_fence=True,
+                    validate_admission=validate_admission,
                 )
                 with self._db._lock:
                     active = self._active_journal(self._db._conn, self.namespace)

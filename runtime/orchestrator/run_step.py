@@ -2355,6 +2355,8 @@ class _HumanFailedRecoveryOperation:
     bookkeeping: list[Callable[[], None]] = field(default_factory=list)
     parent_effect: Callable[[], None] | None = None
     startup_owner: _StartupSweepOwner | None = None
+    followon_validation: Callable[[], None] | None = None
+    first_error: BaseException | None = None
 
     def matches_context(self, context: dict) -> bool:
         task, episode = context["task"], context["episode"]
@@ -2476,6 +2478,9 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
                         operation.job_ids = ids
                         operation.phase = "drain_jobs" if ids else "parent_handoff"
                     elif operation.phase == "parent_handoff":
+                        if operation.followon_validation is None:
+                            operation.followon_validation = _task_followon_validation(orch)
+                        operation.followon_validation()
                         if not db.handoff_consumed_task_completion_recovery_parent_effect(
                                 task_id=operation.task_id, agent=operation.agent,
                                 recovery_session_id=operation.session_id, result_row_id=operation.result_id,
@@ -2484,13 +2489,18 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
                             return
                         operation.phase = "caller_bookkeeping"
                     elif operation.phase == "caller_bookkeeping":
+                        if operation.followon_validation is None:
+                            operation.followon_validation = _task_followon_validation(orch)
                         for effect in operation.bookkeeping:
+                            operation.followon_validation()
                             with _startup_sweep_effect(orch):
                                 effect()
                         operation.bookkeeping.clear()
                         operation.finish("done")
                         return
     except Exception as exc:
+        if operation.first_error is None:
+            operation.first_error = exc
         if operation.startup_owner is not None:
             operation.startup_owner.fail(exc)
         logger.exception("human failed recovery requires next-start reconciliation task=%s phase=%s", operation.task_id, operation.phase)
@@ -5084,7 +5094,8 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
               recovery_owner: tuple[str, str, int] | None = None,
               after_recovery_cleanup: Callable[[], None] | None = None,
               after_recovery_parent_effect: Callable[[], None] | None = None,
-              reclaim_terminal_worktree: bool = True) -> bool:
+              reclaim_terminal_worktree: bool = True,
+              validate_admission: Callable[[], None] | None = None) -> bool:
     root_transitions = _RootWorktreeTransitions()
     root_handed_off = False
     tail_failed = False
@@ -5106,8 +5117,13 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
             if not committed:
                 return False
         else:
-            with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
-                orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
+            with orch._db._lock if validate_admission is not None else nullcontext():
+                if validate_admission is not None:
+                    validate_admission()
+                with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
+                    if validate_admission is not None:
+                        validate_admission()
+                    orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
                                      note=note, final_output_dir=output_dir,
                                      completed_at=datetime.now(timezone.utc).isoformat())
         _log_verdict_if_delegated(orch, task_id, success=True)
@@ -5141,6 +5157,7 @@ def _fail(
     orch: "Orchestrator", task_id: str, *, note: str,
     reclaim_terminal_worktree: bool = True,
     current_owner: Callable[[], bool] | None = None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> None:
     root_transitions = _RootWorktreeTransitions()
     from datetime import datetime, timezone
@@ -5151,6 +5168,8 @@ def _fail(
     if _is_already_terminal(orch, task_id):
         return
     with orch._db._lock:
+        if validate_admission is not None:
+            validate_admission()
         current = orch._db.get_task(task_id)
         if current is not None:
             try:
@@ -5636,6 +5655,7 @@ def _advance_chain_for_completed_child(
     parent_task_id: str,
     child_task_id: str,
     report=None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> str:
     """Inspect the parent's active_chain against the just-completed subtask's
     report. Either spawn the next leg ("advance") or clear the chain so the
@@ -5665,7 +5685,10 @@ def _advance_chain_for_completed_child(
         compute_advance_action,
     )
 
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     parent = orch._db.get_task(parent_task_id)
+    validate()
     if parent is None or parent.active_chain is None:
         return "wake"
 
@@ -5675,12 +5698,14 @@ def _advance_chain_for_completed_child(
         # report is missing/unacceptable — fail closed.  Never consult the
         # task-wide newest-row read: a wrong-agent/wrong-session (or any
         # unrelated) row must not gate chain advancement.
-        orch._db.update_task_active_chain(parent_task_id, None)
+        with _followon_writer(orch, validate):
+            orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
-        orch._db.update_task_active_chain(parent_task_id, None)
+        with _followon_writer(orch, validate):
+            orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
     completed_child = orch._db.get_task(child_task_id)
@@ -5692,7 +5717,8 @@ def _advance_chain_for_completed_child(
         reviewer_agents=_reviewer_agents_for(orch),
     )
     if action.kind == "wake":
-        orch._db.update_task_active_chain(parent_task_id, None)
+        with _followon_writer(orch, validate):
+            orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
     # THR-109: validate attachments FIRST, before any state change.
@@ -5719,14 +5745,16 @@ def _advance_chain_for_completed_child(
         except ValueError:
             # Attachment validation failed — do NOT spawn the leg.
             # Clear the chain so the parent can wake and handle the failure.
-            orch._db.update_task_active_chain(parent_task_id, None)
+            with _followon_writer(orch, validate):
+                orch._db.update_task_active_chain(parent_task_id, None)
             return "wake"
 
     # Atomic chain advance: update parent active_chain + insert next child +
     # attachment links/audit in a single transaction. A crash or write failure
     # rolls back everything — no orphan chain state, no orphan child, no
     # orphan link/audit/claim, no queue side effect.
-    next_child_id = orch._db.next_task_id()
+    with _followon_writer(orch, validate):
+        next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
     chain_json = chain.serialize()
 
@@ -5740,26 +5768,32 @@ def _advance_chain_for_completed_child(
         session_timeout_seconds=parent.session_timeout_seconds,
         task_type="subtask",
     )
-    if not orch._db.try_advance_chain(
-        parent_id=parent_task_id,
-        active_chain_json=chain_json,
-        next_child=next_child,
-        attachments=chain_att_params,
-        uploaded_by="orchestrator",
-    ):
-        # Chain advance + child insert failed — transaction rolled back.
-        # No partial state remains; parent wakes normally.
-        return "wake"
+    with _followon_writer(orch, validate):
+        if not orch._db.try_advance_chain(
+            parent_id=parent_task_id,
+            active_chain_json=chain_json,
+            next_child=next_child,
+            attachments=chain_att_params,
+            uploaded_by="orchestrator", validate_admission=validate,
+        ):
+            # Chain advance + child insert failed — transaction rolled back.
+            # No partial state remains; parent wakes normally.
+            return "wake"
 
-    orch._audit.log_chain_auto_advance(
-        parent_task_id=parent_task_id,
-        leg_index=action.next_step_index,
-        spawned_child_id=next_child_id,
-        triggering_child_id=child_task_id,
-        triggering_verdict=report.verdict,
-        chain_origin_step_audit_id=chain.step_audit_id,
-    )
-    _enqueue_task_generation_aware(orch, next_child_id)
+    try:
+        with _followon_writer(orch, validate):
+            orch._audit.log_chain_auto_advance(
+                parent_task_id=parent_task_id,
+                leg_index=action.next_step_index,
+                spawned_child_id=next_child_id,
+                triggering_child_id=child_task_id,
+                triggering_verdict=report.verdict,
+                chain_origin_step_audit_id=chain.step_audit_id,
+            )
+        _publish_followon_task(orch, next_child_id, validate)
+    except BaseException as exc:
+        exc.add_note(f"Original chain child {next_child_id} committed; publication remains pending.")
+        raise
     return "advance"
 
 
@@ -5769,6 +5803,7 @@ from runtime.orchestrator.task_terminal_readers import _is_carrier
 def _carrier_fail_on_verdict_mismatch(
     orch: "Orchestrator", parent: "TaskRecord",
     child_task_id: str, chain_snapshot: str | None, report=None,
+    *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
     """After a carrier's chain leg completed but the chain did not advance
     (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
@@ -5783,6 +5818,8 @@ def _carrier_fail_on_verdict_mismatch(
     exact report) fails the carrier closed — an unverifiable leg outcome must
     never complete or advance a carrier on task-wide evidence.
     """
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     if chain_snapshot is None:
         return False
     if not _is_carrier(orch, parent):
@@ -5801,9 +5838,9 @@ def _carrier_fail_on_verdict_mismatch(
         )
         if expected is not None:
             note += f" (expected {expected!r})"
-        _fail(orch, parent.id, note=note)
+        _fail(orch, parent.id, note=note, validate_admission=validate)
         # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
         return True
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
@@ -5816,10 +5853,11 @@ def _carrier_fail_on_verdict_mismatch(
         _fail(
             orch, parent.id,
             note=f"carrier verdict mismatch: expected {expected!r}, got None",
+            validate_admission=validate,
         )
         # Feed carrier failure into the fan-out parent's barrier.  Returning
         # True without these side effects strands both carrier and parent.
-        _enqueue_parent_if_waiting(orch, parent.id)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
         return True
     completed_child = orch._db.get_task(child_task_id)
     completed_agent = completed_child.assigned_agent if completed_child is not None else None
@@ -5834,9 +5872,10 @@ def _carrier_fail_on_verdict_mismatch(
     # false success.
     if action.kind == "wake" and action.reason in ("verdict_mismatch", "reviewer_non_approve"):
         _fail(orch, parent.id,
-               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}")
+               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}",
+               validate_admission=validate)
         # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
         return True
     return False
 
@@ -5844,10 +5883,13 @@ def _carrier_fail_on_verdict_mismatch(
 def _carrier_fail_immediate(
     orch: "Orchestrator", parent: "TaskRecord",
     child_task_id: str,
+    *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
     """A carrier's chain leg failed: fail the whole carrier immediately
     (fail-closed at carrier).  Returns True if the carrier was failed,
     False for non-carriers."""
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     if not _is_carrier(orch, parent):
         return False
     child = orch._db.get_task(child_task_id)
@@ -5862,6 +5904,7 @@ def _carrier_fail_immediate(
     _fail(
         orch,
         parent.id,
+        validate_admission=validate,
         note=(
             f"carrier chain leg {child_task_id} failed; "
             f"causal_leaf_id={child_task_id}; causal_status="
@@ -5872,12 +5915,13 @@ def _carrier_fail_immediate(
         ),
     )
     # Feed carrier failure into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
+    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
     return True
 
 
 def _carrier_complete_on_chain_complete(
     orch: "Orchestrator", parent: "TaskRecord",
+    *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
     """After a carrier's chain completed successfully (all legs done,
     final leg verdict matched), complete the carrier DIRECTLY — NO
@@ -5886,13 +5930,15 @@ def _carrier_complete_on_chain_complete(
 
     Returns True if the carrier was completed, False for non-carriers.
     """
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     if not _is_carrier(orch, parent):
         return False
     # Complete the carrier directly — it has no session of its own.
     _complete(orch, parent.id,
-              note="carrier chain complete")
+              note="carrier chain complete", validate_admission=validate)
     # Feed carrier completion into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
+    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
     return True
 
 
@@ -6066,19 +6112,130 @@ def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord")
     return _child_landed_terminal_report(orch, child) is not None
 
 
+def _task_followon_validation(orch: "Orchestrator") -> Callable[[], None]:
+    """Select ordinary admission or the SAME retained P2/P4/P6 native owner."""
+    from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+    from runtime.daemon.startup_publication import current_publication
+    sweep, publication = _startup_sweep_owner(orch), current_publication(orch)
+    if sweep is None and publication is None:
+        return ordinary_admission_validation(orch)
+    state, gate, org = orch._startup_state, orch._startup_recovery, orch._startup_org
+    epoch = None if gate is None else gate.epoch
+    loop, queue = None if gate is None else gate._loop, orch._queue
+    refs = None if org is None else org._startup_admission_refs
+
+    def validate() -> None:
+        if (orch._startup_state is not state or orch._startup_recovery is not gate
+                or orch._startup_org is not org
+                or org is not None and org._startup_admission_refs is not refs
+                or gate is not None and (gate.epoch != epoch or gate._loop is not loop)
+                or orch._queue is not queue):
+            raise StartupUnavailable("startup_attachment_changed")
+        if gate is not None:
+            gate.require_attachment(orch)
+        if sweep is not None:
+            if _startup_sweep_owner(orch) is not sweep or sweep.orch is not orch:
+                raise StartupUnavailable("startup_sweep_owner_changed")
+            with sweep._lock:
+                if not ((sweep._body_open and threading.get_ident() == sweep._body_thread)
+                        or threading.current_thread() in sweep._tails):
+                    raise StartupUnavailable("startup_sweep_owner_changed")
+                sweep.check()
+            if gate is not None:
+                with gate._lock:
+                    if (gate._sweep_owner is not sweep or gate._phase != "sweep"
+                            or gate._status != "recovering" or gate._first_cause is not None):
+                        raise StartupUnavailable("startup_sweep_owner_changed")
+        else:
+            if current_publication(orch) is not publication or publication.gate is not gate:
+                raise StartupUnavailable("startup_publication_owner_changed")
+            gate.require_publication_owner(orch)
+
+    validate()
+    return validate
+
+
+@contextmanager
+def _followon_writer(orch, validate):
+    """Only an original short DB effect, never file work or a native join."""
+    validate()
+    with orch._db._lock:
+        validate()
+        yield
+
+
+class _FollowonOwnerLost(RuntimeError):
+    pass
+
+
+def _publish_followon_task(orch, task_id, validate):
+    """Original generation-aware publication with exact P2/P4/P6 selection."""
+    validate()
+    from runtime.daemon.startup_publication import current_publication, _TaskPublication
+    publication, sweep = current_publication(orch), _startup_sweep_owner(orch)
+    queue = orch._queue
+    if queue is None:
+        return
+    selected = None
+    if publication is not None:
+        selected = _TaskPublication(publication.gate, orch, task_id,
+            "returned_parent" if publication.gate._phase == "returned" else "redelivery",
+            publication=publication)
+    elif sweep is not None and orch._startup_state is not None:
+        selected = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                    "sweep_parent", sweep_owner=sweep)
+    kwargs = {"_publication": selected} if selected is not None else {}
+    def observe(outcome):
+        if selected is not None and outcome not in ("ordinary", "published"):
+            raise RuntimeError("startup_parent_publication_" + outcome)
+    def publish():
+        validate()
+        _enqueue_task_generation_aware(orch, task_id,
+            **({"_observe": observe} if selected is not None else {}), **kwargs)
+    with publication.attempt(orch, "parent_attempted") if publication is not None else nullcontext():
+        validate()
+        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
+        if callable(enqueue_if_absent):
+            inserted = enqueue_if_absent(orch._slug, task_id, publisher=publish, **kwargs)
+        else:
+            if selected is not None:
+                raise RuntimeError("startup_parent_queue_owner_unavailable")
+            publish()  # Existing lightweight standalone adapters.
+            return
+        if selected is not None:
+            from runtime.daemon.queue import TaskQueue
+            if (not isinstance(queue, TaskQueue) or type(inserted) is not bool
+                    or queue.pending_publication(orch._slug, task_id) != "pending"):
+                raise RuntimeError("startup_parent_publication_unacknowledged")
+            if publication is not None:
+                publication.count("acknowledged")
+                publication.count("inserted" if inserted else "already_pending")
+
+
 def _enqueue_parent_if_waiting(
     orch: "Orchestrator", task_id: str, *,
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> None:
     from runtime.daemon.startup_publication import current_publication
     publication = current_publication(orch)
+    selected = _task_followon_validation(orch)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
     try:
         with _startup_sweep_effect(orch):
             return _enqueue_parent_if_waiting_owned(
                 orch, task_id, root_auto_revisit_spawned=root_auto_revisit_spawned,
-                current_owner=current_owner,
+                current_owner=current_owner, validate_admission=validate,
             )
+    except _FollowonOwnerLost as exc:
+        if publication is not None:
+            publication.fail(exc)
+            raise
+        return
     except BaseException as exc:
         if publication is not None:
             publication.fail(exc)
@@ -6091,6 +6248,7 @@ def _enqueue_parent_if_waiting_owned(
     *,
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
@@ -6118,13 +6276,22 @@ def _enqueue_parent_if_waiting_owned(
     to auto-advance as before; on mismatch it clears the chain and wakes
     the parent.
     """
-    if current_owner is not None and not current_owner():
-        return
+    selected_validation = validate_admission or _task_followon_validation(orch)
+    original_owner = current_owner
+    def validate():
+        selected_validation()
+        if original_owner is not None and not original_owner():
+            raise _FollowonOwnerLost("startup_parent_current_owner_lost")
+        selected_validation()
+    validate()
     task = orch._db.get_task(task_id)
+    validate()
     if task is None or task.parent_task_id is None:
         return
     from runtime.workflows.recovery import classify_task
+    validate()
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
+    validate()
     from runtime.daemon.startup_publication import current_publication
     publication = current_publication(orch)
     if publication is not None and ownership.kind == 'reconciliation_required':
@@ -6139,12 +6306,16 @@ def _enqueue_parent_if_waiting_owned(
             entry = queued_storage(orch._db._conn, orch._slug).runs[ownership.intent_id]
             if not entry['native'].get('returned') or entry['source']['task_id'] != task_id:
                 return
+    validate()
     parent_ownership = classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None))
+    validate()
     if publication is not None and parent_ownership.kind == 'reconciliation_required':
         raise RuntimeError("startup_parent_ownership_unavailable")
     if parent_ownership.kind != 'legacy':
         return
+    validate()
     parent = orch._db.get_task(task.parent_task_id)
+    validate()
     # Path B: a delegating parent is in_progress(delegated). The non-cascading
     # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.
     if parent is None or parent.status not in _PARKED_CARRIER_STATUSES:
@@ -6153,62 +6324,7 @@ def _enqueue_parent_if_waiting_owned(
         return
 
     def enqueue_parent_once() -> None:
-        """Keep a restart-reconstructed wake from duplicating a live tail."""
-        if current_owner is not None and not current_owner():
-            return
-        from runtime.daemon.startup_publication import current_publication
-        publication = current_publication(orch)
-        queue = getattr(orch, "_queue", None)
-        if publication is not None:
-            from runtime.daemon.queue import TaskQueue
-            from runtime.daemon.startup_publication import _TaskPublication
-            with publication.attempt(orch, "parent_attempted"):
-                selected = _TaskPublication(publication.gate, orch, parent.id,
-                    "returned_parent" if publication.gate._phase == "returned" else "redelivery",
-                    publication=publication)
-                if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
-                    raise RuntimeError("startup_parent_queue_owner_unavailable")
-
-                def observe(outcome: str) -> None:
-                    if outcome not in ("ordinary", "published"):
-                        raise RuntimeError("startup_parent_publication_" + outcome)
-
-                inserted = queue.enqueue_if_absent(
-                    orch._slug, parent.id, _publication=selected,
-                    publisher=lambda: _enqueue_task_generation_aware(
-                        orch, parent.id, _observe=observe, _publication=selected,
-                    ),
-                )
-                # False alone also means stopping or an in-progress reservation.
-                # Only the real queue's SAME (org, parent) pending owner is proof;
-                # its generation-aware publisher/metadata above remains unchanged.
-                if queue.pending_publication(orch._slug, parent.id) != "pending":
-                    raise RuntimeError("startup_parent_publication_unacknowledged")
-                publication.count("acknowledged")
-                publication.count("inserted" if inserted else "already_pending")
-            return
-        if queue is None:
-            return
-        selected = None
-        startup = _startup_sweep_owner(orch)
-        if startup is not None and orch._startup_state is not None:
-            from runtime.daemon.startup_publication import _TaskPublication
-            selected = _TaskPublication(orch._startup_recovery, orch, parent.id,
-                                       "sweep_parent", sweep_owner=startup)
-        kwargs = {"_publication": selected} if selected is not None else {}
-        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
-        if callable(enqueue_if_absent):
-            enqueue_if_absent(
-                orch._slug,
-                parent.id,
-                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id, **kwargs),
-                **kwargs,
-            )
-            return
-        # Lightweight test adapters predate TaskQueue's atomic boundary. The
-        # production daemon always wires TaskQueue; retain adapter compatibility
-        # without reaching into either queue implementation's private storage.
-        _enqueue_task_generation_aware(orch, parent.id)
+        _publish_followon_task(orch, parent.id, validate)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
@@ -6218,7 +6334,9 @@ def _enqueue_parent_if_waiting_owned(
     # Phase 2 carrier fail-closed: when the parent is a carrier (its own
     # parent has active_fanout), a verdict-mismatch or a failed leg fails
     # the whole carrier immediately — no partial-chain completion.
+    validate()
     child = orch._db.get_task(task_id)
+    validate()
     if child is not None and parent.active_chain is not None:
         # THR-211: a child whose current session has durably landed a
         # structured terminal report is dispatch-terminal even while its row
@@ -6260,19 +6378,19 @@ def _enqueue_parent_if_waiting_owned(
                 chain_snapshot = parent.active_chain
                 outcome = _advance_chain_for_completed_child(
                     orch=orch, parent_task_id=parent.id, child_task_id=task_id,
-                    report=authenticated_report,
+                    report=authenticated_report, validate_admission=validate,
                 )
                 if outcome == "advance":
                     return  # next leg spawned; parent stays in_progress(delegated)
                 # outcome == "wake" → chain cleared; carrier fail-closed?
                 if _carrier_fail_on_verdict_mismatch(
                     orch, parent, task_id, chain_snapshot,
-                    report=authenticated_report,
+                    report=authenticated_report, validate_admission=validate,
                 ):
                     return  # carrier failed; outer _enqueue_parent_if_waiting skipped
                 # Chain complete + verdict matched → carrier auto-completes
                 # directly (no _run_agent session, no manager-wake).
-                if _carrier_complete_on_chain_complete(orch, parent):
+                if _carrier_complete_on_chain_complete(orch, parent, validate_admission=validate):
                     return  # carrier completed; outer _enqueue_parent_if_waiting skipped
             # Stale re-trigger for a leg the chain already advanced past, or a
             # non-newest child: fall through to sibling-check + parent-wake.
@@ -6310,17 +6428,16 @@ def _enqueue_parent_if_waiting_owned(
             # (its own parent has active_fanout), fail the whole carrier
             # immediately — no partial-chain completion.
             if parent.active_chain is not None:
-                if current_owner is not None and not current_owner():
-                    return
-                orch._db.update_task_active_chain(parent.id, None)
+                validate()
+                with _followon_writer(orch, validate):
+                    orch._db.update_task_active_chain(parent.id, None)
             if _is_carrier(orch, parent):
                 causal_leaf = next(
                     (leaf for leaf in unresolved_leaves if leaf.id == task_id),
                     unresolved_leaves[-1],
                 )
-                if current_owner is not None and not current_owner():
-                    return
-                _carrier_fail_immediate(orch, parent, causal_leaf.id)
+                validate()
+                _carrier_fail_immediate(orch, parent, causal_leaf.id, validate_admission=validate)
                 return  # carrier failure feeds the fan-out parent's barrier
 
             # A linked historical retry remains truthful causal context in the
@@ -6435,9 +6552,11 @@ def _maybe_resume_blocked_task(
 
     from runtime.daemon.startup_publication import current_publication
     publication = current_publication(orch)
+    validate = _task_followon_validation(orch)
     db = orch._db
     audit = orch._audit
     task = db.get_task(task_id)
+    validate()
     if task is None:
         if publication is not None:
             raise RuntimeError("startup_blocked_task_missing")
@@ -6451,18 +6570,20 @@ def _maybe_resume_blocked_task(
     try:
         job_ids = _json.loads(task.blocked_on_job_ids or "[]")
     except _json.JSONDecodeError:
-        audit.log_task_resume_skipped(
-            task_id=task_id, reason="empty_job_list",
-            blocked_on_job_ids_raw=task.blocked_on_job_ids,
-        )
+        with _followon_writer(orch, validate):
+            audit.log_task_resume_skipped(
+                task_id=task_id, reason="empty_job_list",
+                blocked_on_job_ids_raw=task.blocked_on_job_ids,
+            )
         if publication is not None:
             raise RuntimeError("startup_blocked_job_list_invalid")
         return False
     if not job_ids:
-        audit.log_task_resume_skipped(
-            task_id=task_id, reason="empty_job_list",
-            blocked_on_job_ids_raw=task.blocked_on_job_ids,
-        )
+        with _followon_writer(orch, validate):
+            audit.log_task_resume_skipped(
+                task_id=task_id, reason="empty_job_list",
+                blocked_on_job_ids_raw=task.blocked_on_job_ids,
+            )
         if publication is not None:
             raise RuntimeError("startup_blocked_job_list_empty")
         return False
@@ -6471,7 +6592,9 @@ def _maybe_resume_blocked_task(
 
     _TERMINAL = {"completed", "failed", "rejected"}
     for jid in job_ids:
+        validate()
         status = db.get_job_status(jid)
+        validate()
         if status not in _TERMINAL:
             if publication is not None:
                 if status is None:
@@ -6479,6 +6602,7 @@ def _maybe_resume_blocked_task(
                 publication.count("held")
             return False  # silent — common steady state
 
+    validate()
     # All terminal — enqueue (trigger metadata preserved through the boundary).
     # This producer's legacy shape is ``queue.enqueue(..., metadata=...)``.
     if publication is not None:

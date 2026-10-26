@@ -146,15 +146,19 @@ def producer_preparation_effects(owner):
 
 
 @contextmanager
-def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False):
+def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False, validate_admission=None):
     """Reservation only, never a gate/DB lock across the writer body.
 
     The caller retains its existing profile/workflow/roster/store lock order.
     Unscoped canonical changes invalidate org-wide snapshot inputs and reserve
     that input. This does not authorize D to borrow an existing journal.
     """
+    if validate_admission is not None:
+        validate_admission()
     disposition = NativeWriterDisposition()
     admission = owner_for(db)
+    if validate_admission is not None:
+        validate_admission()
     if admission is None:
         yield disposition
         return
@@ -176,6 +180,8 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
     # serialized against the operation's SAME DB COMMIT without reverse gate.
     gate = nullcontext() if db._lock._is_owned() else admission.move.gate
     with gate, db._lock:
+        if validate_admission is not None:
+            validate_admission()
         if not settlement:
             admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
         if durable:
