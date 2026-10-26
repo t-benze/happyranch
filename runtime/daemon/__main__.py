@@ -132,6 +132,72 @@ def discover_completed_workflow_handoffs_native(state: DaemonState, recovery: St
     return outcome
 
 
+def redeliver_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """One callable P6 seam, after P4 actual-loop binding and P5 compatibility.
+
+    The later lifecycle caller retains ALL old entry obligations until it moves
+    them together. This entry neither binds references nor activates consumers.
+    """
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.orchestrator.run_step import _maybe_resume_blocked_task, _StartupSweepOutcome
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    from runtime.orchestrator.team_move_operation import TeamMoveOperation
+    from runtime.orchestrator.task_pause import discover_pause_work_native
+    from runtime.daemon.thread_queue import ThreadJob
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_redelivery_state_owner_unavailable")
+    held = False
+    with recovery.phase("redelivery") as settle:
+        state._assert_attachments_unchanged(recovery._attachments)
+        # Retain original all-org blocked -> move -> Pause -> token order.
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with recovery.publications(org.orchestrator):
+                for task_id in org.db.list_tasks_blocked_on_jobs():
+                    _maybe_resume_blocked_task(org.orchestrator, task_id,
+                        trigger="startup_recovery", triggering_job_id=None)
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with org.db._lock:
+                installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
+                completed_move = installed and org.db._conn.execute(
+                    "SELECT 1 FROM team_move_operations WHERE phase='complete' LIMIT 1"
+                ).fetchone() is not None
+            if completed_move:
+                if state.profile_coordinator is None:
+                    raise RuntimeError("startup_move_profile_owner_unavailable")
+                with recovery.publications(org.orchestrator):
+                    TeamMoveOperation(org, state.profile_coordinator).redeliver_native(recovery)
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with recovery.publications(org.orchestrator):
+                outcome = discover_pause_work_native(org, state.queue, recovery)
+                if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+                    raise RuntimeError("startup_pause_outcome_unavailable")
+                held |= outcome.disposition == "local_hold"
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with recovery.publications(org.orchestrator) as publication:
+                # Missing P2 completion is not an empty successful token set.
+                tokens = getattr(org, "_startup_recovered_thread_tokens", None)
+                if (not isinstance(tokens, _StartupSweepOutcome)
+                        or tokens.disposition not in ("settled", "local_hold")
+                        or tokens.first_cause is not None or tuple(tokens) != tokens.tokens
+                        or any(type(token) is not str or not token for token in tokens)):
+                    raise RuntimeError("startup_recovered_thread_tokens_unavailable")
+                for token in tokens:
+                    publication.make_room(org.orchestrator)
+                    publication.submit_thread(org.orchestrator, org.thread_queue,
+                        recovery._loop, ThreadJob(org_slug=org.slug, invocation_token=token))
+            recovery.require_redelivery_owner(org)
+        state._assert_attachments_unchanged(recovery._attachments)
+        outcome = recovery.publication_outcome()
+        if held and outcome.disposition == "settled":
+            outcome = RecoveryOutcome("local_hold")
+        settle(outcome)
+    return outcome
+
+
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,

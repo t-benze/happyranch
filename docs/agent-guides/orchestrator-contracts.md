@@ -4219,6 +4219,66 @@ runtime attachment callers before admission, then wire lifespan/P0-P9/P6,
 consumer gating and stop/close joins. No partial source may merge; behavior and
 sensitivity proof remain NOT RUN.
 
+The native P6 source entry is `redeliver_native_on_startup(state, recovery)`
+in daemon `__main__`, called ONCE on the SAME retained native operation after
+P4 has bound true request-loop references and settled returned notification,
+and P5 compatibility has settled. It owns the `redelivery` phase, checking the
+original org/DB/orchestrator/queue attachments and epoch before and after work.
+Its source order is the original all-org blocked-job predicates, completed-move
+validation/redelivery, Pause rediscovery, then original P2 recovered thread tokens.
+The completed-move query/schema validation is unchanged; absent profile ownership
+is unavailable rather than a successful skipped mandatory redelivery. P2 token
+publication requires the actual positively completed sweep result, not a guessed
+empty token list. No lifecycle caller or readiness/consumer activation is installed
+by this intermediate source slice; old lifespan and attachment obligations remain
+until the root migrates them together. P7, P8 and P9 remain separate later steps.
+
+Pause rediscovery shares `_discover_pause_roots` between its native entry and
+ordinary async wrapper: original page32/cursor, complete tree<=10000, coherent
+capture, settled-producer observation, retained unknown/closed pending evidence,
+held callback authentication and workflow-first task notification stay at their
+original boundaries. Native entry creates no job coroutine/runner/registration
+and acquires no persistent asyncio primitive. An eligible original pending
+unreviewed job remains in its journal; its release_pending_generation is NOT
+cleared while launch is held. An attributed task-publication hold also preserves
+release intent. Ordinary ready-mode processing retains per-root task publication,
+then the eligible `_run_job_core` attempts and original error logging, then exact
+current-generation/unheld release acknowledgement. Genuine rejected/settled
+pending jobs and already-completed callbacks keep their prior bookkeeping meaning.
+
+Completed move redelivery keeps durable release validation and task -> thread ->
+producer ordering. Task publication uses the real generation-aware publisher and
+SAME task pending ownership, retaining trigger metadata and deferred notifications
+until positively acknowledged. `_maybe_resume_blocked_task` keeps its ordinary
+Boolean meaning (qualifying enqueue attempt); P6 observes actual publication and
+attributes nonterminal job holds separately. Pending/admitted v2 targets remain
+with the original generation owner without a new discovery pass; malformed or
+unavailable classification and missing queue ownership fail closed. Workflow
+notifications keep current intent/authority/independence and coding's actual
+queue_admission_allowed predicate; native outcomes distinguish local ineligibility
+from corrupt/unavailable storage. No stage dispatch/progression or result consumer
+is added. The cold P2/P3 require_workflow_owner contract is unchanged and never
+used as a P6 bypass.
+
+Thread selection uses the existing runnable_tokens census and producer selection
+uses original history/current dream pending, wake pending, schedule firing or
+safely deferred-running predicates under the same move gate/DB owner. Selection
+yields original keys outside locks; armed schedules remain the normal timer's
+post-ready responsibility. Native recovery never calls producer put_nowait.
+StartupPublications registers original Thread/Dream/Wake/Schedule handoffs before
+submission to the real request loop; actual put_once returns inserted or
+already_pending for the SAME owned key, with ordinary put/put_nowait/get/release
+signatures and dedup retained. The single total32 handle set includes inherited
+thread handoffs. Incremental drains happen outside DB/move/owner locks before
+capacity is exceeded; no second side backlog or retired-ID telemetry is allocated.
+All real put results AND native Task completion must settle before phase success.
+Stopped/wrong-owner/failed/cancelled/unknown delivery keeps readiness closed and
+retains pending history and any unproved native owner. Cancelling a wrapper does
+not prove the actual Task ended. First BaseException survives bounded secondary
+observations; earlier entered partial effects remain history. These are source
+contracts only: behavior/resource/performance NOT RUN, sensitivity PROOF NOT RUN,
+maker0/3 and QA0/3 unchanged, under10s UNVERIFIED.
+
 Receipt-owned cleanup tails and startup Branch 2 can reach the same parent
 wake concurrently. They (and the already-bounded blocked-job startup producer)
 therefore use `TaskQueue.enqueue_if_absent`: the queue owns one thread-safe

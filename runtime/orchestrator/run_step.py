@@ -6298,6 +6298,66 @@ def _enqueue_parent_if_waiting_owned(
 # these readers are preserved for historical compatibility — existing
 # auto_revisit_of audit rows must remain readable).
 # ---------------------------------------------------------------------------
+def _publish_redelivery_task(
+    orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
+    publisher: Callable[[], str | None] | None = None,
+    generation_aware: bool = True,
+):
+    """P6 selected original pointer: actual insertion/SAME pending ownership.
+
+    This is not ordinary admission. A pending/admitted v2 target remains with
+    its original generation owner (P3), without a second discovery/publish pass.
+    Deferred authenticated SAME-owner callbacks explicitly retain their raw
+    original metadata and do not seek fresh generation admission.
+    """
+    from runtime.daemon.startup_publication import current_publication
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    from runtime.daemon.queue import TaskQueue
+    publication = current_publication(orch)
+    if publication is None:
+        raise RuntimeError("startup_redelivery_publication_owner_missing")
+    org = publication.gate.state.orgs.get(orch._slug)
+    publication.gate.require_redelivery_owner(org)
+    queue = orch._queue
+    if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
+        raise RuntimeError("startup_redelivery_task_queue_unavailable")
+    with publication.attempt(orch, "task_attempted"):
+        if generation_aware:
+            # Exact target-local read, not discovery or reconstruction. Unknown
+            # classification is never inferred to be an empty/held selection.
+            classification = orch._db.classify_authority_policy_v2_root_dispatch_for_enqueue(task_id)
+            if classification.kind in ("pending", "admitted"):
+                publication.count("held")
+                return RecoveryOutcome("local_hold", "startup_redelivery_generation_owned")
+            if classification.kind not in ("absent", "retired"):
+                raise RuntimeError("startup_redelivery_generation_unavailable")
+
+        def publish() -> None:
+            if publisher is not None:
+                result = publisher()
+            elif generation_aware:
+                result = None
+                def observe(value: str) -> None:
+                    nonlocal result
+                    result = value
+                _enqueue_task_generation_aware(orch, task_id, metadata=metadata,
+                                               legacy="enqueue", _observe=observe)
+            else:
+                queue.enqueue(orch._slug, task_id, metadata=metadata)
+                result = None
+            if generation_aware and result not in ("ordinary", "published"):
+                raise RuntimeError("startup_redelivery_task_publication_refused")
+
+        inserted = queue.enqueue_if_absent(orch._slug, task_id, metadata=metadata,
+                                           publisher=publish)
+        if type(inserted) is not bool or queue.pending_publication(orch._slug, task_id) != "pending":
+            raise RuntimeError("startup_redelivery_task_unacknowledged")
+        publication.count("acknowledged")
+        publication.count("inserted" if inserted else "already_pending")
+        publication.gate.require_redelivery_owner(org)
+        return RecoveryOutcome("settled")
+
+
 def _maybe_resume_blocked_task(
     orch: "Orchestrator",
     task_id: str,
@@ -6317,13 +6377,19 @@ def _maybe_resume_blocked_task(
     """
     import json as _json
 
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
     db = orch._db
     audit = orch._audit
     task = db.get_task(task_id)
     if task is None:
+        if publication is not None:
+            raise RuntimeError("startup_blocked_task_missing")
         return False
     # Path B: a task parked on jobs is in_progress(blocked_on_job).
     if task.status not in _PARKED_CARRIER_STATUSES or task.block_kind != BlockKind.BLOCKED_ON_JOB:
+        if publication is not None:
+            publication.count("not_applicable")
         return False  # silent — steady state
 
     try:
@@ -6333,27 +6399,44 @@ def _maybe_resume_blocked_task(
             task_id=task_id, reason="empty_job_list",
             blocked_on_job_ids_raw=task.blocked_on_job_ids,
         )
+        if publication is not None:
+            raise RuntimeError("startup_blocked_job_list_invalid")
         return False
     if not job_ids:
         audit.log_task_resume_skipped(
             task_id=task_id, reason="empty_job_list",
             blocked_on_job_ids_raw=task.blocked_on_job_ids,
         )
+        if publication is not None:
+            raise RuntimeError("startup_blocked_job_list_empty")
         return False
+    if publication is not None and (type(job_ids) is not list or any(type(jid) is not str for jid in job_ids)):
+        raise RuntimeError("startup_blocked_job_list_invalid")
 
     _TERMINAL = {"completed", "failed", "rejected"}
     for jid in job_ids:
-        if db.get_job_status(jid) not in _TERMINAL:
+        status = db.get_job_status(jid)
+        if status not in _TERMINAL:
+            if publication is not None:
+                if status is None:
+                    raise RuntimeError("startup_blocking_job_missing")
+                publication.count("held")
             return False  # silent — common steady state
 
     # All terminal — enqueue (trigger metadata preserved through the boundary).
     # This producer's legacy shape is ``queue.enqueue(..., metadata=...)``.
-    _enqueue_task_generation_aware(
-        orch, task_id,
-        metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
-        legacy="enqueue",
-    )
-    return True
+    if publication is not None:
+        _publish_redelivery_task(
+            orch, task_id,
+            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+        )
+    else:
+        _enqueue_task_generation_aware(
+            orch, task_id,
+            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+            legacy="enqueue",
+        )
+    return True  # Ordinary contract: qualifying attempt, never an ack by itself.
 
 
 from runtime.orchestrator.task_thread_posting import _append_followup_system_and_reinvoke

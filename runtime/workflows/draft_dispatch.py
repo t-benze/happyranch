@@ -16,6 +16,7 @@ from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJEC
 if TYPE_CHECKING:
     import sqlite3
     from runtime.daemon.org_state import OrgState
+    from runtime.daemon.startup_recovery import RecoveryOutcome
     from runtime.platform.session_backend import RunningHandle
     from runtime.workflows.authority import AuthorityAdmissionCapture
 
@@ -326,7 +327,7 @@ class WorkflowDraftDispatcher:
         validate_workflow_schema(conn, expected_org_slug=self.org.slug)
         invocation.draft_claim = claim
 
-    def notify_queued(self, task_id: str, queue: Any) -> None:
+    def notify_queued(self, task_id: str, queue: Any) -> RecoveryOutcome | None:
         """Rediscover eligible durable work on the periodic daemon sweep.
 
         A notification grants no claim or launch authority. Revalidate the
@@ -338,13 +339,27 @@ class WorkflowDraftDispatcher:
         from runtime.workflows.authority import WorkflowAuthorityError
         from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 
+        from runtime.daemon.startup_publication import current_publication
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        publication = current_publication(self.org.orchestrator)
+        if publication is not None:
+            publication.gate.require_redelivery_owner(self.org)
+            if queue is not publication.gate.state.queue:
+                raise RuntimeError("startup_document_queue_changed")
+
+        def held(code):
+            if publication is not None:
+                publication.count("held")
+                return RecoveryOutcome("local_hold", code)
+            return None
+
         with self._live_lock:
             if task_id in self._live:
-                return
+                return held("startup_document_live_owner")
         try:
             with self.db._lock:
                 if self._intent(self.db._conn, task_id)["state"] != "queued":
-                    return
+                    return held("startup_document_not_queued")
             capture = self.org.workflow_authority.capture_admission()
             active_sessions = tuple(self.org.sessions.iter_active())
             with self.org.workflow_authority.admission_writer(capture) as conn:
@@ -353,18 +368,30 @@ class WorkflowDraftDispatcher:
                         or intent["session_id"] is not None
                         or intent["host_execution_id"] is not None
                         or intent["final_result_id"] is not None):
-                    return
+                    return held("startup_document_owner_ineligible")
                 store = getattr(self.db, "_task_pause_store", None)
                 if store is not None:
                     from runtime.infrastructure.task_pause_controls import PauseControlError
                     try:
                         store.held_uncommitted(task_id)
-                    except PauseControlError:
-                        return
+                    except PauseControlError as exc:
+                        if publication is not None and exc.detail["code"] != "root_paused":
+                            raise
+                        return held("root_paused")
                 self._eligible(conn, intent, capture, active_sessions)
         except (DraftOwnershipError, WorkflowActivationError,
-                WorkflowAuthorityError, ProfileCoordinatorError):
+                WorkflowAuthorityError, ProfileCoordinatorError) as exc:
+            if publication is not None:
+                from runtime.workflows.review_join import HOLDS
+                code = str(exc) if isinstance(exc, DraftOwnershipError) else exc.code
+                if code not in HOLDS | {"workflow_activation_author_pending"}:
+                    raise
+                return held(code)
             return
+        if publication is not None:
+            from runtime.orchestrator.run_step import _publish_redelivery_task
+            return _publish_redelivery_task(self.org.orchestrator, task_id,
+                                            generation_aware=False)
         queue.enqueue_if_absent(self.org.slug, task_id)
 
     def bind_session(self, task_id: str, agent: str, session_id: str) -> None:

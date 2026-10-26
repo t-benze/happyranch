@@ -245,6 +245,18 @@ class CodingDispatcher:
             if not self.queue_admission_allowed(task_id):
                 return RecoveryOutcome('local_hold', 'startup_coding_pointer_ineligible')
             return recovery.publish_workflow_task(self.org, task_id, sweep_owner=startup_owner)
+        from runtime.daemon.startup_publication import current_publication
+        publication = current_publication(self.org.orchestrator)
+        if publication is not None:
+            from runtime.daemon.startup_recovery import RecoveryOutcome
+            from runtime.orchestrator.run_step import _publish_redelivery_task
+            publication.gate.require_redelivery_owner(self.org)
+            if queue is not publication.gate.state.queue:
+                raise RuntimeError('startup_coding_queue_changed')
+            if not self.queue_admission_allowed(task_id):
+                publication.count('held')
+                return RecoveryOutcome('local_hold', 'startup_coding_pointer_ineligible')
+            return _publish_redelivery_task(self.org.orchestrator, task_id, generation_aware=False)
         if self.queue_admission_allowed(task_id):
             queue.enqueue_if_absent(self.org.slug, task_id)
 

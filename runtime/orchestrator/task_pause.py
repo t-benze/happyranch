@@ -1010,14 +1010,15 @@ def restore_pause_preparations(orch: Any) -> None:
             store.save_journal_uncommitted(row)
 
 
-async def discover_pause_work(org: Any, queue: Any) -> None:
+def _discover_pause_roots(org: Any, queue: Any):
     """Bounded durable rediscovery through the existing owner publishers."""
     store = getattr(org.db, "_task_pause_store", None)
     if store is None or queue is None:
         return
     from runtime.workflows.recovery import classify_task
     from runtime.orchestrator.authority import enqueue_task_generation_aware
-    from runtime.daemon.routes.jobs import _run_job_core
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(org.orchestrator)
     # One bounded page per sweep, retaining cursor only as a traversal aid.
     # Release intent is acknowledged only for a fully inspected actual root.
     cursor = getattr(store, "_discovery_cursor", "")
@@ -1028,6 +1029,9 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
         store._discovery_cursor = ""
         return
     for root_id, generation in roots:
+        if publication is not None:
+            publication.gate.require_redelivery_owner(org)
+        held_before = publication.snapshot()["held"] if publication is not None else 0
         with org.db.coherent_read_view() as conn:
             root = store.root_uncommitted(root_id)
             row = store.row_uncommitted(root_id)
@@ -1043,6 +1047,7 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
         with store.writer(root_id) as (_, current):
             _observe_settled_producers(store, current)
             retained = []
+            root_unknown = False
             for entry in current["journal"]["entries"]:
                 job = org.db.get_job(entry["owner_identity"]["job_id"]) if entry["owner"] == "job" else None
                 task = org.db.get_task(entry["task_id"])
@@ -1053,10 +1058,12 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                                    and not entry["context"].get("execution_unknown"))
                 if not closed_pending and not closed_deferred:
                     retained.append(entry)
+                    root_unknown |= entry["phase"] == "unknown" or bool(entry["context"].get("execution_unknown"))
             current["journal"]["entries"] = retained
             store.save_journal_uncommitted(current)
             entries = list(retained)
         if not complete:
+            yield root_id, generation, held, entries, False, False
             continue
         # Exact landed callbacks settle through the existing consumer even
         # while held. Delivery itself grants no provider-launch permission.
@@ -1077,8 +1084,11 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                             with org.db.coherent_read_view():
                                 _authenticate_deferred_v2(store, entry)
                         except DeferredRootPause:
+                            if publication is not None:
+                                raise  # Unproved original v2 owner is not delivery.
                             continue
-                    queue.enqueue_if_absent(org.slug, entry["task_id"], metadata=dict(entry["owner_identity"]))
+                    _publish_pause_task(org, queue, entry["task_id"], metadata=dict(entry["owner_identity"]),
+                                        generation_aware=False)
         else:
             deferred = {e["task_id"]: e for e in entries if e["owner"] != "job"
                         and not e["context"].get("producer_settled")
@@ -1096,41 +1106,133 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                             with org.db.coherent_read_view():
                                 _authenticate_deferred_v2(store, entry)
                         except DeferredRootPause:
+                            if publication is not None:
+                                raise  # Unproved original v2 owner is not delivery.
                             continue
                         # This is delivery for the already admitted SAME
                         # owner, not publication/admission of a pending G.
-                        queue.enqueue_if_absent(org.slug, task_id, metadata=dict(entry["owner_identity"]))
+                        _publish_pause_task(org, queue, task_id, metadata=dict(entry["owner_identity"]),
+                                            generation_aware=False)
                     else:
-                        queue.enqueue_if_absent(org.slug, task_id,
+                        _publish_pause_task(org, queue, task_id,
                             publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
                                 org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
                 elif task is not None and eligible(org.orchestrator, task):
                     ownership = classify_task(org.db, task_id, org_slug=org.slug)
                     if ownership.kind == "draft":
-                        org.workflow_drafts.notify_queued(task_id, queue)
+                        _pause_workflow_notification(org.workflow_drafts, task_id, queue, publication)
                     elif ownership.kind == "f5":
-                        org.workflow_reviews.notify_queued(task_id, queue)
+                        _pause_workflow_notification(org.workflow_reviews, task_id, queue, publication)
                     elif ownership.kind == 'coding_attempt':
-                        org.workflow_coding_dispatch.notify_queued(task_id, queue)
+                        _pause_workflow_notification(org.workflow_coding_dispatch, task_id, queue, publication)
                     elif ownership.kind.startswith('coding_'):
+                        if publication is not None:
+                            publication.count("held")
                         continue
                     elif ownership.kind == "legacy":
-                        enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
-            for entry in entries:
-                if entry["owner"] == "job" and entry["phase"] == "pending_job":
-                    job_id = entry["owner_identity"]["job_id"]
-                    job = org.db.get_job(job_id)
-                    if job is not None and job.status.value == "pending" and not job.review_required:
-                        try:
-                            await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
-                                trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
-                        except Exception:
-                            import logging
-                            logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
-            with store.writer(root_id) as (_, current):
-                if current["generation"] == generation and not current["held"]:
-                    org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
-        store._discovery_cursor = root_id
+                        if publication is not None:
+                            from runtime.orchestrator.run_step import _publish_redelivery_task
+                            _publish_redelivery_task(org.orchestrator, task_id)
+                        else:
+                            enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
+                    elif publication is not None:
+                        raise RuntimeError("startup_pause_task_ownership_unavailable")
+        if publication is not None and root_unknown:
+            publication.count("held")  # Authenticated retained root-local uncertainty.
+        task_hold = publication is not None and publication.snapshot()["held"] > held_before
+        yield root_id, generation, held, entries, True, task_hold
+
+
+def _publish_pause_task(org, queue, task_id, *, metadata=None, publisher=None,
+                        generation_aware=True):
+    from runtime.daemon.startup_publication import current_publication
+    if current_publication(org.orchestrator) is not None:
+        from runtime.orchestrator.run_step import _publish_redelivery_task
+        if queue is not org.orchestrator._queue:
+            raise RuntimeError("startup_pause_queue_changed")
+        return _publish_redelivery_task(org.orchestrator, task_id, metadata=metadata,
+            publisher=publisher, generation_aware=generation_aware)
+    return queue.enqueue_if_absent(org.slug, task_id, metadata=metadata, publisher=publisher)
+
+
+def _pause_workflow_notification(dispatcher, task_id, queue, publication):
+    outcome = dispatcher.notify_queued(task_id, queue)
+    if publication is not None:
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+            raise RuntimeError("startup_pause_workflow_notification_unavailable")
+
+
+def _pending_pause_jobs(org, entries):
+    for entry in entries:
+        if entry["owner"] == "job" and entry["phase"] == "pending_job":
+            job_id = entry["owner_identity"]["job_id"]
+            job = org.db.get_job(job_id)
+            if job is not None and job.status.value == "pending" and not job.review_required:
+                yield job_id, entry
+
+
+def _ack_pause_release(org, root_id, generation):
+    store = org.db._task_pause_store
+    with store.writer(root_id) as (_, current):
+        if current["generation"] == generation and not current["held"]:
+            org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
+            return True
+        return False
+
+
+async def discover_pause_work(org: Any, queue: Any) -> None:
+    """Original ordinary per-root publication -> job attempt -> release ack."""
+    if getattr(org.db, "_task_pause_store", None) is None or queue is None:
+        return
+    from runtime.daemon.routes.jobs import _run_job_core
+    for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue):
+        if not complete:
+            continue
+        if not held:
+            for job_id, entry in _pending_pause_jobs(org, entries):
+                try:
+                    await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
+                        trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
+            _ack_pause_release(org, root_id, generation)
+        org.db._task_pause_store._discovery_cursor = root_id
+
+
+def discover_pause_work_native(org: Any, queue: Any, recovery):
+    """Same reconciliation, no job coroutine/registration or async primitive.
+
+    The eligible original pending job remains durable, including its release
+    intent, until the ordinary ready-mode suffix can actually attempt launch.
+    """
+    from runtime.daemon.startup_publication import current_publication
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    recovery.require_redelivery_owner(org)
+    publication = current_publication(org.orchestrator)
+    if (publication is None or publication.gate is not recovery
+            or queue is not recovery.state.queue
+            or getattr(org.db, "_task_pause_store", None) is None):
+        raise RuntimeError("startup_pause_owner_unavailable")
+    held_any = False
+    for root_id, generation, held, entries, complete, task_hold in _discover_pause_roots(org, queue):
+        recovery.require_redelivery_owner(org)
+        if not complete:
+            raise RuntimeError("startup_pause_root_incomplete")
+        pending_job = False
+        if not held:
+            for _job_id, _entry in _pending_pause_jobs(org, entries):
+                pending_job = True
+                break
+            if not pending_job and not task_hold:
+                task_hold = not _ack_pause_release(org, root_id, generation)
+        if held or pending_job or task_hold:
+            publication.count("held")
+            held_any = True
+        org.db._task_pause_store._discovery_cursor = root_id
+    recovery.require_redelivery_owner(org)
+    return RecoveryOutcome("local_hold" if held_any else "settled")
 
 
 def prepared_cancel_controls(db: Any, task_id: str) -> list[tuple[str, Callable[[], None]]]:

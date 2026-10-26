@@ -626,16 +626,18 @@ class ThreadMoveAdmission:
             return tuple(inv.id for inv in self.db.list_pending_thread_invocations()
                 if self.preserve_recovery_uncommitted(inv))
 
-    async def redeliver_after_release(self, queue: Any) -> None:
+    def select_redelivery_tokens(self, *, _observe=None) -> tuple[str, ...]:
         with self.move.gate, self.db._lock:
             if self.move.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
-            tokens = self.runnable_tokens()
+            return self.runnable_tokens(_observe=_observe)
+
+    async def redeliver_after_release(self, queue: Any) -> None:
         from runtime.daemon.thread_queue import ThreadJob
-        for token in tokens:
+        for token in self.select_redelivery_tokens():
             await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))
 
-    def runnable_tokens(self) -> tuple[str, ...]:
+    def runnable_tokens(self, *, _observe=None) -> tuple[str, ...]:
         """Durable release/redelivery census, no process-local defer list.
 
         Safe unstarted/correctly deferred obligations only. Unknown attempts,
@@ -646,14 +648,22 @@ class ThreadMoveAdmission:
             result = []
             for inv in self.db.list_pending_thread_invocations():
                 if self.held_uncommitted(inv.agent_name) is not None or inv.id in self.live:
+                    if _observe is not None:
+                        _observe("local_hold")
                     continue
                 if not self.db._thread_release_pair_permitted_uncommitted(inv.thread_id, inv.agent_name):
+                    if _observe is not None:
+                        _observe("local_hold")
                     continue
                 state = self.store.read_uncommitted(inv)
                 if state is not None:
                     if state.retry_initialized is None or state.unknown or not (state.deferred and state.producer_settled):
+                        if _observe is not None:
+                            _observe("local_hold")
                         continue
                 elif inv.started_at is not None:
+                    if _observe is not None:
+                        _observe("local_hold")
                     continue
                 result.append(inv.invocation_token)
             return tuple(result)

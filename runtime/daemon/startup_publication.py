@@ -71,7 +71,7 @@ class StartupPublications:
         self._first_cause: BaseException | None = None
         self._counts = dict.fromkeys((
             "scopes", "selected", "not_applicable", "held", "preserved_marker",
-            "parent_attempted", "thread_attempted", "submitted", "acknowledged",
+            "parent_attempted", "thread_attempted", "task_attempted", "producer_attempted", "submitted", "acknowledged",
             "inserted", "already_pending", "failed", "failed_handoffs", "cancelled",
             "notifications_failed", "partial", "markers_written",
             "histories_written",
@@ -198,7 +198,7 @@ class StartupPublications:
     def attempt(self, orch: Any, kind: str) -> Iterator[None]:
         """Short admission; no owner mutex spans a DB-aware producer action."""
         self.require_producer(orch)
-        if kind not in ("parent_attempted", "thread_attempted"):
+        if kind not in ("parent_attempted", "thread_attempted", "task_attempted", "producer_attempted"):
             raise RuntimeError("startup_publication_attempt_invalid")
         with self._lock:
             if self._closed or self.gate._stop.is_set():
@@ -214,25 +214,65 @@ class StartupPublications:
             with self._lock:
                 self._actions -= 1
 
-    def submit_thread(self, orch: Any, queue: Any, loop: Any, job: Any) -> None:
-        """Register before scheduling, preserving the actual original token."""
+    def make_room(self, orch: Any) -> None:
+        """Incremental drain BEFORE selection/registration, outside all locks."""
         self.require_producer(orch)
-        from runtime.daemon.thread_queue import ThreadQueue
+        with self._lock:
+            full = len(self._handles) >= 32
+        if full:
+            self.drain(orch)
+
+    def submit_thread(self, orch: Any, queue: Any, loop: Any, job: Any) -> None:
+        from runtime.daemon.thread_queue import ThreadJob, ThreadQueue
+        if (not isinstance(queue, ThreadQueue) or not isinstance(job, ThreadJob)
+                or queue is not orch._thread_queue):
+            raise RuntimeError("startup_publication_thread_owner_unavailable")
+        self._submit(orch, queue, loop, job, job.invocation_token, "thread")
+
+    def submit_producer(self, org: Any, kind: str, source_id: str) -> None:
+        """Only the three original native producer queues, on the request loop."""
+        self.gate.require_redelivery_owner(org)
+        from runtime.daemon.dream_queue import DreamJob, DreamQueue
+        from runtime.daemon.wake_queue import WakeJob, WakeQueue
+        from runtime.daemon.schedule_queue import ScheduleJob, ScheduleQueue
+        choices = {
+            "dream": (org.dream_queue, DreamQueue, DreamJob, "dream_id"),
+            "wake": (org.wake_queue, WakeQueue, WakeJob, "work_hour_id"),
+            "schedule": (org.schedule_queue, ScheduleQueue, ScheduleJob, "schedule_id"),
+        }
+        if kind not in choices:
+            raise RuntimeError("startup_publication_producer_kind_invalid")
+        queue, expected, cls, field = choices[kind]
+        if not isinstance(queue, expected):
+            raise RuntimeError("startup_publication_producer_queue_unavailable")
+        self._submit(org.orchestrator, queue, self.gate._loop,
+                     cls(org_slug=org.slug, **{field: source_id}), source_id, kind)
+
+    def _submit(self, orch: Any, queue: Any, loop: Any, job: Any,
+                key: str, kind: str) -> None:
+        """Register before scheduling; the retained native Task owns its exit."""
+        self.require_producer(orch)
         if (loop is not self.gate._loop or not loop.is_running()
-                or loop.is_closed() or queue is not orch._thread_queue
-                or not isinstance(queue, ThreadQueue) or job.org_slug != orch._slug):
+                or loop.is_closed() or job.org_slug != orch._slug):
             exc = RuntimeError("startup_publication_loop_or_queue_unavailable")
             self.fail(exc)
             raise exc
-        handoff = _Handoff(self.epoch, orch, job.invocation_token)
+        handoff = _Handoff(self.epoch, orch, key)
 
         async def put() -> str:
-            # No DB/recovery calls and no worker join on the request loop.
+            # Real loop only: no DB/recovery call or worker join here.
             handoff.task = asyncio.current_task()
             if handoff.task is None:
                 raise RuntimeError("startup_publication_native_task_missing")
             handoff.task.add_done_callback(lambda _task: handoff.native_done.set())
             try:
+                org = self.gate.state.orgs.get(orch._slug)
+                attached = (orch._thread_queue if kind == "thread" else
+                            getattr(org, kind + "_queue", None))
+                if (asyncio.get_running_loop() is not loop or self.gate._stop.is_set()
+                        or self.gate.epoch != handoff.epoch or org is None
+                        or org.orchestrator is not orch or attached is not queue):
+                    raise RuntimeError("startup_publication_put_owner_changed_or_stopped")
                 handoff.native_result = await queue.put_once(job)
                 return handoff.native_result
             except BaseException as exc:
@@ -251,9 +291,7 @@ class StartupPublications:
                 handoff.future = asyncio.run_coroutine_threadsafe(handoff.coroutine, loop)
                 self._counts["submitted"] += 1
         except BaseException as exc:
-            # A raised scheduling call is never proof that no callback was
-            # installed. Retain its original coroutine/registration; do not
-            # close it through an uncertain concurrent start.
+            # A raised scheduler call never proves that no callback was installed.
             self.fail(exc)
             raise
 
@@ -261,6 +299,8 @@ class StartupPublications:
     def _outside_db_lock(orch: Any) -> None:
         if orch._db._lock._is_owned():
             raise RuntimeError("startup_publication_drain_under_db_lock")
+        if orch._team_moves.gate._is_owned():
+            raise RuntimeError("startup_publication_drain_under_move_lock")
 
     def _wait_future(self, future: Future) -> Any:
         # This is observation of ONE original submission, never resubmission.

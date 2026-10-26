@@ -752,12 +752,57 @@ class TeamMoveOperation:
             raise TeamMoveError("team_move_recovery_owner_live_or_unknown")
         return {"owner_id": owner, "start_audit": start["id"], "different_process_identity": current}
 
-    async def redeliver(self):
-        """After durable release, existing deduplicating owners retain semantics."""
+    def _require_redelivery(self):
         if self.store.read() is not None:
             raise TeamMoveError("team_move_release_not_committed")
         if not hasattr(self.org.orchestrator, "redeliver_team_move_tasks"):
             raise TeamMoveError("team_move_recovery_reattach_for_redelivery")
+
+    def redeliver_native(self, recovery):
+        """P6 selection off-loop, original notifications acknowledged on-loop."""
+        from runtime.daemon.startup_publication import current_publication
+        from runtime.daemon.thread_queue import ThreadJob
+        recovery.require_redelivery_owner(self.org)
+        publication = current_publication(self.org.orchestrator)
+        if publication is None or publication.gate is not recovery:
+            raise RuntimeError("startup_move_publication_owner_missing")
+        self._require_redelivery()
+        self.org.orchestrator.redeliver_team_move_tasks()
+        def observe(disposition):
+            if disposition != "local_hold":
+                raise RuntimeError("startup_move_selection_outcome_unknown")
+            publication.count("held")
+
+        for token in self.move.threads.select_redelivery_tokens(_observe=observe):
+            publication.make_room(self.org.orchestrator)
+            publication.submit_thread(self.org.orchestrator, self.org.thread_queue,
+                recovery._loop, ThreadJob(org_slug=self.org.slug, invocation_token=token))
+        # Threads are observed before selecting producers, preserving source order.
+        publication.drain(self.org.orchestrator)
+        selected = self.move.producers.select_redelivery(_observe=observe)
+        primary = None
+        try:
+            for kind, source_id in selected:
+                publication.make_room(self.org.orchestrator)
+                with publication.attempt(self.org.orchestrator, "producer_attempted"):
+                    publication.submit_producer(self.org, kind, source_id)
+        except BaseException as exc:
+            primary = exc
+            recovery.fail("startup_move_redelivery_failed", exc)
+            raise
+        finally:
+            try:
+                selected.close()  # Close its one cursor before outer scope drains.
+            except BaseException as exc:
+                recovery.fail("startup_move_selection_close_failed", exc)
+                if primary is None:
+                    raise
+        publication.drain(self.org.orchestrator)
+        recovery.require_redelivery_owner(self.org)
+
+    async def redeliver(self):
+        """After durable release, existing deduplicating owners retain semantics."""
+        self._require_redelivery()
         self.org.orchestrator.redeliver_team_move_tasks()
         await self.move.threads.redeliver_after_release(self.org.thread_queue)
         self.move.producers.redeliver_after_release(self.org)

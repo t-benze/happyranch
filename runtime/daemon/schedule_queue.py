@@ -27,19 +27,24 @@ class ScheduleQueue:
         self._owned: set[tuple[str, str]] = set()
 
     async def put(self, job: ScheduleJob) -> None:
+        self._put_once(job)
+
+    async def put_once(self, job: ScheduleJob) -> str:
+        """Positive insertion/SAME original owner acknowledgement on the real loop."""
+        return self._put_once(job)
+
+    def _put_once(self, job: ScheduleJob) -> str:
         key = (job.org_slug, job.schedule_id)
-        if key not in self._owned:
-            self._owned.add(key)
-            self._q.put_nowait(job)
+        if key in self._owned:
+            return "already_pending"
+        # No suspension: a failed insertion cannot manufacture ownership.
+        self._q.put_nowait(job)
+        self._owned.add(key)
+        return "inserted"
 
     def put_nowait(self, job: ScheduleJob) -> None:
-        """Enqueue without a running event loop. Safe because the queue is
-        unbounded (never raises QueueFull); used by the synchronous scheduling
-        path so it never has to spin up/tear down a process-global loop."""
-        key = (job.org_slug, job.schedule_id)
-        if key not in self._owned:
-            self._owned.add(key)
-            self._q.put_nowait(job)
+        """Keep ordinary synchronous dedup; native startup uses real-loop put_once."""
+        self._put_once(job)
 
     def release(self, job):
         self._owned.discard((job.org_slug, job.schedule_id))

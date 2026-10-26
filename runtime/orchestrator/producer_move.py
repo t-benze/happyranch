@@ -661,23 +661,62 @@ class ProducerMoveAdmission:
                 add('native_writer_evidence_unknown', request.source_team, 'Repair native writer evidence under its owner')
         return tuple(blockers)
 
+    def select_redelivery(self, *, _observe=None):
+        """Shared native selection; yield original keys with no locks retained.
+
+        One original cursor per family, no second census/side backlog. Every
+        cursor step and history/current predicate uses the same gate/DB owner.
+        """
+        with self.move.gate, self.db._lock:
+            if self.move.active_uncommitted() is not None:
+                raise DeferredTeamMove('team_move_release_not_committed')
+            states = self.history_uncommitted()
+        for kind in ('dream', 'wake', 'schedule'):
+            status = 'firing' if kind == 'schedule' else 'pending'
+            with self.move.gate, self.db._lock:
+                if self.move.active_uncommitted() is not None:
+                    raise DeferredTeamMove('team_move_release_not_committed')
+                cursor = self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]}')
+            primary = None
+            try:
+                while True:
+                    with self.move.gate, self.db._lock:
+                        if self.move.active_uncommitted() is not None:
+                            raise DeferredTeamMove('team_move_release_not_committed')
+                        row = cursor.fetchone()
+                        if row is None:
+                            break
+                        state = self.state_for_uncommitted(kind, row, states)
+                        safe = state is None or (state.deferred and state.producer_settled and not state.unknown)
+                        selected = safe and (row['status'] == status or state and state.deferred and row['status'] == 'running')
+                        source_id = row['id']
+                    if selected:
+                        yield kind, source_id
+                    elif _observe is not None and row['status'] in (status, 'running'):
+                        _observe("local_hold")
+            except BaseException as exc:
+                primary = exc
+                raise
+            finally:
+                try:
+                    with self.db._lock:
+                        cursor.close()
+                except BaseException as exc:
+                    if primary is None or isinstance(primary, GeneratorExit):
+                        raise
+                    primary.add_note("native redelivery cursor close failed: " + type(exc).__name__)
+
     def redeliver_after_release(self, org):
         """At-least-once notifications; queues dedup queued AND running owners."""
         from runtime.daemon.dream_queue import DreamJob
         from runtime.daemon.wake_queue import WakeJob
         from runtime.daemon.schedule_queue import ScheduleJob
-        with self.move.gate, self.db._lock:
-            if self.move.active_uncommitted() is not None:
-                raise DeferredTeamMove('team_move_release_not_committed')
-            states = self.history_uncommitted()
-            for kind, queue, cls, field in (('dream', org.dream_queue, DreamJob, 'dream_id'),
-                    ('wake', org.wake_queue, WakeJob, 'work_hour_id'), ('schedule', org.schedule_queue, ScheduleJob, 'schedule_id')):
-                status = 'firing' if kind == 'schedule' else 'pending'
-                for row in self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]}'):
-                    state = self.state_for_uncommitted(kind, row, states)
-                    safe = state is None or (state.deferred and state.producer_settled and not state.unknown)
-                    if safe and (row['status'] == status or state and state.deferred and row['status'] == 'running'):
-                        queue.put_nowait(cls(org_slug=org.slug, **{field: row['id']}))
+        choices = {'dream': (org.dream_queue, DreamJob, 'dream_id'),
+                   'wake': (org.wake_queue, WakeJob, 'work_hour_id'),
+                   'schedule': (org.schedule_queue, ScheduleJob, 'schedule_id')}
+        for kind, source_id in self.select_redelivery():
+            queue, cls, field = choices[kind]
+            queue.put_nowait(cls(org_slug=org.slug, **{field: source_id}))
 
 
 async def run_native_producer(org, kind, source_id, action):

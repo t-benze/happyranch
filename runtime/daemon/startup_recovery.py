@@ -81,6 +81,7 @@ class StartupRecovery:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._latch: asyncio.Event | None = None
         self._attachments: tuple | None = None
+        self._redelivery_queues: tuple | None = None
         self._closed = False
         self._ready_commits = 0
         self._created_ns = time.monotonic_ns()
@@ -113,6 +114,8 @@ class StartupRecovery:
                        and self._phases["sweep"].outcome in ("settled", "local_hold")
                        and self._phases["workflows"].outcome in ("settled", "local_hold"))
         org = self.state.orgs.get(orch._slug)
+        if self._phase == "redelivery" and org is not None:
+            self.require_redelivery_owner(org)
         if (not allowed or org is None or org.orchestrator is not orch
                 or org.db is not orch._db or orch._main_loop is not self._loop
                 or org._startup_recovery is not self
@@ -131,6 +134,10 @@ class StartupRecovery:
             self._loop = loop
             self._latch = asyncio.Event()
             self._attachments = attachments
+            # Capture actual original queues before P4 binds loop references.
+            self._redelivery_queues = (self.state.queue, tuple(
+                (org, org.orchestrator, org.thread_queue, org.dream_queue,
+                 org.wake_queue, org.schedule_queue) for org in self.state.orgs.values()))
 
     def signal_serving(self, app: Any) -> None:
         """Only the real Server's matching, successful startup calls this."""
@@ -206,6 +213,41 @@ class StartupRecovery:
                     or sweep_owner._body_thread != threading.get_ident()):
                 raise RuntimeError("startup_workflow_sweep_owner_unavailable")
             sweep_owner.check()
+
+    def require_redelivery_owner(self, org: Any) -> None:
+        """P6 only; never reuse the cold P2/P3 workflow admission."""
+        self.require_native_owner()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("startup_redelivery_requires_native_thread")
+        self.state._assert_attachments_unchanged(self._attachments)
+        with self._lock:
+            allowed = (self._phase == "redelivery"
+                       and self._phases["compatibility"].outcome in ("settled", "local_hold"))
+        if not allowed or self._redelivery_queues is None:
+            raise RuntimeError("startup_redelivery_phase_unavailable")
+        queue, originals = self._redelivery_queues
+        if self.state.queue is not queue or self.state.orgs.get(org.slug) is not org:
+            raise RuntimeError("startup_redelivery_attachment_changed")
+        matched = False
+        for original, orch, thread, dream, wake, schedule in originals:
+            if original is not org:
+                continue
+            matched = True
+            if (org.orchestrator is not orch or orch._db is not org.db
+                    or orch._slug != org.slug or orch._queue is not queue
+                    or orch._main_loop is not self._loop
+                    or org._startup_recovery is not self
+                    or getattr(orch, "_startup_recovery", None) is not self
+                    or orch._thread_queue is not thread or org.thread_queue is not thread
+                    or org.dream_queue is not dream or org.wake_queue is not wake
+                    or org.schedule_queue is not schedule):
+                raise RuntimeError("startup_redelivery_queue_or_owner_changed")
+        if not matched:
+            raise RuntimeError("startup_redelivery_org_unavailable")
 
     def publish_workflow_task(self, org: Any, task_id: str, *, sweep_owner: Any = None) -> RecoveryOutcome:
         """Acknowledge the original committed task, never its reservation alone.
