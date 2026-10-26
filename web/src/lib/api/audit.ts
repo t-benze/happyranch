@@ -1,6 +1,6 @@
 /** Mirror of runtime/daemon/routes/audit.py */
 import { request } from './client';
-import type { AuditEntry } from './types';
+import type { AuditEntry, JobOutput, JobRecord } from './types';
 
 export type { AuditEntry } from './types';
 
@@ -94,3 +94,122 @@ export const listAudit = (
   request(`/orgs/${slug}/audit`, {
     params: { ...params, include_thread_origin: params?.include_thread_origin ?? true },
   });
+
+/** Raw evidence rows, not the enriched public task/audit/job projections. */
+export type MemoryCollectionAuditRow = Pick<AuditEntry, 'id' | 'action' | 'timestamp'> & {
+  task_id: string;
+  agent: string;
+  payload: unknown;
+};
+
+/** Ancestry-only owners carry just these three columns. */
+export interface MemoryCollectionTaskGraphRow {
+  id: string;
+  parent_task_id: string | null;
+  revisit_of_task_id: string | null;
+}
+
+export interface MemoryCollectionTaskRow extends MemoryCollectionTaskGraphRow {
+  status: string;
+  assigned_agent: string | null;
+  team: string;
+  brief: string;
+  task_type: string;
+  revision_count: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  final_output_summary: string | null;
+  final_output_dir: string | null;
+  executor_pid: number | null;
+  block_kind: string | null;
+  note: string | null;
+  orchestration_step_count: number | null;
+  cancelled_at: string | null;
+  last_heartbeat: string | null;
+  session_timeout_seconds: number | null;
+  /** Serialized JSON TEXT remains raw in this acquisition. */
+  blocked_on_job_ids: string | null;
+  dispatched_from_thread_id: string | null;
+  active_chain: string | null;
+  active_fanout: string | null;
+  current_session_id: string | null;
+  zombie_flagged_at: string | null;
+}
+
+export interface MemoryCollectionResultRow {
+  id: number;
+  task_id: string;
+  agent: string;
+  session_id: string;
+  status: string;
+  output_summary: string | null;
+  decision_json: string | null;
+  confidence_score: number | null;
+  learnings: string | null;
+  risks_flagged: string | null;
+  duration_seconds: number | null;
+  token_count: number | null;
+  estimated_cost: number | null;
+  output_dir: string | null;
+  created_at: string;
+  waiting_on_job_ids: string | null;
+  verdict: string | null;
+  local_ci: string | null;
+}
+
+/** SELECT * preserves integer flags and nullable SQL fields. */
+export type MemoryCollectionJobRow = Omit<JobRecord,
+  'review_required' | 'persistent' | 'rationale' | 'max_output_bytes' | 'status' | 'interpreter'
+> & {
+  review_required: number;
+  persistent: number;
+  rationale: string | null;
+  max_output_bytes: number;
+  status: string;
+  interpreter: string;
+  stdout_bytes: number | null;
+  stderr_bytes: number | null;
+  execution_backend: string | null;
+  selected_runner_id: string | null;
+  remote_bundle_json: string | null;
+  remote_bundle_digest: string | null;
+  current_remote_attempt_id: string | null;
+};
+
+/** Aggregate identity validation requires a cache tag; profile markers may be null. */
+export type MemoryCollectionAcquiredIdentity = Omit<MemoryCollectionIdentity, 'python' | 'profiles'> & {
+  python: Omit<MemoryCollectionIdentity['python'], 'cache_tag'> & { cache_tag: string };
+  profiles: (Omit<MemoryCollectionIdentity['profiles'][number], 'readiness_marker_fragment'> & {
+    readiness_marker_fragment: string | null;
+  })[];
+};
+
+/** A successful aggregate has a complete identity and no active preparation/error.
+ * These are serving observations, not collection health or acceptance. */
+export type MemoryCollectionView = Omit<
+  Extract<MemoryCollectionObservation, { boot_id: string }>,
+  'installed_identity' | 'active_preparations' | 'observation_error' | 'data_through'
+> & {
+  installed_identity: MemoryCollectionAcquiredIdentity;
+  active_preparations: [];
+  observation_error: null;
+  data_through: string;
+};
+
+/** Closed aggregate envelope from acquire_memory_collection_response. */
+export interface MemoryCollectionResponse {
+  tables: {
+    audit_log: MemoryCollectionAuditRow[];
+    tasks: (MemoryCollectionTaskGraphRow | MemoryCollectionTaskRow)[];
+    task_results: MemoryCollectionResultRow[];
+    jobs: MemoryCollectionJobRow[];
+  };
+  view: MemoryCollectionView;
+  outputs: Record<string, JobOutput & { truncated_stdout: false; truncated_stderr: false }>;
+  /** Server-owned aware UTC acquisition cutoff. */
+  cutoff: string;
+}
+
+export const getMemoryCollection = (slug: string): Promise<MemoryCollectionResponse> =>
+  request(`/orgs/${slug}/audit/memory-collection`);
