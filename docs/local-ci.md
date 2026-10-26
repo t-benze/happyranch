@@ -595,6 +595,18 @@ self-comparison. First E05 error is recorded before cleanup and remains the same
 original winner across E07 and final failure publication; the first-recorder and
 terminal-scope rules below are unchanged. Groups are evidence, not acceptance.
 
+TASK13130 preserves safely redacted detached scenario/group/first-cause/admission/
+finalization claims in the existing FAIL fallback before later collection/export/
+cleanup failure. Complete original redaction context precedes projection; string
+redaction precedes JSON escaping, and8MiB input/output/string-work,200000 facts and
+depth64 bound this publication work. A refused update retains only previously safe
+state; unavailable inputs remain missing. No artifact/prefix is manufactured and
+strict content/completion/global Health acceptance is unchanged. Sealed safe relay
+originals publish independently of a browser join, with parse-once/refusal and
+same-snapshot sticky capacity state. The historical Request identity and positive
+GET/I/O cancellation observations remain unavailable; native refusal stays strict.
+See the current README case/four-answer/keeper additions for actual control scope.
+
 Only the existing aggregate --controls reader boundary is worker-authorized here.
 Native H NOT RUN, unsupported proof PROOF NOT RUN; integration INCLUDING actual
 CLI callback/lifespan/SessionTracker SKIPPED24342/211270-271; units RETIRED. Actual

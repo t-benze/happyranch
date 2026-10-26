@@ -489,6 +489,69 @@ def _read_failure_categories(root: Path | None, source: object, check: Callable[
         return unavailable, _failure_error(exc), "refused"
 
 
+def scenario_fields(result: dict, sanitize: Callable[[str], str]) -> dict:
+    """Detach only existing scenario fields through the established redactor.
+
+    These are producer claims, not accepted cases or cleanup/export proof.
+    Call only after acquiring the complete original redaction context. A failed
+    projection cannot replace a previously retained safe snapshot.
+    """
+    if type(result) is not dict or type(result.get('variants')) is not dict:
+        raise ValueError('scenario state unavailable')
+    # This is a bounded publication projection, not a case/content validator.
+    # Redact individual strings BEFORE JSON escaping, including nested keys.
+    remaining = 8 * 1024 * 1024
+    facts = 200000
+
+    def detach(value: object, depth: int = 0):
+        nonlocal remaining, facts
+        facts -= 1
+        if facts < 0 or depth > 64:
+            raise ValueError('scenario projection capacity refused')
+        if type(value) is str:
+            if len(value) > remaining:
+                raise ValueError('scenario projection capacity refused')
+            remaining -= len(value.encode('utf8'))
+            safe = sanitize(value)
+            if type(safe) is not str or len(safe) > remaining:
+                raise ValueError('scenario projection capacity refused')
+            remaining -= len(safe.encode('utf8'))
+            if remaining < 0:
+                raise ValueError('scenario projection capacity refused')
+            return safe
+        if type(value) is dict:
+            if len(value) > facts:
+                raise ValueError('scenario projection capacity refused')
+            output = {}
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise ValueError('scenario key unavailable')
+                safe_key = detach(key, depth + 1)
+                if safe_key in output:
+                    raise ValueError('scenario redacted key collision')
+                output[safe_key] = detach(item, depth + 1)
+            return output
+        if type(value) is list:
+            if len(value) > facts:
+                raise ValueError('scenario projection capacity refused')
+            return [detach(item, depth + 1) for item in value]
+        if (value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64
+                or type(value) is float and math.isfinite(value)):
+            return value
+        raise ValueError('scenario value unavailable')
+
+    selected = {k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization") if k in result}
+    detached = detach(selected)
+    detached.setdefault('variants', {})
+    # Bound the eventual JSON representation too; escaping may expand strings.
+    size = 0
+    for chunk in json.JSONEncoder(allow_nan=False, indent=2).iterencode(detached):
+        size += len(chunk.encode('utf8'))
+        if size > 8 * 1024 * 1024:
+            raise ValueError('scenario projection capacity refused')
+    return detached
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", required=True, help="absolute supported interpreter")
@@ -825,6 +888,7 @@ def main() -> int:
         redaction_context: list[str] = []
         collection_window = "UNKNOWN"
         collection_diagnostic: dict[str, tuple] = {}
+        safe_scenario: dict = dict(variants={})
 
         def redact(text: str) -> str:
             if not token:
@@ -834,7 +898,7 @@ def main() -> int:
             return text
 
         def collect_evidence() -> str | None:
-            nonlocal token, redaction_context, collection_window
+            nonlocal token, redaction_context, collection_window, safe_scenario
             collection_window = "ROOT"
             if not root or not root.exists():
                 return "other"
@@ -865,10 +929,17 @@ def main() -> int:
             collection_window = "SCENARIO_PRESENT"
             if (root / "scenario.json").exists():
                 collection_window = "SCENARIO_READ"
-                scenario_text = (root / "scenario.json").read_text()
+                with (root / "scenario.json").open(encoding='utf8') as scenario_file:
+                    scenario_text = scenario_file.read(8 * 1024 * 1024 + 1)
+                if len(scenario_text.encode('utf8')) > 8 * 1024 * 1024:
+                    raise ValueError('scenario input capacity refused')
                 collection_window = "SCENARIO_DECODE"
                 result = json.loads(scenario_text)
                 collection_window = "SCENARIO_MERGE"
+                # Retain this safe detached state BEFORE later raw-file reads,
+                # required-artifact checks or cleanup/export can fail. Never
+                # serialize the unredacted receipt as a rescue path.
+                safe_scenario = scenario_fields(result, redact)
                 receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization") if k in result})
             collection_window = "RAW_ENUM"
             paths = iter((root / "raw").glob("*"))
@@ -1473,7 +1544,8 @@ def main() -> int:
             # a crash can interrupt it. This is not hard timing/crash durability.
 
         def failure_receipt() -> dict:
-            # Bounded metadata only: no raw exception/token text or partial PASS.
+            # Only independently sanitized retained scenario state may accompany
+            # failure metadata. PASS entries remain original unvalidated claims.
             closure = receipt["cleanup"]
             safe_cleanup = {key: closure[key] for key in
                             ("identities", "groups", "ports_absent", "data_absent", "sockets_absent", "watcher_stopped")
@@ -1484,7 +1556,7 @@ def main() -> int:
             safe_timing = dict(receipt["timing"], cleanup=dict(receipt["timing"]["cleanup"], ok=False))
             return dict(binding, **failure_categories(), schema=1, status="FAIL", source_sha=receipt["source_sha"],
                         python=receipt["python"], exercise=args.exercise, skipped=0,
-                        variants={}, signals=receipt["signals"], phases=receipt["phases"],
+                        **safe_scenario, signals=receipt["signals"], phases=receipt["phases"],
                         cleanup=safe_cleanup, timing=safe_timing,
                         failure_phase=receipt.get("failure_phase", "export"),
                         failure="incomplete detailed evidence",

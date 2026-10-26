@@ -990,7 +990,7 @@ class BrowserRelay:
     def _charge(self, record: dict | None, size: int = 0, facts: int = 1) -> bool:
         if (self.capture_refusals or self.capture_bytes + size > 8*1024*1024
                 or self.capture_facts + facts > 16384):
-            self._refuse(record, 'aggregate-cap' if size else 'fact-cap')
+            self._refuse(record, 'aggregate-cap' if self.capture_bytes + size > 8*1024*1024 else 'fact-cap')
             return False
         self.capture_bytes += size
         self.capture_facts += facts
@@ -1012,7 +1012,8 @@ class BrowserRelay:
             outcome='pending', byte_length=0, sha256=None, first_error=None,
             capture_state='open', capture_refusal=None)
         record['forwarding'] = dict(segments=[], byte_length=None, sha256=None, finished=None)
-        self.originals[record['relay_id']] = dict(data=bytearray(), headers=None, parsed=None, parsed_ready=False)
+        self.originals[record['relay_id']] = dict(data=bytearray(), headers=None, parsed=None,
+                                               parsed_ready=False, parse_error=None)
 
     def _capture_headers(self, record: dict, response: http.client.HTTPResponse) -> None:
         if 'original' not in record:
@@ -1166,10 +1167,24 @@ class BrowserRelay:
         private = self.originals[record['relay_id']]
         o = record['original']
         if not private['parsed_ready']:
+            # Parsing belongs to the retained original, not to a successful
+            # browser join. Failed parses also consume their allowance once.
+            if private['parse_error'] == 'utf8':
+                raise UnicodeError('E05 invalid original UTF8')
+            if private['parse_error'] is not None:
+                raise ValueError({'framing': 'E05 identity UTF8 JSON original required',
+                                  'capacity': 'E05 parsed copy capacity refused'}.get(
+                                      private['parse_error'], 'E05 original parse refused'))
             f = o['framing']
             if f['content_encoding'] not in ([], ['identity']) or len(f['content_type']) != 1 or f['content_type'][0].split(';')[0] != 'application/json':
+                private['parse_error'] = 'framing'
                 raise ValueError('E05 identity UTF8 JSON original required')
-            if not self._charge(record, len(private['data'])):
+            # Every JSON node/key requires a delimiter or the one root slot.
+            # Counting raw delimiters over-reserves punctuation inside strings,
+            # but bounds retained parser facts BEFORE json.loads allocates them.
+            parse_facts = 1 + sum(private['data'].count(bytes([c])) for c in b'{}[],:')
+            if not self._charge(record, len(private['data']), facts=parse_facts):
+                private['parse_error'] = 'capacity'
                 raise ValueError('E05 parsed copy capacity refused')
             def pairs(items):
                 value = {}
@@ -1180,7 +1195,11 @@ class BrowserRelay:
                 return value
             def constant(_value):
                 raise ValueError('E05 nonfinite original JSON')
-            private['parsed'] = json.loads(private['data'].decode('utf8'), object_pairs_hook=pairs, parse_constant=constant)
+            try:
+                private['parsed'] = json.loads(private['data'].decode('utf8'), object_pairs_hook=pairs, parse_constant=constant)
+            except (ValueError, UnicodeError, RecursionError) as exc:
+                private['parse_error'] = 'utf8' if isinstance(exc, UnicodeError) else 'json'
+                raise
             private['parsed_ready'] = True
         return private['parsed']
 
@@ -1227,25 +1246,38 @@ class BrowserRelay:
                 if 'original' not in record:
                     continue
                 o = record['original']
+                source = self.records[record['relay_id']]
                 private = self.originals.get(record['relay_id'])
                 entity = dict(representation='unavailable', text=None, copy_bytes=None, copy_sha256=None,
                               original_byte_check='unavailable')
                 if 'response' in record and not self._publishable_body(record['response']):
                     record['response'] = None
-                if (private is not None and o['capture_state'] == 'sealed' and o['status'] == 200
-                        and private['parsed_ready'] and self._publishable_body(private['parsed'])):
-                    if not self._charge(self.records[record['relay_id']], len(private['data'])):
-                        continue
+                publishable = False
+                if private is not None and o['capture_state'] == 'sealed':
+                    if o['outcome'] in {'empty', 'bodyless'} and not private['data']:
+                        publishable = True  # Zero original bytes, never JSON success.
+                    elif o['outcome'] == 'complete':
+                        try:
+                            parsed = self._parse_original(source, locked=True)
+                        except (ValueError, UnicodeError, RecursionError):
+                            pass  # Retain the original and explicit unavailable copy.
+                        else:
+                            publishable = self._publishable_body(parsed)
+                if publishable and self._charge(source, len(private['data'])):
                     try:
                         text = private['data'].decode('utf8')
                     except UnicodeError:
                         pass
                     else:
                         safe = sanitize(text)
-                        if self._charge(self.records[record['relay_id']], max(0,len(safe.encode('utf8'))-len(private['data'])), facts=0):
+                        if self._charge(source, max(0,len(safe.encode('utf8'))-len(private['data'])), facts=0):
                             entity.update(representation='unchanged_utf8' if safe == text else 'sanitized_utf8', text=safe,
                                 copy_bytes=len(safe.encode('utf8')), copy_sha256=hashlib.sha256(safe.encode('utf8')).hexdigest(),
                                 original_byte_check='available' if safe == text else 'unavailable')
+                # Parsing/copy reservation can refuse after the initial metadata
+                # snapshot. Export that sticky refusal in this SAME snapshot.
+                o.update(capture_state=source['original']['capture_state'],
+                         capture_refusal=copy.deepcopy(source['original']['capture_refusal']))
                 o['entity_copy'] = entity
             return records
 

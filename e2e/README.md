@@ -32,6 +32,54 @@ prepared-redaction exporter. Notifier identity/latch and original owner cancella
 rules remain. Safe exported copies explicitly distinguish unchanged/sanitized/
 unavailable UTF8. Sanitized copies cannot satisfy original byte equality.
 
+The TASK13130 recovery removes publication's dependency on a successful browser
+join. Every sealed complete original is parsed at most once at this same capture/
+snapshot seam, including a remembered parse refusal; a safely selected original
+can be exported even with no Request join. Empty/bodyless originals publish their
+actual zero bytes, while pending/partial/error originals remain explicitly
+unavailable. Invalid UTF8/JSON, duplicate keys, nonfinite values, unsupported
+encoding and sensitive/unknown fields never publish a replacement entity.
+Storage/fact refusal remains sticky and is visible in the same snapshot or an
+explicit incomplete census. Status, framing, first error, original length/hash
+and actual forwarding prefixes keep their original identities and meanings.
+A non200 safely selected entity is still not required-response success.
+
+The launcher retains a detached safe scenario projection after acquiring the
+complete original token/redaction context and before subsequent raw reads or
+required-artifact checks. Existing variants, scenario phases, e07, groups,
+admission/refusal, failures and finalization can survive later collection/export/
+cleanup failure in the existing FAIL result. Projection redacts individual strings
+before JSON escaping; it refuses unsupported/nonfinite values, key collisions,
+depth above64, more than200000 facts, or input/output beyond8MiB. The string
+copy work allowance is8MiB across original and sanitized strings. These are
+publication safety limits, not altered case predicates. Assignment happens only
+after a full safe projection; a later refused projection cannot replace an
+already detached safe snapshot. Without safely acquired inputs the fallback
+has variants={} and no invented groups. No raw rescue, e07.json, screenshot or
+completion prefix is manufactured. Producer claims remain unvalidated until the
+existing independent content/source/completion readers accept them. Global FAIL,
+strict completed.join_results/full56, false cleanup/export and first-cause/error
+history remain controlling.
+
+The eight historical Request/document/relay/Response joins still lack exact
+issuing observations. Callback timestamps and earlier same-URL records do not
+supply that identity. BrokenPipe/physically zero owners do not establish the
+positive matching GET/I/O stop acknowledgement. These native findings remain
+UNKNOWN/refused; this correction changes no identity or owner predicate and
+allocates no E07 work on unproved safety.
+
+TASK13130 extends the existing A03-A08/A13 and B09-B12 controls:
+
+| Cases / actual boundary | Observable contract and credible regression | Nearest keeper / distinct gap | Test-only product seam |
+| --- | --- | --- | --- |
+| A03-A08/A13 capture/snapshot: sealed unpaired, safe non200, empty/bodyless/partial/error/pending, invalid JSON/UTF8/duplicates/nonfinite/encoding/sensitive, byte/fact exhaustion, repeated refusal | Literal original text/hash/length/status/error survives only safe export; parsed_ready-only publication drops unpaired bytes; parse retry spends again; overflow must not hide refusal. | original_controls serialized original grammar starts already exported; extend it with real bare-owner capture/snapshot methods. It cannot prove native read/forward/parser/socket behavior. | None; no constructor, server, browser or native fixture. |
+| B09-B12 scenario_fields: safe claims/first cause/refusal/finalization, detachment, escaped secret, absent/invalid/redaction-refused/capped/deep input | Literal independently expected safe field tree; dropping groups loses the original cause, raw JSON redaction misses escaped strings, mutable retention rewrites history. | Existing group/error controls start with result fields populated; extend controls with the real shipping projection. Native collection/fallback/publication after actual failure remains NOT RUN. | None; real launcher projection, no product injection. |
+
+Existing-support intended failure/restored pass is recorded in TASK13130 task/PR
+evidence, with byte-exact restoration. These are bare-owner/serialized controls,
+not native I/O, browser, admission, full-reader, cleanup or Health proof. Those
+remain NOT RUN/PROOF NOT RUN. No failing control is removed or skipped.
+
 **Known open item:** independent browser body/hash/length/full JSON projection
 proof is UNAVAILABLE in this selected observation design. Healthy E05/full56
 remains an unmet strict specification. Relay/public/SQL/DOM values never fill a
