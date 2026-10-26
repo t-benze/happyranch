@@ -156,6 +156,9 @@ class Controller:
         self.primary_error: BaseException | None = None
         self.primary_traceback: Any = None
         self.failures: list[dict] = []
+        self.finalization = dict(entered=None, finished=None, attempts=[])
+        self._final_attempt = None
+        self._final_attempt_cause = None
         self._failure_raw: dict[str, tuple] = {}
         self._failure_slots: dict[str, tuple] = {}
         self._failure_check: dict[str, tuple] = {}
@@ -944,7 +947,7 @@ class Controller:
         except BaseException:
             pass  # Diagnostic interruption must not replace capture/invalidation.
 
-    def record_error(self, stage: str, error: BaseException) -> None:
+    def record_error(self, stage: str, error: BaseException) -> int:
         # Select actual object/traceback before time, legacy diagnostics or I/O.
         # Literal-key setdefault prevents a nested callback replacing the winner.
         candidate = (error, error.__traceback__, _failure_stage(stage))
@@ -962,7 +965,15 @@ class Controller:
                     self._failure_slots.setdefault("first_observed", slot)
             except BaseException:
                 pass  # Raw winner is authoritative even if category completion fails.
+            index = len(self.failures)
             self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+            if self._final_attempt is not None:
+                self._final_attempt['failure_refs'].append(index)
+                if self._final_attempt_cause is None:
+                    self._final_attempt_cause = error
+                elif self._final_attempt_cause is not error:
+                    self._final_attempt['same_cause'] = False
+            return index
         finally:
             self._diagnostic_recorder_active = prior_recording
 
@@ -1178,6 +1189,17 @@ class Controller:
             self._failure_writer_active = False
 
     def _attempt(self, stage: str, action: Callable[[], Any], *, blocking: bool = True) -> Any:
+        # Only the actual direct close call site owns these final-operation
+        # receipts. A stage label or an error during E07 cannot acquire one.
+        final = (sys._getframe(1).f_code is Controller.close.__code__
+                 and self.finalization['entered'] is not None)
+        attempt = None
+        if final:
+            attempt = dict(owner='Controller.close', operation=stage, entered=time.monotonic(),
+                           finished=None, failure_refs=[], same_cause=True, ordinary=None,
+                           main_thread=threading.current_thread() is threading.main_thread())
+            self.finalization['attempts'].append(attempt)
+            self._final_attempt, self._final_attempt_cause = attempt, None
         try:
             if blocking:
                 end = self.effective_end()
@@ -1187,7 +1209,14 @@ class Controller:
             return action()
         except BaseException as exc:
             self.record_error(stage, exc)
+            if attempt is not None:
+                attempt['ordinary'] = (isinstance(exc, Exception) and not isinstance(exc, TimeoutError)
+                                       and not self.interrupted)
             return None
+        finally:
+            if attempt is not None:
+                attempt['finished'] = time.monotonic()
+                self._final_attempt, self._final_attempt_cause = None, None
 
     def prepare_redaction(self) -> None:
         self.redaction_ready = False
@@ -1222,7 +1251,7 @@ class Controller:
             return
         self._attempt("stage-scenario", lambda: self._atomic_json(self.root / "scenario.json",
                       dict(variants=self.results, scenario_phases=self.phases, failures=self.failures,
-                           groups=self.groups, e07_admission=self.e07_admission,
+                           groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
                            evidence_state="partial/unvalidated")), blocking=False)
         self._attempt("stage-browser-trace", self.stage_browser_trace, blocking=False)
         if self.primary_error is not None:
@@ -1386,7 +1415,8 @@ class Controller:
                     http=self.http, durable=self.durable, relay=list(self.relay.records) if self.relay else [],
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
                     provider_observer=observer, observer_error=self.observer_error, observer_state=state,
-                    failures=self.failures, groups=self.groups, e07_admission=self.e07_admission)
+                    failures=self.failures, groups=self.groups, e07_admission=self.e07_admission,
+                    finalization=self.finalization)
         if self.e07:
             def e07_evidence() -> None:
                 launches, failures = self.collect_e07_launches()
@@ -1415,7 +1445,7 @@ class Controller:
         self._attempt("export-observations", lambda: self._atomic_json(self.root / "raw/observations.json", rows), blocking=False)
         self._attempt("export-scenario", lambda: self._atomic_json(self.root / "scenario.json",
             dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, failures=self.failures,
-                 groups=self.groups, e07_admission=self.e07_admission,
+                 groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
                  observer_state=state)), blocking=False)
         self._attempt("export-browser-trace", self.stage_browser_trace, blocking=False)
         # All available evidence attempts precede the existing final assertion.
@@ -1663,11 +1693,13 @@ def main(_terminal: dict | None = None) -> None:
                 controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
     finally:
         begin = time.monotonic()
+        controller.finalization['entered'] = begin
         try:
             controller.close()
         except BaseException as exc:
             controller.record_error("controller-close", exc)
         finally:
+            controller.finalization['finished'] = time.monotonic()
             controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
         controller._stage_failure_categories()
         try:

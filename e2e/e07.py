@@ -456,6 +456,14 @@ def exercise(c: Controller) -> None:
         admission['starts'], admission['host'] = S,H
         check(len(c.results) == 48 or len(c.results) == 53 and name == 'D', 'real sparse outcomes or strict original53')
         check(all(f['stage'] == 'controller-action' for f in c.failures), 'no resource, redaction, export or safety failure')
+        if c.failures:
+            failure = prior.get('failure', {})
+            check(len(c.failures) == 1 and failure.get('site') == 'threads.exercise'
+                  and type(failure.get('error_ref')) is int and failure['error_ref'] == 0
+                  and failure.get('ordinary') is True and failure.get('primary') is True
+                  and c.groups['E05']['first_error_ref'] == 0
+                  and prior['entered'] <= c.failures[0]['at'] <= failure['caught'] <= prior['cleanup_finished'],
+                  'original ordinary E05 catch and first-cause reference')
         check(c.browser is not None and not c.browser.poisoned and not c.timer_phases
               and not c.browser._bridge_active and not c.interrupted, 'healthy original browser and no residual phase owner')
         check(prior['cleanup_finished'] <= prior['cleanup_deadline'] and time.monotonic() < c.deadline,

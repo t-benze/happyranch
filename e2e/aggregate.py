@@ -445,6 +445,92 @@ def original_controls() -> dict:
         results['B09-E07-own-metadata-required'] = str(exc)
     else:
         raise AssertionError('invalid own E07 metadata accepted')
+    # Serialized attribution inputs exercise the SAME shipping predicate called
+    # by validate_e07. They are not manufactured complete E07/native receipts.
+    owner = dict(state='unknown',begin=1.,end=5.,first_error_ref=0,
+        variants=MANIFEST['variants'][48:53],checkpoint_ref=None,admission_ref=None)
+    later = dict(state='reported_pass',begin=6.,end=9.,first_error_ref=None,
+        variants=MANIFEST['variants'][53:],checkpoint_ref='D',admission_ref='e07_admission')
+    caught = dict(site='threads.exercise',error_ref=0,caught=3.2,ordinary=True,primary=True)
+    e05 = dict(entered=2.,failure=caught,cleanup_finished=4.,cleanup_deadline=4.5,
+        case_outcomes={v:dict(status='UNKNOWN',error_ref=None) for v in MANIFEST['variants'][48:53]})
+    observed = dict(groups=dict(E05=owner,E07=later),observer_error=None,
+        failures=[dict(stage='controller-action',error='ValueError',at=3.1)],
+        durable=[dict(threads_cases=e05)],e07=dict(entered=7.,finished=8.),
+        e07_admission=dict(entered=6.1,finished=6.3),
+        finalization=dict(entered=10.,finished=12.,attempts=[]))
+    archived = dict(groups=copy.deepcopy(observed['groups']),failures=copy.deepcopy(observed['failures']),
+        durable=copy.deepcopy(observed['durable']),observer_state=dict(cutoff=6.2))
+    archived['groups']['E07'].update(state='running',end=None,checkpoint_ref=None,admission_ref=None)
+    def attribution_input(earlier: bool, final: bool) -> tuple[dict,dict]:
+        o,a = copy.deepcopy(observed),copy.deepcopy(archived)
+        if not earlier:
+            o['failures'],a['failures'] = [],[]
+            o['groups']['E05'].update(state='reported_pass',first_error_ref=None)
+            a['groups']['E05'] = copy.deepcopy(o['groups']['E05'])
+            del o['durable'][0]['threads_cases']['failure']
+            a['durable'] = copy.deepcopy(o['durable'])
+        if final:
+            ref = len(o['failures'])
+            o['failures'].extend([dict(stage='bounded',error='OSError',at=11.4),
+                                  dict(stage='daemon-log-close',error='OSError',at=11.5)])
+            o['finalization']['attempts'] = [dict(owner='Controller.close',operation='daemon-log-close',
+                entered=11.,finished=11.8,failure_refs=[ref,ref+1],same_cause=True,ordinary=True,main_thread=True)]
+        return o,a
+    for name,earlier,final in (('healthy-no-errors',False,False),('E05-unknown-first-cause',True,False),
+                              ('final-log-only',False,True),('E05-plus-final-log',True,True)):
+        o,a = attribution_input(earlier,final)
+        try:
+            validate_e07_failures(copy.deepcopy(o),o,a,[])
+        except (ValueError,KeyError,TypeError) as exc:
+            raise AssertionError('valid E07 failure attribution rejected: '+name) from exc
+        results['B09-B11-attribution-'+name] = 'attribution predicate only; full native/content/completion gates still required'
+    o,a = attribution_input(True,False)
+    o['groups']['E05']['state'] = a['groups']['E05']['state'] = 'failed'
+    validate_e07_failures(copy.deepcopy(o),o,a,[])
+    results['B09-attribution-E05-failed-first-cause'] = 'original failed E05 retained'
+    counterexamples = {
+        'missing-catch':('original E05 catch export',lambda o,a:o['durable'][0]['threads_cases'].pop('failure')),
+        'foreign-ref':('original ordinary E05 first cause',lambda o,a:[d[0]['threads_cases']['failure'].update(error_ref=1) for d in (o['durable'],a['durable'])]),
+        'false-primary':('original ordinary E05 first cause',lambda o,a:[d[0]['threads_cases']['failure'].update(primary=False) for d in (o['durable'],a['durable'])]),
+        'nonordinary':('original ordinary E05 first cause',lambda o,a:[d[0]['threads_cases']['failure'].update(ordinary=False) for d in (o['durable'],a['durable'])]),
+        'unknown-stage':('original ordinary E05 first cause',lambda o,a:[f[0].update(stage='unknown') for f in (o['failures'],a['failures'])]),
+        'prefix-drift':('original failure prefix',lambda o,a:a['failures'][0].update(error='AssertionError')),
+        'nonfinite':('closed finite original failure',lambda o,a:[f[0].update(at=float('inf')) for f in (o['failures'],a['failures'])]),
+        'overlap':('E05 catch and cleanup before E07',lambda o,a:[g['E05'].update(end=6.5) for g in (o['groups'],a['groups'])]),
+        'reversed-admission':('original admission, prefix',lambda o,a:o['e07_admission'].update(finished=6.15)),
+        'E07-error':('unattributed or E07 failure',lambda o,a:o['failures'].append(dict(stage='controller-action',error='AssertionError',at=7.5))),
+        'E07-group-error':('original running E07',lambda o,a:o['groups']['E07'].update(first_error_ref=0)),
+        'bad-final-ref':('final failure reference',lambda o,a:o['finalization']['attempts'][0].update(failure_refs=[99])),
+        'mixed-final-cause':('source-owned final attempt interval',lambda o,a:o['finalization']['attempts'][0].update(same_cause=False)),
+        'required-resource-error':('unrelated final log descriptor',lambda o,a:o['finalization']['attempts'][0].update(operation='thread-proxy-close')),
+        'required-export-error':('source-owned final attempt interval',lambda o,a:o['finalization']['attempts'][0].update(operation='export-e07')),
+        'early-final':('original finalization export',lambda o,a:o['finalization'].update(entered=7.)),
+        'final-time-drift':('unrelated final log descriptor',lambda o,a:o['failures'][-1].update(at=11.9)),
+        'reversed-failures':('ordered original failures',lambda o,a:o['failures'][-1].update(at=11.3)),
+        'interrupted-final':('unrelated final log descriptor',lambda o,a:o['finalization']['attempts'][0].update(ordinary=False)),
+        'observer-error':('complete browser stream',lambda o,a:o.update(observer_error='unavailable')),
+    }
+    final_names = {'bad-final-ref','mixed-final-cause','required-resource-error','required-export-error',
+                   'early-final','final-time-drift','reversed-failures','interrupted-final'}
+    for name,(reason,change) in counterexamples.items():
+        o,a = attribution_input(True,name in final_names)
+        change(o,a)
+        try:
+            validate_e07_failures(copy.deepcopy(o),o,a,[])
+        except ValueError as exc:
+            assert reason in str(exc), (name,str(exc))
+            results['B04-B08-B09-attribution-'+name] = str(exc)
+        else:
+            raise AssertionError('unsafe E07 failure attribution accepted: '+name)
+    o,a = attribution_input(True,False)
+    try:
+        validate_e07_failures(copy.deepcopy(o),o,a,None)
+    except ValueError as exc:
+        assert 'complete browser stream' in str(exc)
+        results['B09-attribution-missing-browser-stream'] = str(exc)
+    else:
+        raise AssertionError('missing browser stream accepted')
     return results
 
 
@@ -3225,6 +3311,107 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
     return S,H,point
 
 
+def validate_e07_failures(row: dict, observations: dict, archive: dict, trace: object) -> None:
+    """The complete reader's error boundary, using original catch/operation joins.
+
+    This does not establish admission, content, source, export or completion by
+    itself. validate_e07 retains all those independent gates around this call.
+    """
+    def check(value: bool, reason: str) -> None:
+        if not value:
+            raise ValueError('E07 failure attribution: ' + reason)
+    def same(a: object, b: object) -> bool:
+        return json.dumps(a,sort_keys=True,allow_nan=False) == json.dumps(b,sort_keys=True,allow_nan=False)
+    def number(value: object) -> bool:
+        return type(value) in (int,float) and math.isfinite(value) and value >= 0
+
+    check(type(trace) is list and observations['observer_error'] is None,
+          'complete browser stream and no observer error')
+    failures, original = observations['failures'], archive['failures']
+    check(type(failures) is list and type(original) is list, 'original failure lists')
+    for failure in failures + original:
+        check(type(failure) is dict and set(failure) == {'stage','error','at'}
+              and type(failure['stage']) is str and type(failure['error']) is str
+              and bool(failure['error']) and number(failure['at']), 'closed finite original failure')
+    check(same(row['failures'],failures) and same(original,failures[:len(original)]),
+          'original failure prefix and final export equality')
+    check(all(a['at'] <= b['at'] for a,b in zip(failures,failures[1:])), 'ordered original failures')
+    group = observations['groups']['E07']
+    prior_group = archive['groups']['E07']
+    case, admission = observations['e07'], observations['e07_admission']
+    check(same(row['groups']['E07'],group) and group['state'] == 'reported_pass'
+          and group['first_error_ref'] is None and prior_group['state'] == 'running'
+          and prior_group['first_error_ref'] is None and prior_group['end'] is None
+          and same(prior_group['begin'],group['begin'])
+          and prior_group['variants'] == group['variants'] == MANIFEST['variants'][53:],
+          'original running E07 and completed error-free group')
+    cutoff = archive['observer_state']['cutoff']
+    times = (group['begin'], admission['entered'], cutoff, admission['finished'],
+             case['entered'], case['finished'], group['end'])
+    check(all(number(t) for t in times) and all(a <= b for a,b in zip(times,times[1:])),
+          'original admission, prefix and complete E07 chronology')
+    if original:
+        cases = [d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d]
+        archived = [d['threads_cases'] for d in archive['durable'] if 'threads_cases' in d]
+        check(len(cases) == len(archived) == 1 and same(cases[0],archived[0]), 'original E05 catch export')
+        e05, owner = cases[0], observations['groups']['E05']
+        caught = e05['failure']
+        check(len(original) == 1 and type(caught) is dict
+              and set(caught) == {'site','error_ref','caught','ordinary','primary'}
+              and caught['site'] == 'threads.exercise' and type(caught['error_ref']) is int
+              and caught['error_ref'] == 0 and caught['ordinary'] is True and caught['primary'] is True
+              and original[0]['stage'] == 'controller-action'
+              and type(owner['first_error_ref']) is int and owner['first_error_ref'] == 0
+              and owner['state'] in {'failed','unknown'}
+              and same(owner,archive['groups']['E05']) and same(owner,row['groups']['E05'])
+              and owner['variants'] == MANIFEST['variants'][48:53], 'original ordinary E05 first cause')
+        times = (owner['begin'], e05['entered'], original[0]['at'], caught['caught'],
+                 e05['cleanup_finished'], owner['end'], group['begin'])
+        check(all(number(t) for t in (*times,e05['cleanup_deadline']))
+              and all(a <= b for a,b in zip(times,times[1:]))
+              and e05['cleanup_finished'] <= e05['cleanup_deadline'], 'E05 catch and cleanup before E07')
+        for outcome in e05['case_outcomes'].values():
+            check(outcome['error_ref'] is None or
+                  (outcome['status'] == 'FAIL' and type(outcome['error_ref']) is int
+                   and outcome['error_ref'] == 0), 'E05 case error reference')
+
+    final = observations['finalization']
+    check(type(final) is dict and set(final) == {'entered','finished','attempts'}
+          and same(final,row['finalization']) and number(final['entered']) and number(final['finished'])
+          and group['end'] <= final['entered'] <= final['finished']
+          and type(final['attempts']) is list, 'original finalization export and interval')
+    # This action owns only the controller's log descriptor. Resource, browser,
+    # observer, source and evidence writers are not unrelated final operations.
+    accounted = list(range(len(original)))
+    previous = final['entered']
+    operations = {'thread-proxy-release','late-transport-release','provider-observer-join','browser-teardown',
+        'thread-proxy-close','late-transport-close','peer-socket-shutdown','peer-stream-close','peer-socket-close',
+        'provider-server-close','provider-socket-unlink','cli-relay-close','daemon-term','daemon-wait','daemon-log-close'}
+    for attempt in final['attempts']:
+        check(type(attempt) is dict and set(attempt) ==
+              {'owner','operation','entered','finished','failure_refs','same_cause','ordinary','main_thread'}
+              and attempt['owner'] == 'Controller.close' and type(attempt['operation']) is str
+              and attempt['operation'] in operations
+              and number(attempt['entered']) and number(attempt['finished'])
+              and previous <= attempt['entered'] <= attempt['finished'] <= final['finished']
+              and attempt['main_thread'] is True and attempt['same_cause'] is True
+              and type(attempt['failure_refs']) is list, 'source-owned final attempt interval')
+        previous = attempt['finished']
+        refs = attempt['failure_refs']
+        check(all(type(ref) is int and 0 <= ref < len(failures) for ref in refs), 'final failure reference')
+        if not refs:
+            check(attempt['ordinary'] is None, 'successful final attempt has no error')
+            continue
+        check(attempt['operation'] == 'daemon-log-close' and attempt['ordinary'] is True
+              and refs == list(range(len(accounted),len(accounted)+len(refs)))
+              and [failures[ref]['stage'] for ref in refs] in
+                  (['daemon-log-close'],['bounded','daemon-log-close'])
+              and all(attempt['entered'] <= failures[ref]['at'] <= attempt['finished'] for ref in refs),
+              'unrelated final log descriptor failure and exact cause references')
+        accounted.extend(refs)
+    check(accounted == list(range(len(failures))), 'unattributed or E07 failure remains')
+
+
 def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     """Reopen serialized C evidence; no producer oracle or expected helper import."""
     import hashlib
@@ -3598,8 +3785,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and any(d.get("python_version", "").startswith(row["python"]+".")
                   for d in observations["durable"]), "actual cell/interpreter version")
     trace = strict_file("browser-events.json")
-    check(type(trace) is list and observations["failures"] == [] and observations["observer_error"] is None,
-          "complete browser stream and no recorded ownership errors")
+    validate_e07_failures(row, observations, strict_file('e07-prefix.json'), trace)
     ref = listing["roots_observation"]
     check(type(ref) is dict and set(ref) == {"group_id", "checkpoint_site", "selected_request_sequence", "query", "accepted_at"}
           and type(ref["group_id"]) is int and ref["group_id"] > 0
@@ -4151,7 +4337,7 @@ def main() -> int:
     names = ["e2e-" + version for version in expected] + ["e2e-cancel-TERM", "e2e-cancel-INT"]
     health = dict(status="FAIL", event=None, source_sha=None,
                   requested_event=args.event, requested_source_sha=args.source,
-                  cells=expected, artifacts=names, errors=[], completed_cases={}, groups={})
+                  cells=expected, artifacts=names, errors=[], completed_cases={}, groups={}, recorded_failures={})
     try:
         admission = daily_admission(Path(__file__).resolve().parents[1])
         health.update(admission)
@@ -4219,6 +4405,9 @@ def main() -> int:
                         health['errors'].append(f'e2e-{version}: scoped source/group evidence unavailable: {exc}')
                         observations = None
                     if observations is not None:
+                        health['recorded_failures'][version] = observations['failures']
+                        if observations['failures']:
+                            health['errors'].append(f'e2e-{version}: original controller failures retained; global Health fails')
                         try:
                             validate_groups(result, observations)
                         except (ValueError,KeyError,TypeError) as exc:

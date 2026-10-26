@@ -519,8 +519,11 @@ def exercise(c: Controller) -> None:
             c.mark(variant, dict(threads=record))
     except BaseException as exc:
         # Original exception/traceback wins before close/export can fail.
-        index = len(c.failures)
-        c.record_error('controller-action', exc)
+        index = c.record_error('controller-action', exc)
+        caught = time.monotonic()
+        record['failure'] = dict(site='threads.exercise', error_ref=index, caught=caught,
+            ordinary=isinstance(exc, Exception) and not isinstance(exc, TimeoutError) and not c.interrupted,
+            primary=c.primary_error is exc)
         if active_variant is not None and isinstance(exc, AssertionError):
             record['case_outcomes'][active_variant] = dict(status='FAIL',error_ref=index)
         c.groups['E05'].update(first_error_ref=c.groups['E05']['first_error_ref'] if c.groups['E05']['first_error_ref'] is not None else index,

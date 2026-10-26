@@ -41,6 +41,32 @@ full original comparison for a genuine measured browser input. Other available
 original/native/DOM/public/durable assertions still run. Missing evidence stays
 UNKNOWN; actual failed assertions stay FAIL. E05 cannot report pass here.
 
+The complete E07 reader attributes recorded errors using the immutable original
+`e07-prefix.json`, the E05 catch's actual first-cause reference and ordinary/
+primary-object facts, matching final group/case exports, and ordered finite
+catch/cleanup/admission/group intervals. A `controller-action` label, producer
+group state or timestamp alone cannot qualify an earlier error. The producer
+also requires that original E05 catch before allocating P/W. Missing, foreign,
+conflicting or ambiguous attribution refuses; every original failure remains.
+
+Finalization records direct `Controller.close` attempts with their actual failure
+references, same-exception identity, main-thread/ordinary facts and intervals
+after complete E07. Only a failed `daemon-log-close` is independently unrelated:
+it owns the controller log descriptor, not E07 content or resource/export proof.
+Its nested bounded record and outer operation record must name the same original
+exception. Other final errors remain blocking without proved independence;
+browser/observer/resource/export errors never acquire this exclusion. Complete
+safe E07 bytes, all original source/ownership/closure checks and its scoped case
+join are still required. Health retains the entire recorded failure list and
+stays FAIL/nonzero even when E07 earns scoped acceptance. Missing or corrupted
+required exports cannot be supplied by an otherwise unrelated final failure.
+
+The existing aggregate controls exercise this shipping attribution predicate
+with healthy, earlier failed/unknown E05 and final-log inputs, plus source/ref/
+chronology/observer/resource/export counterexamples. This is serialized reader
+evidence only. Complete native E07 admission/content/finalization/export proof
+remains NOT RUN / PROOF NOT RUN; no complete healthy native receipt is fabricated.
+
 The E05 first exception is recorded before its own cleanup. A later E07 result or
 final cleanup/export error appends without replacing that original object/traceback
 or erasing separately complete safe scoped evidence. E07 admission is the entire
