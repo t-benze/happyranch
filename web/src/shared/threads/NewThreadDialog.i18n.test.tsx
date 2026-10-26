@@ -20,6 +20,8 @@ import { useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { OrgProvider } from '@/lib/orgSlug';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
+import { seedReadyHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
 import { server } from '@/test/server';
 import { NewThreadDialog } from './NewThreadDialog';
 
@@ -81,6 +83,8 @@ function Harness() {
 }
 
 function renderDialog(locale: 'en' | 'zh-CN' = 'en') {
+  const client = makeQueryClient();
+  seedReadyHealth(client);
   return renderWithProviders(
     <Routes>
       <Route
@@ -92,7 +96,7 @@ function renderDialog(locale: 'en' | 'zh-CN' = 'en') {
         }
       />
     </Routes>,
-    { route: `/orgs/${SLUG}/threads`, i18n: { adapter: savedLocaleAdapter(locale) } },
+    { route: `/orgs/${SLUG}/threads`, queryClient: client, i18n: { adapter: savedLocaleAdapter(locale) } },
   );
 }
 

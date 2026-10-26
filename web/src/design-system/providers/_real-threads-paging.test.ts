@@ -5,11 +5,12 @@
  * through all messages via since_seq until `has_more` becomes false, and the
  * assembled transcript equals ALL messages from the server.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor, act, render } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
+import { seedReadyHealth } from '@/test/startup';
 import React, { useEffect } from 'react';
 import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
 import type { ThreadListPage, ThreadRecord } from '@/lib/api/types';
@@ -106,6 +107,7 @@ it('commits thread page totals and serializes duplicate next-page demand', async
       has_more: cursor === 'first', next_cursor: cursor === 'first' ? 'next' : null, sampled_at: '2026-10-07T00:00:00Z' });
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
   await waitFor(() => expect({ requests, cache: qc.getQueriesData({ queryKey: ['threads'] }), totals: result.current.data?.pages[0]?.totals, error: result.current.error }).toMatchObject({ requests: ['first'], totals: { open: 2, archived: 0, all: 2, dream_origin: 0 }, error: null }));
   await act(async () => { await Promise.all([result.current.fetchNextPage(), result.current.fetchNextPage()]); });
@@ -129,6 +131,7 @@ it('shares one request latch across mounted consumers of the same list key', asy
     return HttpResponse.json(threadPage(cursor, cursor === 'first' ? 'next' : null));
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => ({ a: realThreadsApi.useThreadsInfiniteList('open'), b: realThreadsApi.useThreadsInfiniteList('open') }), { wrapper: wrapper(qc) });
   await waitFor(() => expect(result.current.a.data?.pages[0].threads[0].thread_id).toBe('first'));
   await act(async () => { await Promise.all([result.current.a.fetchNextPage(), result.current.b.fetchNextPage()]); });
@@ -148,6 +151,7 @@ it('retains committed rows on continuation failure and repeated cursors until ex
     return HttpResponse.json(threadPage('second', outcome === 'repeat' ? 'next' : null));
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
   await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
   const committed = result.current.data;
@@ -184,6 +188,7 @@ it('stages a full replacement prefix and exposes no partial refresh in committed
     return HttpResponse.json(threadPage(`${phase}-${cursor ?? 'first'}`, cursor === null ? `${phase}-next` : null, phase === 'new' ? 3 : 2));
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
   await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
   await act(async () => { await result.current.fetchNextPage(); });
@@ -226,6 +231,7 @@ it('rejects a late continuation after refresh starts a fresh generation', async 
     return HttpResponse.json(initialReads === 1 ? threadPage('old', 'old-next') : threadPage('fresh', null, 1));
   }));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(qc);
   const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
   await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
   let old!: Promise<unknown>;
@@ -256,6 +262,7 @@ describe('useThreadMessages paging (THR-098)', () => {
     ]);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedReadyHealth(qc);
     const { result } = renderHook(() => realThreadsApi.useThreadMessages(THREAD_ID), {
       wrapper: wrapper(qc),
     });
@@ -302,6 +309,7 @@ describe('useThreadMessages paging (THR-098)', () => {
     ]);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedReadyHealth(qc);
     const { result } = renderHook(() => realThreadsApi.useThreadMessages(THREAD_ID), {
       wrapper: wrapper(qc),
     });
@@ -327,6 +335,7 @@ describe('useThreadMessages paging (THR-098)', () => {
     ]);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedReadyHealth(qc);
 
     // Consumer that models the ThreadsPage messages assembly (flatten all
     // existing pages + auto-page effect). Before the THR-098 fix the effect
@@ -498,6 +507,7 @@ it.each([
     }),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  seedReadyHealth(qc);
   const added = vi.spyOn(window, 'addEventListener');
   const removed = vi.spyOn(window, 'removeEventListener');
   const alpha = renderHook(useMembershipProbe, { wrapper: wrapper(qc, 'alpha') });

@@ -85,9 +85,12 @@ vi.mock('@/lib/api', () => ({
 }));
 
 import { realThreadsApi } from './_real-threads';
+import { seedReadyHealth } from '@/test/startup';
 
 function makeClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seedReadyHealth(client);
+  return client;
 }
 
 function wrapper(qc: QueryClient) {

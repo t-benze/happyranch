@@ -5,15 +5,24 @@ import { AddOrgDialog } from './AddOrgDialog';
 import { orgs as orgsApi } from '@/lib/api';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import type { Locale } from '@/lib/i18n';
+import { seedReadyHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+
+function readyClient() {
+  const client = makeQueryClient();
+  seedReadyHealth(client);
+  return client;
+}
 
 function renderDialog(onClose = vi.fn()) {
-  return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, { route: '/' });
+  return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, { route: '/', queryClient: readyClient() });
 }
 
 /** Explicit zh-CN render for the bilingual W2a assertions. */
 function renderDialogZh(locale: Locale, onClose = vi.fn()) {
   return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, {
     route: '/',
+    queryClient: readyClient(),
     i18n: { adapter: savedLocaleAdapter(locale) },
   });
 }

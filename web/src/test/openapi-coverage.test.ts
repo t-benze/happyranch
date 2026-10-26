@@ -51,6 +51,13 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('readiness is browser-included with explicit unavailable and ready responses', () => {
+    const route = 'GET /api/v1/health/ready';
+    expect(INCLUDED_PATHS.has(route)).toBe(true);
+    expect(EXCLUDED_PATHS.has(route)).toBe(false);
+    const snapshot = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf-8')) as Snapshot;
+    expect(snapshot.paths['/api/v1/health/ready']?.GET).toEqual({ params: [], responses: ['200', '503'] });
+  });
   // Naming routes are checked against the maintained summary; standalone and served-schema receipts are attributed in the naming maker handoff.
   test('the four existing naming routes are browser-included', () => {
     for (const route of [

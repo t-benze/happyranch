@@ -9,6 +9,7 @@ import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { stubReadyHealth } from '@/test/startup';
 
 const SLUG = 'alpha';
 
@@ -35,6 +36,7 @@ function threadListResponse(
 const NativeRequest = globalThis.Request;
 
 beforeEach(() => {
+  stubReadyHealth();
   vi.stubGlobal('AbortController', function () { return transferableAbortController(); });
   vi.stubGlobal('IntersectionObserver', class {
     observe() {}
