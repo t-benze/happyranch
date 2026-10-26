@@ -213,7 +213,7 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 2. **Consult memory.** Before planning:
 
    1. Read `task_history.md` in your workspace root. It lists your recent tasks with briefs, outcomes, and (when present) output dir paths.
-   2. **Consult per-agent learnings.** If `learnings/_index.md` exists in your workspace, scan it for entries relevant to the current brief and fetch full bodies with `happyranch learning get --org {ORG_SLUG} --agent <your_agent_name> <LRN-NNN-or-slug>`. Pre-migration workspaces have a flat `learnings.md` inlined into your bootstrap doc instead.
+   2. **Consult per-agent memory before the first substantive decision.** Select up to TWO memories pertinent to the actual task from the available digest, memory index or current context. Read selected bodies with `happyranch memory get --org {ORG_SLUG} --agent <your_agent_id> <MEM-NNN-or-slug>` and apply their relevant constraints before deciding. Bodies already available in the current context, including full-body directives, need no reread; apply their relevant constraints directly. Select zero when none is relevant: no ritual fetch, search or requirement to find two. Use `happyranch memory search --org {ORG_SLUG} --agent <your_agent_id> "<terms>"` when relevant recall is missing. Keep the task-history, referenced-task recall and KB obligations below.
    3. If the current brief references prior work — phrases like "follow up on", "continue", "the report from last week", a specific date, or an explicit `TASK-xxx` — identify the matching entry and fetch the details:
 
       ```bash
