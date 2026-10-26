@@ -201,6 +201,15 @@ session callback through its original transport; this note adds no preflight,
 retry, launch, deployment or permission authority. See maintained
 `docs/agent-guides/web-and-cli.md` for setup/Mac and operator observation limits.
 
+Startup's bounded private clock/phase/cache records are observations only.
+A fresh shell late-exec marker excludes preflight, is untrusted local telemetry,
+and is not original-parent/API/UI timing. Mac/direct launch has no shell marker.
+Only the actual listener owner records serving; native completion and ready are
+separate. Null duration means unavailable, never zero. Do not run a profiler,
+restart, scan, collect DB history or create a new benchmark to fill missing data.
+Use existing task-owned source/job receipts and the runtime guide's fixed summary
+limits; source/static approval never establishes under10s or behavior acceptance.
+
 ## Steps
 
 Each attachment storage_key can be claimed by one task only, including within

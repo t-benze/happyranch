@@ -36,8 +36,8 @@ actual matching serving AND accepted ready epoch, without stop/close/failure or
 missing owner; otherwise503 includes truthful startup disposition and guidance.
 No raw cause/path/native handle/task collection is public. Owner-to-serving time
 is not launcher duration; absent launcher evidence stays null. Ordinary TS API
-mapping is additive; absent startup on older servers means unknown. Remaining launcher/phase/cache
-instrumentation, finite behavioral verification and isolated OpenAPI
+mapping is additive; absent startup on older servers means unknown. Actual-owner clock/phase/cache source is described in
+docs/agent-guides/runtime-and-configuration.md. Finite behavioral verification and isolated OpenAPI
 snapshot synchronization remain root-owned. This is source only: runtime/proof
 NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED; no activation follows.
 
@@ -54,8 +54,19 @@ bounded120s observation window with post-await original owner/port checks and
 explicit read-only status renewal; alive held recovery keeps readable WebView,
 never triggers automatic restart. Labels/diagnostics show recovery separately.
 See docs/agent-guides/web-and-cli.md for output/observation contract. Runtime/Mac
-execution NOT RUN; root still owns instrumentation/test/OpenAPI convergence,
+execution NOT RUN; root still owns final assessment/test/OpenAPI convergence,
 independent final gates and separately authorized operator acceptance.
+
+Actual-owner observation source (TASK13275): normal boot carries one fixed scalar
+aggregate through original P0 and actual reader/recovery owners. Earliest module
+entry excludes interpreter/package work; shell's fresh per-launch late marker
+excludes preflight and is untrusted local telemetry. Original parent/API/UI/RSS
+remain unavailable. Only actual ASGI/listener establishes serving; native end,
+ready, failure and stop are separate once-only facts. Original six phases and v2
+reader counters remain owners; closed consuming-reader export requires no DB lock
+on health and retains no reader/graph/root IDs. See runtime guide for exact fixed
+categories, nesting, clock limitations and bounded logs. Public fields/strict shell
+parsers remain compatible; no new runtime execution, readiness grant or activation.
 
 Web recovery source (TASK13273): the app shell owns ONE shared `['health']`
 observation (2s while unavailable, 30s once ready); `web/src/lib/startup.ts`

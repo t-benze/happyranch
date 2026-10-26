@@ -24,6 +24,13 @@ Check Daemon Status to renew explicitly without launching another daemon.
 Swift compilation, real Mac lifecycle/races and behavioral acceptance are NOT RUN
 in this source stage. This does not authorize deployment or restart.
 
+Internal daemon records separate module-entry, actual listener, native recovery
+and ready times. Mac's direct normal launch supplies no shell late-exec marker;
+original launcher provenance stays explicitly unavailable. No sanitizer or native
+launch policy changes to supply it. Public health fields/typed observation are
+unchanged; diagnostics, health or a running WebView do not establish parent-to-
+usable API/UI <10s. See [runtime clock limits](../../docs/agent-guides/runtime-and-configuration.md#actual-owner-startup-observations--root13137).
+
 ## Development
 
 Xcode 16 / Swift 6 and a macOS build host are required. From `app/mac`, use

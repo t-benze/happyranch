@@ -14,6 +14,25 @@ Status: historical implementation contract for THR-229 / GitHub issue #918.
 The v2 schema-gate portion was superseded by founder THR-229 seq351; the
 recovery and idempotency portions remain current.
 
+## Current startup observation extension — ROOT13137
+
+The actual authority startup consuming lifetime now exports fixed scalar counter/
+duration aggregates after original reader exit and invalidation, including early
+unavailable/failed/incomplete paths. The independent entry-only sweep check is
+not counted as the consuming reader. Closed export acquires no canonical DB lock;
+health/request projections add no reader/scan. Real fetch/hit/miss/decode and
+independent logical exact semantics, original history/cache metadata caps,
+refusal/check/log/tail ordering and every cleanup/transaction fence remain.
+Ten finite invalidation causes and direct max/outcome counters extend the original
+statistics. Characters remain characters; unavailable payload bytes remain null.
+See [bounded runtime observations](../../agent-guides/runtime-and-configuration.md#actual-owner-startup-observations--root13137).
+Runtime/clock/counter/sensitivity proof NOT RUN. The future C12 control must target
+the single production `history_fetches` increment after real fetchall, with BOTH
+`C12_history_fetch_count_matches_sql` and `C12_fetch_is_not_cache_hit` observed by
+an unchanged independent SQL/decoder observer and byte-restored same-command pass.
+No such mutation/run, new resource allocation, deployment or restart is authorized
+by this source extension; earlier evidence retains its original attribution.
+
 ## Problem
 
 Historical org databases may retain `agent_enrollments`. The former v2

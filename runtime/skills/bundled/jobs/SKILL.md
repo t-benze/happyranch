@@ -198,6 +198,16 @@ the ordinary rules below.
 
 You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs an authorized daemon operation. Obtain any required authorization in an existing thread BEFORE submitting; job admission does not authorize contents or grant executor permissions.
 
+## Startup observation receipts
+
+When separately authorized to observe normal startup, keep the original external
+parent clock and distinguish actual usable API/UI from daemon listener/native/
+ready observations. Shell late-exec tokens are untrusted local telemetry and
+exclude preflight; Mac/direct origins may be unavailable. Fixed private summaries
+add no DB scan, profiler, restart, replay or new execution authority. Null timing
+is not zero or performance PASS. Preserve actual job command/cwd/head/runtime/
+output/exit and original failures; source-only stages execute no startup experiment.
+
 ## When to use
 
 Three signals you should reach for jobs instead of running the command inline:

@@ -16,6 +16,13 @@ injected content.
 """
 from __future__ import annotations
 
+import time
+
+# Earliest module-body marker: Python and runtime/daemon package startup excluded.
+_MODULE_ENTRY_NS = time.monotonic_ns()
+from runtime.infrastructure.startup_observation import BootObservation, observed, observation_time_ns
+_BOOT_OBSERVATION = BootObservation(_MODULE_ENTRY_NS)
+
 import argparse
 import logging
 import os
@@ -48,6 +55,8 @@ from runtime.orchestrator.orchestrator import (
     completion_report_from_result_row,
 )
 from runtime.runtime import RuntimeDir
+
+_BOOT_OBSERVATION.record_interval("imports", _MODULE_ENTRY_NS, time.monotonic_ns())
 
 logger = logging.getLogger("happyranch.daemon")
 
@@ -874,40 +883,45 @@ def recover_startup_native(recovery: StartupRecovery) -> RecoveryOutcome:
     return RecoveryOutcome("local_hold" if held else "settled")
 
 
-def _build_state(settings: Settings) -> DaemonState:
-    reg = runtimes.load()
-    move_diagnostics = {}
-    if reg.active is None:
-        # Auto-provision a default runtime on first launch so the daemon
-        # never starts idle unless the provisioning itself fails.
-        # Precedence:
-        #   1. Registered runtimes exist but none active → activate the first.
-        #   2. Registry empty → create a default runtime at daemon_home/runtime.
-        if reg.registered:
-            target = reg.registered[0]
-            logger.info("no active runtime — activating existing registered runtime: %s", target)
-            move_diagnostics.update(runtimes.activate(target))
-        else:
-            default_path = paths.daemon_home() / "runtime"
-            logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
-            RuntimeDir.init(default_path)
-            move_diagnostics.update(runtimes.register(default_path))
+def _build_state(settings: Settings, *, observation: BootObservation | None = None) -> DaemonState:
+    with observed(observation, "runtime_registry") as registry_observation:
         reg = runtimes.load()
+        move_diagnostics = {}
         if reg.active is None:
-            # Defensive: if provisioning still yields no active runtime,
-            # fall back to idle rather than raising. This path should be
-            # unreachable in practice.
-            logger.error("runtime auto-provision failed — starting in idle mode")
-            return DaemonState.idle(settings)
-    runtime = RuntimeDir.load(reg.active)
-    state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics)
+            # Auto-provision a default runtime on first launch so the daemon
+            # never starts idle unless the provisioning itself fails.
+            # Precedence:
+            #   1. Registered runtimes exist but none active → activate the first.
+            #   2. Registry empty → create a default runtime at daemon_home/runtime.
+            if reg.registered:
+                target = reg.registered[0]
+                logger.info("no active runtime — activating existing registered runtime: %s", target)
+                move_diagnostics.update(runtimes.activate(target))
+            else:
+                default_path = paths.daemon_home() / "runtime"
+                logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
+                RuntimeDir.init(default_path)
+                move_diagnostics.update(runtimes.register(default_path))
+            reg = runtimes.load()
+            if reg.active is None:
+                # Defensive: if provisioning still yields no active runtime,
+                # fall back to idle rather than raising. This path should be
+                # unreachable in practice.
+                logger.error("runtime auto-provision failed — starting in idle mode")
+                registry_observation.outcome = "local_hold"
+                return DaemonState.idle(settings)
+    with observed(observation, "runtime_load"):
+        runtime = RuntimeDir.load(reg.active)
+    with observed(observation, "daemon_state"):
+        state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics, observation=observation)
     for org in state.orgs.values():
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
         # server-owned permission-surface reader before any startup recovery or
         # publication.  These bindings are the production owner setup; they were
         # previously exercised only by tests/store forwarders.
-        org.bind_authority_v2_owner()
+        with observed(observation, "authority_owner"):
+            org.bind_authority_v2_owner()
         # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
         # through the existing serialized transaction owner BEFORE any startup
         # recovery/enqueue and before the API becomes available. Initialization
@@ -916,15 +930,16 @@ def _build_state(settings: Settings) -> DaemonState:
         # and an initializer-audit failure rather than manufacturing empty state
         # or silently selecting legacy. A refusal propagates out of
         # ``_build_state`` so the daemon never binds the API or admits launch.
-        for team in org.teams.teams():
-            manager = org.teams.executable_manager_for_team(team)
-            if manager is not None and is_eligible_policy_manager(
-                root=org.root, agent_name=manager, team=team, teams=org.teams,
-            ):
-                org.workflow_authority.ensure_authority_selector(
-                    team=team,
-                    publisher="daemon-startup:selector-initialization",
-                )
+        with observed(observation, "authority_selectors"):
+            for team in org.teams.teams():
+                manager = org.teams.executable_manager_for_team(team)
+                if manager is not None and is_eligible_policy_manager(
+                    root=org.root, agent_name=manager, team=team, teams=org.teams,
+                ):
+                    org.workflow_authority.ensure_authority_selector(
+                        team=team,
+                        publisher="daemon-startup:selector-initialization",
+                    )
         # P0 ends here. The original ordered sweep/publication and tokens
         # belong exclusively to the lifespan's retained native P2-P7 owner.
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
@@ -1108,6 +1123,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "and requires a fresh explicit invocation for retry."
         ),
     )
+    parser.add_argument("--startup-clock", help=argparse.SUPPRESS)
+    parser.add_argument("--startup-launch-id", help=argparse.SUPPRESS)
     parser.add_argument("--reader-guarded-start", nargs="?", const="online-team-move@1",
         choices=("online-team-move@1", "online-team-move@2", "online-team-move@3"),
         help="Supported launcher reader-capability protocol; incompatible older parsers refuse before startup.")
@@ -1123,16 +1140,31 @@ class _DiagnosticServer(uvicorn.Server):
         self._diagnostic_signalled = False
 
     async def startup(self, sockets=None) -> None:
-        await super().startup(sockets=sockets)
-        if (self._diagnostic_signalled or not self.started or self.should_exit
-                or self.lifespan.should_exit or self.config.app is not self._diagnostic_app):
-            return
-        self._diagnostic_signalled = True
-        app = self._diagnostic_app
-        # Only this original adapter proves ASGI AND actual listener success.
-        # Service admission additionally waits for positive recovery readiness.
-        from runtime.daemon.startup_recovery import bind_http_listener
-        bind_http_listener(app, self)
+        started_ns = observation_time_ns()
+        observation = getattr(getattr(getattr(self._diagnostic_app, "state", None), "daemon", None),
+                              "_startup_observation", None)
+        try:
+            await super().startup(sockets=sockets)
+            if self._diagnostic_signalled:
+                return
+            if (not self.started or self.should_exit or self.lifespan.should_exit
+                    or self.config.app is not self._diagnostic_app):
+                if observation is not None:
+                    observation.record_interval("asgi_listener", started_ns, observation_time_ns(), "incomplete")
+                return
+            self._diagnostic_signalled = True
+            app = self._diagnostic_app
+            # Only this original adapter proves ASGI AND actual listener success.
+            # Service admission additionally waits for positive recovery readiness.
+            from runtime.daemon.startup_recovery import bind_http_listener
+            bind_http_listener(app, self)
+        except BaseException as exc:
+            if observation is not None:
+                observation.record_interval("asgi_listener", started_ns, observation_time_ns(),
+                                            "failed" if isinstance(exc, Exception) else "incomplete")
+            raise
+        if observation is not None:
+            observation.record_interval("asgi_listener", started_ns, observation_time_ns())
         app.state.daemon._startup_recovery.signal_serving(app)
 
 
@@ -1155,20 +1187,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.maintenance:
         return run_maintenance()
 
-    paths.ensure_daemon_home()
+    _BOOT_OBSERVATION.origin(args.startup_clock, args.startup_launch_id)
+    try:
+        with observed(_BOOT_OBSERVATION, "main_preflight"):
+            paths.ensure_daemon_home()
 
-    paths.ensure_token()
+            paths.ensure_token()
 
-    settings = Settings()
-    # Normalise PATH so the bundled happyranch CLI and standard tool
-    # directories are available even when the daemon is launched by
-    # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
-    # binary resolution is handled separately via the machine-local
-    # executors.json registry (THR-107 seq155).  Must happen before any
-    # executor is constructed (issue #254).
-    from runtime.orchestrator.executors import _normalize_path
-    _normalize_path()
-    state = _build_state(settings)
+            settings = Settings()
+            # Normalise PATH so the bundled happyranch CLI and standard tool
+            # directories are available even when the daemon is launched by
+            # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
+            # binary resolution is handled separately via the machine-local
+            # executors.json registry (THR-107 seq155).  Must happen before any
+            # executor is constructed (issue #254).
+            from runtime.orchestrator.executors import _normalize_path
+            _normalize_path()
+        with observed(_BOOT_OBSERVATION, "build_state"):
+            state = _build_state(settings, observation=_BOOT_OBSERVATION)
+        state._startup_observation = _BOOT_OBSERVATION
+    except BaseException:
+        _BOOT_OBSERVATION.emit("boot_failed")
+        raise
+    _BOOT_OBSERVATION.emit("boot_prepared")
     app = create_app(state)
 
     sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
@@ -1176,7 +1217,7 @@ def main(argv: list[str] | None = None) -> int:
     paths.pid_file().write_text(str(os.getpid()))
     _install_signal_handlers(state)
 
-    logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
+    logger.info("HappyRanch daemon socket bound (ASGI/listener pending) on %s:%d", settings.daemon_bind_host, port)
     config = uvicorn.Config(app, log_level="info", lifespan="on")
     server = _DiagnosticServer(config, app)
     # Hand the bound socket to uvicorn so we don't race the port number.

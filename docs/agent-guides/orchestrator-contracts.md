@@ -1,5 +1,19 @@
 # Orchestrator Contracts
 
+## Actual-owner startup counter export
+
+See [runtime observations](runtime-and-configuration.md#actual-owner-startup-observations--root13137)
+for fixed clock/nesting/log definitions. Authority's REAL consuming
+`with store._startup_v2_reads()` scope is inside an outer scalar observation;
+export occurs after its exit invalidation, including early unavailable return
+and exception. Closed statistics copy takes no canonical DB lock. The entry-only
+sweep reader is not a substitute. Existing checks/log/refusal/tail ordering,
+8-root/4096-row/8MiB memo accounting and all cleanup fences remain. One actual
+history-fetch increment remains after SELECT/fetchall; separate discovery/exact,
+hit/miss/fetch/decode/max/outcome/invalidation observations are never a scan or
+recovery grant. New optional counter faults cannot replace primary exceptions.
+All behavior/sensitivity NOT RUN; source delivery grants no restart or retry.
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -4541,7 +4555,7 @@ requires actual matching serving and the accepted ready epoch without stop/close
 failure/unbound ownership. No DB/history/probe is added, cached host health stays
 sanitized, and native causes/paths/IDs are private. owner_to_serving_ns is not a
 launcher duration; launcher_duration_ns remains null. TS API mapping is additive.
-Root owns remaining UI/launcher/consumer instrumentation, isolated OpenAPI snapshot
+Root owns final UI/launcher/consumer assessment, isolated OpenAPI snapshot
 sync and finite behavioral/resource/independent final acceptance. Runtime/proof
 NOT RUN, maker0/3 QA0/3 unchanged; source publication grants no activation.
 

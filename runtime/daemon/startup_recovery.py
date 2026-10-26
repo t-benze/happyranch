@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal
 
+from runtime.infrastructure.startup_observation import observation_time_ns
+
 _LOG = logging.getLogger(__name__)
 _PHASES = ("sweep", "workflows", "returned", "compatibility", "redelivery", "producers")
 _COUNTERS = {
@@ -54,10 +56,14 @@ class _Phase:
     outcome: str = "not_started"
     started_ns: int | None = None
     ended_ns: int | None = None
+    observation_outcome: str = "not_started"
     counts: dict[str, int] = field(default_factory=dict)
 
     def public(self) -> dict[str, Any]:
-        return {"outcome": self.outcome, "counts": dict(self.counts), "duration_ns":
+        return {"outcome": self.outcome, "observation_outcome": self.observation_outcome,
+                "started_ns": self.started_ns, "ended_ns": self.ended_ns,
+                "exclusive_ns": None,  # No explicitly nested recovery child interval.
+                "counts": dict(self.counts), "duration_ns":
                 None if self.started_ns is None or self.ended_ns is None
                 else self.ended_ns - self.started_ns}
 
@@ -115,6 +121,15 @@ class StartupRecovery:
         self._closed = False
         self._ready_commits = 0
         self._created_ns = time.monotonic_ns()
+        self._observation = getattr(state, "_startup_observation", None)
+        self._submitted_ns: int | None = None
+        self._native_started_ns: int | None = None
+        self._native_ended_ns: int | None = None
+        self._native_outcome = "not_started"
+        self._ready_ns: int | None = None
+        self._failed_ns: int | None = None
+        self._stop_ns: int | None = None
+        self._closed_ns: int | None = None
         self._serving_ns: int | None = None
         self._sweep_owner: Any | None = None
         self._coordinator: asyncio.Task | None = None
@@ -364,12 +379,17 @@ class StartupRecovery:
 
     def signal_serving(self, app: Any) -> None:
         """Only the real Server's matching, successful startup calls this."""
+        first = False
         with self._lock:
             if app is not self.app or self._loop is None or self._closed or self._stop.is_set():
                 raise RuntimeError("startup_listener_attachment_mismatch")
             if not self._serving:
                 self._serving_ns = time.monotonic_ns()
                 self._serving = True
+                first = True
+        if first and self._observation is not None:
+            self._observation.listener(self._serving_ns)
+            self._emit_observation("serving")
         self._signal_services()
 
     def _signal_services(self) -> None:
@@ -459,10 +479,44 @@ class StartupRecovery:
         if any(not task.done() for task in self._consumers):
             raise RuntimeError("startup_consumer_join_incomplete")
 
+    def _timing_locked(self) -> dict[str, Any]:
+        def interval(start, end):
+            return None if start is None or end is None else end - start
+        return {"submitted_ns": self._submitted_ns, "native_started_ns": self._native_started_ns,
+                "native_ended_ns": self._native_ended_ns, "native_outcome": self._native_outcome,
+                "ready_ns": self._ready_ns, "failed_ns": self._failed_ns,
+                "stop_ns": self._stop_ns, "closed_ns": self._closed_ns,
+                "submit_to_native_ns": interval(self._submitted_ns, self._native_started_ns),
+                "native_execution_ns": interval(self._native_started_ns, self._native_ended_ns),
+                "native_to_ready_ns": interval(self._native_ended_ns, self._ready_ns),
+                "recovery_wall_to_ready_ns": interval(self._submitted_ns, self._ready_ns),
+                "recovery_wall_to_failure_ns": interval(self._submitted_ns, self._failed_ns),
+                "owner_to_stop_ns": interval(self._created_ns, self._stop_ns),
+                "stop_to_closed_ns": interval(self._stop_ns, self._closed_ns),
+                "serving_preceded_ready": None if self._serving_ns is None or self._ready_ns is None
+                else self._serving_ns < self._ready_ns,
+                "serving_native_overlap_ns": None if self._serving_ns is None
+                or self._native_started_ns is None or self._native_ended_ns is None else
+                max(0, self._native_ended_ns - max(self._native_started_ns, self._serving_ns))}
+
+    def _emit_observation(self, event: str) -> None:
+        if self._observation is None:
+            return
+        try:
+            with self._lock:
+                timing = self._timing_locked()
+            # Never nest a new reader/publication lock under the gate mutex.
+            reads = self.state._startup_reads
+            self._observation.emit(event, recovery={"timing": timing,
+                "publications": self._publications.snapshot(),
+                "reads": None if reads is None else reads.snapshot()})
+        except Exception:
+            self._observation.fault()
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             binding = self._binding
-            return {"state": self._status, "epoch": self.epoch,
+            result = {"state": self._status, "epoch": self.epoch,
                     "serving": self._serving,
                     "recovery_ready": self._status == "ready" and not self._stop.is_set(),
                     "stopping": self._stop.is_set(), "phase": self._phase,
@@ -478,18 +532,25 @@ class StartupRecovery:
                         "orgs_bound": 0 if binding is None else binding.orgs_bound,
                         "jobs_bound": binding is not None and binding.jobs_bound,
                     },
+                    "timing": self._timing_locked(),
                     "launcher_duration_ns": None,
                     "owner_to_serving_ns": None if self._serving_ns is None
                     else self._serving_ns - self._created_ns,
                     "phases": {name: phase.public() for name, phase in self._phases.items()}}
 
+        result["observations"] = None if self._observation is None else self._observation.snapshot()
+        reads = self.state._startup_reads
+        result["reads"] = None if reads is None else reads.snapshot()
+        return result
+
     def require_ready(self) -> None:
         with self._lock:
             allowed = self._status == "ready" and not self._stop.is_set() and not self._closed
         if not allowed:
-            current = self.snapshot()
-            code = "daemon_recovering" if current["state"] == "recovering" and not current["stopping"] else "daemon_recovery_failed"
-            raise StartupUnavailable(code, current)
+            with self._lock:
+                recovering = self._status == "recovering" and not self._stop.is_set()
+            code = "daemon_recovering" if recovering else "daemon_recovery_failed"
+            raise StartupUnavailable(code, public_startup_status(self.state, self.app))
 
     def require_attachment(self, owner: Any) -> None:
         """Authenticate the actual current production owner without DB work."""
@@ -543,7 +604,7 @@ class StartupRecovery:
                        and self._status == "recovering" and not self._stop.is_set()
                        and self._first_cause is None)
         if not allowed:
-            raise StartupUnavailable("startup_owner_unavailable", self.snapshot())
+            raise StartupUnavailable("startup_owner_unavailable", public_startup_status(self.state, self.app))
 
     def require_workflow_owner(self, org: Any, *, sweep_owner: Any = None) -> None:
         """P2/P3 only: original native operation, attachment and cold sweep.
@@ -643,10 +704,13 @@ class StartupRecovery:
                                else "startup_workflow_task_already_pending")
 
     def fail(self, code: str, cause: BaseException) -> None:
+        first = False
         with self._lock:
             if self._first_cause is None:
                 self._first_cause = cause
                 self._error_code = code
+                self._failed_ns = observation_time_ns()
+                first = True
             elif cause is not self._first_cause:
                 if len(self._secondary) < 8:
                     self._secondary.append(cause)
@@ -659,6 +723,8 @@ class StartupRecovery:
         if sweep is not None:
             sweep.fail(cause)
         self._publications.close_admission()
+        if first:
+            self._emit_observation("failed")
 
     @contextmanager
     def phase(self, name: str) -> Iterator[Callable[[RecoveryOutcome], None]]:
@@ -671,6 +737,7 @@ class StartupRecovery:
                 raise RuntimeError("startup_phase_out_of_order")
             phase = self._phases[name]
             phase.outcome = "incomplete"
+            phase.observation_outcome = "incomplete"
             phase.started_ns = time.monotonic_ns()
             self._phase = name
         outcome: RecoveryOutcome | None = None
@@ -695,19 +762,23 @@ class StartupRecovery:
             self.fail("startup_" + name + "_failed", exc)
             with self._lock:
                 phase.outcome = "failed"
+                phase.observation_outcome = "failed" if isinstance(exc, Exception) and not self._stop.is_set() else "incomplete"
             raise
         else:
             with self._lock:
                 phase.outcome = outcome.disposition
+                phase.observation_outcome = "complete"
         finally:
             with self._lock:
                 phase.ended_ns = time.monotonic_ns()
             try:
-                _LOG.info("startup phase=%s outcome=%s epoch=%s", name, phase.outcome, self.epoch)
+                _LOG.info("startup phase=%s outcome=%s observation=%s duration_ns=%s", name,
+                          phase.outcome, phase.observation_outcome, phase.ended_ns - phase.started_ns)
             except BaseException as exc:
                 self.fail("startup_phase_observation_failed", exc)
                 with self._lock:
                     phase.outcome = "failed"
+                    phase.observation_outcome = "failed"
                 if primary is None:
                     raise
 
@@ -717,12 +788,15 @@ class StartupRecovery:
             if self._loop is None or self._native is not None or self._closed or self._stop.is_set():
                 raise RuntimeError("startup_submission_unavailable")
             # submit can start immediately; _run first acquires this same lock.
+            self._submitted_ns = observation_time_ns()
             self._native = self._executor.submit(self._run, operation)
             return self._native
 
     def _run(self, operation: Callable[[StartupRecovery], RecoveryOutcome]) -> RecoveryOutcome:
         with self._lock:
             self._native_thread = threading.get_ident()
+            self._native_started_ns = observation_time_ns()
+            self._native_outcome = "incomplete"
         try:
             self.require_native_owner()
             outcome = operation(self)
@@ -734,13 +808,18 @@ class StartupRecovery:
             with self._lock:
                 if any(phase.outcome not in ("settled", "local_hold") for phase in self._phases.values()):
                     raise RuntimeError("startup_native_phases_incomplete")
+                self._native_outcome = "complete"
             return outcome
         except BaseException as exc:
+            with self._lock:
+                self._native_outcome = "failed" if isinstance(exc, Exception) and not self._stop.is_set() else "incomplete"
             self.fail("startup_native_failed", exc)
             raise
         finally:
             with self._lock:
                 self._native_thread = None
+                self._native_ended_ns = observation_time_ns()
+            self._emit_observation("native_settled")
 
     async def join(self) -> RecoveryOutcome:
         """A cancelled waiter still consumes the ORIGINAL native completion."""
@@ -785,7 +864,9 @@ class StartupRecovery:
             self._status = "ready"
             self._phase = "ready"
             self._ready_commits += 1
+            self._ready_ns = observation_time_ns()
             self._latch.set()
+        self._emit_observation("ready")
         self._signal_services()
 
     async def wait_ready(self) -> None:
@@ -797,11 +878,16 @@ class StartupRecovery:
     def stop(self) -> None:
         # Synchronous admission fence, before any shutdown await.
         with self._lock:
+            first = not self._stop.is_set()
+            if first:
+                self._stop_ns = observation_time_ns()
             self._stop.set()
             sweep = self._sweep_owner
         if sweep is not None:
             sweep.negative('startup_sweep_stopped')
         self._publications.close_admission()
+        if first:
+            self._emit_observation("stop")
 
     def assert_native_idle(self) -> None:
         self._publications.assert_idle()
@@ -878,6 +964,9 @@ class StartupRecovery:
         self._executor.shutdown(wait=True, cancel_futures=False)
         with self._lock:
             self._closed = True
+            if self._closed_ns is None:
+                self._closed_ns = observation_time_ns()
+        self._emit_observation("closed")
         if cancellation is not None:
             raise cancellation
 

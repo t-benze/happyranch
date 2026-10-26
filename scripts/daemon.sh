@@ -132,7 +132,7 @@ _startup_observation() {
 
 cmd_start() {
     local start_timeout="${HAPPYRANCH_DAEMON_START_TIMEOUT-120}"
-    local bind_host probe_host bg_pid port deadline observation
+    local bind_host probe_host bg_pid port deadline observation launch_clock launch_id
 
     if [[ ! "$start_timeout" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: HAPPYRANCH_DAEMON_START_TIMEOUT must be a positive integer (got '$start_timeout')." >&2
@@ -164,7 +164,11 @@ cmd_start() {
 
     # No live PID remains, so an old port file cannot describe this launch.
     rm -f "$PORT_FILE"
-    nohup uv run python -m runtime.daemon --reader-guarded-start=online-team-move@3 >> "$LOG_FILE" 2>&1 &
+    # Later marker excludes shell/uv/settings/Python preflight. Failure leaves
+    # telemetry unavailable and changes no native launch/admission decision.
+    launch_clock=$(uv run --no-sync --offline python "$SCRIPT_DIR/runtime/infrastructure/startup_observation.py" --launch-clock 2>/dev/null) || launch_clock=unavailable
+    launch_id=${launch_clock%%:*}
+    nohup uv run python -m runtime.daemon --startup-clock="$launch_clock" --startup-launch-id="$launch_id" --reader-guarded-start=online-team-move@3 >> "$LOG_FILE" 2>&1 &
     bg_pid=$!
 
     # uv currently remains as $bg_pid and waits for its Python child. If that

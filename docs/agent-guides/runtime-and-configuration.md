@@ -1,5 +1,117 @@
 # Runtime And Configuration
 
+## Actual-owner startup observations — ROOT13137
+
+Normal boot retains its original P0 prerequisites and P2–P9 order. The earliest
+`__main__` monotonic marker precedes heavy imports but excludes interpreter and
+package initialization. `BootObservation` in the infrastructure layer retains
+only fixed scalar aggregates, attached to that actual DaemonState/StartupRecovery;
+normal dynamic org attachment does not enlarge the boot census. It adds no
+reader, SQL, filesystem census, payload serialization, native owner or readiness
+predicate. It never retains org/root IDs, readers, connections or decoded graphs.
+
+There are 23 fixed timing categories: imports, main preflight, state construction,
+registry/runtime, org load/preflight, Database, workflow install/full validation,
+move/Pause schema, cutover, roster/orchestrator/services, identity/authority
+publication, selectors/authority owner, profile reconciliation and actual ASGI/
+listener. Each has count/min/max/total inclusive and exclusive nanoseconds,
+first-start/last-end, outcome counts and not_started/complete/failed/incomplete/
+local_hold summary. No observation gives count=0 with null min/max/endpoints;
+zero duration is never substituted for missing work. P0 nested synchronous
+intervals subtract ONLY explicitly nested children on the SAME thread. Aggregated
+org intervals include their DB/schema children: do not sum them. ASGI time may
+overlap native recovery and subtracts none of that concurrent work. Five fixed
+attachment counters distinguish diagnostic skips, refused loads, actual attaches,
+nonfatal settings seed and fenced authority publication. Successful org attachment
+never claims a caught publication failure succeeded; the publication interval and
+fence counter preserve it. Original warning/cleanup/exception behavior remains.
+
+The shell generates one fresh telemetry-only local late-exec marker AFTER its
+existing shell/uv/Python/settings preflight. Its closed token (<=60 characters)
+contains a random launch correlation, linux/darwin domain label and monotonic ns;
+the separate explicit launch-id argument must match. No environment origin is
+adopted and no optional original parent clock is accepted. Absent/malformed,
+unmatched, unsupported/foreign domain, future or >1h stale markers yield no
+interval. A syntactically valid marker is labelled `local_late_exec_untrusted`:
+same-host/same-clock-domain transport is an assumption, not host/boot/time-namespace
+attestation. Arbitrary supplied arguments confer no trusted provenance, identity,
+authority or performance proof. Its nominal `local_late_exec_to_listener_ns` is
+only later-marker-to-listener telemetry, excludes all preceding work and is never
+a launcher-to-usable API/UI result. Unsupported/otherwise incomparable clock
+provenance remains unavailable. Marker generation failure changes no launch
+predicate. Exact two-line shell stdout and strict CLI/setup parsers are unchanged.
+Mac/direct daemon launch supplies no shell marker; original parent provenance is
+explicitly unavailable, without any native sanitizer/environment-policy change.
+
+Only the matching `_DiagnosticServer` successful ASGI/listener adapter and original
+`signal_serving` establish the listener time. The early log says socket bound /
+ASGI-listener pending. Module-entry-to-listener and owner-to-serving intervals
+retain distinct origins; neither proves usable authenticated API or browser
+content. Public `launcher_duration_ns`, internal `startup_to_serving_ns`, original
+parent/API/UI times and unobserved RSS stay null. No new public telemetry fields
+or endpoints are added. Startup refusal exceptions carry the same sanitized public
+projection, never the enlarged private snapshot/epoch. Health reads cached original
+scalars under the short gate mutex and never acquire recovery's DB or worker lock.
+
+The six original recovery phases retain settled/local_hold dispositions and
+mandatory log-failure handling, plus explicit observation outcomes, actual start/
+end and inclusive duration. Exclusive recovery time is unavailable because no
+explicit nested child interval was measured there. Submit/native begin/native
+end/ready/first-failure/first-stop/positive recovery-owner close are separate
+once-only facts. Recovery-owner close precedes the separate StartupReads drain;
+it certifies neither reader retirement nor full DB/lifecycle shutdown.
+Native end is not ready; submit-to-ready wall time includes actual tails, real-loop
+acknowledgements, reference binding and dormant-consumer preparation. Native
+execution, submit queue delay, native-to-ready gap, failure wall time and actual
+serving/native overlap are separate. Failed/interrupted native outcome stays
+failed/incomplete; repeated signals/stop/fail do not log a second transition,
+replace first cause, erase committed effects or manufacture successful ready/end.
+
+The REAL `refuse_authority_policy_v2_pre_final_on_startup` consuming scope exports
+only AFTER its original store reader exits and invalidates, including normal,
+early-None/unavailable and exception/incomplete exits. It does not export sweep's
+entry-only connection check. Closed `statistics()` copies fixed scalars without
+reacquiring the canonical DB mutex. Across the existing attached-org iteration,
+37 fixed v2 counters have lifetime count/min/max/total plus four outcome counts
+and lifetime duration aggregate. `history_fetches` still has ONE production
+increment, after the real audit SELECT/fetchall; hits, misses and logical exact
+rechecks remain distinct. Discovery/exact calls, total/max ns, complete/failed,
+rows/max rows, real decode attempts/success, characters/unknown size, admission/
+rejection, epoch/fallback/failed reads and ten finite invalidation causes remain
+actual event observations. Partial fetched/decoded work survives failures.
+Known characters are not UTF8 bytes; history_payload_bytes remains null. Existing
+8-root/4096-row/8MiB memo/full-metadata accounting, chronology, epoch/bookends,
+independent exact rechecks and every transaction/rollback/COMMIT/finally fence
+remain unchanged. Extra counters participate in original metadata accounting.
+
+StartupReads reuses actual admission/worker/close/retirement counters, adding
+retired/budget/submission failures, admission/work maxima and actual queue/native
+time totals/maxima. Four retained leases remain the bound; a Future.done or
+cancel is never close/retirement proof. Failed close keeps its incomplete lease.
+StartupPublications retains its original bounded snapshot, handles and native
+acknowledgements unchanged. New observer/counter faults cannot skip native close,
+retirement acknowledgement or invalidation, replace primary exceptions or open
+admission. Their optional observation failures remain counted when possible;
+original mandatory phase-log failures still fail closed.
+
+Instrumentation is O(1) per existing event with fixed categories, not O(1) whole
+startup. No per-query/root/row/request log is added. There are at most eight
+aggregate attempts per boot (boot_prepared/boot_failed/serving/native_settled/ready/
+failed/stop/closed) and the six original phase logs; existing private error logs
+keep their original owners. Aggregate attempts are once-only even if a sink fails;
+no delivery/durability guarantee follows. Logging/copying is outside aggregate/
+gate/reader/publication locks; fixed copies perform no DB work. No metrics table,
+profiler, retry/recovery framework, process census or hard RSS/time bound is added.
+
+This is SOURCE/static delivery only: all actual counter/clock/failure/stop/race/
+resource cases NOT RUN and sensitivity PROOF NOT RUN, maker0/3 QA0/3 unchanged.
+Root owns OpenAPI/test convergence, finite correctness, coherent PR, independent
+FULL final-source review/same-head QA/guarded merge/exact-main lints and separately
+authorized operator observation. Under10s remains UNVERIFIED. The eventual oracle
+is the ORIGINAL external parent clock to BOTH usable authenticated API and actual
+UI, with independent held-launch refusal/responsiveness and separate recovery
+duration. No runtime execution, activation, restart or new allocation follows.
+
 ## Launcher consumers — serving and recovery readiness
 
 Shell start/status preserve their process identity line and append exactly one
@@ -36,8 +148,7 @@ last observation; expiry/detachment is unknown. Daemon → Check Daemon Status
 explicitly renews it without launching. Labels/diagnostics distinguish liveness,
 serving and recovery; no raw private cause or credential is added.
 
-Source delivery is separate from activation. ROOT13137 retains launcher origin/
-phase/cache instrumentation, isolated OpenAPI/test convergence, finite execution,
+Source delivery is separate from activation. ROOT13137 retains isolated OpenAPI/test convergence, finite execution,
 full independent review/same-head QA, coherent PR/guarded merge/exact-main lints.
 All runtime/platform/race cases here are NOT RUN; maker0/3 QA0/3 unchanged;
 under10s remains UNVERIFIED. Before any separately authorized operator restart,
@@ -45,7 +156,8 @@ use exact reviewed source and capture external parent monotonic time BEFORE the
 normal launcher, usable authenticated thread API AND real browser transcript,
 independent pre-ready launch refusal, later ready and separate recovery duration.
 Health, shell exit and bind alone are insufficient. Absent launcher duration stays
-unavailable; this consumer stage supplies no new launch clock or activation.
+unavailable; the later exec marker described above supplies no original parent
+clock or activation.
 
 
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
@@ -414,9 +526,10 @@ guidance and timing scalars. /health/ready returns200 only with matching actual
 listener AND accepted ready epoch; recovering/failed/stopped/unbound return503.
 No DB/history/probe runs for readiness, and no native cause/path/ID collection is
 public. owner_to_serving_ns starts at owner construction, never launcher start;
-launcher_duration_ns remains null pending root instrumentation. Absence of startup
+launcher_duration_ns remains null because usable API/UI and original parent
+clock evidence are unavailable; private actual-owner observations are described above. Absence of startup
 fields on old servers means unknown. TS mapping supplies no polling/activation.
-Root still owns UI/launcher consumers, instrumentation, isolated OpenAPI snapshot
+Root still owns final consumer/instrumentation assessment, isolated OpenAPI snapshot
 sync and finite behavioral acceptance. Source is not <10s or runtime acceptance.
 
 After return, ordinary callers own their later state and later allocations;

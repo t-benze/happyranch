@@ -1,5 +1,16 @@
 # Web And CLI
 
+## Startup clock limits
+
+The existing health/public startup inventory is unchanged. Internal boot records
+now distinguish actual module/late-exec/listener/native/ready owners; see
+[runtime observations](runtime-and-configuration.md#actual-owner-startup-observations--root13137).
+A shell late-exec marker is untrusted local telemetry, never original-parent or
+usable API/UI proof. Mac/direct launch has no shell provenance. Exact two-line
+stdout, strict parsers and null public launcher duration remain. Private phase/
+cache summaries are not included in public startup refusals. Under10s UNVERIFIED;
+no activation or new observation run is authorized by source delivery.
+
 ## Startup health and finite thread API source — ROOT13137
 
 GET /api/v1/health remains liveness200, preserving status/active_runtime and the
@@ -47,8 +58,7 @@ last observation; expiry/detachment is unknown. Daemon → Check Daemon Status
 explicitly renews it without launching. Labels/diagnostics distinguish liveness,
 serving and recovery; no raw private cause or credential is added.
 
-Source delivery is separate from activation. ROOT13137 retains launcher origin/
-phase/cache instrumentation, isolated OpenAPI/test convergence, finite execution,
+Source delivery is separate from activation. ROOT13137 retains isolated OpenAPI/test convergence, finite execution,
 full independent review/same-head QA, coherent PR/guarded merge/exact-main lints.
 All runtime/platform/race cases here are NOT RUN; maker0/3 QA0/3 unchanged;
 under10s remains UNVERIFIED. Before any separately authorized operator restart,
@@ -56,7 +66,7 @@ use exact reviewed source and capture external parent monotonic time BEFORE the
 normal launcher, usable authenticated thread API AND real browser transcript,
 independent pre-ready launch refusal, later ready and separate recovery duration.
 Health, shell exit and bind alone are insufficient. Absent launcher duration stays
-unavailable; this consumer stage supplies no new launch clock or activation.
+unavailable; the later exec marker supplies no original parent clock or activation.
 
 The ordinary health API namespace exports getHealthReady and matching types;
 503 follows the ordinary ApiError boundary, retaining its response in detail.
@@ -96,7 +106,7 @@ of canonical DB fallback. Explicit busy/deadline/budget/unavailable/primary-clos
 failures preserve existing authenticated404/pagination/cursor/malformed errors.
 Captured actual route/static identities govern pre-body admission; query strings,
 encoded raw targets and slash redirects do not add authority. Original bearer,
-OrgDep and loopback bootstrap rules remain. Root owns remaining instrumentation and
+OrgDep and loopback bootstrap rules remain. Root owns final instrumentation assessment and
 finite API/browser/resource proof and isolated canonical OpenAPI synchronization;
 this source handoff changes no test/assertion/snapshot and proves no behavior.
 

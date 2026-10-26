@@ -3598,8 +3598,11 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         _V2StartupEvidenceUnavailable,
     )
 
+    from runtime.infrastructure.startup_observation import v2_lifetime
+    boot = getattr(getattr(orchestrator, "_startup_recovery", None), "_observation", None)
     store = AuthorityPolicyStore(db)
-    with store._startup_v2_reads() as reads:
+    with v2_lifetime(boot) as observation, store._startup_v2_reads() as reads:
+        observation.reader = reads
         try:
             targets = reads.discover()
         except _V2StartupConnectionUnsafe:
@@ -3608,6 +3611,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
             reads.check()
             _v2_startup_failure_log("discovery_unavailable")
             reads.check()
+            observation.outcome = "unavailable"
             return None
         fenced_roots: set[str] = set()
         failed_roots: set[str] = set()
@@ -3634,6 +3638,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     # the authentic final owner to its own reconciliation, without
                     # another refusal or postcommit tail in this pass.
                     if anchor is None:
+                        observation.outcome = "unavailable"
                         return None
                     fenced_roots.add(discovered.root_task_id)
                     failed_roots.add(discovered.root_task_id)
@@ -3801,6 +3806,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 _v2_startup_failure_log("exact_or_refusal_unavailable")
                 reads.check()
                 if anchor is None:
+                    observation.outcome = "unavailable"
                     return None
         return fenced_roots
 

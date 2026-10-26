@@ -17,6 +17,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from runtime.infrastructure.startup_observation import observation_time_ns
 from runtime.daemon.startup_recovery import StartupRecovery, StartupUnavailable
 from runtime.infrastructure.db.reply_delivery import ReplyDeliveryMixin
 from runtime.infrastructure.db.threads import ThreadsMixin
@@ -252,6 +253,9 @@ class _Lease:
     started: bool = False
     cancel_recorded: bool = False
     connection: sqlite3.Connection | None = None
+    submitted_ns: int | None = field(default_factory=observation_time_ns)
+    started_ns: int | None = None
+    ended_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -280,7 +284,10 @@ class StartupReads:
         self._closed = False
         self._counts = {name: 0 for name in (
             "admitted", "started", "closed", "refused", "cancelled", "failed", "deadline",
-            "rows", "raw_bytes", "response_bytes", "opcodes", "attachments", "cleanup_failures", "close_failed")}
+            "rows", "raw_bytes", "response_bytes", "opcodes", "attachments", "cleanup_failures", "close_failed",
+            "retired", "budget_exhausted", "submission_failed", "admissions_max", "observation_failures",
+            "queue_ns_total", "queue_ns_max", "native_ns_total", "native_ns_max",
+            "rows_max", "raw_bytes_max", "response_bytes_max", "opcodes_max", "attachments_max")}
 
     def _references(self, org: Any) -> tuple[Any, ...]:
         # Reference-only capture: no stat, DB call or canonical lock on the loop.
@@ -351,9 +358,11 @@ class StartupReads:
                     raise StartupReadUnavailable("startup_reader_unavailable")
             self._leases.append(lease)
             self._counts["admitted"] += 1
+            self._observe("admissions_max", len(self._leases), maximum=True)
             try:
                 lease.future = self._executor.submit(self._read, lease, projection)
             except BaseException:
+                self._observe("submission_failed")
                 self._leases.remove(lease)
                 raise
         # Callback owns retirement, outside pool lock (may run synchronously).
@@ -396,54 +405,69 @@ class StartupReads:
         result: bytes | None = None
         with self._lock:
             lease.started = True
+            lease.started_ns = observation_time_ns()
             self._counts["started"] += 1
         try:
-            self._validate_references(lease)
-            lease.identity = lease.references[7][3:]
-            self._validate(lease)
-            uri = lease.references[3].absolute().as_uri() + "?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, timeout=0.05)
-            lease.connection = conn
-            conn.row_factory = sqlite3.Row
-            conn.set_progress_handler(lease.budget.progress, 1000)
-            lease.budget.opcodes += 5000  # Finite setup/release statement tails.
-            conn.execute("PRAGMA query_only=ON")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=50")
-            conn.execute("SAVEPOINT startup_read")
-            self._validate(lease)
-            value = projection(_ThreadReader(conn, lease.budget), lease.budget)
-            lease.budget.check()
-            result = lease.budget.encode(value)
-            conn.execute("RELEASE SAVEPOINT startup_read")
-            self._validate(lease)
-        except BaseException as exc:
-            # Budget interruption is SQLite's wrapper for the original refusal.
-            # Nested cleanup must not replace a genuine earlier decoder/SQL error.
-            refusal = (lease.budget.cleanup_refusal if lease.budget.cleanup_primary is exc
-                       else lease.budget.refusal)
-            lease.primary_error = refusal if isinstance(exc, sqlite3.Error) and refusal is not None else exc
-        finally:
-            # Only this worker can close its connection. A failed close remains
-            # an owned incomplete lease even after its Future has completed.
             try:
-                if conn is not None:
-                    conn.close()
-                lease.close_proven = True
-                lease.connection = None
+                self._validate_references(lease)
+                lease.identity = lease.references[7][3:]
+                self._validate(lease)
+                uri = lease.references[3].absolute().as_uri() + "?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=0.05)
+                lease.connection = conn
+                conn.row_factory = sqlite3.Row
+                conn.set_progress_handler(lease.budget.progress, 1000)
+                lease.budget.opcodes += 5000  # Finite setup/release statement tails.
+                conn.execute("PRAGMA query_only=ON")
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA busy_timeout=50")
+                conn.execute("SAVEPOINT startup_read")
+                self._validate(lease)
+                value = projection(_ThreadReader(conn, lease.budget), lease.budget)
+                lease.budget.check()
+                result = lease.budget.encode(value)
+                conn.execute("RELEASE SAVEPOINT startup_read")
+                self._validate(lease)
             except BaseException as exc:
-                lease.close_error = exc
-                if lease.primary_error is not None:
-                    lease.primary_error.add_note("Startup reader close also failed: " + type(exc).__name__)
-        if lease.primary_error is not None:
-            if isinstance(lease.primary_error, sqlite3.Error):
-                raise StartupReadUnavailable("startup_reader_unavailable") from lease.primary_error
-            raise lease.primary_error
-        if not lease.close_proven:
-            raise StartupReadUnavailable("startup_reader_close_failed") from lease.close_error
-        self._validate(lease)
-        assert result is not None
-        return result
+                # Budget interruption is SQLite's wrapper for the original refusal.
+                # Nested cleanup must not replace a genuine earlier decoder/SQL error.
+                refusal = (lease.budget.cleanup_refusal if lease.budget.cleanup_primary is exc
+                           else lease.budget.refusal)
+                lease.primary_error = refusal if isinstance(exc, sqlite3.Error) and refusal is not None else exc
+            finally:
+                # Only this worker can close its connection. A failed close remains
+                # an owned incomplete lease even after its Future has completed.
+                try:
+                    if conn is not None:
+                        conn.close()
+                    lease.close_proven = True
+                    lease.connection = None
+                except BaseException as exc:
+                    lease.close_error = exc
+                    if lease.primary_error is not None:
+                        lease.primary_error.add_note("Startup reader close also failed: " + type(exc).__name__)
+            if lease.primary_error is not None:
+                if isinstance(lease.primary_error, sqlite3.Error):
+                    raise StartupReadUnavailable("startup_reader_unavailable") from lease.primary_error
+                raise lease.primary_error
+            if not lease.close_proven:
+                raise StartupReadUnavailable("startup_reader_close_failed") from lease.close_error
+            self._validate(lease)
+            assert result is not None
+            return result
+        finally:
+            lease.ended_ns = observation_time_ns()
+
+    def _observe(self, name: str, value: int = 1, *, maximum: bool = False) -> None:
+        # Caller owns the original pool mutex; optional telemetry cannot strand
+        # the mandatory native close/removal/retirement acknowledgement below.
+        try:
+            self._counts[name] = max(self._counts[name], value) if maximum else self._counts[name] + value
+        except Exception:
+            try:
+                self._counts["observation_failures"] += 1
+            except Exception:
+                pass
 
     def _retire(self, lease: _Lease, future: Future[bytes]) -> None:
         # Observe failures even after the HTTP waiter departed. Only native
@@ -454,11 +478,22 @@ class StartupReads:
                 self._counts["failed"] += 1
             if isinstance(error, StartupReadUnavailable) and error.code == "startup_reader_deadline":
                 self._counts["deadline"] += 1
+            if lease.budget.refusal is not None and lease.budget.refusal.code == "startup_reader_budget_exhausted":
+                self._observe("budget_exhausted")
             for name in ("rows", "raw_bytes", "response_bytes", "opcodes", "attachments", "cleanup_failures"):
-                self._counts[name] += getattr(lease.budget, name)
+                value = getattr(lease.budget, name)
+                self._counts[name] += value
+                if name != "cleanup_failures":
+                    self._observe(name + "_max", value, maximum=True)
+            if lease.submitted_ns is not None and lease.started_ns is not None and lease.ended_ns is not None:
+                for name, elapsed in (("queue", lease.started_ns - lease.submitted_ns),
+                                      ("native", lease.ended_ns - lease.started_ns)):
+                    self._observe(name + "_ns_total", elapsed)
+                    self._observe(name + "_ns_max", elapsed, maximum=True)
             self._counts["close_failed"] += int(lease.close_error is not None)
             if lease.close_proven or (future.cancelled() and not lease.started):
                 self._counts["closed"] += int(lease.close_proven)
+                self._observe("retired")
                 self._leases.remove(lease)
             # Future.done() precedes callbacks. Acknowledge accounting in the
             # same critical segment as removal, before assert_idle can pass.

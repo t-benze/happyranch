@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from runtime.daemon.startup_recovery import StartupRecovery
     from runtime.daemon.startup_reads import StartupReads
 
+from runtime.infrastructure.startup_observation import BootObservation, observed
 from runtime.config import Settings
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 from runtime.daemon.host_session_store import HostSessionStore
@@ -76,6 +77,7 @@ class DaemonState:
     _thread_release_service: _ThreadDeliveryReleaseService | None = field(init=False, default=None, repr=False)
     _startup_recovery: StartupRecovery | None = field(init=False, default=None, repr=False)
     _startup_reads: StartupReads | None = field(init=False, default=None, repr=False)
+    _startup_observation: BootObservation | None = field(init=False, default=None, repr=False)
 
     _maintenance_workers: set[asyncio.Future] = field(init=False, default_factory=set, repr=False)
 
@@ -266,11 +268,12 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None, observation: BootObservation | None = None) -> "DaemonState":
         from runtime.orchestrator.team_move_startup import require_runtime_reader
         diagnostics = dict(move_diagnostics or {})
         diagnostics.update(require_runtime_reader(runtime))
         state = cls(runtime=runtime, settings=settings)
+        state._startup_observation = observation
         state.broken_orgs.update(diagnostics)
         from runtime.orchestrator.team_move_startup import diagnostic_move_orgs
         state.broken_orgs.update(diagnostic_move_orgs(runtime))
@@ -349,13 +352,18 @@ class DaemonState:
 
         for slug, root in runtime.iter_org_roots():
             if slug in state.broken_orgs:
+                if observation is not None:
+                    observation.count("orgs_skipped_diagnostic")
                 continue
             try:
-                org = OrgState.load(slug=slug, root=root, settings=settings)
+                with observed(observation, "org_load"):
+                    org = OrgState.load(slug=slug, root=root, settings=settings, observation=observation)
             except (OrgConsistencyError, ValueError) as exc:
                 # One broken org must not crash the daemon. Record the
                 # error for GET /orgs and skip; the folder stays intact
                 # on disk so the founder can fix teams.yaml and restart.
+                if observation is not None:
+                    observation.count("orgs_refused")
                 state.broken_orgs[slug] = str(exc)
                 logger.error("org %r failed consistency check: %s", slug, exc)
                 continue
@@ -368,18 +376,19 @@ class DaemonState:
                 is_eligible_policy_manager,
             )
             try:
-                for team in org.teams.teams():
-                    manager = org.teams.executable_manager_for_team(team)
-                    if manager is not None and is_eligible_policy_manager(
-                        root=org.root,
-                        agent_name=manager,
-                        team=team,
-                        teams=org.teams,
-                    ):
-                        org.workflow_authority.ensure_authority_selector(
+                with observed(observation, "authority_selectors"):
+                    for team in org.teams.teams():
+                        manager = org.teams.executable_manager_for_team(team)
+                        if manager is not None and is_eligible_policy_manager(
+                            root=org.root,
+                            agent_name=manager,
                             team=team,
-                            publisher="daemon-state-load:selector-initialization",
-                        )
+                            teams=org.teams,
+                        ):
+                            org.workflow_authority.ensure_authority_selector(
+                                team=team,
+                                publisher="daemon-state-load:selector-initialization",
+                            )
             except Exception:
                 org.close()
                 raise
@@ -394,6 +403,8 @@ class DaemonState:
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(state.host_supervisor)
             state.orgs[slug] = org
+            if observation is not None:
+                observation.count("orgs_attached")
         assert state.profile_coordinator is not None
         for org in state.orgs.values():
             # Keep the established route-call signatures intact: org-scoped
@@ -407,7 +418,8 @@ class DaemonState:
             slug: runtime.orgs_dir / slug for slug, reason in state.broken_orgs.items()
             if "team_move_" in reason
         }
-        state.profile_coordinator.reconcile_startup()
+        with observed(observation, "profile_reconcile"):
+            state.profile_coordinator.reconcile_startup()
         return state
 
     @property

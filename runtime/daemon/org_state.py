@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from runtime.infrastructure.memory_collection import CollectionObserver
     from runtime.daemon.cleanup_diagnostics import _Attachment
 
+from runtime.infrastructure.startup_observation import BootObservation, observed
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
 from runtime.daemon.event_bus import EventBus
@@ -408,23 +409,29 @@ class OrgState:
         return ts.isoformat()
 
     @classmethod
-    def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
-        paths = OrgPaths(root=root)
-        from runtime.orchestrator.team_move_startup import before_org_attachment
-        before_org_attachment(root, slug)
-        from runtime.identities.schema import preflight
-        naming_preflight = preflight(paths.db_path, org_slug=slug)
-        db = Database(paths.db_path)
+    def load(cls, *, slug: str, root: Path, settings: Settings,
+             observation: BootObservation | None = None) -> "OrgState":
+        with observed(observation, "org_preflight"):
+            paths = OrgPaths(root=root)
+            from runtime.orchestrator.team_move_startup import before_org_attachment
+            before_org_attachment(root, slug)
+            from runtime.identities.schema import preflight
+            naming_preflight = preflight(paths.db_path, org_slug=slug)
+        with observed(observation, "database"):
+            db = Database(paths.db_path)
         try:
-            install_or_recover(db, expected_org_slug=slug)
-            with db._lock:
-                layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with observed(observation, "workflow_install"):
+                install_or_recover(db, expected_org_slug=slug)
+            with observed(observation, "workflow_validate"):
+                with db._lock:
+                    layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
             # Native org release preparation, after strict early move discovery
             # and complete workflow validation, before any roster/publication or
             # producer attachment. Generic Database and diagnostic recovery never
             # install this extension. An existing hold/unknown layout refuses.
             from runtime.infrastructure.team_move_store import install_team_move_schema
-            install_team_move_schema(db, org_slug=slug)
+            with observed(observation, "move_schema"):
+                install_team_move_schema(db, org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
@@ -435,13 +442,17 @@ class OrgState:
                 ))
             if layout == "G":
                 logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
-            WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
+            with observed(observation, "cutover"):
+                WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
-            install_pause_schema(db, org_slug=slug)
-            db._task_pause_store = TaskPauseStore(db, slug)
-            with db._lock:
-                validate_workflow_schema(db._conn, expected_org_slug=slug)
-            teams = TeamsRegistry.load(root)
+            with observed(observation, "pause_schema"):
+                install_pause_schema(db, org_slug=slug)
+                db._task_pause_store = TaskPauseStore(db, slug)
+            with observed(observation, "workflow_validate"):
+                with db._lock:
+                    validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with observed(observation, "roster"):
+                teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.
             # Idempotent (sentinel); runs on every daemon startup but is a no-op
@@ -457,6 +468,8 @@ class OrgState:
                 # never overwrites an explicit setting.
                 backfill_reviewer_agents_setting(paths, db)
             except Exception as exc:
+                if observation is not None:
+                    observation.count("org_seed_nonfatal")
                 logger.warning(
                     "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
                 )
@@ -465,25 +478,28 @@ class OrgState:
             # OrgConsistencyError on drift; DaemonState.from_runtime catches
             # per-org so one broken org cannot crash daemon startup, while
             # add_org propagates so explicit founder actions fail loudly.
-            validate_team_membership(paths, teams)
-            orchestrator = Orchestrator(
-                db=db,
-                settings=settings,
-                paths=paths,
-                slug=slug,
-                teams=teams,
-                authority_evaluator=_build_authority_evaluator(),
-            )
+            with observed(observation, "roster"):
+                validate_team_membership(paths, teams)
+            with observed(observation, "orchestrator"):
+                orchestrator = Orchestrator(
+                    db=db,
+                    settings=settings,
+                    paths=paths,
+                    slug=slug,
+                    teams=teams,
+                    authority_evaluator=_build_authority_evaluator(),
+                )
             from runtime.orchestrator.task_pause import restore_pause_preparations
-            restore_pause_preparations(orchestrator)
-            state = cls(
-                slug=slug,
-                root=root,
-                db=db,
-                teams=teams,
-                settings=settings,
-                orchestrator=orchestrator,
-            )
+            with observed(observation, "org_services"):
+                restore_pause_preparations(orchestrator)
+                state = cls(
+                    slug=slug,
+                    root=root,
+                    db=db,
+                    teams=teams,
+                    settings=settings,
+                    orchestrator=orchestrator,
+                )
             from runtime.identities.registry import read_name_metadata, refresh_names
             # Binding reads current validated org metadata at prompt construction;
             # no cached snapshot, reconciliation or new launch/readiness gate.
@@ -491,16 +507,20 @@ class OrgState:
             state.naming_diagnostic = naming_preflight
             # Cold load has no concurrent route coroutine. Capture/install is
             # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
-                refresh_names(state, install=True, writer=interval.native_disposition)
+            with observed(observation, "identity_publication"):
+                with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                    refresh_names(state, install=True, writer=interval.native_disposition)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain
             # behavior; later supported writers and the next cold start retain
             # the same recovery path.
             try:
-                state.workflow_authority.recover_or_publish()
+                with observed(observation, "authority_publication"):
+                    state.workflow_authority.recover_or_publish()
             except Exception:
+                if observation is not None:
+                    observation.count("authority_fenced")
                 logger.exception(
                     "org %r: workflow authority startup publication remains fenced",
                     slug,
