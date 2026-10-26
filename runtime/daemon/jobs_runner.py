@@ -697,16 +697,36 @@ async def run_job(
                 _validate_registration(registration, running_task=True)
         # Last fresh-effect fence. No gate/DB lock spans native creation.
         _require_runner_admission(registration, job_id, task_id, move_owner)
-        spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-            binary,
-            "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
-            cwd=cwd,
-            env=child_env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        ))
+        runner_task = asyncio.current_task()
+
+        async def create_process():
+            # The shield introduces a scheduling turn before actual creation.
+            # Authenticate this original parent/registration again here, not
+            # a caller flag or an arbitrary supplied launch coroutine.
+            if registration is not None:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                require_job_admission(db=registration.db, org_slug=registration.org_slug)
+                if (registration.task is not runner_task
+                        or registration.startup_binding is not _JOBS_STARTUP):
+                    raise StartupUnavailable("startup_jobs_binding_changed")
+                _validate_registration(registration)
+                require_job_admission(db=registration.db, org_slug=registration.org_slug)
+            else:
+                require_job_admission()
+            if runner_task.cancelling():
+                raise asyncio.CancelledError()
+            return await asyncio.create_subprocess_exec(
+                binary,
+                "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
+                cwd=cwd,
+                env=child_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+
+        spawn = asyncio.create_task(create_process())
         cancellation = None
         while True:
             try:
@@ -716,7 +736,11 @@ async def run_job(
                 # Observe this SAME spawn; cancelling its wrapper is not exit.
                 cancellation = cancellation or exc
                 if spawn.done():
-                    proc = spawn.result()
+                    try:
+                        proc = spawn.result()
+                    except BaseException as failure:
+                        failure.add_note(f"original job spawn waiter cancellation: {cancellation!r}")
+                        raise
                     break
             except BaseException as exc:
                 if cancellation is not None:
@@ -808,6 +832,7 @@ async def run_job(
     watcher = asyncio.create_task(_watch_cap())
 
     reason: str | None = None
+    primary_failure = None
     try:
         if cancellation is not None:
             raise cancellation
@@ -864,6 +889,7 @@ async def run_job(
         status = "failed"
         exit_code = proc.returncode
     except asyncio.CancelledError as primary:
+        primary_failure = primary
         # Includes cancellation while native creation was in flight. Cleanup
         # uses identity only; closure of fresh admission cannot forbid reap.
         try:
@@ -905,12 +931,15 @@ async def run_job(
             if registration is not None:
                 registration.tail_failed |= any(isinstance(x, BaseException) for x in pump_results)
             await watcher
-        except asyncio.CancelledError:
-            # Ignore only the watcher's own cancellation, not cancellation of
-            # the runner while joining output work.
+        except asyncio.CancelledError as cleanup:
+            # Ignore only the watcher's own cancellation. Preserve the first
+            # runner cancellation when its output reconciliation is interrupted.
             if asyncio.current_task().cancelling():
                 if registration is not None:
                     registration.tail_failed = True
+                if primary_failure is not None:
+                    primary_failure.add_note(f"job output reconciliation cancelled: {cleanup!r}")
+                    raise primary_failure
                 raise
         if (registration is not None and _INFLIGHT.get(registration.key) is registration
                 and registration.process is proc and proc.returncode is not None
