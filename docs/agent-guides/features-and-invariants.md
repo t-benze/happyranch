@@ -3119,6 +3119,32 @@ This named job SOURCE stage leaves whole-feature integration and final independe
 review/same-head behavioral QA with ROOT13137; runtime/proof NOT RUN, maker0/3
 QA0/3 unchanged, under10s UNVERIFIED. No partial merge or activation follows.
 
+Document/F5 source admission checks the selected original draft/review dispatchers,
+submission/revision/receipt stores, authority and activation references, in addition
+to the existing seven task/producer references and daemon epoch. References bind
+before exposure, including ready-only dynamic attachment; another store sharing
+an org pointer is insufficient. Ordinary claim, dispatch/preparation/reservation,
+stage, graph/receipt/collection and discovery entries check before capture/effects
+and renew after their own asynchronous locks and inside the original writers.
+P2 carries its retained sweep owner; P3 uses the same synchronous cores; P6 keeps
+its actual publication scope. None grants a fresh claim, session or host launch.
+
+Native terminal/cancellation/cleanup remains independent of fresh admission.
+The original retained invocation owns narrow final reconciliation; completed native
+sources keep their genuine result/bridge/stage and durable pending delivery when
+receipt/graph publication is held. Ordinary direct calls still raise
+StartupUnavailable. Postcommit publication refusal identifies the committed tasks;
+it supplies no delivery acknowledgement or synthetic execution failure.
+
+This document SOURCE slice is PARTIAL: the original authority admission lease and
+Pause preparation writers still need an admission recheck after their own blocking
+locks and before their first effect. Caller checks cannot close those excluded
+writer seams. ROOT13137 owns that exact radius resolution and the inherited P4
+four-versus-seven reference reader mismatch, plus remaining coding/maintenance/
+HTTP/UI/readiness/launcher/counter closure. No complete-stage, runtime or feature
+acceptance follows. Behavior/proof NOT RUN, maker0/3 QA0/3 unchanged, under10s
+UNVERIFIED; no partial merge or activation.
+
 Ordinary dream/work-hour/schedule production now checks the same global gate
 at queue insertion and checked nonblocking dequeue, direct scheduler and runner
 entries, native reservation, preparation, retry and fallback self-launch. Checks

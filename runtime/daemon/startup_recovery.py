@@ -891,6 +891,86 @@ def require_ready(owner: Any) -> None:
     gate.require_ready()
 
 
+def _document_references(org: Any) -> tuple:
+    """Original selected stores; an org pointer alone cannot select a writer."""
+    try:
+        refs = org._startup_document_refs
+        current = (org.workflow_drafts, org.workflow_reviews, org.workflow_submissions,
+                   org.workflow_revisions, org.workflow_review_receipts,
+                   org.workflow_authority, org.workflow_activations)
+        valid = (isinstance(refs, tuple) and len(refs) == len(current)
+                 and all(a is b for a, b in zip(refs, current, strict=True))
+                 and all(owner.org is org and owner.db is org.db for owner in refs[:5])
+                 and org.orchestrator._workflow_drafts is refs[0]
+                 and org.orchestrator._workflow_reviews is refs[1]
+                 and org.orchestrator._workflow_submissions is refs[2]
+                 and org.db._workflow_drafts is refs[0] and org.db._workflow_reviews is refs[1]
+                 and refs[5]._db is org.db and refs[5]._org_slug == org.slug
+                 and refs[6].org is org and refs[6].db is org.db)
+    except (AttributeError, TypeError) as exc:
+        raise StartupUnavailable("startup_document_attachment_changed") from exc
+    if not valid:
+        raise StartupUnavailable("startup_document_attachment_changed")
+    return refs
+
+
+def _document_attachment(owner: Any) -> StartupRecovery:
+    """Identity only; genuine native settlement is owed even after stop."""
+    try:
+        org, state, gate = owner.org, owner._startup_state, owner._startup_recovery
+        refs = _document_references(org)
+        valid = (any(owner is original for original in refs[:5])
+                 and owner._startup_org is org and org._startup_state is state
+                 and isinstance(gate, StartupRecovery) and org._startup_recovery is gate
+                 and gate.state is state
+                 and all(original._startup_state is state and original._startup_org is org
+                         and original._startup_recovery is gate for original in refs[:5]))
+    except AttributeError as exc:
+        raise StartupUnavailable("startup_gate_unbound") from exc
+    if not valid:
+        raise StartupUnavailable("startup_document_attachment_changed")
+    gate.require_attachment(org)
+    return gate
+
+
+def require_document_admission(owner: Any, *, recovery: Any = None,
+                               sweep_owner: Any = None, publication: Any = None) -> None:
+    """Fresh document effects require readiness or the original P2/P3/P6 owner.
+
+    These selected stores have no anonymous standalone admission contract.
+    """
+    gate = _document_attachment(owner)
+    org = owner.org
+    if recovery is not None:
+        if recovery is not gate or publication is not None:
+            raise StartupUnavailable("startup_document_owner_changed")
+        gate.require_workflow_owner(org, sweep_owner=sweep_owner)
+    elif publication is not None:
+        from runtime.daemon.startup_publication import current_publication
+        if (sweep_owner is not None or publication.gate is not gate
+                or current_publication(org.orchestrator) is not publication):
+            raise StartupUnavailable("startup_document_owner_changed")
+        gate.require_redelivery_owner(org)
+    else:
+        if sweep_owner is not None:
+            raise StartupUnavailable("startup_document_owner_changed")
+        gate.require_ready()
+
+
+def publish_document_tasks(owner: Any, queue: Any, task_ids: list[str]) -> None:
+    """Ordinary postcommit delivery, with the existing durable outbox as intent."""
+    try:
+        for task_id in task_ids:
+            require_document_admission(owner)
+            if queue is not owner._startup_state.queue:
+                raise StartupUnavailable("startup_document_queue_changed")
+            queue.enqueue_if_absent(owner.org.slug, task_id)
+    except StartupUnavailable as exc:
+        exc.detail["committed_task_ids"] = list(task_ids)
+        exc.add_note("Document graph/task intent is committed; dependent publication remains unacknowledged.")
+        raise
+
+
 def _require_ordinary_ready(owner: Any) -> None:
     """Explicitly constructed standalone owners retain their offline contract.
 

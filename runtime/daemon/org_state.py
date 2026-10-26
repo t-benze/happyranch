@@ -137,6 +137,7 @@ class OrgState:
     # Shared daemon boot owner; these references do not admit or launch work.
     # Admission captures orchestrator/DB/tracker/thread/dream/wake/schedule queues.
     _startup_admission_refs: Any = field(init=False, default=None, repr=False)
+    _startup_document_refs: Any = field(init=False, default=None, repr=False)
     _startup_state: Any = field(init=False, default=None, repr=False)
     _startup_org: Any = field(init=False, default=None, repr=False)
     _startup_recovery: Any = field(init=False, default=None, repr=False)
@@ -266,6 +267,11 @@ class OrgState:
         self.workflow_revisions = WorkflowRevisionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
         self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
+        self._startup_document_refs = (
+            self.workflow_drafts, self.workflow_reviews, self.workflow_submissions,
+            self.workflow_revisions, self.workflow_review_receipts,
+            self.workflow_authority, self.workflow_activations,
+        )
         self.workflow_repository_artifacts = WorkflowRepositoryArtifactService()
         if self.orchestrator is not None:
             self.orchestrator._workflow_coding_start = self.workflow_coding_start

@@ -167,18 +167,21 @@ def _publish_cold_document_task(dispatcher: Any, task_id: str, gate: Any,
     from runtime.workflows.review_join import HOLDS
     from runtime.infrastructure.task_pause_controls import PauseControlError
     org = dispatcher.org
-    gate.require_workflow_owner(org, sweep_owner=startup_owner)
+    from runtime.daemon.startup_recovery import require_document_admission
+    require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
     with dispatcher._live_lock:
+        require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
         if task_id in dispatcher._live:
             return RecoveryOutcome('local_hold', 'startup_document_live_owner')
     try:
         with dispatcher.db._lock:
+            require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
             if dispatcher._intent(dispatcher.db._conn, task_id)['state'] != 'queued':
                 return RecoveryOutcome('local_hold', 'startup_document_not_queued')
         capture = org.workflow_authority.capture_admission()
         sessions = tuple(org.sessions.iter_active())
         with org.workflow_authority.admission_writer(capture) as conn:
-            gate.require_workflow_owner(org, sweep_owner=startup_owner)
+            require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
             intent = dispatcher._intent(conn, task_id)
             if (intent['state'] != 'queued' or intent['host_launch_started']
                     or intent['session_id'] is not None or intent['host_execution_id'] is not None
@@ -230,7 +233,7 @@ def _recover_cold_owned_task(db: Any, queue: Any, slug: str, task_id: str,
             current = ownership
             if ownership.state != 'queued':
                 gate.require_workflow_owner(org, sweep_owner=startup_owner)
-                dispatcher.reconcile(task_id)  # Original synchronous writer/live-owner fences.
+                dispatcher.reconcile(task_id, recovery=gate, startup_owner=startup_owner)
                 current = classify_task(db, task_id, org_slug=slug)
                 if current.kind != ownership.kind:
                     raise RuntimeError('startup_workflow_reconciliation_required')

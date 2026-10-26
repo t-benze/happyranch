@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import Field, StrictInt, ValidationError
 
+from runtime.daemon.startup_recovery import require_document_admission
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked
 from runtime.workflows.draft_dispatch import DraftOwnershipError, WorkflowDraftDispatcher, canonical_bytes, digest
@@ -379,23 +380,31 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                 'follows. Use your actual task/session report-completion as the FINAL session action.\n')
 
     async def stage_review(self, *, session_id: str, command: dict) -> dict:
+        require_document_admission(self)
         command = parse_stage(command)
         store = self.org.workflow_submissions
         task, agent = store._session(session_id)
         selection = dict(request_id=command['request_id'], task_agent=(task, agent), session_id=session_id, human=False)
         # Preserve selected identity/grant refusal before authority/schema decoding.
         with self.org.sessions.binding_lease(task, agent):
+            require_document_admission(self)
             with self.db._lock:
+                require_document_admission(self)
                 store._session(session_id)
                 store._select_request(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
         async with store._lock:
+            require_document_admission(self)
             async with self.org.db_lock:
+                require_document_admission(self)
                 with self.org.sessions.binding_lease(task, agent):
+                    require_document_admission(self)
                     with self.db._lock:
+                        require_document_admission(self)
                         store._session(session_id)
                         store._select_request(self.db._conn, **selection)
                     with self.org.workflow_authority.admission_writer(capture) as conn:
+                        require_document_admission(self)
                         store._session(session_id)
                         request, _, source = store._select_request(conn, **selection)
                         store._authority(conn, source, capture, {'collect-review'})
@@ -540,7 +549,9 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             completed = (len(bridge) == 1 and bridge[0]['state'] == 'completed'
                          and bridge[0]['assigned_principal'] == agent and bridge[0]['session_id'] == session_id)
         if completed:
-            self._on_loop(self.org.workflow_review_receipts.admit_completed(task_id))
+            with self._completed_followup(task_id):
+                require_document_admission(self)
+                self._on_loop(self.org.workflow_review_receipts.admit_completed(task_id))
 
     def cancel(self, task_id: str) -> dict:
         from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
