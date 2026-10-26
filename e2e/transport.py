@@ -1017,7 +1017,12 @@ class BrowserRelay:
             private = self.originals.get(record['relay_id'])
             if private is None or record['original']['capture_state'] == 'refused':
                 raise ValueError('E05 selected capture refused before read')
-            return max(0, min(1024*1024-len(private['data']), 8*1024*1024-self.capture_bytes))
+            capacity = max(0,min(1024*1024-len(private['data']), (8*1024*1024-self.capture_bytes)//2))
+            lengths = record['original']['framing']['content_length']
+            if lengths and int(lengths[0]) > capacity:
+                self._refuse(record, 'selected-declared-capacity')
+                raise ValueError('E05 selected capture refused before read')
+            return capacity
 
     def _capture_chunk(self, record: dict, data: bytes) -> None:
         if 'original' not in record:

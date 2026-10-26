@@ -2715,7 +2715,7 @@ def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tu
     # invented prefix receipts. Reuse their complete existing independent reader.
     validate_e04(row,observations,json.loads((directory/'browser-events.json').read_text()),directory)
     a = observations['e07_admission']
-    check(a['state'] == 'accepted' and a == observations['e07']['admission'] == row['e07_admission'], 'actual admission export equality')
+    check(a['state'] == 'accepted' and a['refusal'] is None and a == observations['e07']['admission'] == row['e07_admission'], 'actual admission export equality')
     check(a['checkpoint'] in {'pre-E05','C','N','D'}, 'finite genuine checkpoint')
     name = a['checkpoint']
     S,H = {'pre-E05':(29,17),'C':(32,20),'N':(33,21),'D':(36,24)}[name]
@@ -3745,6 +3745,8 @@ def validate_groups(result: dict, observations: dict) -> None:
         ref = group['first_error_ref']
         if ref is not None and (type(ref) is not int or not 0 <= ref < len(observations['failures'])):
             raise ValueError('group original error reference unavailable')
+        if group['state'] in {'failed','refused','unknown'} and ref is None:
+            raise ValueError('group first original error unavailable')
         if group['state'] == 'reported_pass' and (ref is not None or group['begin'] is None or group['end'] is None):
             raise ValueError('group pass conflicts with original error/interval')
 
