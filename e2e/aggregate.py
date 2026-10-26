@@ -208,6 +208,28 @@ def original_controls() -> dict:
             else:
                 raise AssertionError('ambiguous original census accepted: '+name)
         assert read(observations,events)[1] == reference
+    groups = {name:dict(state='reported_pass',begin=1.,end=2.,first_error_ref=None,
+              variants=MANIFEST['variants'][start:end],checkpoint_ref=None,admission_ref=None)
+              for name,start,end in (('E05',48,53),('E07',53,56))}
+    group_result = dict(groups=groups)
+    group_observations = dict(groups=copy.deepcopy(groups),failures=[])
+    group_result['groups']['E05']['state'] = 'invalid'
+    validate_groups(group_result,group_observations,'E07')
+    try:
+        validate_groups(group_result,group_observations)
+    except ValueError as exc:
+        assert 'group export equality' in str(exc)
+        results['B09-E05-metadata-isolation'] = 'E07 own metadata valid; global E05 conflict refused, independent content still required'
+    else:
+        raise AssertionError('invalid E05 metadata promoted globally')
+    group_result['groups']['E07']['variants'] = []
+    try:
+        validate_groups(group_result,group_observations,'E07')
+    except ValueError as exc:
+        assert 'selected group export equality' in str(exc)
+        results['B09-E07-own-metadata-required'] = str(exc)
+    else:
+        raise AssertionError('invalid own E07 metadata accepted')
     return results
 
 
@@ -3726,12 +3748,16 @@ def scoped_completed_join(accepted: dict, result: dict, variants: list[str]) -> 
             raise ValueError('scoped completed original result conflict')
 
 
-def validate_groups(result: dict, observations: dict) -> None:
+def validate_groups(result: dict, observations: dict, selected: str | None = None) -> None:
     groups = result['groups']
-    if groups != observations['groups'] or set(groups) != {'E05','E07'}:
+    if selected is None and (groups != observations['groups'] or set(groups) != {'E05','E07'}):
         raise ValueError('group export equality/identity mismatch')
     for name,start,end in (('E05',48,53),('E07',53,56)):
+        if selected is not None and name != selected:
+            continue
         group = groups[name]
+        if group != observations['groups'][name]:
+            raise ValueError('selected group export equality mismatch')
         if (set(group) != {'state','begin','end','first_error_ref','variants','checkpoint_ref','admission_ref'}
                 or group['state'] not in {'not_started','running','reported_pass','failed','refused','unknown'}
                 or group['variants'] != MANIFEST['variants'][start:end]):
@@ -3835,11 +3861,14 @@ def main() -> int:
                     try:
                         observations = json.loads((directory/'observations.json').read_text())
                         validate_admission(result, admission)
-                        validate_groups(result, observations)
                     except (OSError, ValueError, KeyError, TypeError) as exc:
                         health['errors'].append(f'e2e-{version}: scoped source/group evidence unavailable: {exc}')
                         observations = None
                     if observations is not None:
+                        try:
+                            validate_groups(result, observations)
+                        except (ValueError,KeyError,TypeError) as exc:
+                            health['errors'].append(f'e2e-{version}: group metadata: {exc}')
                         thread_cases = [d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d]
                         if len(thread_cases) == 1:
                             for item in health['completed_cases'][version]:
@@ -3860,6 +3889,8 @@ def main() -> int:
                         try:
                             if observations is None or accepted is None:
                                 raise ValueError('required scoped source/completion evidence unavailable')
+                            if group != 'E04':
+                                validate_groups(result,observations,group)
                             reader()
                             scoped_completed_join(accepted,result,named)
                         except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
