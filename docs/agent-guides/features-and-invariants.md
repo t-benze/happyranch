@@ -2982,6 +2982,26 @@ worker drain is added; other synchronous DB callers retain their limitations.
 
 When a task dispatched from a thread reaches true terminal state, `_maybe_post_thread_followup` appends a system message and mints a `TASK_FOLLOWUP` invocation. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
 
+An ordinary followup optionally permits only a team manager to dispatch a
+self-targeted, same-team replacement for an unfinished goal already covered by
+existing authority, using the ordinary dispatch payload without `resolves`.
+Admission validates the pending open-thread invocation, terminal event/source status
+agreement, lineage and original dispatch provenance. The DB terminal source set is
+`completed`/`failed`/`cancelled`/`superseded`/`escalated`; mechanical eligibility does
+not authorize continuation. At most one persisted replacement is allowed per causal
+root; a new token or replacement task cannot replenish it. Workers gain no manager
+rights, and dispatch still requires a final reply or decline.
+
+Before replacing, inspect the original task details/history and existing artifacts,
+branch/PR, process and effect evidence as applicable. Reconcile uncertain previous
+effects, preserve failed history and lineage, and carry forward unchanged scope,
+allowances and holds. Failed status, an absent PID or a missing callback never proves
+no launch or cleanup. Cancellation, explicit holds, exhausted allowances (including
+external run allowances) and reserved founder decisions remain binding, with no new
+authority or budget. An escalated followup still requires the precise founder
+decision or a decline, never repair dispatch; autonomous escalation continuation
+remains retired. The optional replacement guidance does not override that boundary.
+
 Traps:
 
 - Helper runs after task failure is finalized (no auto-revisit spawns; the task is already terminal FAILED).

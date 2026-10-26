@@ -306,13 +306,26 @@ knows), decline.
 **Escalation variant:** If the dispatched task **escalated** to the founder instead
 of finishing, the thread gets a `task_escalated` system message (with the escalation
 reason). Reply with the precise founder decision needed, or decline if there is nothing
-substantive to add.
+substantive to add. Do not dispatch repair work from this turn. Autonomous escalation
+continuation is retired; the optional replacement guidance below does not override
+these escalation restrictions or an unresolved founder decision.
 
-**Optional replacement dispatch:** A team manager may dispatch one self-targeted
-replacement from this turn before the terminal callback, using the ordinary dispatch
-payload and omitting `resolves`. The runtime validates the terminal event, its lineage
-and dispatch provenance, and the causal root's one-replacement budget; a fresh token
-does not create another replacement. This path does not end the turn: reply or decline
+**Optional replacement dispatch:** Only a team manager may dispatch a self-targeted,
+same-team replacement from an ordinary task-followup turn, and only for an unfinished
+goal already covered by existing authority. Workers gain no manager rights. Use the
+ordinary dispatch payload, omitting `resolves`. The runtime validates the terminal
+event/source status agreement, lineage and original dispatch provenance, and permits
+at most one persisted replacement per causal root; neither a new token nor a
+replacement task resets that limit. Mechanical terminal eligibility is not authority
+to continue cancelled or held work.
+
+Before replacing, inspect the original task details/history and existing artifacts,
+branch/PR, process and effect evidence as applicable. Reconcile uncertain previous
+effects, preserve failed history and lineage, and carry forward unchanged scope,
+allowances and holds. Never infer no launch or cleanup from a failed status, absent
+PID or missing callback. Explicit cancellation, holds, exhausted allowances (including
+external run allowances) and reserved founder decisions remain binding; this path
+grants no new authority or budget. Dispatch does not end the turn: reply or decline
 afterwards as usual.
 
 Callback shapes are unchanged: same `reply` / `decline` payload schema as a normal
