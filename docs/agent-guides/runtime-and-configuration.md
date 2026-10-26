@@ -1,6 +1,28 @@
 # Runtime And Configuration
 
-**Current PR800 allocation — THR228seq648 / sole recovery ROOT TASK-13017.**
+**Current PR800 LOCAL status — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
+The current bounded contract is the [PR800 status in AGENTS.md](../../AGENTS.md)
+and the current ROOT13151 manager brief. PR800 remains OPEN/unmerged at PUBLIC
+`b3c22353a13d662e2327d00dabd7e3c001251e61`; nested allowlisted diagnostics
+and the B1 shared-acquisition correction are LOCAL/unpublished candidates.
+Publications1/3 and automatic attempts1/3 are SPENT at that public head and
+run40321214462/attempt1. Remaining TWO publications and TWO attempts are
+UNALLOCATED across the whole root/children/jobs/retries/continuations.
+This documentation correction reserves/spends ZERO and grants no publication.
+
+Actual installation FAILED at admission_child: helper_exit78/reap_exit78,
+reapedtrue/deadlinefalse/killfalse. The nested guard/root cause remains UNKNOWN;
+no functional installer repair is established. degraded:ready/status1 proves
+system-manager availability only. Affirmative cleanup covers only the current
+NEVER-STARTED fixture; historical40210816942 installation/cleanup remains
+FAILED/UNPROVED, and live cleanup is unaccepted. Same-boot was NOT REACHED;
+R1/R2 remain OPEN and scope_complete HELD. All v4/PHASES, unconditional incomplete,
+recovery/architecture, N3/N6, reboot/release and proof limits in the current
+contract remain unchanged. Current-main composition/publication remains HELD;
+later authorized integration must preserve unrelated storage/setup/sweeper
+contributions and renew independent full-head review and exact-head scoped QA.
+
+**Historical PR800 seq648 recovery-intake snapshot — ROOT TASK-13017 (spent; superseded only by the current tranche above).**
 Founder seq655 authorizes supported recovery continuing FAILED TASK-12936 and
 failed partial TASK-13004 under the SAME seq648 allocation, without replenishment.
 All original failed tasks, preparations, jobs and custody remain preserved.
