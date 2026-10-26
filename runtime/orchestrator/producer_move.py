@@ -12,9 +12,9 @@ import json
 import re
 import time
 from datetime import datetime, timezone
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, ExitStack, closing
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Iterator
 
 from runtime.infrastructure.producer_admission import ProducerAdmissionStore, ProducerLifecycle, native_owner_uncommitted, NativeWriterLifecycle, NativeWriterStore
 from runtime.infrastructure.thread_admission import ThreadAttempt
@@ -36,6 +36,66 @@ def owner_for(db):
         return None
     with db._lock:
         return native_owner_uncommitted(db)
+
+
+def require_producer_admission(org: Any = None, *, db: Any = None) -> None:
+    """Actual early DB/org binding; no same-slug or missing-binding fallback."""
+    from runtime.daemon.startup_recovery import _require_ordinary_ready, StartupUnavailable
+    if org is not None:
+        _require_ordinary_ready(org)
+        db = org.db
+    refs = getattr(db, "_jobs_startup_refs", None)
+    if refs is None:
+        if org is not None and org._startup_state is not None:
+            raise StartupUnavailable("startup_attachment_changed")
+        return
+    if not isinstance(refs, tuple) or len(refs) != 3:
+        raise StartupUnavailable("startup_attachment_changed")
+    state, gate, original = refs
+    if (original.db is not db or state.orgs.get(original.slug) is not original
+            or original._startup_state is not state or original._startup_recovery is not gate
+            or gate is not state._startup_recovery or org is not None and org is not original):
+        raise StartupUnavailable("startup_attachment_changed")
+    _require_ordinary_ready(original)
+
+
+@contextmanager
+def producer_admission_writer(org: Any, writer: Any) -> Iterator[None]:
+    """Check after original admission locks, then release before writer body."""
+    require_producer_admission(org)
+    admission = owner_for(org.db)
+    with ExitStack() as stack:
+        with admission.move.gate if admission is not None else nullcontext(), org.db._lock:
+            require_producer_admission(org)
+            stack.enter_context(writer)
+        yield
+
+
+async def await_producer_worker(native: Any) -> Any:
+    """Keep the existing runner/native owner until its original worker ends."""
+    import asyncio
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(native)
+            break
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            if native.done():
+                try:
+                    result = native.result()
+                except BaseException as secondary:
+                    cancellation.add_note(f"native producer worker failed: {secondary!r}")
+                    raise cancellation
+                break
+        except BaseException as exc:
+            if cancellation is not None:
+                cancellation.add_note(f"native producer worker failed: {exc!r}")
+                raise cancellation
+            raise
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 
 class NativeWriterDisposition:
@@ -210,7 +270,9 @@ class ProducerPreparation:
         self.state = candidate
 
     def before_fifo(self):
+        require_producer_admission(db=self.admission.db)
         with self.admission.move.gate, self.admission.db._lock:
+            require_producer_admission(db=self.admission.db)
             self.admission.revalidate_uncommitted(self)
 
     @property
@@ -259,7 +321,7 @@ class ProducerPreparation:
         return self.last_spec if self.commit(ctx) else None
 
     def __call__(self):
-        pass  # final private commitment protocol; no pre-prepare launch grant
+        require_producer_admission(db=self.admission.db)
 
     def before_selflaunch(self):
         try:
@@ -705,18 +767,31 @@ class ProducerMoveAdmission:
 
     def redeliver_after_release(self, org):
         """At-least-once notifications; queues dedup queued AND running owners."""
+        require_producer_admission(org)
+        if self.db is not org.db or owner_for(org.db) is not self:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_attachment_changed")
         from runtime.daemon.dream_queue import DreamJob
         from runtime.daemon.wake_queue import WakeJob
         from runtime.daemon.schedule_queue import ScheduleJob
         choices = {'dream': (org.dream_queue, DreamJob, 'dream_id'),
                    'wake': (org.wake_queue, WakeJob, 'work_hour_id'),
                    'schedule': (org.schedule_queue, ScheduleJob, 'schedule_id')}
-        for kind, source_id in self.select_redelivery():
-            queue, cls, field = choices[kind]
-            queue.put_nowait(cls(org_slug=org.slug, **{field: source_id}))
+        with closing(self.select_redelivery()) as selected:
+            while True:
+                with self.move.gate, self.db._lock:
+                    require_producer_admission(org)
+                    try:
+                        kind, source_id = next(selected)
+                    except StopIteration:
+                        break
+                require_producer_admission(org)
+                queue, cls, field = choices[kind]
+                queue.put_nowait(cls(org_slug=org.slug, **{field: source_id}))
 
 
 async def run_native_producer(org, kind, source_id, action):
+    require_producer_admission(org)
     admission = owner_for(org.db)
     if admission is None:
         return await action(None)
@@ -724,9 +799,12 @@ async def run_native_producer(org, kind, source_id, action):
     deferred = failed = False
     primary = None
     try:
-        owner = admission.reserve(kind, source_id)
+        with admission.move.gate, org.db._lock:
+            require_producer_admission(org)
+            owner = admission.reserve(kind, source_id)
         if owner is None:
             return
+        require_producer_admission(org)
         return await action(owner)
     except DeferredTeamMove:
         deferred = True  # owner rows remain unchanged; no failure/callback

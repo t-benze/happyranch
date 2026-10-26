@@ -491,7 +491,12 @@ async def spawn_schedule(
     org: OrgDep,
     request: Request,
 ) -> dict:
+    from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+    require_ready(org)
     state: DaemonState = request.app.state.daemon
+    require_ready(state)
+    if org._startup_state is not state or state.orgs.get(slug) is not org:
+        raise StartupUnavailable("startup_attachment_changed")
     registry = org.teams
     if registry is None:
         raise HTTPException(
@@ -501,6 +506,8 @@ async def spawn_schedule(
 
     created: list[str] = []
     async with org.db_lock:
+        require_ready(org)
+        require_ready(state)
         schedule = org.db.schedules.get(schedule_id)
         if schedule is None:
             raise HTTPException(
@@ -529,6 +536,7 @@ async def spawn_schedule(
 
         # Create exactly one root task from the stored normalized_brief.
         # The payload cannot choose the agent, team, or brief.
+        require_ready(org)
         try:
             task_id = org.db.next_task_id()
             org.db.insert_task(TaskRecord(
@@ -761,7 +769,18 @@ async def spawn_schedule(
 
     # Enqueue + audit outside the db lock.
     for task_id in created:
-        enqueue_task(state, org.slug, task_id)
+        try:
+            enqueue_task(state, org.slug, task_id)
+        except StartupUnavailable as exc:
+            exc.add_note(f"source callback committed tasks {created!r}; delivery of {task_id} unacknowledged; do not allocate again")
+            try:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "source callback committed tasks %s; task %s delivery unacknowledged", created, task_id,
+                )
+            except BaseException as secondary:
+                exc.add_note(f"callback refusal logging failed: {secondary!r}")
+            raise
 
     # Audit: schedule_spawned + schedule_completed.
     org.db.insert_audit_log(

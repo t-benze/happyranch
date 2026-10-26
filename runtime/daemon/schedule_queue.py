@@ -23,17 +23,39 @@ class ScheduleJob:
 
 class ScheduleQueue:
     def __init__(self) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         self._q: asyncio.Queue[ScheduleJob] = asyncio.Queue()
         self._owned: set[tuple[str, str]] = set()
 
-    async def put(self, job: ScheduleJob) -> None:
-        self._put_once(job)
+    def _require_ready(self) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
 
-    async def put_once(self, job: ScheduleJob) -> str:
+    def _require_publication(self, job: ScheduleJob, publication: object | None) -> None:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if publication is None:
+            self._require_ready()
+        else:
+            from runtime.daemon.startup_publication import _Handoff
+            gate = self._startup_recovery
+            if (not isinstance(publication, _Handoff) or gate is None
+                    or publication.owner is not gate._publications):
+                raise StartupUnavailable("startup_producer_publication_unavailable")
+            publication.owner.require_producer_handoff(publication, self, job)
+        if self._startup_org is not None and job.org_slug != self._startup_org.slug:
+            raise StartupUnavailable("startup_attachment_changed")
+
+    async def put(self, job: ScheduleJob, *, _publication: object | None = None) -> None:
+        self._put_once(job, _publication=_publication)
+
+    async def put_once(self, job: ScheduleJob, *, _publication: object | None = None) -> str:
         """Positive insertion/SAME original owner acknowledgement on the real loop."""
-        return self._put_once(job)
+        return self._put_once(job, _publication=_publication)
 
-    def _put_once(self, job: ScheduleJob) -> str:
+    def _put_once(self, job: ScheduleJob, *, _publication: object | None = None) -> str:
+        self._require_publication(job, _publication)
         key = (job.org_slug, job.schedule_id)
         if key in self._owned:
             return "already_pending"
@@ -50,7 +72,13 @@ class ScheduleQueue:
         self._owned.discard((job.org_slug, job.schedule_id))
 
     async def get(self) -> ScheduleJob:
-        return await self._q.get()
+        # Check and nonblocking pop share one unsuspended admission segment.
+        while True:
+            self._require_ready()
+            try:
+                return self._q.get_nowait()
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(0.05)
 
     @property
     def size(self) -> int:
@@ -60,8 +88,12 @@ class ScheduleQueue:
 async def schedule_worker_loop(state, settings: Settings) -> None:
     from runtime.daemon.schedule_runner import run_schedule
 
+    from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+
     while True:
+        require_ready(state)
         for org in list(state.orgs.values()):
+            require_ready(org)
             if org.schedule_queue.size == 0:
                 continue
             try:
@@ -75,6 +107,8 @@ async def schedule_worker_loop(state, settings: Settings) -> None:
                     settings=settings,
                     host_supervisor=state.host_supervisor,
                 )
+            except StartupUnavailable:
+                raise
             except Exception:
                 logger.exception(
                     "schedule_worker_loop: schedule %s crashed", job.schedule_id,

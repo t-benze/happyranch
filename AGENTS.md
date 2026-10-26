@@ -126,6 +126,37 @@ This named job SOURCE stage leaves whole-feature integration and final independe
 review/same-head behavioral QA with ROOT13137; runtime/proof NOT RUN, maker0/3
 QA0/3 unchanged, under10s UNVERIFIED. No partial merge or activation follows.
 
+Ordinary dream/work-hour/schedule production now checks the same global gate
+at queue insertion and checked nonblocking dequeue, direct scheduler and runner
+entries, native reservation, preparation, retry and fallback self-launch. Checks
+precede runner registration and repeat after awaited admission/teams/DB locks and
+repository refresh. Original queue/org/DB/orchestrator/tracker/host references
+and epoch are bound before exposure, including ready-only dynamic attachment.
+Explicit standalone construction keeps its existing contract; missing production
+references refuse. Existing cadence, catch-up/startup_deferred, due/expiry,
+recurrence, Pause/move, agent/team and native eligibility remain independent.
+
+Only original P6 dream/wake/schedule handoffs may insert during recovery. The
+retained registered-before-submit owner authenticates exact phase/kind/source,
+queue/org/orchestrator/epoch and actual loop/Task/coroutine/Future under the active
+native scope. This is observed on the real loop, never by calling a native-thread
+validator there. Original inserted/SAME queued-or-in-flight ownership supplies
+acknowledgement; no consumer runs before P8. Native selectors and P7 recovery
+retain their original contract. Stop/refusal never consumes their history.
+
+Actual executor workers remain joined under existing org runner/native ownership
+through wrapper cancellation; fresh admission is separate from original terminal,
+cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
+unavailable, without synthetic source failure, successful move deferral or no-op.
+Scheduled enqueue failures report the genuine committed pending/firing source.
+Work-hour/schedule spawn callbacks recheck actual state/org and the awaited DB
+lock before the first task ID. Their original once/current-team/partial-commit
+semantics remain; a postcommit delivery refusal preserves task/source rows and
+reports the committed task scope without granting another allocation.
+This named producer SOURCE stage leaves the whole feature incomplete. Runtime
+cases/proof NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED; root retains
+full final-source independent review, same-head behavioral QA and coherent delivery.
+
 This is incomplete SOURCE integration, not full API/direct/UI/readiness/launcher
 closure or behavioral acceptance. ROOT13137 retains those consumers, finite
 correctness execution, full independent final review, same-head scoped QA and

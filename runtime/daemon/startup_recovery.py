@@ -203,6 +203,8 @@ class StartupRecovery:
                     or org._startup_recovery is not self or getattr(orch, "_startup_recovery", None) is not self
                     or org.thread_queue is not thread or org.dream_queue is not dream
                     or org.wake_queue is not wake or org.schedule_queue is not schedule
+                    or any(q._startup_state is not self.state or q._startup_org is not org
+                           or q._startup_recovery is not self for q in (dream, wake, schedule))
                     or orch._main_loop is not (self._loop if bound else None)
                     or orch._thread_queue is not (thread if bound else None)):
                 raise RuntimeError("startup_phase_attachment_changed")
@@ -491,7 +493,7 @@ class StartupRecovery:
         state = self.state
         if (state._startup_recovery is not self or self.app.state.daemon is not state
                 or (owner is not state and owner._startup_state is not state)
-                or owner._startup_recovery is not self):
+                or owner._startup_recovery is not self or self.epoch != self._publications.epoch):
             raise StartupUnavailable("startup_attachment_changed")
         if (state.queue is not self._admission_queue or state.host_supervisor is not self._admission_host
                 or state.queue._startup_state is not state or state.queue._startup_recovery is not self
@@ -506,15 +508,21 @@ class StartupRecovery:
             attached = owner is state.queue or owner is state.host_supervisor
         else:
             refs = org._startup_admission_refs
-            attached = (isinstance(refs, tuple) and len(refs) == 4 and org.orchestrator is refs[0]
+            attached = (isinstance(refs, tuple) and len(refs) == 7 and org.orchestrator is refs[0]
                         and org.db is refs[1] and org.sessions is refs[2]
                         and org.thread_queue is refs[3]
+                        and org.dream_queue is refs[4] and org.wake_queue is refs[5]
+                        and org.schedule_queue is refs[6]
+                        and all(q._startup_state is state and q._startup_org is org
+                                and q._startup_recovery is self
+                                for q in (org.dream_queue, org.wake_queue, org.schedule_queue))
                         and org.thread_queue._startup_state is state
                         and org.thread_queue._startup_org is org
                         and org.thread_queue._startup_recovery is self
                         and state.orgs.get(org.slug) is org and org._startup_recovery is self
                         and org._startup_state is state
-                        and any(owner is original for original in (org, org.orchestrator, org.sessions, org.thread_queue))
+                        and any(owner is original for original in (org, org.orchestrator, org.sessions, org.thread_queue,
+                                                                 org.dream_queue, org.wake_queue, org.schedule_queue))
                         and org.orchestrator._db is org.db
                         and org.orchestrator._slug == org.slug
                         and org.orchestrator._queue is state.queue

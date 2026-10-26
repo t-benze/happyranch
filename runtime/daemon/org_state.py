@@ -135,6 +135,7 @@ class OrgState:
     _thread_release_attachment: Any = field(init=False, default=None, repr=False)
     _thread_release_users: set[object] = field(init=False, default_factory=set, repr=False)
     # Shared daemon boot owner; these references do not admit or launch work.
+    # Admission captures orchestrator/DB/tracker/thread/dream/wake/schedule queues.
     _startup_admission_refs: Any = field(init=False, default=None, repr=False)
     _startup_state: Any = field(init=False, default=None, repr=False)
     _startup_org: Any = field(init=False, default=None, repr=False)

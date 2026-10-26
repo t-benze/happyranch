@@ -170,7 +170,12 @@ class WorkHoursSpawnBody(BaseModel):
 async def spawn_work_hour(
     slug: str, work_hour_id: str, body: WorkHoursSpawnBody, org: OrgDep, request: Request,
 ) -> dict:
+    from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+    require_ready(org)
     state: DaemonState = request.app.state.daemon
+    require_ready(state)
+    if org._startup_state is not state or state.orgs.get(slug) is not org:
+        raise StartupUnavailable("startup_attachment_changed")
     registry = org.teams
     if registry is None:
         raise HTTPException(status_code=400, detail={"code": "unknown_team", "valid": []})
@@ -183,6 +188,8 @@ async def spawn_work_hour(
     created: list[str] = []
     partial_error: str | None = None
     async with org.db_lock:
+        require_ready(org)
+        require_ready(state)
         wh = org.db.work_hours.get(work_hour_id)
         if wh is None:
             raise HTTPException(status_code=404, detail={"code": "not_found", "work_hour_id": work_hour_id})
@@ -208,6 +215,7 @@ async def spawn_work_hour(
         # (summary non-empty, >=1 routine, each brief non-empty) before any task
         # is born. If creation still fails partway, already-created root tasks are
         # real work and are NOT rolled back (settled no-rollback ruling).
+        require_ready(org)
         try:
             for routine in body.routines:
                 task_id = org.db.next_task_id()
@@ -251,7 +259,18 @@ async def spawn_work_hour(
     # Enqueue + audit outside the db lock. Already-created tasks are enqueued even
     # on partial failure — they are real work that should proceed.
     for task_id in created:
-        enqueue_task(state, org.slug, task_id)
+        try:
+            enqueue_task(state, org.slug, task_id)
+        except StartupUnavailable as exc:
+            exc.add_note(f"source callback committed tasks {created!r}; delivery of {task_id} unacknowledged; do not allocate again")
+            try:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "source callback committed tasks %s; task %s delivery unacknowledged", created, task_id,
+                )
+            except BaseException as secondary:
+                exc.add_note(f"callback refusal logging failed: {secondary!r}")
+            raise
     audit = AuditLogger(org.db)
     if created:
         audit.log_work_hour_spawned(work_hour_id, agent, task_ids=created)

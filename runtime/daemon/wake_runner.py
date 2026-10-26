@@ -14,13 +14,16 @@ that transitions the row.
 from __future__ import annotations
 
 from runtime.orchestrator.team_move import DeferredTeamMove
-from runtime.orchestrator.producer_move import producer_preparation_effects
+from runtime.orchestrator.producer_move import (
+    producer_preparation_effects, require_producer_admission, await_producer_worker,
+)
+from runtime.daemon.startup_recovery import StartupUnavailable
 
 import asyncio
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.dream_runner import _is_timeout
@@ -147,6 +150,10 @@ async def _run_wake(
     row ``completed``; if the session returns without calling it, the row is
     failed (``no_callback``) or timed out, and no tasks are spawned.
     """
+    require_producer_admission(org_state)
+    if (org_state._startup_state is not None
+            and host_supervisor is not org_state._startup_state.host_supervisor):
+        raise StartupUnavailable("startup_attachment_changed")
     store = org_state.db.work_hours
     record = store.get(work_hour_id)
     if record is None or (record.status != WorkHourStatus.PENDING and not (_move_owner is not None and record.status == WorkHourStatus.RUNNING)):
@@ -201,6 +208,7 @@ async def _run_wake(
     # FAIL-CLOSED: a materialization error must persist a terminal failure
     # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
+        require_producer_admission(org_state)
         with producer_preparation_effects(_move_owner):
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
@@ -224,7 +232,7 @@ async def _run_wake(
                 agent_name=record.agent_name,
                 task_id=work_hour_id,
             )
-    except DeferredTeamMove:
+    except (StartupUnavailable, DeferredTeamMove):
         raise
     except Exception as e:
         store.update(
@@ -243,14 +251,17 @@ async def _run_wake(
     # Await the joined offload BEFORE executor launch, inside the SAME native
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
+    require_producer_admission(org_state)
     repo_refresh_results = await refresh_workspace_repos_async(workspace,
         preparation=_move_owner, host_supervisor=host_supervisor,
         materialization=(settings, expected_specs))
 
+    require_producer_admission(org_state)
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
+        require_producer_admission(org_state)
         with producer_preparation_effects(_move_owner):
             validate_workspace_skills_integrity(
                 workspace, expected_specs,
@@ -312,15 +323,18 @@ async def _run_wake(
     result = None
     if host_supervisor is None:
         # ── Legacy uncontained path (unchanged) ──
-        result = await loop.run_in_executor(None, lambda: executor.run(
-            workspace=workspace,
-            prompt=prompt,
-            session_id=session_id,
-            timeout_seconds=settings.session_timeout_seconds,
-            pre_launch_validator=_pre_launch_validator,
-            org_slug=org_state.slug,
-            model=model_name, reasoning_effort=reasoning_effort,
-        ))
+        def _run_uncontained() -> Any:
+            require_producer_admission(org_state)
+            return executor.run(
+                workspace=workspace,
+                prompt=prompt,
+                session_id=session_id,
+                timeout_seconds=settings.session_timeout_seconds,
+                pre_launch_validator=_pre_launch_validator,
+                org_slug=org_state.slug,
+                model=model_name, reasoning_effort=reasoning_effort,
+            )
+        result = await await_producer_worker(loop.run_in_executor(None, _run_uncontained))
     else:
         # ── THR-207 supervised wiring: the wake session runs through the
         # daemon-wide HostSessionSupervisor (admission lease, atomic ownership
@@ -344,6 +358,7 @@ async def _run_wake(
             )
             return
         try:
+            require_producer_admission(org_state)
             with producer_preparation_effects(_move_owner):
                 launch_spec = spec_builder(
                     workspace=workspace,
@@ -353,7 +368,7 @@ async def _run_wake(
                     org_slug=org_state.slug,
                     timeout_seconds=settings.session_timeout_seconds,
                 )
-        except DeferredTeamMove:
+        except (StartupUnavailable, DeferredTeamMove):
             raise
         except Exception as exc:
             store.update(
@@ -375,6 +390,8 @@ async def _run_wake(
             # internal 429 retry disabled so the supervisor owns the
             # finish/release/sleep/reacquire lifecycle.
             contained = running.process is not None
+            if not contained:
+                require_producer_admission(org_state)
             res = executor.run(
                 workspace=workspace,
                 prompt=prompt,
@@ -396,7 +413,7 @@ async def _run_wake(
                 payload=res,
             )
 
-        outcome = await loop.run_in_executor(
+        outcome = await await_producer_worker(loop.run_in_executor(
             None,
             lambda: host_supervisor.run(
                 AdmissionRequest(
@@ -414,7 +431,7 @@ async def _run_wake(
                 pre_launch_validator=_pre_launch_validator,
                 final_prelaunch_validator=_move_owner,
             ),
-        )
+        ))
         if outcome.terminal_reason in (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED):
             # Daemon drain / cancellation interrupted the invocation: leave the
             # RUNNING row for daemon-restart recovery
@@ -490,6 +507,10 @@ async def run_wake(
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
+    require_producer_admission(org_state)
+    if (org_state._startup_state is not None
+            and host_supervisor is not org_state._startup_state.host_supervisor):
+        raise StartupUnavailable("startup_attachment_changed")
     with org_state._runner_lifetime() as admitted:
         if not admitted:
             return

@@ -1333,6 +1333,22 @@ management reads/writes, not registration):
 
 ## Executor Notes
 
+Dream, work-hour and schedule runners check the actual global StartupRecovery
+attachment before org runner registration/native reservation and at preparation,
+retry and fallback self-launch boundaries. Queues and schedulers independently
+check before fresh effects; only authenticated original P6 queue handoffs may
+publish during recovery, with no early consumer. Missing/replaced production
+state/org/DB/queue/host/epoch refuses; explicit standalone construction retains
+its existing contract. Existing executor permissions and native controls remain.
+StartupUnavailable propagates as unavailable rather than source failure or a
+successful deferral. Actual executor workers stay joined under original runner
+and producer ownership through wrapper cancellation. Original signal, terminal,
+cleanup and settlement stay usable after admission closes; no wrapper cancellation
+or closed gate proves native exit. Spawn callback delivery refusal preserves
+committed source/tasks and reports the original scope without a new allocation.
+This producer SOURCE stage is incomplete whole-feature integration, with runtime
+and proof NOT RUN, maker0/3 QA0/3 unchanged and under10s UNVERIFIED.
+
 Contained builtin and custom-envelope communication shares the host supervisor
 lifecycle. Under THR307seq117, its process-group backend uses the factory-wired
 1s sampler, retained authenticated identities and a fresh checked terminal

@@ -342,6 +342,49 @@ class StartupPublications:
                 or job.invocation_token != handoff.token):
             raise StartupUnavailable("startup_thread_publication_unavailable")
 
+    def require_producer_handoff(self, handoff: _Handoff, queue: Any, job: Any) -> None:
+        """Authenticate the retained ORIGINAL insertion on the actual loop.
+
+        Type or copied ContextVar alone is never authority. The native scope
+        registered this exact handle before submit and still owns its outcome.
+        No lock spans the queue effect, await or native acknowledgement.
+        """
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        from runtime.daemon.dream_queue import DreamJob, DreamQueue
+        from runtime.daemon.wake_queue import WakeJob, WakeQueue
+        from runtime.daemon.schedule_queue import ScheduleJob, ScheduleQueue
+        choices = {"dream": (DreamQueue, DreamJob, "dream_id"),
+                   "wake": (WakeQueue, WakeJob, "work_hour_id"),
+                   "schedule": (ScheduleQueue, ScheduleJob, "schedule_id")}
+        selected = choices.get(handoff.kind)
+        if selected is None:
+            raise StartupUnavailable("startup_producer_publication_unavailable")
+        queue_type, job_type, field = selected
+        gate, orch = self.gate, handoff.orch
+        gate.require_attachment(queue)
+        gate._require_phase_attachments(handoff.phase)
+        gate._assert_binding_complete(required=True)
+        task = asyncio.current_task()
+        with self._lock:
+            allowed = (handoff in self._handles and handoff.owner is self
+                       and gate._publications is self and self._active and not self._closed
+                       and self._first_cause is None and self._thread == gate._native_thread
+                       and self._thread is not None and handoff.submission_attempted
+                       and handoff.future is not None and not handoff.future.cancelled()
+                       and not handoff.native_done.is_set() and handoff.native_error is None)
+        org = gate.state.orgs.get(orch._slug)
+        if (not allowed or not isinstance(queue, queue_type) or not isinstance(job, job_type)
+                or handoff.phase != "redelivery"
+                or handoff.epoch != self.epoch or self.epoch != gate.epoch
+                or gate._stop.is_set() or asyncio.get_running_loop() is not handoff.loop
+                or handoff.loop is not gate._loop or task is None or task is not handoff.task
+                or task.get_coro() is not handoff.coroutine
+                or queue is not handoff.queue or queue is not getattr(org, handoff.kind + "_queue", None)
+                or org is None or org.orchestrator is not orch
+                or job is not handoff.job or job.org_slug != org.slug
+                or getattr(job, field) != handoff.token):
+            raise StartupUnavailable("startup_producer_publication_unavailable")
+
     def submit_producer(self, org: Any, kind: str, source_id: str) -> None:
         """Only the three original native producer queues, on the request loop."""
         self.gate.require_redelivery_owner(org)
@@ -386,10 +429,7 @@ class StartupPublications:
                         or self.gate.epoch != handoff.epoch or org is None
                         or org.orchestrator is not orch or attached is not queue):
                     raise RuntimeError("startup_publication_put_owner_changed_or_stopped")
-                if kind == "thread":
-                    handoff.native_result = await queue.put_once(job, _publication=handoff)
-                else:
-                    handoff.native_result = await queue.put_once(job)
+                handoff.native_result = await queue.put_once(job, _publication=handoff)
                 return handoff.native_result
             except BaseException as exc:
                 handoff.native_error = exc
