@@ -148,6 +148,11 @@ class StartupRecovery:
                 else:
                     self._secondary_overflow += 1
             self._status = "recovery_failed"
+            sweep = self._sweep_owner
+        # Never nest the gate lock inside a sweep lock in the opposite order.
+        # Close new tail effects without interrupting their native termination.
+        if sweep is not None:
+            sweep.fail(cause)
 
     @contextmanager
     def phase(self, name: str) -> Iterator[Callable[[RecoveryOutcome], None]]:
@@ -269,6 +274,9 @@ class StartupRecovery:
         # Synchronous admission fence, before any shutdown await.
         with self._lock:
             self._stop.set()
+            sweep = self._sweep_owner
+        if sweep is not None:
+            sweep.negative('startup_sweep_stopped')
 
     def assert_native_idle(self) -> None:
         with self._lock:
@@ -280,16 +288,19 @@ class StartupRecovery:
     def retain_sweep(self, owner: Any) -> None:
         self.require_native_owner()
         with self._lock:
-            if self._sweep_owner is not None:
-                raise RuntimeError("startup_duplicate_sweep_owner")
+            if (self._sweep_owner is not None or self._stop.is_set()
+                    or self._first_cause is not None):
+                raise RuntimeError("startup_duplicate_or_closed_sweep_owner")
             self._sweep_owner = owner
 
     def settle_sweep(self, owner: Any) -> None:
-        # A failed body may have positively joined every tail. Conversely a
-        # completed executor Future cannot erase an unjoined native handle.
+        # The body Future or tail seal alone cannot retire this owner. Context
+        # reset and the sole actual final batch result also belong to it.
         with owner._lock:
-            if not owner._sealed or owner._tails:
-                raise RuntimeError("startup_sweep_drain_incomplete")
+            if (not owner._boundary_complete or not owner._sealed or owner._tails
+                    or owner._humans
+                    or owner.counts['effects_started'] != owner.counts['effects_settled']):
+                raise RuntimeError("startup_sweep_boundary_incomplete")
         with self._lock:
             if self._sweep_owner is not owner:
                 raise RuntimeError("startup_sweep_owner_changed")

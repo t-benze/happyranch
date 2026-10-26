@@ -136,7 +136,7 @@ def _sweep_on_startup(
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
     from runtime.orchestrator.run_step import (
-        _capture_root_worktree_transition, _root_worktree_batch,
+        _capture_root_worktree_transition,
         _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS,
         _StartupSweepOwner,
     )
@@ -149,6 +149,7 @@ def _sweep_on_startup(
         recovery_gate.retain_sweep(root_owner)
     root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
+        root_owner.check()
         # A full sweep may commit in Pause/workflow/thread/batch consumers.
         # Reject caller-owned or unknown connections before reaching any of
         # them; this entry observation never settles or repairs caller work.
@@ -188,6 +189,7 @@ def _sweep_on_startup(
             # Retain the source-local branch fences; the owner cannot activate
             # or attempt a final cleanup batch on this observation.
             root_owner.negative('startup_v2_discovery_unavailable')
+            root_owner.raise_if_failed()
 
         # Accepted recovery callbacks whose effects committed just before a crash
         # may now be terminal.  Include only the ledger's exact current-owner
@@ -208,6 +210,7 @@ def _sweep_on_startup(
             *db.get_nonterminal_task_ids(),
         ])
         for task_id in task_ids:
+            root_owner.check()
             t = db.get_task(task_id)
             if t is None:
                 continue
@@ -218,6 +221,7 @@ def _sweep_on_startup(
             if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
                 continue
             if v2_discovery_unavailable or task_id in v2_pre_final_roots:
+                root_owner.local_hold()
                 continue
 
             # A completed leaf receipt can commit immediately before its ordinary
@@ -226,7 +230,12 @@ def _sweep_on_startup(
             # a persisted PID; terminal-child handling below reconstructs its wake.
             selected_owner = selected_recovery_owners.get(task_id)
             if selected_owner is not None and orchestrator is not None:
-                if t.task_type == "subtask" and selected_owner["status"] == TaskStatus.FAILED.value:
+                try:
+                    human_recovery = orchestrator.teams.manager_for_team(t.team).kind == 'human'
+                except KeyError:
+                    human_recovery = False
+                if (human_recovery and t.task_type == "subtask"
+                        and selected_owner["status"] == TaskStatus.FAILED.value):
                     from runtime.orchestrator.run_step import _submit_human_failed_recovery
                     _submit_human_failed_recovery(orchestrator, task_id, selected_owner["agent"],
                         selected_owner["recovery_session_id"], selected_owner["accepted_result_id"])
@@ -378,11 +387,16 @@ def _sweep_on_startup(
                     # never ran (the daemon died before that point).
                     orchestrator._audit.log_completion_report(report=orphaned_report)
                     from runtime.orchestrator.run_step import _consume_completion_report
-                    _consume_completion_report(
+                    outcome = _consume_completion_report(
                         orchestrator, task_id, orphaned_report,
                         result_row_id=orphaned_result_row.get("id"),
                         reclaim_terminal_worktree=False,
                     )
+                    if isinstance(outcome, str):
+                        # This is a selected human consumer's normal negative,
+                        # not pre-selection non-applicability or empty success.
+                        root_owner.negative('startup_completion_negative_outcome')
+                    root_owner.raise_if_failed()
                     continue
 
                 # Dead or undeterminable (no orphaned result to consume):
@@ -459,6 +473,7 @@ def _sweep_on_startup(
             # The boot-time migration flips any legacy blocked(escalated) row
             # before startup; this branch is reached only via new escalated rows.
 
+        root_owner.check()
         # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
         # Replace ONLY the conversational REPLY portion of the generic reaper with
         # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
@@ -532,7 +547,7 @@ def _sweep_on_startup(
         )
         if move is not None:
             recovered_tokens.extend(move.threads.runnable_tokens())
-        return list(dict.fromkeys(recovered_tokens))
+        recovered_tokens = list(dict.fromkeys(recovered_tokens))
     except _V2StartupConnectionUnsafe as exc:
         # Keep an original interrupt/SystemExit as a BaseException, with the
         # unsafe disposition chained and the finally suppression already set.
@@ -546,30 +561,18 @@ def _sweep_on_startup(
         root_owner.fail(exc)
         raise
     finally:
-        # Keep context capture active until ALL original native tails end.
-        # No DB/publisher lock is retained here; the request loop remains free
-        # to acknowledge internal publications. A wrapper is not a native join.
-        try:
-            root_owner.drain()
-            if recovery_gate is not None:
+        # The owner remains registered through actual tail exit, every cold
+        # human completion/bookkeeping result, context reset and ONE genuine
+        # final batch. Failure/stop suppresses the whole batch, including late
+        # transitions. A failed join/reset/attempt retains native ownership.
+        root_owner.finalize(root_token)
+        if recovery_gate is not None:
+            try:
                 recovery_gate.settle_sweep(root_owner)
-        except BaseException as exc:
-            root_owner.fail(exc)
-        root_delivery['active'] = False
-        try:
-            _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-        except BaseException as exc:
-            root_owner.fail(exc)
-        # Suppression is ZERO batch calls, including DB/report work which the
-        # normal teardown_incomplete argument would still perform.
+            except BaseException as exc:
+                root_owner.fail(exc)
         root_owner.raise_if_failed()
-        if root_delivery['teardown_incomplete']:
-            root_owner.negative('startup_sweep_teardown_incomplete')
-            root_owner.raise_if_failed()
-        result = _root_worktree_batch(orchestrator, root_transitions)
-        if result.kind != 'safe':
-            root_owner.negative('startup_final_batch_' + result.kind)
-            root_owner.raise_if_failed()
+    return root_owner.outcome(recovered_tokens)
 
 
 def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:

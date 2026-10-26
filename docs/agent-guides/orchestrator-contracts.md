@@ -4113,6 +4113,33 @@ authority hook as `CONTINUE_SAME_ROOT`, the completion receipt is reconciled
 only from that committed causal result/candidate/envelope tuple and current
 owner; restart never reruns the evaluator or guesses from `pending` alone.
 
+The cold sweep retains one shared native-tail/context owner before each native
+start. At most16 simultaneous retained tail/human handles are admitted; nested
+tails keep that same owner. The body closes admissions before draining actual
+Threads outside DB/publisher locks. A done Future alone does not prove exit.
+A list-compatible token result carries the consumed native disposition and
+fixed counters; tokens or a successful Future alone never imply settlement.
+Selected human failed-recovery operations must finish their original caller
+bookkeeping, cold drain and observed completion result; negative/unknown results
+keep recovery failed. Exact nonhuman target-local fences remain local holds.
+
+Tail backstops, parent handoffs and caller publications take short admission
+tokens before their original exact-owner checks. Unsafe/stop closes new effects;
+already admitted effects may commit and remain history. Required native job
+termination still runs for an admitted tail after stop. Delayed root transitions
+merge synchronously into this owner, including through the async batch helper;
+no cold cleanup executor may escape the enclosing batch decision.
+
+The shared context stays active through tail exit and outcome collection. Body,
+tail, capture, human, join, reset or stop uncertainty suppresses the ENTIRE final
+root batch, including its DB/report work. Positive closure seals and resets the context
+before invoking the original batch once; only its actual safe disposition settles
+it. Final unknown/deferred/raised attempts are retained without retry. Ownership
+is not retired before reset and that real result; failed joins retain handles and
+the first BaseException, with bounded secondary observations. These R2/R3 source
+seams do not complete the separate serving/listener, R4 return-notification or
+whole-feature startup integration. Runtime/proof evidence remains NOT RUN.
+
 Receipt-owned cleanup tails and startup Branch 2 can reach the same parent
 wake concurrently. They (and the already-bounded blocked-job startup producer)
 therefore use `TaskQueue.enqueue_if_absent`: the queue owns one thread-safe
