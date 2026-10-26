@@ -98,9 +98,12 @@ class CodingRoleStore:
                     yield references, capture, revise_limit
 
     def _structure(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> None:
-        rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name')
-        if _hash('\n'.join(str(row[0]) for row in rows).encode()) not in references:
-            raise CodingRoleError('coding_role_whole_schema_mismatch')
+        from runtime.infrastructure.workflow_schema import _read_structure
+        from runtime.infrastructure.workflow_coding_schema import _validate_coding_dependencies
+        _, coding = _read_structure(conn)
+        _validate_coding_dependencies(conn)
+        if not coding:
+            raise CodingRoleError('coding_role_schema_required')
 
     @contextmanager
     def _read(self, principal: WorkflowTemplatePrincipal, capture: AuthorityAdmissionCapture | None,

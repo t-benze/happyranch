@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Guided human-host coding setup; admission stays Disabled.
 
-No startup migration, automatic rollback, import replay or maintenance lock.
+Normal startup owns inert coding storage; no document upgrade, automatic
+rollback, import replay or maintenance lock.
 Run from the published checkout in a genuine human terminal. Missing ownership
 or serving observations are actionable holds, never successful setup.
 """
@@ -1188,6 +1189,7 @@ class Coordinator:
         elif self.stopped_lifecycle() != self.offline_lifecycle:
             raise Hold('stopped lifecycle moved during constructor')
         self.accepted_layouts = {o['path']: o['layout'] for o in self.frozen['orgs']}
+        self.accepted_coding = {o['path']: o['coding'] for o in self.frozen['orgs']}
         self.target = next((o for o in self.frozen['orgs'] if o['runtime'] == str(self.runtime) and o['org'] == args.org), None)
         if self.target is None:
             raise Hold('target org is not an existing admitted registered org; org creation is excluded')
@@ -1445,7 +1447,7 @@ class Coordinator:
         work.check()
         return raw
 
-    def revalidate(self, *, offline=None, accepted_target=None):
+    def revalidate(self, *, offline=None):
         if offline is None:
             offline = self.offline
         self.diagnostic.observe('revalidate-host')
@@ -1471,13 +1473,21 @@ class Coordinator:
         self.diagnostic.observe('revalidate-maintenance')
         current = observe_maintenance(self.home, self.runtime)
         expected = dict(self.accepted_layouts)
-        if accepted_target is not None:
-            expected[accepted_target[0]] = accepted_target[1]
-        # Layouts may advance ONLY through the individually accepted writer.
+        expected_coding = dict(self.accepted_coding)
+        startup = not offline and hasattr(self, 'started')
+        if startup:
+            # The original supported start installs coding only in normally
+            # admitted orgs of the selected runtime. It upgrades no document
+            # foundation; I plus coding retains the historical J identity.
+            for org in self.frozen['orgs']:
+                if org['runtime'] == str(self.runtime):
+                    expected[org['path']] = 'J' if expected[org['path']] == 'I' else expected[org['path']]
+                    expected_coding[org['path']] = True
         if (current['registry'] != self.frozen['registry'] or current['directories'] != self.frozen['directories']
                 or current['runtimes'] != self.frozen['runtimes'] or current['excluded'] != self.frozen['excluded']
                 or [(o['path'], o['identity']) for o in current['orgs']] != [(o['path'], o['identity']) for o in self.frozen['orgs']]
-                or {o['path']: o['layout'] for o in current['orgs']} != expected):
+                or {o['path']: o['layout'] for o in current['orgs']} != expected
+                or {o['path']: o['coding'] for o in current['orgs']} != expected_coding):
             raise Hold('runtime/org/database membership or identity changed')
         self.diagnostic.observe('revalidate-processes')
         self.process_boundary(offline=offline)
@@ -1496,6 +1506,11 @@ class Coordinator:
             self.live_scope()
             if hasattr(self, 'started'):
                 self.revalidate_start()
+        if startup:
+            self.accepted_layouts = expected
+            self.accepted_coding = expected_coding
+            self.last_layout = expected[self.target['path']]
+            self.diagnostic.layout = self.last_layout
         return current
 
     def live_scope(self):
@@ -2177,57 +2192,6 @@ class Coordinator:
             result[name] = self.hash_file(literal(self.dist / name))
         return result
 
-    def run_transition(self, source_layouts, target_layout, script, arguments, needed_exit, needed_text):
-        self.diagnostic.enter('migration-' + target_layout + '-preflight')
-        self.require_backup()
-        current = self.revalidate(offline=True)
-        layout = next(o['layout'] for o in current['orgs'] if o['path'] == self.target['path'])
-        self.last_layout = layout
-        self.diagnostic.layout = layout
-        if layout not in source_layouts:
-            if 'FEGHIJ'.index(layout) >= 'FEGHIJ'.index(target_layout):
-                return  # whole current readers accepted; no earlier writer
-            raise Hold(f'unsupported transition {layout} to {target_layout}')
-        print(f'5. Checking {layout} → {target_layout}')
-        argv = [str(self.python), f'scripts/{script}', *arguments]
-        self.diagnostic.enter('migration-' + target_layout + '-needed-check')
-        code, out, err = self.command([*argv, '--check'], accept=(0, 1, 3), private=True)
-        if code != needed_exit or out != needed_text + '\n' or err:
-            raise Hold(f'{script} check exit={code}: unexpected/refused result; no writer; original migration owner must reconcile')
-        self.revalidate(offline=True)
-        self.diagnostic.enter('migration-' + target_layout + '-writer')
-        self.command([*argv, *(['--confirm-cooperative-offline'] if target_layout == 'J' else [])], private=True, effect='migration-' + target_layout)
-        self.diagnostic.enter('migration-' + target_layout + '-post-check')
-        code, out, err = self.command([*argv, '--check'], private=True)
-        expected = (f'ready: org {self.args.org}; layout G; compatible reader required\n' if target_layout == 'G' else
-                    'already-compatible: empty coding layout J; J-compatible reader required\n' if target_layout == 'J' else
-                    f'already-compatible: layout {target_layout}; compatible reader required\n')
-        if out != expected or err:
-            raise Hold(f'{script}: original post-check unexpected; preserve last layout {self.last_layout}, no next writer/start')
-        current = self.revalidate(offline=True, accepted_target=(self.target['path'], target_layout))
-        actual = next(o['layout'] for o in current['orgs'] if o['path'] == self.target['path'])
-        if actual != target_layout:
-            raise Hold(f'{script}: whole target mismatch {actual}; no next writer/start')
-        self.accepted_layouts[self.target['path']] = target_layout
-        self.last_layout = target_layout
-        self.diagnostic.layout = target_layout
-        self.diagnostic.effect('migration-' + target_layout, 'accepted-complete-target')
-        self.diagnostic.accepted('migration-' + target_layout)
-
-    def migrate(self):
-        from runtime.infrastructure.workflow_schema import (submission_migration_guidance,
-            author_handoff_migration_guidance, revision_migration_guidance, coding_migration_guidance)
-        args = ['--runtime-root', str(self.runtime), '--org', self.args.org]
-        org_args = ['--org-root', str(Path(self.target['path']).parent), '--org-slug', self.args.org]
-        self.run_transition(('F', 'E'), 'G', 'migrate_workflow_submission_schema.py', args, 3,
-                            'migration-needed: ' + submission_migration_guidance(org_slug=self.args.org, runtime_root=str(self.runtime)))
-        self.run_transition(('G',), 'H', 'migrate_workflow_author_handoff_schema.py', org_args, 1,
-                            'migration-required: ' + author_handoff_migration_guidance())
-        self.run_transition(('H',), 'I', 'migrate_workflow_document_revision_schema.py', org_args, 1,
-                            'migration-required: ' + revision_migration_guidance())
-        self.run_transition(('I',), 'J', 'migrate_workflow_coding_schema.py', args, 3,
-                            'migration-needed: ' + coding_migration_guidance())
-
     def launch_process(self, pid: int, kind: str, rows: dict) -> dict:
         """Bind one checked Linux observation to executable/source/home custody."""
         row = rows.get(pid)
@@ -2469,7 +2433,7 @@ class Coordinator:
         self.stop()
         self.backup_inventory()
         self.prepare()
-        self.migrate()
+        # Normal OrgState startup owns the atomic coding extension.
         print('6. Starting selected compatible source once')
         self.diagnostic.enter('start-preflight')
         self.revalidate(offline=True)

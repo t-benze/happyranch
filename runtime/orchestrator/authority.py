@@ -1923,10 +1923,10 @@ COMMIT;
 """
 
 
-_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False) -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
@@ -1938,37 +1938,39 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
     """
     # Legacy admission must reject workflow-only histories BEFORE shared cache.
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
-            or type(naming_version) is not int or naming_version not in (0, 1)):
+            or type(naming_version) is not int or naming_version not in (0, 1)
+            or type(coding_extension) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
 
 
-def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False) -> str:
+def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
     """Whole workflow references; legacy authority retains its four histories."""
     if history in _RELEASE_REFERENCE_HISTORIES:
         return _release_schema_digest(layout, history, naming_version,
-            pause_layout=pause_layout, team_move_layout=team_move_layout)
+            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _WORKFLOW_RELEASE_REFERENCE_HISTORIES
-            or type(naming_version) is not int or naming_version not in (0, 1)):
+            or type(naming_version) is not int or naming_version not in (0, 1)
+            or type(coding_extension) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
 
 
-def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool) -> str:
+def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool) -> str:
     """Shared disposable lifetime, entered only after family-specific admission."""
     global _release_schema_digest_cache
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history, naming_version, pause_layout, team_move_layout)
+    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
-        from runtime.infrastructure.workflow_schema import (install_or_recover, initialize_complete_org_schema,
+        from runtime.infrastructure.workflow_schema import (initialize_complete_org_schema, _install_foundation,
             _execute_ddl, CANONICAL_WORKFLOW_DRAFT_DDL)
         with tempfile.TemporaryDirectory() as td:
             path = _Path(td) / "fresh-authority-schema.db"
@@ -1987,13 +1989,15 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                                 seed.execute(f'ALTER TABLE "{table}" DROP COLUMN "{column}"')
             fresh = Database(path)
             try:
-                if layout == "F":
-                    install_or_recover(fresh)
-                elif layout == "E":
-                    install_or_recover(fresh)
+                if layout in ("F", "E"):
+                    # Literal historical references never call the operational
+                    # startup installer: its additive coding side effect is
+                    # separate from these original raw SQL/digest preimages.
                     with fresh.workflow_schema_transaction() as conn:
-                        _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
-                        conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
+                        _install_foundation(conn, expected_org_slug=None, advances=[])
+                        if layout == "E":
+                            _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+                            conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
                 elif history == 'v2-chronological-20260530' and layout == "J":
                     # This complete historical seed retains sequence metadata.
                     # The strict fresh-J guard stays with genuine fresh creation;
@@ -2008,6 +2012,12 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                             raise ValueError("workflow_release_reference_requires_j")
                 else:
                     initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
+                if coding_extension and layout != "J":
+                    from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
+                    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                    with fresh.workflow_schema_transaction() as conn:
+                        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+                        validate_workflow_schema(conn, expected_org_slug="release-reference")
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
                     install_pause_schema(fresh, org_slug="release-reference")
@@ -3422,17 +3432,17 @@ def _server_evidence(
     )
     live_schema_digest = "unavailable"
     try:
-        from runtime.infrastructure.workflow_schema import validate_workflow_schema
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema
         with db.coherent_read_view() as conn:
             live_schema_digest = _live_schema_digest(db)
-            layout = validate_workflow_schema(conn, expected_org_slug=orch._slug)
+            layout, coding = _read_workflow_schema(conn, expected_org_slug=orch._slug)
             from runtime.infrastructure.task_pause_controls import validate_pause_schema
             from runtime.identities.schema import validate_names
             pause_layout = validate_pause_schema(conn, org_slug=orch._slug, allow_absent=True)
             names = validate_names(conn, org_slug=orch._slug)
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             team_move_layout = validate_team_move_schema(conn, org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout) for history in _RELEASE_REFERENCE_HISTORIES)
+        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"

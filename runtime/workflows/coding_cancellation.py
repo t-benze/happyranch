@@ -100,9 +100,13 @@ def cancel_locked(org: Any, task_id: str, *, cascade: bool, rationale: str,
                 return dict(tasks=[], prior={}, block_kinds={}, coding_tasks=[])
             # Direct document owners retain their own route. An ancestor must
             # never mutate their graph through this coding-only transaction.
+            from runtime.infrastructure.workflow_schema import _coding_document_exclusions
+            optional = _coding_document_exclusions(conn)
             for key in selected:
                 budget.step()
                 for table in ('workflow_draft_dispatch_intents', 'workflow_request_task_bridges'):
+                    if table == 'workflow_draft_dispatch_intents' and table not in optional:
+                        continue
                     _check(conn.execute(f'SELECT 1 FROM {table} WHERE task_id=? LIMIT 1', (key,)).fetchone() is None)
                 if key not in saved.owners:
                     _check(conn.execute('SELECT 1 FROM workflow_instances WHERE root_task_id=? LIMIT 1', (key,)).fetchone() is None)

@@ -170,12 +170,15 @@ class WorkflowCutoverStore:
         except sqlite3.DatabaseError as exc:
             raise WorkflowCutoverError("cutover_operation_failed") from exc
 
-    def _projection(self, conn: sqlite3.Connection, marker: dict, events: list[dict]) -> dict:
-        blockers = self._draft_readiness_blockers(conn)
+    def _projection(self, conn: sqlite3.Connection, marker: dict, events: list[dict], *, _validated=None) -> dict:
+        if _validated is None:
+            from runtime.infrastructure.workflow_schema import _read_installed
+            _validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+        blockers = self._draft_readiness_blockers(conn, _validated=_validated)
         if marker["state"] in ("enable_requested", "compatibility_verified"):
-            blockers = self._compatibility_blockers(conn)
+            blockers = self._compatibility_blockers(conn, _validated=_validated)
         elif marker["state"] in ("disable_requested", "draining", "drained"):
-            blockers = self._drain_blockers(conn)
+            blockers = self._drain_blockers(conn, _validated=_validated)
         return {
             "org_slug": self._org_slug, **marker, "events": events,
             "allowed_actions": (["enable"] if not blockers else []) if marker["generation"] == 1 else (
@@ -207,15 +210,19 @@ class WorkflowCutoverStore:
                                   required_action="reconcile_storage")]
         return []
 
-    def _draft_readiness_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H", "I", "J"):
+    def _draft_readiness_blockers(self, conn: sqlite3.Connection, *, _validated=None) -> list[dict]:
+        if _validated is None:
+            from runtime.infrastructure.workflow_schema import _read_installed
+            _validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+        layout, _ = _validated
+        if layout in ("E", "G", "H", "I", "J"):
             try:
                 _validate_draft_data(conn, expected_org_slug=self._org_slug)
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("G", "H", "I", "J"):
+                if layout in ("G", "H", "I", "J"):
                     _validate_submission_data(conn, expected_org_slug=self._org_slug)
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("H", "I", "J"):
+                if layout in ("H", "I", "J"):
                     _validate_author_handoff_data(conn, expected_org_slug=self._org_slug)
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ('I', 'J'):
+                if layout in ('I', 'J'):
                     from runtime.workflows.revisions import validate_revision_storage
                     validate_revision_storage(conn, expected_org_slug=self._org_slug)
             except (ValueError, sqlite3.DatabaseError):
@@ -230,8 +237,8 @@ class WorkflowCutoverStore:
         return [self._blocker("draft_schema_migration_required", owner="operator",
                              required_action=draft_migration_guidance(org_slug=self._org_slug, runtime_root=runtime_root))]
 
-    def _compatibility_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        blockers = self._draft_readiness_blockers(conn) + self._integrity_blockers(conn)
+    def _compatibility_blockers(self, conn: sqlite3.Connection, *, _validated=None) -> list[dict]:
+        blockers = self._draft_readiness_blockers(conn, _validated=_validated) + self._integrity_blockers(conn)
         # Inert template and coordinated authority/profile foundations are
         # permitted. Every other workflow work relation must still be empty.
         for table in self._workflow_tables(conn):
@@ -250,14 +257,16 @@ class WorkflowCutoverStore:
                 ))
         return blockers
 
-    def _drain_blockers(self, conn: sqlite3.Connection) -> list[dict]:
+    def _drain_blockers(self, conn: sqlite3.Connection, *, _validated=None) -> list[dict]:
         # The central J reader validates complete immutable setup histories and
         # pointers, including metadata paths. Setup/import/mapping history has no
         # run/host tail to drain; source/run/attempt/event/receipt families refuse.
-        blockers = self._draft_readiness_blockers(conn) + self._integrity_blockers(conn)
-        if 'workflow_coding_runs' in self._workflow_tables(conn):
-            from runtime.workflows.coding_start import queued_storage
-            saved = queued_storage(conn, self._org_slug)
+        if _validated is None:
+            from runtime.infrastructure.workflow_schema import _read_installed
+            _validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+        blockers = self._draft_readiness_blockers(conn, _validated=_validated) + self._integrity_blockers(conn)
+        if _validated[1] is not None:
+            saved = _validated[1].queued
             for instance, entry in saved.runs.items():
                 if entry['native'].get('returned'):
                     continue  # Complete original native and caller closure.
@@ -446,7 +455,12 @@ class WorkflowCutoverStore:
     def downgrade_preflight(self) -> dict:
         try:
             with self._transaction(write=False) as conn:
-                marker, events = self._read(conn)
+                from runtime.infrastructure.workflow_schema import _read_installed
+                try:
+                    validated = _read_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+                    marker, events = _validate_cutover_data(conn, expected_org_slug=self._org_slug)
+                except (ValueError, sqlite3.DatabaseError) as exc:
+                    raise WorkflowCutoverError("cutover_storage_corrupt") from exc
                 blockers = self._integrity_blockers(conn)
                 from runtime.infrastructure.task_pause_controls import validate_pause_schema
                 if validate_pause_schema(conn, org_slug=self._org_slug, allow_absent=True):
@@ -459,9 +473,12 @@ class WorkflowCutoverStore:
                 if validate_names(conn, org_slug=self._org_slug):
                     blockers.append(self._blocker("naming_schema_requires_compatible_reader", owner="operator",
                                                   required_action="retain_compatible_runtime"))
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H", "I", "J"):
-                    layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
-                    blockers.append(self._blocker("coding_schema_requires_compatible_reader" if layout == "J" else "document_revision_schema_requires_compatible_reader" if layout == "I" else "author_handoff_schema_requires_compatible_reader" if layout == "H" else "submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",
+                layout, coding = validated
+                if coding is not None:
+                    blockers.append(self._blocker("coding_schema_requires_compatible_reader", owner="operator",
+                                                  required_action="retain_compatible_runtime"))
+                if layout in ("E", "G", "H", "I", "J"):
+                    blockers.append(self._blocker("document_revision_schema_requires_compatible_reader" if layout in ("I", "J") else "author_handoff_schema_requires_compatible_reader" if layout == "H" else "submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",
                                                   required_action="retain_compatible_runtime"))
                 if marker["generation"] != 1:
                     blockers.append(self._blocker(
@@ -477,6 +494,6 @@ class WorkflowCutoverStore:
                             required_action="retain_current_runtime",
                         ))
                 return {"eligible": not blockers, "blockers": blockers,
-                        "projection": self._projection(conn, marker, events)}
+                        "projection": self._projection(conn, marker, events, _validated=validated)}
         except sqlite3.DatabaseError as exc:
             raise WorkflowCutoverError("cutover_operation_failed") from exc

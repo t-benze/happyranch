@@ -39,7 +39,9 @@ PIN_TABLES = (
 
 def rows(conn: sqlite3.Connection, table: str, budget: _Budget, *,
          where: str = '1', args: tuple = (), maximum: int = 8192) -> Iterator[dict]:
-    columns = tuple(row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")'))
+    from runtime.workflows.coding_source_history import _TASK_COLUMNS, _RESULT_COLUMNS
+    columns = (_TASK_COLUMNS if table == 'tasks' else _RESULT_COLUMNS if table == 'task_results'
+               else tuple(row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")')))
     allowed = (_TASK_TYPES if table == 'tasks' else _RESULT_TYPES if table == 'task_results'
                else (('text', 'blob', 'integer', 'real', 'null'),) * len(columns))
     for row in _bounded_rows(conn, table, columns, allowed, budget,
@@ -87,6 +89,8 @@ class QueuedStorage:
 
 
 def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any) -> QueuedStorage:
+    from runtime.infrastructure.workflow_schema import _coding_document_exclusions
+    optional = _coding_document_exclusions(conn)
     storage = QueuedStorage()
     # Native callbacks can exist before allocation. Authenticate each full row,
     # without consuming a claim or treating a command as permission.
@@ -443,6 +447,9 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             ('workflow_events', 'instance_id', [instance]),
             ('task_results', 'task_id', [carrier_id]),
         ):
+            if table in ('workflow_draft_dispatch_intents', 'workflow_author_handoffs',
+                         'workflow_document_revision_operations') and table not in optional:
+                continue
             for key in keys:
                 budget.step()
                 _check(conn.execute(f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1', (key,)).fetchone() is None)

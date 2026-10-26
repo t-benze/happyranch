@@ -596,8 +596,9 @@ class WorkflowTemplateStore:
                 if allow_absent:
                     return None
                 raise WorkflowTemplateError('template_version_not_found')
-            from runtime.infrastructure.workflow_schema import validate_workflow_schema
-            if validate_workflow_schema(conn, expected_org_slug=imported.provenance['org_slug']) != 'J':
+            from runtime.infrastructure.workflow_schema import _read_workflow_schema
+            _, coding = _read_workflow_schema(conn, expected_org_slug=imported.provenance['org_slug'])
+            if coding is None:
                 raise WorkflowTemplateError('template_storage_corrupt')
             return imported.template()
         except WorkflowTemplateError:
