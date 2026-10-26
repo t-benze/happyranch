@@ -12,11 +12,19 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal
 
 _LOG = logging.getLogger(__name__)
 _PHASES = ("sweep", "workflows", "returned", "compatibility", "redelivery", "producers")
+_COUNTERS = {
+    "returned": ("orgs_bound", "jobs_bound", "coding_absent", "orgs_observed"),
+    "compatibility": ("orgs_observed", "layouts_completed", "migration_advisories",
+                      "naming_unavailable", "skill_advisories", "unknown_jobs",
+                      "pending_scans", "pending_orgs_reported", "pending_rows_reported"),
+    "producers": ("dream_orgs", "dreams_recovered", "wake_orgs", "wakes_recovered",
+                  "schedule_orgs", "schedules_recovered", "schedule_audits"),
+}
 _ACTION = "Read threads while recovery runs; retry new work after recovery is ready."
 _FAILED_ACTION = "New work remains paused. Send the startup error code to engineering_manager."
 
@@ -46,11 +54,28 @@ class _Phase:
     outcome: str = "not_started"
     started_ns: int | None = None
     ended_ns: int | None = None
+    counts: dict[str, int] = field(default_factory=dict)
 
     def public(self) -> dict[str, Any]:
-        return {"outcome": self.outcome, "duration_ns":
+        return {"outcome": self.outcome, "counts": dict(self.counts), "duration_ns":
                 None if self.started_ns is None or self.ended_ns is None
                 else self.ended_ns - self.started_ns}
+
+
+@dataclass
+class _ReferenceBinding:
+    """One original real-loop operation; wrapper completion is not native exit."""
+
+    epoch: str
+    future: Future | None = None
+    coroutine: Any = None
+    submission_attempted: bool = False
+    task: asyncio.Task | None = None
+    completion: Future = field(default_factory=Future)
+    error: BaseException | None = None
+    observed: bool = False
+    orgs_bound: int = 0
+    jobs_bound: bool = False
 
 
 class StartupRecovery:
@@ -70,7 +95,7 @@ class StartupRecovery:
         self._status = "recovering"
         self._serving = False
         self._phase = "attachment"
-        self._phases = {name: _Phase() for name in _PHASES}
+        self._phases = {name: _Phase(counts=dict.fromkeys(_COUNTERS.get(name, ()), 0)) for name in _PHASES}
         self._first_cause: BaseException | None = None
         self._error_code: str | None = None
         self._secondary: list[BaseException] = []
@@ -82,6 +107,9 @@ class StartupRecovery:
         self._latch: asyncio.Event | None = None
         self._attachments: tuple | None = None
         self._redelivery_queues: tuple | None = None
+        self._binding: _ReferenceBinding | None = None
+        # Retain the EXACT resolver supplied to the jobs reference binder.
+        self._jobs_resolver = lambda slug: self.state.orgs[slug].orchestrator if slug in self.state.orgs else None
         self._closed = False
         self._ready_commits = 0
         self._created_ns = time.monotonic_ns()
@@ -114,6 +142,8 @@ class StartupRecovery:
                        and self._phases["sweep"].outcome in ("settled", "local_hold")
                        and self._phases["workflows"].outcome in ("settled", "local_hold"))
         org = self.state.orgs.get(orch._slug)
+        if self._phase == "returned":
+            self.require_returned_owner(org)
         if self._phase == "redelivery" and org is not None:
             self.require_redelivery_owner(org)
         if (not allowed or org is None or org.orchestrator is not orch
@@ -122,6 +152,186 @@ class StartupRecovery:
                 or getattr(orch, "_startup_recovery", None) is not self
                 or orch._thread_queue is not org.thread_queue):
             raise RuntimeError("startup_publication_phase_or_attachment_unavailable")
+
+    def count_phase(self, phase: str, event: str, count: int = 1) -> None:
+        """Fixed scalar observations at the existing producers, never a census."""
+        self.require_native_owner()
+        with self._lock:
+            if (self._phase != phase or event not in self._phases[phase].counts
+                    or type(count) is not int or count < 0):
+                raise RuntimeError("startup_phase_counter_invalid")
+            self._phases[phase].counts[event] += count
+
+    def _require_phase_attachments(self, phase: str, *, binding: _ReferenceBinding | None = None) -> None:
+        """Reference checks shared by native admission and actual-loop effects.
+
+        This performs no DB/file work and deliberately has no native-thread
+        guard: the binding coroutine must authenticate on the real loop too.
+        """
+        self.state._assert_attachments_unchanged(self._attachments)
+        with self._lock:
+            allowed = (self._phase == phase and self._phases[phase].outcome == "incomplete"
+                       and self._status == "recovering" and self._first_cause is None
+                       and not self._closed and not self._stop.is_set()
+                       and self._sweep_owner is None and self._native_thread is not None)
+            if binding is not None:
+                allowed &= self._binding is binding and binding.epoch == self.epoch
+        if (not allowed or self.state._startup_recovery is not self
+                or self.app.state.daemon is not self.state or self._redelivery_queues is None
+                or self.epoch != self._publications.epoch
+                or self._loop is None or self._loop.is_closed() or not self._loop.is_running()):
+            raise RuntimeError("startup_phase_owner_or_loop_unavailable")
+        self._assert_reference_attachments(binding if binding is not None else self._binding)
+
+    def _assert_reference_attachments(self, current: _ReferenceBinding | None) -> None:
+        """Original references, including after the native operation has exited."""
+        self.state._assert_attachments_unchanged(self._attachments)
+        queue, originals = self._redelivery_queues
+        if self.state.queue is not queue:
+            raise RuntimeError("startup_phase_queue_changed")
+        for index, (org, orch, thread, dream, wake, schedule) in enumerate(originals):
+            bound = current is not None and index < current.orgs_bound
+            if (self.state.orgs.get(org.slug) is not org or org.orchestrator is not orch
+                    or orch._db is not org.db or orch._slug != org.slug or orch._queue is not queue
+                    or org._startup_recovery is not self or getattr(orch, "_startup_recovery", None) is not self
+                    or org.thread_queue is not thread or org.dream_queue is not dream
+                    or org.wake_queue is not wake or org.schedule_queue is not schedule
+                    or orch._main_loop is not (self._loop if bound else None)
+                    or orch._thread_queue is not (thread if bound else None)):
+                raise RuntimeError("startup_phase_attachment_changed")
+        from runtime.daemon.jobs_runner import jobs_resume_binding_matches
+        jobs_bound = current is not None and current.jobs_bound
+        if not jobs_resume_binding_matches(self._loop if jobs_bound else None,
+                                          self._jobs_resolver if jobs_bound else None):
+            raise RuntimeError("startup_jobs_binding_changed")
+
+    def _require_later_native(self, phase: str, org: Any = None, *, bound: bool = True) -> None:
+        self.require_native_owner()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("startup_phase_requires_native_thread")
+        self._require_phase_attachments(phase)
+        self._publications.assert_idle()
+        if bound:
+            self._assert_binding_complete(required=True)
+        elif self._binding is not None:
+            raise RuntimeError("startup_binding_already_reserved")
+        if org is not None and self.state.orgs.get(org.slug) is not org:
+            raise RuntimeError("startup_phase_org_changed")
+
+    def require_returned_owner(self, org: Any = None, *, bound: bool = True) -> None:
+        # Publication scopes themselves must be allowed to remain active here.
+        self.require_native_owner()
+        self._require_phase_attachments("returned")
+        if bound:
+            self._assert_binding_complete(required=True)
+        elif self._binding is not None:
+            raise RuntimeError("startup_binding_already_reserved")
+        if org is not None and self.state.orgs.get(org.slug) is not org:
+            raise RuntimeError("startup_returned_org_changed")
+
+    def require_compatibility_owner(self, org: Any = None) -> None:
+        self._require_later_native("compatibility", org)
+
+    def require_producers_owner(self, org: Any = None) -> None:
+        self._require_later_native("producers", org)
+
+    def _assert_binding_complete(self, *, required: bool = False) -> None:
+        with self._lock:
+            binding = self._binding
+        if binding is None:
+            if required:
+                raise RuntimeError("startup_binding_missing")
+            return
+        if (not binding.completion.done() or not binding.observed
+                or binding.completion.result() is not True or binding.error is not None
+                or binding.orgs_bound != len(self._redelivery_queues[1]) or not binding.jobs_bound):
+            raise RuntimeError("startup_binding_incomplete")
+        self._assert_reference_attachments(binding)
+
+    def _assert_binding_idle(self) -> None:
+        # A failed, positively ended operation is idle, but never successful.
+        with self._lock:
+            binding = self._binding
+        if binding is not None and (not binding.completion.done() or binding.completion.cancelled()):
+            raise RuntimeError("startup_binding_native_still_owned")
+
+    def bind_returned_references(self) -> None:
+        """P4 singleton: submit on the real loop, observe OFF loop/locks.
+
+        Registration survives submission uncertainty and wrapper cancellation.
+        Only the actual Task callback supplies native completion. No rollback
+        of partial references or inference of quiescence from cancellation.
+        """
+        # Import closure on the native owner BEFORE any actual-loop callback.
+        from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop
+        self._require_later_native("returned", bound=False)
+        for org, orch, *_ in self._redelivery_queues[1]:
+            self._publications._outside_db_lock(orch)
+        binding = _ReferenceBinding(self.epoch)
+        with self._lock:
+            if self._binding is not None or self._stop.is_set():
+                raise RuntimeError("startup_binding_duplicate_or_stopped")
+            self._binding = binding
+
+        def completed(task: asyncio.Task) -> None:
+            try:
+                result = task.result()
+                if result is not True:
+                    raise RuntimeError("startup_binding_outcome_unknown")
+            except BaseException as exc:
+                binding.error = exc
+                self.fail("startup_binding_failed", exc)
+                binding.completion.set_result(False)
+            else:
+                binding.completion.set_result(True)
+
+        async def bind() -> bool:
+            task = asyncio.current_task()
+            if task is None or binding.task is not None:
+                raise RuntimeError("startup_binding_native_task_invalid")
+            binding.task = task
+            task.add_done_callback(completed)
+            # Separate loop admission: never call require_native_owner here.
+            if asyncio.get_running_loop() is not self._loop:
+                raise RuntimeError("startup_binding_wrong_loop")
+            self._require_phase_attachments("returned", binding=binding)
+            for org, orch, thread, *_ in self._redelivery_queues[1]:
+                self._require_phase_attachments("returned", binding=binding)
+                orch.bind_thread_queue_references(thread, self._loop)
+                binding.orgs_bound += 1
+                self._require_phase_attachments("returned", binding=binding)
+            self._require_phase_attachments("returned", binding=binding)
+            attach_jobs_resume_main_loop(self._loop, self._jobs_resolver)
+            binding.jobs_bound = True
+            self._require_phase_attachments("returned", binding=binding)
+            return True
+
+        try:
+            binding.coroutine = bind()
+            binding.submission_attempted = True
+            binding.future = asyncio.run_coroutine_threadsafe(binding.coroutine, self._loop)
+            # Same off-loop wait policy as owned queue publications. No owner,
+            # DB, move, publication or SYSTEM-marker lock spans either wait.
+            result = self._publications._wait_future(binding.future)
+            native_result = self._publications._wait_future(binding.completion)
+            binding.observed = True
+            if result is not True or native_result is not True:
+                raise binding.error or RuntimeError("startup_binding_unacknowledged")
+            self.require_returned_owner()
+            self.count_phase("returned", "orgs_bound", binding.orgs_bound)
+            self.count_phase("returned", "jobs_bound")
+        except BaseException as exc:
+            self.fail("startup_binding_failed", exc)
+            if binding.task is not None:
+                try:
+                    self._publications._wait_future(binding.completion)
+                except BaseException as secondary:
+                    self.fail("startup_binding_exit_unobserved", secondary)
+            raise
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind references only, on the actual request loop, before submission."""
@@ -150,6 +360,7 @@ class StartupRecovery:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            binding = self._binding
             return {"state": self._status, "epoch": self.epoch,
                     "serving": self._serving,
                     "recovery_ready": self._status == "ready" and not self._stop.is_set(),
@@ -157,6 +368,13 @@ class StartupRecovery:
                     "error_code": self._error_code,
                     "ready_commits": self._ready_commits,
                     "publications": self._publications.snapshot(),
+                    "reference_binding": {
+                        "registered": binding is not None,
+                        "native_complete": binding is not None and binding.completion.done(),
+                        "observed": binding is not None and binding.observed,
+                        "orgs_bound": 0 if binding is None else binding.orgs_bound,
+                        "jobs_bound": binding is not None and binding.jobs_bound,
+                    },
                     "launcher_duration_ns": None,
                     "owner_to_serving_ns": None if self._serving_ns is None
                     else self._serving_ns - self._created_ns,
@@ -224,6 +442,8 @@ class StartupRecovery:
         else:
             raise RuntimeError("startup_redelivery_requires_native_thread")
         self.state._assert_attachments_unchanged(self._attachments)
+        self._require_phase_attachments("redelivery")
+        self._assert_binding_complete(required=True)
         with self._lock:
             allowed = (self._phase == "redelivery"
                        and self._phases["compatibility"].outcome in ("settled", "local_hold"))
@@ -314,6 +534,8 @@ class StartupRecovery:
             yield settle
             self.require_native_owner()
             self._publications.assert_idle()
+            if _PHASES.index(name) >= _PHASES.index("returned"):
+                self._assert_binding_complete(required=True)
             if outcome is None or not outcome.positive:
                 raise RuntimeError(outcome.code if outcome is not None and outcome.code else "startup_outcome_unavailable")
         except BaseException as exc:
@@ -356,6 +578,7 @@ class StartupRecovery:
                 raise RuntimeError("startup_native_outcome_unavailable")
             self.require_native_owner()
             self._publications.assert_idle()
+            self._assert_binding_complete(required=True)
             with self._lock:
                 if any(phase.outcome not in ("settled", "local_hold") for phase in self._phases.values()):
                     raise RuntimeError("startup_native_phases_incomplete")
@@ -397,6 +620,7 @@ class StartupRecovery:
             raise RuntimeError("startup_wrong_activation_loop")
         self.state._assert_attachments_unchanged(self._attachments)
         self._publications.assert_idle()
+        self._assert_binding_complete(required=True)
         with self._lock:
             if (self._native is None or not self._native.done() or self._native.cancelled()
                     or self._closed or self._stop.is_set() or self._first_cause is not None
@@ -427,6 +651,7 @@ class StartupRecovery:
 
     def assert_native_idle(self) -> None:
         self._publications.assert_idle()
+        self._assert_binding_idle()
         with self._lock:
             if self._native is not None and not self._native.done():
                 raise RuntimeError("startup_native_still_owned")
@@ -461,8 +686,23 @@ class StartupRecovery:
             try:
                 await self.join()
             except Exception:
-                self.assert_native_idle()
+                # Observe a failed native operation without blocking the loop
+                # its retained binding Task still needs in order to finish.
+                pass
+        binding = self._binding
+        cancellation = None
+        if binding is not None and binding.task is not None and not binding.completion.done():
+            wrapped = asyncio.wrap_future(binding.completion)
+            while True:
+                try:
+                    await asyncio.shield(wrapped)
+                    break
+                except asyncio.CancelledError as exc:
+                    self.stop()
+                    cancellation = cancellation or exc
         self.assert_native_idle()
+        if cancellation is not None:
+            raise cancellation
         self._executor.shutdown(wait=True, cancel_futures=False)
         with self._lock:
             self._closed = True

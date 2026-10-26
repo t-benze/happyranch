@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import time as _time
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
 
 from fastapi import FastAPI, Request
 
@@ -114,12 +118,262 @@ def _wire_then_start_workers(state: DaemonState, loop) -> None:
     ensure_workers_started(state)
 
 
+def recover_startup_compatibility(state: DaemonState, *, recovery: StartupRecovery | None = None) -> RecoveryOutcome:
+    """Shared P5 production body; legacy lifespan keeps its original position.
+
+    Native completion means original work/observations returned, not a proof
+    of repair or an empty registry. Existing advisory isolation remains local.
+    """
+    import logging
+    from datetime import datetime, timezone
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+
+    held = False
+
+    def check(org=None) -> None:
+        if recovery is not None:
+            recovery.require_compatibility_owner(org)
+
+    def count(event: str, value: int = 1) -> None:
+        if recovery is not None:
+            recovery.count_phase("compatibility", event, value)
+
+    check()
+    # Recover any jobs left in 'running' state from a previous daemon process.
+    _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    _logger = logging.getLogger("happyranch.daemon")
+    from runtime.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
+    for org in state.orgs.values():
+        check(org)
+        # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
+        # recovery scan reads any stdout_path/stderr_path. The DB-side
+        # rename already happened in Database init; this realigns disk.
+        migrate_filesystem_layout(org.root)
+        # 2026-06-02 rename: rehome on-disk assets/ → artifacts/ and
+        # per-workspace artifacts/ → output/ before any mkdir.
+        check(org)
+        migrate_artifacts_layout(org.root)
+        check(org)
+        OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
+        count("layouts_completed")
+        # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
+        check(org)
+        org.naming_readiness = "unavailable"
+        migration_results = None
+        migration_completed = False
+        primary = None
+        try:
+            from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
+            migration_results = migrate_agent_yaml_to_frontmatter(
+                OrgPaths(root=org.root),
+                workflow_authority=org.workflow_authority,
+            )
+            migration_completed = True
+            if migration_results:
+                changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
+                if changed:
+                    _logger.info(
+                        "THR-095 agent.yaml->frontmatter migration for org %s: %s",
+                        org.slug, changed,
+                    )
+        except Exception as exc:
+            primary = exc
+            held = True
+            count("migration_advisories")
+            _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            from runtime.identities.registry import refresh_names
+            # The compatibility batch/profile reconciliation has released its
+            # leases; startup has not exposed any route writers yet.
+            try:
+                check(org)
+                with org.workflow_authority.writer_interval(publisher="identity_names_compatibility") as interval:
+                    names_ready = refresh_names(org, writer=interval.native_disposition)
+            except BaseException as secondary:
+                if primary is not None:
+                    if recovery is not None:
+                        recovery.fail("startup_compatibility_failed", primary)
+                        recovery.fail("startup_compatibility_finally_failed", secondary)
+                    primary.add_note("identity_names_compatibility finally also failed: " + type(secondary).__name__)
+                    raise primary from secondary
+                raise
+        check(org)
+        if recovery is not None:
+            if migration_completed and (type(migration_results) is not dict
+                    or any(type(k) is not str or type(v) is not str for k, v in migration_results.items())):
+                raise RuntimeError("startup_yaml_migration_outcome_unknown")
+            if type(names_ready) is not bool:
+                raise RuntimeError("startup_naming_outcome_unknown")
+            if not names_ready:
+                held = True
+                count("naming_unavailable")
+            if migration_results and any(v.startswith("error:") for v in migration_results.values()):
+                held = True
+                count("migration_advisories")
+        # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
+        # persisted org/config.yaml skills eligibility section (allow + deny,
+        # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
+        check(org)
+        rename_outcome = None
+        rename_completed = False
+        try:
+            from runtime.orchestrator.org_config import migrate_hr_review_skill_id
+            rename_outcome = migrate_hr_review_skill_id(OrgPaths(root=org.root))
+            rename_completed = True
+            if rename_outcome != "skipped (already migrated)":
+                _logger.info(
+                    "THR-106 hr:review->hr:reflection migration for org %s: %s",
+                    org.slug, rename_outcome,
+                )
+        except Exception as exc:
+            held = True
+            count("skill_advisories")
+            _logger.warning(
+                "THR-106 skill-id rename migration error for org %s: %s",
+                org.slug, exc,
+            )
+        check(org)
+        if recovery is not None and rename_completed and type(rename_outcome) is not str:
+            raise RuntimeError("startup_skill_rename_outcome_unknown")
+        unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
+        if recovery is not None and (type(unknown_jobs) is not list
+                or any(type(job) is not str or not job for job in unknown_jobs)):
+            raise RuntimeError("startup_orphan_observation_outcome_unknown")
+        count("unknown_jobs", len(unknown_jobs))
+        if unknown_jobs:
+            held = True
+            _logger.warning(
+                "job_liveness_unknown: retained %d running jobs in org %s: %s; "
+                "restart is not attributable orphan/cleanup proof",
+                len(unknown_jobs), org.slug, unknown_jobs,
+            )
+
+        check(org)
+        count("orgs_observed")
+
+    # THR-195: observation (read-only) of stale never-started pending jobs.
+    # Registry-wide: scans EVERY org root discovered via
+    # ``RuntimeDir.iter_org_roots`` — including a current DB-bearing org root
+    # whose OrgState.load failed (``broken_orgs``), which ``state.orgs`` omits.
+    # Read-only connections only: never creates/migrates/writes a store (the
+    # founder contract protects the durable source ``.db``/``-wal`` bytes;
+    # the WAL-index ``-shm`` may be created/modified/removed by read-side WAL
+    # access — permitted). Startup-safe seam (founder ruling TASK-5544): a
+    # per-org observation failure is logged with org/root/error context and
+    # isolated, so it cannot abort daemon startup or suppress other org roots.
+    # Surfaces a recurrence of the historical submission-to-dispatch
+    # orphan; deliberately NOT a reaper — no automatic mutation.
+    if state.runtime is not None:
+        from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
+        check()
+        class CheckedRegistry:
+            # Only the original iterator; no second discovery or stored IDs.
+            # Admission errors escape the scanner's per-org isolation, which
+            # catches only the actual original observation body after yield.
+            def iter_org_roots(self):
+                for item in state.runtime.iter_org_roots():
+                    check()
+                    yield item
+                check()
+
+        observations = scan_all_org_stale_pending(
+            state.runtime if recovery is None else CheckedRegistry())
+        count("pending_scans")
+        # This original API isolates/logs per-org failures as empty lists. It
+        # supplies no complete-success/empty-census proof. Retain its advisory
+        # posture instead of reconstructing discarded outcomes with a new scan.
+        held = True
+        for slug, stale_pending in observations.items():
+            check()
+            count("pending_orgs_reported")
+            count("pending_rows_reported", len(stale_pending))
+            if stale_pending:
+                _logger.warning(
+                    "stale never-started pending jobs in org %s: %s",
+                    slug,
+                    [
+                        f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
+                        for r in stale_pending
+                    ],
+                )
+
+    check()
+    return RecoveryOutcome("local_hold" if held else "settled", "startup_compatibility_observed")
+
+
+def recover_startup_dreams(state: DaemonState, *, recovery: StartupRecovery | None = None) -> RecoveryOutcome:
+    """Original all-org dream recovery, without starting a consumer."""
+    from runtime.daemon.dream_scheduler import recover_running_dreams
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    for org in state.orgs.values():
+        if recovery is not None:
+            recovery.require_producers_owner(org)
+        changed = recover_running_dreams(org)
+        if recovery is not None:
+            if type(changed) is not int or changed < 0:
+                raise RuntimeError("startup_dream_recovery_outcome_unknown")
+            recovery.count_phase("producers", "dreams_recovered", changed)
+            recovery.count_phase("producers", "dream_orgs")
+            recovery.require_producers_owner(org)
+    return RecoveryOutcome("settled", "startup_dream_recovery_observed")
+
+
+def recover_startup_wakes(state: DaemonState, *, recovery: StartupRecovery | None = None) -> RecoveryOutcome:
+    """Original all-org wake recovery; native-preserved rows stay untouched."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    for org in state.orgs.values():
+        if recovery is not None:
+            recovery.require_producers_owner(org)
+        changed = org.db.work_hours.recover_running()
+        if recovery is not None:
+            if type(changed) is not int or changed < 0:
+                raise RuntimeError("startup_wake_recovery_outcome_unknown")
+            recovery.count_phase("producers", "wakes_recovered", changed)
+            recovery.count_phase("producers", "wake_orgs")
+            recovery.require_producers_owner(org)
+    return RecoveryOutcome("settled", "startup_wake_recovery_observed")
+
+
+def recover_startup_schedules(state: DaemonState, *, recovery: StartupRecovery | None = None) -> RecoveryOutcome:
+    """Original firing recovery and exact schedule_failed audit publication."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    for org in state.orgs.values():
+        if recovery is not None:
+            recovery.require_producers_owner(org)
+        recovered = org.db.schedules.recover_firing()
+        if recovery is not None and type(recovered) is not list:
+            raise RuntimeError("startup_schedule_recovery_outcome_unknown")
+        for item in recovered:
+            if recovery is not None:
+                if (type(item) is not tuple or len(item) != 2
+                        or any(type(value) is not str or not value for value in item)):
+                    raise RuntimeError("startup_schedule_recovery_member_unknown")
+                recovery.count_phase("producers", "schedules_recovered")
+                recovery.require_producers_owner(org)
+            schedule_id, agent_name = item
+            audit_id = org.db.insert_audit_log(
+                task_id=schedule_id,
+                agent=agent_name,
+                action="schedule_failed",
+                payload={"reason": "daemon_restart"},
+            )
+            if recovery is not None:
+                if type(audit_id) is not int or audit_id <= 0:
+                    raise RuntimeError("startup_schedule_audit_outcome_unknown")
+                recovery.count_phase("producers", "schedule_audits")
+        if recovery is not None:
+            recovery.count_phase("producers", "schedule_orgs")
+            recovery.require_producers_owner(org)
+    return RecoveryOutcome("settled", "startup_schedule_recovery_observed")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
     import logging
-    from datetime import datetime, timezone
-
     from runtime.daemon.thread_queue import thread_worker_loop
 
     state: DaemonState = app.state.daemon
@@ -147,90 +401,8 @@ async def _lifespan(app: FastAPI):
     await discover_completed_workflow_handoffs(state)
     _wire_then_start_workers(state, _main_loop)
 
-    # Recover any jobs left in 'running' state from a previous daemon process.
-    _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    recover_startup_compatibility(state)
     _logger = logging.getLogger("happyranch.daemon")
-    from runtime.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
-    for org in state.orgs.values():
-        # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
-        # recovery scan reads any stdout_path/stderr_path. The DB-side
-        # rename already happened in Database init; this realigns disk.
-        migrate_filesystem_layout(org.root)
-        # 2026-06-02 rename: rehome on-disk assets/ → artifacts/ and
-        # per-workspace artifacts/ → output/ before any mkdir.
-        migrate_artifacts_layout(org.root)
-        OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
-        # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
-        org.naming_readiness = "unavailable"
-        try:
-            from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
-            migration_results = migrate_agent_yaml_to_frontmatter(
-                OrgPaths(root=org.root),
-                workflow_authority=org.workflow_authority,
-            )
-            if migration_results:
-                changed = {k: v for k, v in migration_results.items() if v != "unchanged"}
-                if changed:
-                    _logger.info(
-                        "THR-095 agent.yaml->frontmatter migration for org %s: %s",
-                        org.slug, changed,
-                    )
-        except Exception as exc:
-            _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
-        finally:
-            from runtime.identities.registry import refresh_names
-            # The compatibility batch/profile reconciliation has released its
-            # leases; startup has not exposed any route writers yet.
-            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility") as interval:
-                refresh_names(org, writer=interval.native_disposition)
-        # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
-        # persisted org/config.yaml skills eligibility section (allow + deny,
-        # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
-        try:
-            from runtime.orchestrator.org_config import migrate_hr_review_skill_id
-            rename_outcome = migrate_hr_review_skill_id(OrgPaths(root=org.root))
-            if rename_outcome != "skipped (already migrated)":
-                _logger.info(
-                    "THR-106 hr:review->hr:reflection migration for org %s: %s",
-                    org.slug, rename_outcome,
-                )
-        except Exception as exc:
-            _logger.warning(
-                "THR-106 skill-id rename migration error for org %s: %s",
-                org.slug, exc,
-            )
-        unknown_jobs = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
-        if unknown_jobs:
-            _logger.warning(
-                "job_liveness_unknown: retained %d running jobs in org %s: %s; "
-                "restart is not attributable orphan/cleanup proof",
-                len(unknown_jobs), org.slug, unknown_jobs,
-            )
-
-    # THR-195: observation (read-only) of stale never-started pending jobs.
-    # Registry-wide: scans EVERY org root discovered via
-    # ``RuntimeDir.iter_org_roots`` — including a current DB-bearing org root
-    # whose OrgState.load failed (``broken_orgs``), which ``state.orgs`` omits.
-    # Read-only connections only: never creates/migrates/writes a store (the
-    # founder contract protects the durable source ``.db``/``-wal`` bytes;
-    # the WAL-index ``-shm`` may be created/modified/removed by read-side WAL
-    # access — permitted). Startup-safe seam (founder ruling TASK-5544): a
-    # per-org observation failure is logged with org/root/error context and
-    # isolated, so it cannot abort daemon startup or suppress other org roots.
-    # Surfaces a recurrence of the historical submission-to-dispatch
-    # orphan; deliberately NOT a reaper — no automatic mutation.
-    if state.runtime is not None:
-        from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
-        for slug, stale_pending in scan_all_org_stale_pending(state.runtime).items():
-            if stale_pending:
-                _logger.warning(
-                    "stale never-started pending jobs in org %s: %s",
-                    slug,
-                    [
-                        f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
-                        for r in stale_pending
-                    ],
-                )
 
     # _attach_thread_queue_wiring was called above (before workers).
     # The second call at the original location is now a no-op for
@@ -296,14 +468,10 @@ async def _lifespan(app: FastAPI):
         thread_breaker_scheduler_loop(state)
     )
 
-    from runtime.daemon.dream_scheduler import (
-        dream_scheduler_loop,
-        recover_running_dreams,
-    )
+    from runtime.daemon.dream_scheduler import dream_scheduler_loop
     from runtime.daemon.dream_queue import dream_worker_loop
 
-    for org in state.orgs.values():
-        recover_running_dreams(org)
+    recover_startup_dreams(state)
 
     dream_worker_tasks = [
         asyncio.create_task(dream_worker_loop(state, state.settings))
@@ -316,8 +484,7 @@ async def _lifespan(app: FastAPI):
 
     # Startup recovery: a wake left `running` when the daemon died can never
     # receive its spawn callback, so mark it failed (mirrors recover_running_dreams).
-    for org in state.orgs.values():
-        org.db.work_hours.recover_running()
+    recover_startup_wakes(state)
 
     wake_worker_tasks = [
         asyncio.create_task(wake_worker_loop(state, state.settings))
@@ -331,15 +498,7 @@ async def _lifespan(app: FastAPI):
 
     # Startup recovery: a schedule left `firing` when the daemon died can never
     # receive its spawn callback, so mark it failed (mirrors recover_running).
-    for org in state.orgs.values():
-        recovered = org.db.schedules.recover_firing()
-        for schedule_id, agent_name in recovered:
-            org.db.insert_audit_log(
-                task_id=schedule_id,
-                agent=agent_name,
-                action="schedule_failed",
-                payload={"reason": "daemon_restart"},
-            )
+    recover_startup_schedules(state)
 
     schedule_worker_tasks = [
         asyncio.create_task(schedule_worker_loop(state, state.settings))

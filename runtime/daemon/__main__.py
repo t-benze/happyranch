@@ -132,6 +132,75 @@ def discover_completed_workflow_handoffs_native(state: DaemonState, recovery: St
     return outcome
 
 
+def bind_returned_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """Own P4 once: positively bind the real loop, then notify actual returns.
+
+    This is callable source for serial lifecycle integration, not a driver.
+    The old effectful attachment/lifespan callers remain deliberately intact.
+    """
+    from runtime.daemon.startup_recovery import StartupRecovery
+    from runtime.workflows.recovery import rediscover_returned
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_returned_state_owner_unavailable")
+    with recovery.phase("returned") as settle:
+        recovery.bind_returned_references()
+        for org in state.orgs.values():
+            recovery.require_returned_owner(org)
+            coding = getattr(org.orchestrator, "_workflow_coding_dispatch", None)
+            if coding is None:
+                recovery.count_phase("returned", "coding_absent")
+            else:
+                if coding.org is not org or coding.db is not org.db:
+                    raise RuntimeError("startup_returned_dispatcher_changed")
+                # notify_returned already owns its per-selection observer and
+                # drains outside DB/marker locks; do not nest that observer.
+                with recovery.publications(org.orchestrator):
+                    rediscover_returned(coding)
+            recovery.require_returned_owner(org)
+            recovery.count_phase("returned", "orgs_observed")
+        outcome = recovery.publication_outcome()
+        settle(outcome)
+    return outcome
+
+
+def compatibility_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """Own P5 once using exactly the shared legacy compatibility bodies."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.daemon.app import recover_startup_compatibility
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_compatibility_state_owner_unavailable")
+    with recovery.phase("compatibility") as settle:
+        recovery.require_compatibility_owner()
+        outcome = recover_startup_compatibility(state, recovery=recovery)
+        if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+            raise RuntimeError("startup_compatibility_outcome_unavailable")
+        recovery.require_compatibility_owner()
+        settle(outcome)
+    return outcome
+
+
+def recover_producers_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """Own P7 once after P5/P6; no scheduler, consumer or job is started."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.daemon.app import recover_startup_dreams, recover_startup_wakes, recover_startup_schedules
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_producers_state_owner_unavailable")
+    held = False
+    with recovery.phase("producers") as settle:
+        # Each family retains its original all-org order and actual store;
+        # inspect its result BEFORE invoking the next original family.
+        for recover in (recover_startup_dreams, recover_startup_wakes, recover_startup_schedules):
+            recovery.require_producers_owner()
+            result = recover(state, recovery=recovery)
+            if not isinstance(result, RecoveryOutcome) or not result.positive:
+                raise RuntimeError("startup_producers_outcome_unavailable")
+            held |= result.disposition == "local_hold"
+            recovery.require_producers_owner()
+        outcome = RecoveryOutcome("local_hold" if held else "settled")
+        settle(outcome)
+    return outcome
+
+
 def redeliver_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
     """One callable P6 seam, after P4 actual-loop binding and P5 compatibility.
 

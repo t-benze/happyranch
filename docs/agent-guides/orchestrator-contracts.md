@@ -4212,12 +4212,73 @@ delivery, repair or remint. Newly partial/failed publication keeps the gate clos
 Fixed event-local counters distinguish selected/not-applicable/held/preserved,
 attempted/submitted/acknowledged/inserted/already-pending/failed/partial and retained
 incomplete owners; unobserved scopes are explicitly labelled. Ordinary callers
-retain their returns and logging semantics. This source core deliberately leaves
-`Orchestrator.attach_thread_queue`'s owed recovery call intact: the NEXT serial
-integration must extract it into P4 AND explicitly discharge it for app/state
-runtime attachment callers before admission, then wire lifespan/P0-P9/P6,
-consumer gating and stop/close joins. No partial source may merge; behavior and
-sensitivity proof remain NOT RUN.
+retain their returns and logging semantics.
+
+The callable P4 entry is `bind_returned_native_on_startup(state, recovery)` in
+`__main__`; it owns `returned` ONCE after positive sweep/workflow phases on the
+original native operation. `StartupRecovery.bind_returned_references()` reserves
+one binding before scheduling on the actual request loop. The loop calls ONLY
+`Orchestrator.bind_thread_queue_references` (the two original assignments) and
+`attach_jobs_resume_main_loop`, with original epoch/app/state/org/DB/queue
+reference checks before each effect and afterwards. It performs no history/DB/
+file recovery or persistent asyncio-lock acquisition. Until P4, orchestrators'
+main-loop references remain None; StartupRecovery alone retains the real loop.
+The concurrent Future and actual asyncio Task completion are retained separately.
+Submission uncertainty, cancellation or partial binding never rolls references
+back or proves native exit. Native observation waits outside DB/move/publication/
+marker locks; phase completion/activation require positive binding acknowledgement,
+and idle/close retain an incomplete binding. Async close yields to the real loop
+rather than blocking it beneath a callback. Stop closes new effects; the first
+cause and partial bindings remain attributable.
+
+After positive binding, P4 visits each original coding dispatcher natively under
+`recovery.publications(orch)`, invoking the SAME complete `rediscover_returned`
+selection and existing `notify_returned` observer once per selected return. No
+second notification scope or history census is added. Absent coding/empty actual
+returned selection is an observed no-op; validated ineligibility or an existing
+partial SYSTEM marker is local_hold. Newly attempted unknown/failed notification
+is mandatory failure. Fixed binding/phase/publication counters describe actual
+observations, never behavioral verification.
+
+This intermediate source deliberately retains the old EFFECTFUL public
+`Orchestrator.attach_thread_queue` wrapper: it delegates the two assignments to
+the pure helper, then still performs its original returned rediscovery/logging.
+Both app lifespan and state.add_org callers retain that obligation. The final
+root migration must make the public binder reference-only, explicitly discharge
+dynamic attachment recovery/fences and move the lifecycle callers together.
+No lifecycle may run both the old wrapper recovery and native P4. This source
+slice installs no native driver, ready release or consumer migration; it does
+not satisfy the final public reference-only-binder contract or permit partial
+merge. Behavior/resource/performance NOT RUN; sensitivity PROOF NOT RUN.
+
+P5 `compatibility_native_on_startup(state, recovery)` owns `compatibility` once
+following returned completion, original true-loop binding and idle handoffs.
+Its shared `app.recover_startup_compatibility` body retains the original timestamp,
+filesystem jobs/artifacts/output renames and mkdir, agent YAML compatibility with
+workflow authority, naming refresh in the ORIGINAL finally/writer_interval,
+skill-ID rename, orphan-running-job observation, then registry-wide stale-pending
+observation including broken orgs. Original advisory warnings and naming-unavailable
+posture remain local holds; mandatory writer/finally/connection failures propagate
+without masking an earlier exception. The original stale-pending API logs/isolates
+per-org failures as empty lists without an outcome channel: its native aggregate
+is conservatively advisory/local_hold, never a proven empty successful census.
+No additional scan or repair reconstructs discarded results. Layout counters mean
+returned routines, not proof that every advisory migration repaired its target.
+Legacy lifespan invokes this same body at its original location.
+
+P7 `recover_producers_native_on_startup(state, recovery)` owns `producers` once
+after positive compatibility AND P6 redelivery. It calls shared app helpers
+`recover_startup_dreams`, `recover_startup_wakes`, `recover_startup_schedules` in
+that all-org family order. They call the SAME original stores, with native
+preservation/unknown-owner/deadline rules unchanged, and validate actual returned
+nonnegative counts or original schedule tuples. Each recovered schedule retains
+`task_id=schedule_id`, original agent, action `schedule_failed`, payload
+`{reason:daemon_restart}`. Counts come from those actual returns/audits, without
+another census or a claim that preserved rows were repaired. Unknown returns or
+mandatory audit/cleanup errors fail before phase success. Legacy lifespan calls
+each shared family at its original interleaved worker-start position; native
+P7 starts no consumer, scheduler, job or session. Root still owes the atomic
+P0-P9 migration, all launch gates, lifecycle joins and independent acceptance.
 
 The native P6 source entry is `redeliver_native_on_startup(state, recovery)`
 in daemon `__main__`, called ONCE on the SAME retained native operation after

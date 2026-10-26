@@ -99,6 +99,21 @@ sources omitted from nonterminal scans, using complete readers and the native
 stored thread marker to avoid a second notification. A partial thread tail stays
 with its original owner. Coding leaves/carriers never enter legacy allocation.
 The existing root terminal-worktree tail remains separately attributable.
+The intermediate native startup seams are callable source, not installed lifecycle:
+`bind_returned_native_on_startup` owns actual-loop reference binding and native
+returned notification; `compatibility_native_on_startup` shares the original
+compatibility/observation bodies; `recover_producers_native_on_startup` shares the
+original stale dream/wake/schedule recovery after P6. Each owns its single phase
+on the same StartupRecovery epoch, before any consumer release. Binding retains
+actual Task completion separately from scheduling/wrapper status, and incomplete
+native ownership prevents DB close. Stop/failure retains the original cause and
+partial effects. Existing lifespan and dynamic attachment callers still use the
+old effectful public attachment wrapper; the pure reference helper is used by
+native P4 only. Root must migrate those callers/recovery fences atomically and
+must never invoke both paths in one startup. Existing naming warnings and isolated
+registry observations remain advisory, not proven repair or empty-census success.
+No driver, ready/consumer wiring or partial merge/activation follows these seams;
+behavior/performance/proof remain NOT RUN and under10s UNVERIFIED.
 After return, ordinary callers own their later state and later allocations;
 original complete captures and stable ancestry identity remain validated, while
 all coding-owned current task rows still compare exactly. Returned graphs no

@@ -291,14 +291,24 @@ def rediscover_returned(coding: Any) -> None:
     """
     from runtime.workflows.coding_authority_history import _Budget
     from runtime.workflows.coding_progression import notify_returned
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(coding.org.orchestrator)
     db = coding.db
     with db.coherent_read_view() as conn:
         if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
+            if publication is not None:
+                publication.count('not_applicable')
             return
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         _, inventory = _read_workflow_schema(conn, expected_org_slug=coding.org.slug, budget=_Budget())
         if inventory is None:
+            if publication is not None:
+                publication.count('not_applicable')
             return
         returned = tuple(key for key, entry in inventory.queued.runs.items() if entry['native'].get('returned'))
+        if not returned and publication is not None:
+            publication.count('not_applicable')
     for instance in returned:
-        notify_returned(coding, instance)
+        result = notify_returned(coding, instance)
+        if publication is not None and type(result) is not bool:
+            raise RuntimeError('startup_returned_notification_outcome_unknown')

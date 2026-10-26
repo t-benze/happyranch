@@ -309,6 +309,14 @@ def attach_jobs_resume_main_loop(
     _ORCH_RESOLVER = orch_resolver
 
 
+def jobs_resume_binding_matches(
+    loop: asyncio.AbstractEventLoop | None,
+    orch_resolver: "Callable[[str], Orchestrator | None] | None",
+) -> bool:
+    """Identity readback only; never invoke a resolver or recover a job."""
+    return _RESUME_MAIN_LOOP is loop and _ORCH_RESOLVER is orch_resolver
+
+
 def fire_resume_check_for_job(org: "object", job_id: str) -> None:
     """Check whether any task blocked on *job_id* can now be resumed.
 

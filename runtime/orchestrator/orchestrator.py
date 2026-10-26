@@ -260,8 +260,7 @@ class Orchestrator:
         — tests that build an Orchestrator without a daemon never call this
         and simply get the None-guarded skip path in ``_maybe_post_thread_followup``.
         """
-        self._thread_queue = thread_queue
-        self._main_loop = main_loop
+        self.bind_thread_queue_references(thread_queue, main_loop)
         coding = getattr(self, '_workflow_coding_dispatch', None)
         if coding is not None:
             # A terminal source is outside the ordinary nonterminal startup
@@ -271,6 +270,15 @@ class Orchestrator:
                 rediscover_returned(coding)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception('coding caller notification rediscovery unavailable')
+
+    def bind_thread_queue_references(self, thread_queue, main_loop) -> None:
+        """References only; native P4 separately owns returned discovery.
+
+        The public attachment wrapper still owes its existing recovery for
+        lifespan/dynamic callers until their atomic lifecycle migration.
+        """
+        self._thread_queue = thread_queue
+        self._main_loop = main_loop
 
     def notify_escalated(
         self, *, task_id: str, agent: str, reason: str, last_summary: str = "",
