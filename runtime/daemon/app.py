@@ -72,7 +72,12 @@ def _attach_org_runtime_wiring(state: DaemonState) -> None:
     populated separately so unit tests that build an OrgState without a
     daemon can still inspect the orchestrator before the queue exists.
     """
+    from runtime.daemon.startup_recovery import _bind_task_admission
+    _bind_task_admission(state.queue, state)
+    if state.host_supervisor is not None:
+        _bind_task_admission(state.host_supervisor, state)
     for org in state.orgs.values():
+        state._attach_startup_owner(org)
         org.orchestrator.attach_queue(state.queue)
         org.orchestrator.attach_sessions(org.sessions)
         org.orchestrator.attach_host_supervisor(state.host_supervisor)

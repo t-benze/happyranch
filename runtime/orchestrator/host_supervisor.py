@@ -1355,6 +1355,9 @@ class HostSessionSupervisor:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         if max_retry_attempts < 0:
             raise ValueError("max_retry_attempts must be >= 0")
         self._backend = backend
@@ -1391,6 +1394,10 @@ class HostSessionSupervisor:
         # No separate active registry: the admission controller's ownership
         # registry IS the active set (created atomically at grant), so the
         # drain always sees every admitted attempt.
+
+    def _require_startup_ready(self) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
 
     # ── capability probing ────────────────────────────────────────
 
@@ -1479,6 +1486,7 @@ class HostSessionSupervisor:
         swallowed (logged) — they never replace the terminal reason and
         never break the exactly-once lease release."""
 
+        self._require_startup_ready()
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
         task_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_task_pause_commit") else None
         thread_invocation = final_prelaunch_validator if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) else None
@@ -1502,6 +1510,7 @@ class HostSessionSupervisor:
             attempt, retry_schedule = thread_invocation.retry_schedule("host", tuple(retry_schedule))
             retry_limit = len(retry_schedule)
         while True:
+            self._require_startup_ready()
             if request.move_reservation is not None:
                 reservation = request.move_reservation
                 if (request.org != reservation.identity.org_slug
@@ -1512,6 +1521,7 @@ class HostSessionSupervisor:
                     raise DeferredTeamMove("team_move_host_owner_mismatch")
                 # A held task never enters the host FIFO or spends a slot.
                 reservation.before_fifo()
+            self._require_startup_ready()
             lease = self._admission.acquire(request, timeout=timeout)
             if lease is None:
                 outcome = SessionOutcome(
@@ -1641,6 +1651,7 @@ class HostSessionSupervisor:
         # froze on the ownership record: refuse before any handle exists.
         if ctx.terminal_reason() is not None:
             return self._outcome(request, ctx, attempt)
+        self._require_startup_ready()
         # ── pre-launch integrity validation (per attempt, incl. 429 retries) ──
         # Runs BEFORE ``backend.prepare``/launch so a failing check never
         # creates a containment handle (fail-closed; the supervisor re-runs it
@@ -1652,11 +1663,13 @@ class HostSessionSupervisor:
             except Exception as exc:
                 from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
                 from runtime.orchestrator.team_move import DeferredTeamMove
-                if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                if isinstance(exc, (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError)):
                     raise
                 ctx.freeze_terminal(TerminalReason.FAILURE)
                 ctx.set_error(f"pre-launch validation failed: {exc}")
                 return self._outcome(request, ctx, attempt)
+        self._require_startup_ready()
         # ── prepare (never before admission) ──
         try:
             pending = self._backend.prepare(request, self._policy)
@@ -1681,6 +1694,11 @@ class HostSessionSupervisor:
         # replacement/cancellation. This hook deliberately runs after that
         # window, and immediately before the existing atomic commitment. It
         # is opt-in so ordinary callers do not re-run their validators here.
+        try:
+            self._require_startup_ready()
+        except BaseException:
+            self._safe_abandon(self._backend, pending, request.move_reservation)
+            raise
         task_commit = getattr(final_prelaunch_validator, "_task_pause_commit", None)
         if task_commit is None:
             task_commit = getattr(final_prelaunch_validator, "_thread_move_commit", None)
@@ -1707,7 +1725,8 @@ class HostSessionSupervisor:
                 except Exception as exc:
                     from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
                     from runtime.orchestrator.team_move import DeferredTeamMove
-                    if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                    from runtime.daemon.startup_recovery import StartupUnavailable
+                    if isinstance(exc, (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError)):
                         self._safe_abandon(self._backend, pending, request.move_reservation)
                         raise
                     ctx.freeze_terminal(TerminalReason.FAILURE)
@@ -1722,6 +1741,11 @@ class HostSessionSupervisor:
                 self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
                 return self._outcome(request, ctx, attempt)
         # ── launch ──
+        try:
+            self._require_startup_ready()
+        except BaseException:
+            self._safe_abandon(self._backend, pending, request.move_reservation)
+            raise
         try:
             running = self._backend.launch(pending, launch_spec)
         except BackendError as exc:
@@ -1753,11 +1777,16 @@ class HostSessionSupervisor:
 
         # ── launch body ───────────────────────────────────────────
         deferred_thread_admission = None
+        startup_refusal = None
         try:
             result = launch_body(running)
         except Exception as exc:  # launch body never replaces terminal state
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable):
+                startup_refusal = exc
+                ctx.freeze_terminal(TerminalReason.CANCELLED)
+            elif (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
                 deferred_thread_admission = exc
                 ctx.freeze_terminal(TerminalReason.CANCELLED)
             else:
@@ -1770,6 +1799,10 @@ class HostSessionSupervisor:
 
         # ── finish + residue + publish (idempotent w/ cancel) ─
         self._finish_and_reconcile(ctx)
+        if startup_refusal is not None:
+            # Passthrough final validator refusal is never a provider failure.
+            # Original native finish/residue/receipt precede typed propagation.
+            raise startup_refusal
         if deferred_thread_admission is not None:
             # Cleanup/receipt publication still precedes lease release. Typed
             # deferral escapes without a provider failure or native callback.

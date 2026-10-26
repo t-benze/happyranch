@@ -163,6 +163,9 @@ class Orchestrator:
         teams: TeamsRegistry,
         authority_evaluator=None,
     ) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         self._db = db
         self._settings = settings
         self._paths = paths
@@ -191,6 +194,10 @@ class Orchestrator:
         # path (executor.run self-launch) remains byte-identical.
         self._host_supervisor = None
 
+    def _require_startup_ready(self) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
+
     @property
     def teams(self) -> TeamsRegistry:
         return self._teams
@@ -212,9 +219,7 @@ class Orchestrator:
             from runtime.daemon.startup_publication import current_publication
             if current_publication(self) is not None:
                 from runtime.orchestrator.run_step import _publish_redelivery_task
-                outcome = _publish_redelivery_task(self, task_id, metadata=metadata,
-                    publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
-                        task_id, metadata=metadata))
+                outcome = _publish_redelivery_task(self, task_id, metadata=metadata)
                 return outcome.disposition == "settled"
             return self._queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
                 publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
@@ -227,6 +232,14 @@ class Orchestrator:
         Decoupled from __init__ because tests construct an Orchestrator
         without a daemon, and because TaskQueue is owned by DaemonState, not
         the Orchestrator."""
+        if self._startup_state is not None:
+            expected = self._startup_state.queue
+            if queue is not expected:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        elif queue is not None and queue._startup_state is not None:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_gate_unbound")
         self._queue = queue
 
     def attach_sessions(self, tracker: "SessionTracker") -> None:
@@ -235,6 +248,14 @@ class Orchestrator:
         agent's `happyranch report-completion` callback can land. Without this, the
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
+        if self._startup_state is not None:
+            expected = self._startup_org.sessions
+            if tracker is not expected:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        elif tracker is not None and tracker._startup_state is not None:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_gate_unbound")
         self._sessions = tracker
         self._team_moves.producers.sessions = tracker
 
@@ -245,6 +266,14 @@ class Orchestrator:
         capability backend, and register an opaque cancellation/cleanup
         control with SessionTracker. Tests/idle states leave it None and
         ``_run_agent`` keeps the legacy uncontained launch path."""
+        if self._startup_state is not None:
+            expected = self._startup_state.host_supervisor
+            if supervisor is not expected:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_attachment_changed")
+        elif supervisor is not None and supervisor._startup_state is not None:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_gate_unbound")
         self._host_supervisor = supervisor
 
     def attach_notifier(self, notifier) -> None:
@@ -395,6 +424,7 @@ class Orchestrator:
             loop.create_task(coro_factory())
 
     def _build_session_id(self) -> str:
+        self._require_startup_ready()
         return f"sess-{uuid.uuid4().hex}"
 
     def _resolve_agent_def(self, agent_name: str) -> AgentDef:
@@ -709,6 +739,7 @@ class Orchestrator:
 
     def create_task(self, brief: str, team: str | None = None) -> str:
         """Create an agent-managed root; human teams require explicit API owner."""
+        self._require_startup_ready()
         team = team or self._teams.task_default_team
         owner = self._teams.executable_manager_for_team(team)
         if owner is None:
@@ -734,6 +765,7 @@ class Orchestrator:
         It is passed directly to ``run_step_impl`` as a function parameter —
         no shared mutable state.
         """
+        self._require_startup_ready()
         from runtime.orchestrator.run_step import run_step_impl
         run_step_impl(self, task_id, metadata=metadata)
 
@@ -827,6 +859,7 @@ class Orchestrator:
         recovery_deadline_monotonic: float | None = None,
         recovery: bool = False,
     ) -> tuple[ExecutorResult, CompletionReport | None]:
+        self._require_startup_ready()
         # Direct Orchestrator construction stays unobserved. Only the real
         # OrgState attachment supplies an independent per-org census owner.
         observer = getattr(self, "_memory_collection", None)
@@ -879,6 +912,7 @@ class Orchestrator:
         ``on_session_started`` is invoked with ``(task_id, agent_name, session_id)``
         before the subprocess starts so the daemon can register the active session.
         """
+        self._require_startup_ready()
         from runtime.orchestrator.task_pause import current_invocation
         from runtime.orchestrator.team_move import DeferredTeamMove
         invocation = current_invocation()
@@ -958,6 +992,7 @@ class Orchestrator:
         #   refresh_session_skills (wholesale when enabled)
         #   ensure_system_contracts_materialized (inject + verify)
         #   inject_managed_skills (managed-catalog + lifecycle)
+        self._require_startup_ready()
         expected_specs = materialize_workspace_skills(
             workspace, self._settings,
             slug=self._slug,
@@ -1040,6 +1075,7 @@ class Orchestrator:
         # re-validate integrity before the next Popen.
         def _recovery_launch_validator() -> None:
             """Fence recovery ownership/budget at its actual launch seam."""
+            self._require_startup_ready()
             if recovery:
                 if pause_invocation is not None and not pause_invocation.admitted:
                     pause_invocation.recovery_prelaunch()
@@ -1066,6 +1102,7 @@ class Orchestrator:
                     )
 
         def _pre_launch_integrity_validator() -> None:
+            self._require_startup_ready()
             with task_preparation_effects():
                 validate_workspace_skills_integrity(
                     workspace,
@@ -1152,6 +1189,7 @@ class Orchestrator:
         # fresh code regardless of executor (claude/codex/opencode/pi).
         # Must run BEFORE the executor subprocess starts. Failure is non-
         # blocking: offline / dirty / non-ff / timeout are swallowed.
+        self._require_startup_ready()
         repo_refresh_results = refresh_workspace_repos(workspace,
             preparation=pause_invocation, host_supervisor=self._host_supervisor,
             materialization=(self._settings, expected_specs))
@@ -1233,6 +1271,7 @@ class Orchestrator:
             active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
         )
 
+        self._require_startup_ready()
         if pause_invocation is None:
             # Publish the durable invocation fence before exposing this generation
             # to callback routes.  A route can therefore never observe a tracker
@@ -1443,6 +1482,7 @@ class Orchestrator:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
         timeout_seconds = timeout_seconds_override if timeout_seconds_override is not None else self._resolve_session_timeout(agent_name, task_id=task_id)
+        self._require_startup_ready()
         try:
             scratch = prepare_task_scratch(
                 workspace=workspace,
@@ -1458,6 +1498,7 @@ class Orchestrator:
             return ExecutorResult(
                 success=False, duration_seconds=0, session_id=session_id, error=str(exc)
             ), None
+        self._require_startup_ready()
         scratch_token = activate_task_scratch(scratch)
         try:
             result = self._launch_agent_with_scratch(
@@ -1478,6 +1519,11 @@ class Orchestrator:
                 recovery_deadline_monotonic=recovery_deadline_monotonic,
                 recovery=recovery,
             )
+        except Exception as exc:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable) and self._sessions is not None:
+                self._sessions.clear_if_active_session(task_id, agent_name, session_id)
+            raise
         finally:
             reset_task_scratch(scratch_token)
         if pause_invocation is not None:
@@ -1519,6 +1565,7 @@ class Orchestrator:
         recovery: bool = False,
     ) -> ExecutorResult:
         """Launch after the task scratch context has been installed."""
+        self._require_startup_ready()
         if self._host_supervisor is not None:
             # THR-207 task-producer wiring: the session runs through the
             # daemon-wide HostSessionSupervisor (admission lease, atomic
@@ -1640,6 +1687,7 @@ class Orchestrator:
         with the throttle's internal 429 retry disabled so the supervisor
         still owns the finish/release/sleep/reacquire.
         """
+        self._require_startup_ready()
         from runtime.orchestrator.host_supervisor import (
             AdmissionRequest,
             CancellationToken,
@@ -1661,6 +1709,7 @@ class Orchestrator:
             return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
                                   error="workflow_reconciliation_required")
 
+        self._require_startup_ready()
         token = CancellationToken()
         invocation = current_invocation()
         if invocation is not None:
@@ -1738,9 +1787,11 @@ class Orchestrator:
         # durable/tracker ownership check. Runs BEFORE
         # backend.prepare/launch so a failing check never creates a scope.
         def _pre_launch_validator() -> None:
+            self._require_startup_ready()
             pre_launch_integrity_validator()
 
         def _final_prelaunch_validator() -> None:
+            self._require_startup_ready()
             if recovery:
                 recovery_launch_validator()
             if drafts is not None:
@@ -1786,6 +1837,8 @@ class Orchestrator:
             # internal 429 retry disabled so the supervisor owns the
             # finish/release/sleep/reacquire lifecycle.
             contained = running.process is not None
+            if not contained:
+                self._require_startup_ready()
             from runtime.orchestrator.task_pause import current_invocation
             invocation = current_invocation()
             actual_prompt = invocation.prompt_reader() if invocation is not None else full_prompt

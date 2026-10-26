@@ -73,15 +73,18 @@ class _TrackedAsyncQueue(asyncio.Queue[_QueueItem]):
         self,
         admission_lock: threading.RLock,
         on_remove: Callable[[_QueueItem], None],
+        before_remove: Callable[[], None],
     ) -> None:
         super().__init__()
         self._admission_lock = admission_lock
         self._on_remove = on_remove
+        self._before_remove = before_remove
 
     def _get(self) -> _QueueItem:
         # asyncio.Queue.get/get_nowait both remove through this synchronous
         # hook. Holding the same lock as enqueue_if_absent makes "pending"
         # end at the exact dequeue operation, without a taken-item gap.
+        self._before_remove()
         with self._admission_lock:
             item = super()._get()
             self._on_remove(item)
@@ -92,17 +95,41 @@ class TaskQueue:
     """Wrapper around asyncio.Queue + a worker pool."""
 
     def __init__(self) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         self._admission_lock = threading.RLock()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
         self._admission_reservations: set[tuple[str, str]] = set()
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(
-            self._admission_lock, self._record_dequeue,
+            self._admission_lock, self._record_dequeue, self._require_ready,
         )
         self._worker_tasks: list[asyncio.Task] = []
         self._stopping = False
         self._native_work: set[_NativeWork] = set()
         self._stop_task: asyncio.Task | None = None
         self._metrics_registry: MetricsRegistry | None = None  # set by daemon wiring
+
+    def _require_ready(self) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
+
+    def _require_publication(self, slug: str, task_id: str, metadata: dict | None,
+                             publication: object) -> None:
+        if publication is None:
+            self._require_ready()
+            if self._startup_state is not None:
+                from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+                org = self._startup_state.orgs.get(slug)
+                if org is None:
+                    raise StartupUnavailable("startup_attachment_changed")
+                require_ready(org)
+        else:
+            from runtime.daemon.startup_publication import _TaskPublication
+            if type(publication) is not _TaskPublication or self._startup_recovery is not publication.gate:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_task_publication_unbound")
+            publication.check(self, slug, task_id, metadata)
 
     def _record_dequeue(self, item: _QueueItem) -> None:
         key = item[0], item[1]
@@ -112,7 +139,9 @@ class TaskQueue:
         else:
             self._pending_counts[key] = count - 1
 
-    def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
+    def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None,
+                _publication: object = None) -> None:
+        self._require_publication(slug, task_id, metadata, _publication)
         with self._admission_lock:
             if self._stopping:
                 logger.warning(
@@ -122,8 +151,9 @@ class TaskQueue:
             self._queue.put_nowait((slug, task_id, metadata))
             self._pending_counts[(slug, task_id)] += 1
 
-    def put_nowait(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
-        self.enqueue(slug, task_id, metadata=metadata)
+    def put_nowait(self, slug: str, task_id: str, *, metadata: dict | None = None,
+                   _publication: object = None) -> None:
+        self.enqueue(slug, task_id, metadata=metadata, _publication=_publication)
 
     def enqueue_if_absent(
         self,
@@ -132,6 +162,7 @@ class TaskQueue:
         *,
         metadata: dict | None = None,
         publisher: Callable[[], None] | None = None,
+        _publication: object = None,
     ) -> bool:
         """Publish only when this task has no reservation or pending item.
 
@@ -147,6 +178,7 @@ class TaskQueue:
         by the pending count until the same locked dequeue operation, so a
         later qualifying wake is admitted.
         """
+        self._require_publication(slug, task_id, metadata, _publication)
         key = slug, task_id
         with self._admission_lock:
             if self._stopping:
@@ -159,7 +191,7 @@ class TaskQueue:
             self._admission_reservations.add(key)
         try:
             if publisher is None:
-                self.enqueue(slug, task_id, metadata=metadata)
+                self.enqueue(slug, task_id, metadata=metadata, _publication=_publication)
             else:
                 publisher()
             with self._admission_lock:
@@ -211,6 +243,7 @@ class TaskQueue:
                     return future.result()
 
     def _submit(self, dispatcher: _Dispatcher, item: _QueueItem) -> _NativeWork | None:
+        self._require_ready()
         # Submission and org close/preflight are synchronous on the event loop.
         # Register the obligation before creating any executor future/await.
         if self._stopping:
@@ -219,6 +252,9 @@ class TaskQueue:
         attachment = attachment_reader(item[0]) if attachment_reader else None
         if attachment_reader is not None and attachment is None:
             return None
+        if attachment is not None:
+            from runtime.daemon.startup_recovery import _require_ordinary_ready
+            _require_ordinary_ready(attachment)
         work = _NativeWork(dispatcher, item, attachment)
         if attachment is not None and not attachment._acquire_native_task(work):
             return None
@@ -233,6 +269,7 @@ class TaskQueue:
         hb = None
         t0 = time.monotonic()
         try:
+            self._require_ready()
             if self._stopping or work.abandoned:
                 return
             admission = getattr(work.dispatcher, "task_admission_allowed", None)
@@ -248,14 +285,20 @@ class TaskQueue:
             # Late preparation after cancellation must retire its returned
             # owner, without launching another native run during shutdown.
             if not self._stopping and not work.abandoned:
+                self._require_ready()
                 hb = asyncio.create_task(self._heartbeat(work))
                 work.run = loop.run_in_executor(
                     None, work.call("run_step", slug, task_id, metadata),
                 )
                 await self._join_native(work, work.run)
         except BaseException as exc:
-            work.failures.append(exc)
-            logger.exception("native task %s/%s failed; retaining close barrier", slug, task_id)
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            # A known refusal BEFORE native run submission has no provider
+            # effect. Still retire a genuinely prepared queue owner in finally.
+            # An exception from an actual submitted run retains its old barrier.
+            if not isinstance(exc, StartupUnavailable) or work.run is not None:
+                work.failures.append(exc)
+                logger.exception("native task %s/%s failed; retaining close barrier", slug, task_id)
         finally:
             if hb is not None:
                 hb.cancel()
@@ -286,6 +329,7 @@ class TaskQueue:
                 )
 
     async def _consume(self, dispatcher: _Dispatcher, item: _QueueItem) -> None:
+        self._require_ready()
         work = self._submit(dispatcher, item)
         if work is None:
             self._queue.task_done()
@@ -297,7 +341,9 @@ class TaskQueue:
             raise
 
     async def _worker_loop(self, dispatcher: _Dispatcher) -> None:
+        self._require_ready()
         while not self._stopping:
+            self._require_ready()
             item = await self._queue.get()
             await self._consume(dispatcher, item)
 
@@ -306,9 +352,13 @@ class TaskQueue:
         # boot latch. Post-ready callers still cross the same direct gate.
         from runtime.daemon.startup_recovery import require_ready
         if recovery is None:
+            self._require_ready()
             require_ready(dispatcher._state)
-        elif recovery.state is not dispatcher._state or recovery.state.queue is not self:
+        elif (recovery is not self._startup_recovery or recovery.state is not dispatcher._state
+              or recovery.state.queue is not self):
             raise RuntimeError("startup_worker_owner_mismatch")
+        if recovery is not None:
+            recovery.require_attachment(self)
         for _ in range(n):
             if recovery is None:
                 task = asyncio.create_task(self._worker_loop(dispatcher))
@@ -403,5 +453,6 @@ class TaskQueue:
     async def drain_sync(self, dispatcher: _Dispatcher) -> None:
         # Retained alternative entrypoint: use exactly the same owned native
         # submission/retirement as the worker pool, including cancellation.
+        self._require_ready()
         while not self._stopping and not self._queue.empty():
             await self._consume(dispatcher, self._queue.get_nowait())

@@ -1515,7 +1515,7 @@ def is_root(task: "TaskRecord") -> bool:
 def _enqueue_task_generation_aware(
     orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
     legacy: str = "put_nowait",
-    _observe: Callable[[str], None] | None = None,
+    _observe: Callable[[str], None] | None = None, _publication=None,
 ) -> None:
     """Route a producer's enqueue through the common DB-aware boundary.
 
@@ -1536,16 +1536,23 @@ def _enqueue_task_generation_aware(
     if queue is None:
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware
+    if _publication is None:
+        startup = _startup_sweep_owner(orch)
+        if startup is not None and orch._startup_state is not None:
+            from runtime.daemon.startup_publication import _TaskPublication
+            _publication = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                            "sweep", metadata, sweep_owner=startup)
+    kwargs = {"_publication": _publication} if _publication is not None else {}
     if legacy == "enqueue":
         if metadata is None:
-            raw = lambda: queue.enqueue(orch._slug, task_id)
+            raw = lambda: queue.enqueue(orch._slug, task_id, **kwargs)
         else:
-            raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata)
+            raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata, **kwargs)
     else:
-        raw = lambda: queue.put_nowait(orch._slug, task_id)
+        raw = lambda: queue.put_nowait(orch._slug, task_id, **kwargs)
     outcome = enqueue_task_generation_aware(
         orch, queue, orch._slug, task_id, metadata=metadata,
-        ordinary_enqueue=raw,
+        ordinary_enqueue=raw, _publication=_publication,
     )
     if _observe is not None:
         _observe(outcome)
@@ -1603,6 +1610,7 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    orch._require_startup_ready()
     # Workflow dispatch returns before the ordinary invocation owner exists.
     # This worker scope also carries its terminal event past tracker teardown,
     # workflow invocation close/release and the dispatcher's live-claim tail.
@@ -1643,6 +1651,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    orch._require_startup_ready()
     from runtime.orchestrator.task_pause import (
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
     )
@@ -1689,6 +1698,9 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     except DeferredRootPause:
         return
     except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         if isinstance(exc, PauseControlError) and exc.detail["code"] == "root_paused":
             return
         if invocation is not None:
@@ -1749,6 +1761,9 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             invocation.phase("retry_deferred", started_at=None, captured_generation=None)
     except BaseException as exc:
         root_delivery['teardown_incomplete'] = True
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         if isinstance(exc, Exception) and not invocation.launch_observed:
             from runtime.orchestrator.launch_refusals import settle_refusal
             if settle_refusal(invocation, exc, prepared=True):
@@ -1773,6 +1788,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
 
 
 def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    orch._require_startup_ready()
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1999,6 +2015,9 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         # owner boundary for bounded refusal accounting and normal failure.
         raise
     except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         if pause_invocation is not None and not pause_invocation.launch_observed:
             # The native owner records and settles before its release tail.
             raise
@@ -2165,6 +2184,9 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
                     except (DeferredRootPause, DeferredTeamMove, PauseControlError):
                         raise
                     except Exception as exc:
+                        from runtime.daemon.startup_recovery import StartupUnavailable
+                        if isinstance(exc, StartupUnavailable):
+                            raise
                         result.error = f"completion recovery launch failed: {exc}"
                 else:
                     # The durable claim has already spent the sole recovery.  Do
@@ -4373,6 +4395,18 @@ def _attachment_owned_effect(
                 orch._db._conn.rollback()
 
 
+def _publish_retry_feedback_task(orch: "Orchestrator", task_id: str) -> None:
+    queue = orch._queue
+    startup = _startup_sweep_owner(orch)
+    kwargs = {}
+    if startup is not None and orch._startup_state is not None:
+        from runtime.daemon.startup_publication import _TaskPublication
+        selected = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                    "sweep", sweep_owner=startup)
+        kwargs["_publication"] = selected
+    queue.put_nowait(orch._slug, task_id, **kwargs)
+
+
 def _attachment_feedback_and_reenqueue(
     orch: "Orchestrator", expected_claim: RetryClaim, detail: dict, *,
     location: str | None = None, reclaim_terminal_worktree: bool = True,
@@ -4380,7 +4414,7 @@ def _attachment_feedback_and_reenqueue(
     feedback = _attachment_feedback_text(detail, location)
     outcome = orch._db.try_attachment_retry_feedback(expected_claim, feedback, detail["code"])
     if isinstance(outcome, PendingRetry):
-        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, expected_claim.task_id)
+        enqueue = None if orch._queue is None else lambda: _publish_retry_feedback_task(orch, expected_claim.task_id)
         orch._db.admit_retry_feedback(outcome, enqueue)
         return
     if not isinstance(outcome, AttachmentCorrectionStopped):
@@ -4660,7 +4694,7 @@ def _reject_retry_link_decision(
     )
     pending = orch._db.try_retry_feedback(expected_claim, feedback)
     if isinstance(pending, PendingRetry):
-        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, task_id)
+        enqueue = None if orch._queue is None else lambda: _publish_retry_feedback_task(orch, task_id)
         orch._db.admit_retry_feedback(pending, enqueue)
 
 
@@ -6120,7 +6154,11 @@ def _enqueue_parent_if_waiting_owned(
         queue = getattr(orch, "_queue", None)
         if publication is not None:
             from runtime.daemon.queue import TaskQueue
+            from runtime.daemon.startup_publication import _TaskPublication
             with publication.attempt(orch, "parent_attempted"):
+                selected = _TaskPublication(publication.gate, orch, parent.id,
+                    "returned_parent" if publication.gate._phase == "returned" else "redelivery",
+                    publication=publication)
                 if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
                     raise RuntimeError("startup_parent_queue_owner_unavailable")
 
@@ -6129,9 +6167,9 @@ def _enqueue_parent_if_waiting_owned(
                         raise RuntimeError("startup_parent_publication_" + outcome)
 
                 inserted = queue.enqueue_if_absent(
-                    orch._slug, parent.id,
+                    orch._slug, parent.id, _publication=selected,
                     publisher=lambda: _enqueue_task_generation_aware(
-                        orch, parent.id, _observe=observe,
+                        orch, parent.id, _observe=observe, _publication=selected,
                     ),
                 )
                 # False alone also means stopping or an in-progress reservation.
@@ -6144,12 +6182,20 @@ def _enqueue_parent_if_waiting_owned(
             return
         if queue is None:
             return
+        selected = None
+        startup = _startup_sweep_owner(orch)
+        if startup is not None and orch._startup_state is not None:
+            from runtime.daemon.startup_publication import _TaskPublication
+            selected = _TaskPublication(orch._startup_recovery, orch, parent.id,
+                                       "sweep_parent", sweep_owner=startup)
+        kwargs = {"_publication": selected} if selected is not None else {}
         enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
         if callable(enqueue_if_absent):
             enqueue_if_absent(
                 orch._slug,
                 parent.id,
-                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id),
+                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id, **kwargs),
+                **kwargs,
             )
             return
         # Lightweight test adapters predate TaskQueue's atomic boundary. The
@@ -6322,6 +6368,9 @@ def _publish_redelivery_task(
     if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
         raise RuntimeError("startup_redelivery_task_queue_unavailable")
     with publication.attempt(orch, "task_attempted"):
+        from runtime.daemon.startup_publication import _TaskPublication
+        selected = _TaskPublication(publication.gate, orch, task_id, "redelivery",
+                                    metadata, publication=publication)
         if generation_aware:
             # Exact target-local read, not discovery or reconstruction. Unknown
             # classification is never inferred to be an empty/held selection.
@@ -6341,15 +6390,15 @@ def _publish_redelivery_task(
                     nonlocal result
                     result = value
                 _enqueue_task_generation_aware(orch, task_id, metadata=metadata,
-                                               legacy="enqueue", _observe=observe)
+                                               legacy="enqueue", _observe=observe, _publication=selected)
             else:
-                queue.enqueue(orch._slug, task_id, metadata=metadata)
+                queue.enqueue(orch._slug, task_id, metadata=metadata, _publication=selected)
                 result = None
             if generation_aware and result not in ("ordinary", "published"):
                 raise RuntimeError("startup_redelivery_task_publication_refused")
 
         inserted = queue.enqueue_if_absent(orch._slug, task_id, metadata=metadata,
-                                           publisher=publish)
+                                           publisher=publish, _publication=selected)
         if type(inserted) is not bool or queue.pending_publication(orch._slug, task_id) != "pending":
             raise RuntimeError("startup_redelivery_task_unacknowledged")
         publication.count("acknowledged")

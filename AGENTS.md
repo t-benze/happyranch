@@ -38,6 +38,29 @@ all partial consumer handles are retained and joined, including exchange reaper.
 Failed or uncertain cleanup prevents DB-close fallthrough; cancellation is not
 native quiescence. Primary causes and earlier durable effects remain attributable.
 
+Ordinary task source admission now checks the same original daemon epoch at
+queue enqueue/reservation/raw dequeue, direct worker submission/dispatcher/task
+entry, task/session allocation, workspace/scratch preparation and provider entry.
+Production construction binds actual queue/org/orchestrator/tracker/host references;
+missing, detached or replaced owners refuse. Explicit standalone constructors
+retain their existing offline contract. Recovery purpose never exempts a new
+session registration. The shared host checks before FIFO/grant, per-attempt
+preparation and final native launch, including retries; task self-launch validators
+also recheck. Existing containment, terminal winners, cancellation, tracker cleanup
+and native retirement retain their original owners. A check alone proves no native
+quiescence.
+
+Only selected original P2/P3/P4/P6 TASK publications carry a private exact task,
+metadata, queue, attachment, phase and epoch object through queue/generation
+adapters. P2 uses its retained sweep/body-or-native-tail owner; workflow P2/P3 uses
+its original workflow owner; P4/P6 requires the existing active publication owner.
+Authenticated generation raw put still follows its genuine claim and exact ack.
+No generic recovery-thread or metadata bypass grants queue/session/provider use.
+The existing custom Pause retry-deferred publisher in task_pause._discover_pause_roots
+still needs its explicit publication-object/metadata adapter outside this slice's
+permitted file list; that selected P6 branch remains blocked before queue insertion.
+This source checkpoint is incomplete and must not activate or merge independently.
+
 This is incomplete SOURCE integration, not full API/direct/UI/readiness/launcher
 closure or behavioral acceptance. ROOT13137 retains those consumers, finite
 correctness execution, full independent final review, same-head scoped QA and

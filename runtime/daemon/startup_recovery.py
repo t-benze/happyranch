@@ -90,6 +90,8 @@ class StartupRecovery:
         self.state = state
         self.app = app
         self.epoch = uuid.uuid4().hex
+        self._admission_queue = state.queue
+        self._admission_host = state.host_supervisor
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._status = "recovering"
@@ -483,6 +485,39 @@ class StartupRecovery:
             code = "daemon_recovering" if current["state"] == "recovering" and not current["stopping"] else "daemon_recovery_failed"
             raise StartupUnavailable(code, current)
 
+    def require_attachment(self, owner: Any) -> None:
+        """Authenticate the actual current production owner without DB work."""
+        state = self.state
+        if (state._startup_recovery is not self or self.app.state.daemon is not state
+                or (owner is not state and owner._startup_state is not state)
+                or owner._startup_recovery is not self):
+            raise StartupUnavailable("startup_attachment_changed")
+        if (state.queue is not self._admission_queue or state.host_supervisor is not self._admission_host
+                or state.queue._startup_state is not state or state.queue._startup_recovery is not self
+                or (state.host_supervisor is not None
+                    and (state.host_supervisor._startup_state is not state
+                         or state.host_supervisor._startup_recovery is not self))):
+            raise StartupUnavailable("startup_attachment_changed")
+        if owner is state:
+            return
+        org = owner._startup_org
+        if org is None:
+            attached = owner is state.queue or owner is state.host_supervisor
+        else:
+            refs = org._startup_admission_refs
+            attached = (refs is not None and org.orchestrator is refs[0]
+                        and org.db is refs[1] and org.sessions is refs[2]
+                        and state.orgs.get(org.slug) is org and org._startup_recovery is self
+                        and org._startup_state is state
+                        and any(owner is original for original in (org, org.orchestrator, org.sessions))
+                        and org.orchestrator._db is org.db
+                        and org.orchestrator._slug == org.slug
+                        and org.orchestrator._queue is state.queue
+                        and org.orchestrator._sessions is org.sessions
+                        and org.orchestrator._host_supervisor is state.host_supervisor)
+        if not attached or state.queue._startup_recovery is not self:
+            raise StartupUnavailable("startup_attachment_changed")
+
     def require_native_owner(self) -> None:
         with self._lock:
             allowed = (self._native_thread == threading.get_ident()
@@ -576,7 +611,10 @@ class StartupRecovery:
         queue = self.state.queue
         if not isinstance(queue, TaskQueue):
             raise RuntimeError("startup_workflow_queue_unavailable")
-        inserted = queue.enqueue_if_absent(org.slug, task_id)
+        from runtime.daemon.startup_publication import _TaskPublication
+        publication = _TaskPublication(self, org.orchestrator, task_id, "workflow",
+                                       sweep_owner=sweep_owner)
+        inserted = queue.enqueue_if_absent(org.slug, task_id, _publication=publication)
         if type(inserted) is not bool:
             raise RuntimeError("startup_workflow_queue_outcome_unknown")
         if queue.pending_publication(org.slug, task_id) != "pending":
@@ -830,7 +868,46 @@ def require_ready(owner: Any) -> None:
     gate = getattr(owner, "_startup_recovery", None)
     if not isinstance(gate, StartupRecovery):
         raise StartupUnavailable("startup_gate_unbound")
+    try:
+        gate.require_attachment(owner)
+    except AttributeError as exc:
+        raise StartupUnavailable("startup_attachment_changed") from exc
     gate.require_ready()
+
+
+def _require_ordinary_ready(owner: Any) -> None:
+    """Explicitly constructed standalone owners retain their offline contract.
+
+    Production construction binds state BEFORE exposing the owner. Missing
+    fields, a replaced gate or a detached original owner never select offline.
+    No recovery publication object is accepted at this launch boundary.
+    """
+    try:
+        state, gate, org = owner._startup_state, owner._startup_recovery, owner._startup_org
+    except AttributeError as exc:
+        raise StartupUnavailable("startup_gate_unbound") from exc
+    if state is None:
+        if gate is not None or org is not None:
+            raise StartupUnavailable("startup_gate_unbound")
+        return
+    require_ready(owner)
+
+
+def _bind_task_admission(owner: Any, state: Any, org: Any = None) -> None:
+    """Bind an original native reference; never reset a bound production gate."""
+    previous = owner._startup_state
+    if owner._startup_org is not None and owner._startup_org is not org:
+        raise StartupUnavailable("startup_attachment_changed")
+    if previous is not None and previous is not state:
+        # Existing ready-only runtime transfer moves freshly constructed,
+        # unpublished references, never an already activated epoch.
+        if previous._startup_recovery is not None or state._startup_recovery is None:
+            raise StartupUnavailable("startup_attachment_changed")
+        state._require_startup_ready()
+    if owner._startup_recovery is not None and owner._startup_recovery is not state._startup_recovery:
+        raise StartupUnavailable("startup_attachment_changed")
+    owner._startup_state, owner._startup_org = state, org
+    owner._startup_recovery = state._startup_recovery
 
 
 class StartupAdmissionMiddleware:

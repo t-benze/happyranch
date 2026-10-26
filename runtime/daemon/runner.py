@@ -15,6 +15,8 @@ from runtime.daemon.state import DaemonState
 def enqueue_task(
     state: DaemonState, slug: str, task_id: str, *, metadata: dict | None = None,
 ) -> None:
+    from runtime.daemon.startup_recovery import require_ready
+    require_ready(state)
     if state.is_idle:
         raise RuntimeError("daemon is idle — no active runtime")
     try:

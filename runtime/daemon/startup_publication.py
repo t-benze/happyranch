@@ -36,6 +36,81 @@ def current_publication(orch: Any) -> StartupPublications | None:
     return owner
 
 
+@dataclass(frozen=True, eq=False)
+class _TaskPublication:
+    """One selected original TASK pointer, never session/provider admission.
+
+    Only the named P2/P3/P4/P6 adapters construct this object. Queue reservation
+    and raw insertion revalidate its original owner/phase/attachment/epoch.
+    It is passed explicitly across generation adapters, never via ambient
+    recovery-thread context or user metadata.
+    """
+
+    gate: Any
+    orch: Any
+    task_id: str
+    kind: str
+    metadata: Any = None
+    sweep_owner: Any = None
+    publication: Any = None
+    epoch: str = field(init=False)
+    queue: Any = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "epoch", self.gate.epoch)
+        object.__setattr__(self, "queue", self.gate.state.queue)
+        if self.metadata is not None:
+            object.__setattr__(self, "metadata", dict(self.metadata))
+        self.check(self.queue, self.orch._slug, self.task_id, self.metadata)
+
+    def generation(self, task_id: str, metadata: dict) -> _TaskPublication:
+        # Called only after the ORIGINAL authenticated generation claim.
+        if task_id != self.task_id:
+            raise RuntimeError("startup_task_publication_target_changed")
+        return _TaskPublication(self.gate, self.orch, task_id, self.kind,
+                                metadata, self.sweep_owner, self.publication)
+
+    def check(self, queue: Any, slug: str, task_id: str, metadata: Any) -> None:
+        gate, orch = self.gate, self.orch
+        gate.require_attachment(orch)
+        if (gate.epoch != self.epoch or queue is not self.queue
+                or queue is not gate.state.queue or orch._queue is not queue
+                or slug != orch._slug or task_id != self.task_id
+                or metadata != self.metadata):
+            raise RuntimeError("startup_task_publication_identity_changed")
+        org = gate.state.orgs.get(slug)
+        if self.kind in ("sweep", "sweep_parent"):
+            from runtime.orchestrator.run_step import _startup_sweep_owner
+            owner = self.sweep_owner
+            if (owner is None or gate._sweep_owner is not owner or owner.orch is not orch
+                    or _startup_sweep_owner(orch) is not owner
+                    or gate._phase != "sweep" or gate._native_thread != owner._body_thread
+                    or (threading.get_ident() != owner._body_thread
+                        and threading.current_thread() not in owner._tails)):
+                raise RuntimeError("startup_task_sweep_owner_changed")
+            owner.check()
+            current = gate.snapshot()
+            if current["state"] != "recovering" or current["stopping"]:
+                raise RuntimeError("startup_task_sweep_closed")
+        elif self.kind == "v2":
+            gate.require_native_owner()
+            gate._require_phase_attachments("sweep")
+            if orch._main_loop is not None:
+                raise RuntimeError("startup_task_v2_owner_changed")
+        elif self.kind == "workflow":
+            gate.require_workflow_owner(org, sweep_owner=self.sweep_owner)
+        elif self.kind in ("returned_parent", "redelivery"):
+            if self.publication is not gate._publications:
+                raise RuntimeError("startup_task_publication_owner_changed")
+            self.publication.require_producer(orch)
+            if self.kind == "returned_parent" and gate._phase != "returned":
+                raise RuntimeError("startup_task_parent_phase_changed")
+            if self.kind == "redelivery":
+                gate.require_redelivery_owner(org)
+        else:
+            raise RuntimeError("startup_task_publication_kind_invalid")
+
+
 @dataclass(eq=False)
 class _Handoff:
     epoch: str

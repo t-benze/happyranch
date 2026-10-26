@@ -86,6 +86,10 @@ class DaemonState:
         recovery = StartupRecovery(self, app)
         self._startup_recovery = recovery
         self._startup_reads = StartupReads(self, recovery)
+        from runtime.daemon.startup_recovery import _bind_task_admission
+        _bind_task_admission(self.queue, self)
+        if self.host_supervisor is not None:
+            _bind_task_admission(self.host_supervisor, self)
         for org in self.orgs.values():
             self._attach_startup_owner(org)
 
@@ -112,9 +116,16 @@ class DaemonState:
                 logger.exception("coding caller notification rediscovery unavailable")
 
     def _attach_startup_owner(self, org) -> None:
-        org._startup_recovery = self._startup_recovery
+        from runtime.daemon.startup_recovery import _bind_task_admission, StartupUnavailable
+        originals = org._startup_admission_refs
+        if originals is None:
+            org._startup_admission_refs = (org.orchestrator, org.db, org.sessions)
+        elif (org.orchestrator is not originals[0] or org.db is not originals[1]
+              or org.sessions is not originals[2]):
+            raise StartupUnavailable("startup_attachment_changed")
+        for owner in (org, org.orchestrator, org.sessions):
+            _bind_task_admission(owner, self, org)
         org._startup_reads = self._startup_reads
-        org.orchestrator._startup_recovery = self._startup_recovery
 
     async def _drain_startup(self, org=None) -> None:
         # Recovery may require request-loop queue acknowledgements to end. Join
@@ -203,6 +214,12 @@ class DaemonState:
         Called by from_runtime after the dataclass constructor.
         Idle states still own the inert move service; metrics_store is set by idle().
         """
+        from runtime.daemon.startup_recovery import _bind_task_admission
+        _bind_task_admission(self.queue, self)
+        if self.host_supervisor is not None:
+            _bind_task_admission(self.host_supervisor, self)
+        for org in self.orgs.values():
+            self._attach_startup_owner(org)
         from runtime.daemon.team_move_service import TeamMoveService
         self.team_move_service = TeamMoveService(self)
         if self.runtime is not None and self.metrics_store is None:
@@ -253,6 +270,9 @@ class DaemonState:
             max_retry_attempts=len(settings.executor_rate_limit_backoff_seconds),
             backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),
         )
+
+        from runtime.daemon.startup_recovery import _bind_task_admission
+        _bind_task_admission(state.host_supervisor, state)
 
         from runtime.orchestrator.runtime_executor_store import (
             load_runtime_profiles,
@@ -336,6 +356,7 @@ class DaemonState:
             # admission/containment. The lifespan wiring also does this, but
             # `from_runtime` is used by tests that bypass lifespan, so we do
             # it here too — idempotent.
+            state._attach_startup_owner(org)
             org.orchestrator.attach_queue(state.queue)
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(state.host_supervisor)

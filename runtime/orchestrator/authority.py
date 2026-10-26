@@ -4695,6 +4695,7 @@ def run_authority_hook(
 def publish_authority_policy_v2_notifications(
     orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
     startup_observer: Callable[[str, object, BaseException | None], None] | None = None,
+    _publication=None, _startup_recovery=None,
 ) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
@@ -4721,6 +4722,15 @@ def publish_authority_policy_v2_notifications(
     This function performs no evaluation, no remint and no task mutation, and
     returns bounded per-target receipts for the caller.
     """
+    if _publication is not None:
+        _publication.check(queue, orch._slug, _publication.task_id, _publication.metadata)
+    elif _startup_recovery is not None:
+        _startup_recovery.require_attachment(orch)
+        _startup_recovery.require_native_owner()
+        _startup_recovery._require_phase_attachments("sweep")
+    else:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(orch)
     db = orch._db
     receipts: list[dict] = []
     # Observe ORIGINAL producer values/exceptions without changing receipts,
@@ -4778,14 +4788,17 @@ def publish_authority_policy_v2_notifications(
             })
             continue
         try:
-            queue.put_nowait(
-                orch._slug,
-                target.root_task_id,
-                metadata={
-                    "authority_v2_generation": claim.generation_id,
-                    "publication_attempt": claim.publication_attempt,
-                },
-            )
+            metadata = {"authority_v2_generation": claim.generation_id,
+                        "publication_attempt": claim.publication_attempt}
+            raw_publication = None
+            if _publication is not None:
+                raw_publication = _publication.generation(target.root_task_id, metadata)
+            elif _startup_recovery is not None:
+                from runtime.daemon.startup_publication import _TaskPublication
+                raw_publication = _TaskPublication(_startup_recovery, orch,
+                                                   target.root_task_id, "v2", metadata)
+            queue.put_nowait(orch._slug, target.root_task_id, metadata=metadata,
+                             **({"_publication": raw_publication} if raw_publication is not None else {}))
         except Exception as exc:
             try:
                 failure = (
@@ -5071,7 +5084,7 @@ ENQUEUE_DISPATCH_NO_QUEUE = "no_queue"
 
 def enqueue_task_generation_aware(
     orch, queue, slug: str, task_id: str, *, metadata: dict | None = None,
-    ordinary_enqueue=None,
+    ordinary_enqueue=None, _publication=None,
 ) -> str:
     """Common DB-aware task enqueue entry (THR-229 checkpoint C3d4a).
 
@@ -5104,6 +5117,11 @@ def enqueue_task_generation_aware(
     original call so the tuple/metadata shape and any queue-double contract are
     unchanged; the default uses the shared legacy ``enqueue`` shape.
     """
+    if _publication is not None:
+        _publication.check(queue, slug, task_id, metadata)
+    else:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(orch)
     if queue is None:
         return ENQUEUE_DISPATCH_NO_QUEUE
 
@@ -5111,7 +5129,7 @@ def enqueue_task_generation_aware(
         if ordinary_enqueue is not None:
             ordinary_enqueue()
         else:
-            _ordinary_enqueue(queue, slug, task_id, metadata)
+            _ordinary_enqueue(queue, slug, task_id, metadata, _publication=_publication)
 
     db = getattr(orch, "_db", None)
     # Only a genuine durable ``Database`` carries the classification read.  A
@@ -5133,7 +5151,7 @@ def enqueue_task_generation_aware(
         # The publisher performs the claim -> raw put -> ack itself; a refusal or
         # an empty target set means NO queue call and NO ordinary fallback.
         receipts = publish_authority_policy_v2_notifications(
-            orch, queue, root_task_id=task_id,
+            orch, queue, root_task_id=task_id, _publication=_publication,
         )
         published = any(
             isinstance(r, dict) and r.get("status") in ("published", "published_exact")
@@ -5173,7 +5191,7 @@ def _durable_dispatch_classifier(db):
     return classifier if callable(classifier) else None
 
 
-def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> None:
+def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None, *, _publication=None) -> None:
     """Raw ordinary enqueue preserving the legacy call shape exactly.
 
     The common legacy entry (``runner.enqueue_task``, startup sweep) used
@@ -5187,7 +5205,8 @@ def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> 
         put = getattr(queue, "put_nowait", None)
     if not callable(put):
         raise AttributeError("queue exposes neither enqueue nor put_nowait")
+    kwargs = {"_publication": _publication} if _publication is not None else {}
     if metadata is None:
-        put(slug, task_id)
+        put(slug, task_id, **kwargs)
     else:
-        put(slug, task_id, metadata=metadata)
+        put(slug, task_id, metadata=metadata, **kwargs)
