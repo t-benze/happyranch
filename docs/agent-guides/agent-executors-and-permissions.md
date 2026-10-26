@@ -1377,6 +1377,19 @@ Genuine callback, terminal, cleanup and atomic performed-work return remain owed
 when startup closes. Fresh follow-on work stays pending without rewriting its
 source/carrier/results or calling a closed gate proof of native quiescence.
 
+Both coding return histories pass the SAME selected ordinary/P4/P6 validator
+into the original `_update_task_history` owner. It checks entry, after its
+original task/workspace/recent-history observations and immediately before the
+original file write; closed or replaced ownership refuses before the next
+effect. Selected calls report whether a write actually returned, so recovery
+requires BOTH performed writes and counts each before later fallible inspection.
+A skipped write cannot borrow an existing file as success. Default terminal and
+cleanup callers keep their ungated None/no-op contract and existing fences.
+Earlier writes, committed return and pending delivery remain attributable on
+later refusal; original publication drain, marker and positive queue ack still
+own completion. Synchronous rechecks do not guarantee atomic exclusion through
+arbitrary filesystem I/O and grant no new recovery/session exception.
+
 These named document and coding source stages leave the whole feature
 incomplete. ROOT13137 retains remaining maintenance/HTTP/UI/readiness/
 launcher/counter closure, full independent final-source review and same-head QA.

@@ -520,16 +520,25 @@ def _notify_returned_native(dispatcher: Any, instance: str) -> bool:
         # A selected authenticated return must actually publish BOTH histories.
         for history_id in (carrier_id, source_id):
             history_task = dispatcher.db.get_task(history_id)
+            validate()
             _check(history_task is not None and bool(history_task.assigned_agent))
-            _check((orch._paths.workspaces_dir / history_task.assigned_agent).is_dir())
+            workspace_exists = (orch._paths.workspaces_dir / history_task.assigned_agent).is_dir()
+            validate()
+            _check(workspace_exists)
     for history_id in (carrier_id, source_id):
         validate()
-        orch._update_task_history(history_id)
+        written = orch._update_task_history(history_id, validate_admission=validate)
         if publication is not None:
-            history_task = dispatcher.db.get_task(history_id)
-            _check(history_task is not None and bool(history_task.assigned_agent))
-            _check((orch._paths.workspaces_dir / history_task.assigned_agent / 'task_history.md').is_file())
+            _check(written is True)
+            # Attribute the performed write even if a later observation fails.
             publication.count('histories_written')
+            validate()
+            history_task = dispatcher.db.get_task(history_id)
+            validate()
+            _check(history_task is not None and bool(history_task.assigned_agent))
+            history_exists = (orch._paths.workspaces_dir / history_task.assigned_agent / 'task_history.md').is_file()
+            validate()
+            _check(history_exists)
     validate()
     _enqueue_parent_if_waiting(orch, source_id, current_owner=current_owner)
     # The ordinary thread tail is not an idempotent API. Serialize its existing

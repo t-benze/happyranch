@@ -2001,21 +2001,36 @@ class Orchestrator:
     _HISTORY_CAP = 50
     _HISTORY_HEADER = "# Task History"
 
-    def _update_task_history(self, task_id: str) -> None:
+    def _update_task_history(
+        self, task_id: str, *, validate_admission: Callable[[], None] | None = None,
+    ) -> bool | None:
         """Rebuild the assigned_agent's task_history.md from the DB.
 
         Newest-first, capped at ``_HISTORY_CAP`` entries. Silent no-op if
-        the task has no assigned_agent or its workspace is missing.
+        the task has no assigned_agent or its workspace is missing. A selected
+        caller renews its SAME admission after observations and before writing;
+        only selected callers receive True for a write or False for a no-op.
+        Default terminal bookkeeping remains ungated and returns None. These
+        synchronous rechecks do not make filesystem I/O atomic against stop.
         """
+        if validate_admission is not None:
+            validate_admission()
         task = self._db.get_task(task_id)
+        if validate_admission is not None:
+            validate_admission()
         if task is None or not task.assigned_agent:
-            return
+            return None if validate_admission is None else False
         ws = self._paths.workspaces_dir / task.assigned_agent
-        if not ws.exists():
-            return
+        workspace_exists = ws.exists()
+        if validate_admission is not None:
+            validate_admission()
+        if not workspace_exists:
+            return None if validate_admission is None else False
         path = ws / "task_history.md"
 
         recent = self._db.list_agent_tasks(task.assigned_agent, limit=self._HISTORY_CAP)
+        if validate_admission is not None:
+            validate_admission()
         header = f"{self._HISTORY_HEADER}: {task.assigned_agent}\n\n"
         lines: list[str] = []
         for t in recent:
@@ -2027,7 +2042,11 @@ class Orchestrator:
             lines.append(f"  - Outcome: {outcome}" if outcome else "  - Outcome: (none)")
             if t.final_output_dir:
                 lines.append(f"  - Output: `{t.final_output_dir}`")
-        path.write_text(header + "\n".join(lines) + ("\n" if lines else ""))
+        content = header + "\n".join(lines) + ("\n" if lines else "")
+        if validate_admission is not None:
+            validate_admission()
+        path.write_text(content)
+        return None if validate_admission is None else True
 
     def _log_step_result(
         self,
