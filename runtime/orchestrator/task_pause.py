@@ -1114,9 +1114,13 @@ def _discover_pause_roots(org: Any, queue: Any):
                         _publish_pause_task(org, queue, task_id, metadata=dict(entry["owner_identity"]),
                                             generation_aware=False)
                     else:
-                        _publish_pause_task(org, queue, task_id,
-                            publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
-                                org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
+                        if publication is not None:
+                            _publish_pause_task(org, queue, task_id,
+                                                metadata=dict(entry["owner_identity"]))
+                        else:
+                            _publish_pause_task(org, queue, task_id,
+                                publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
+                                    org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
                 elif task is not None and eligible(org.orchestrator, task):
                     ownership = classify_task(org.db, task_id, org_slug=org.slug)
                     if ownership.kind == "draft":

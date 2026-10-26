@@ -56,10 +56,16 @@ adapters. P2 uses its retained sweep/body-or-native-tail owner; workflow P2/P3 u
 its original workflow owner; P4/P6 requires the existing active publication owner.
 Authenticated generation raw put still follows its genuine claim and exact ack.
 No generic recovery-thread or metadata bypass grants queue/session/provider use.
-The existing custom Pause retry-deferred publisher in task_pause._discover_pause_roots
-still needs its explicit publication-object/metadata adapter outside this slice's
-permitted file list; that selected P6 branch remains blocked before queue insertion.
-This source checkpoint is incomplete and must not activate or merge independently.
+For original unheld non-v2 retry/recovery-deferred Pause tasks during P6,
+task_pause._discover_pause_roots passes the journal owner_identity metadata through
+_publish_pause_task's default generation-aware adapter. The actual selected task
+publication reaches queue admission and insertion; genuine insertion or SAME
+pending acknowledgement is observed before release acknowledgement. Ordinary ready
+calls retain their original custom publisher and metadata/call shape. Held and v2
+branches retain their existing authentication and explicit non-generation publisher;
+stop, failed epoch or changed ownership still refuses and reservations retire through
+the existing finally. This task-admission source stage is complete; whole-feature
+integration remains incomplete and must not activate or merge independently.
 
 This is incomplete SOURCE integration, not full API/direct/UI/readiness/launcher
 closure or behavioral acceptance. ROOT13137 retains those consumers, finite
