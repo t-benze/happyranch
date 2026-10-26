@@ -492,12 +492,34 @@ export interface OrgsListResponse {
 export interface HealthResponse {
   status: string;
   active_runtime: string | null;
+  /** Absent on older daemons means unknown; liveness is not readiness. */
+  startup?: StartupStatus;
   /** Bounded, non-sensitive host-session health block (THR-207). Present only
    *  when the daemon-wide HostSessionSupervisor is wired (runtime-backed
-   *  states); idle states keep the two-key contract. Public variant drops the
+   *  states). Public variant drops the
    *  per-receipt recent window, censused survivor identities, and backend
    *  probe evidence. */
   host_sessions?: HostSessionPublicBlock;
+}
+
+export interface StartupStatus {
+  state: 'recovering' | 'ready' | 'recovery_failed' | 'unknown' | 'stopped';
+  serving: boolean;
+  recovery_ready: boolean;
+  stopping: boolean;
+  phase: string;
+  error_code: string | null;
+  required_action: string | null;
+  ready_commits: number;
+  /** Unavailable until original launcher instrumentation supplies evidence. */
+  launcher_duration_ns: null;
+  /** Owner construction to listener signal, never launcher duration. */
+  owner_to_serving_ns: number | null;
+}
+
+export interface HealthReadyResponse {
+  status: 'ready' | 'unavailable';
+  startup: StartupStatus;
 }
 
 /** Mirror of the public (unauthenticated) `host_sessions` block on /health.

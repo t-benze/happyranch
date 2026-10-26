@@ -1131,6 +1131,8 @@ class _DiagnosticServer(uvicorn.Server):
         app = self._diagnostic_app
         # Only this original adapter proves ASGI AND actual listener success.
         # Service admission additionally waits for positive recovery readiness.
+        from runtime.daemon.startup_recovery import bind_http_listener
+        bind_http_listener(app, self)
         app.state.daemon._startup_recovery.signal_serving(app)
 
 

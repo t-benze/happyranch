@@ -9,6 +9,38 @@ loop and dormant services, submits ONE original native operation, and yields.
 The existing identity-based pre-body middleware holds unsafe HTTP entries;
 original authentication and early reader budgets remain additional controls.
 
+The HTTP source stage captures the original ordered router, actual early route
+objects and registered root/assets/SPA handlers at create_app registration.
+Replacement, duplicate registration or missing app/state/gate/read-domain bindings
+refuse before receive/dependencies/body parsing. Only seven existing GETs plus
+GET /api/v1/health/ready and those actual static handlers are early. Original
+bearer/loopback/OrgDep still authorize content; queries and redirects add no grant.
+Ready restores original routing/auth/validation; P2-P9/native fences are unchanged.
+
+Thread list/detail/messages share the ten canonical read functions and original
+DTOs on a separate two-worker/four-admission read-only domain. One cooperative
+2s deadline includes queue delay, native filesystem/SQLite/snapshot/decoding/DTO/
+JSON and final reference/epoch/stop checks; limits remain2,000,000 opcode allowance,
+4096 fetched rows,4MiB raw plus4MiB encoded,1MiB per value,128 attachment entries.
+Early negative limits refuse explicitly; ready legacy behavior remains. Missing
+production bindings cannot select canonical DB fallback. Worker-only open/use/
+close and path identity readback retain actual Future/slot/connection ownership;
+retirement accounting is separately acknowledged. Cancellation or failed close
+never proves retirement. Selected nested read SAVEPOINT cleanup retains the
+original malformed/deadline/SQLite error, records incomplete cleanup and relies
+on actual worker close; ordinary Database cleanup/defaults are unchanged.
+
+Liveness /health remains200 with original status/active_runtime and sanitized
+cached host_sessions, plus bounded startup scalars. /health/ready is200 only for
+actual matching serving AND accepted ready epoch, without stop/close/failure or
+missing owner; otherwise503 includes truthful startup disposition and guidance.
+No raw cause/path/native handle/task collection is public. Owner-to-serving time
+is not launcher duration; absent launcher evidence stays null. Ordinary TS API
+mapping is additive; absent startup on older servers means unknown. UI/launcher/
+consumer instrumentation, finite behavioral verification and isolated OpenAPI
+snapshot synchronization remain root-owned. This is source only: runtime/proof
+NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED; no activation follows.
+
 On the same native thread, each original org's positively settled sweep/tails/
 human/bookkeeping/finally boundary precedes its original v2 publication. Actual
 publisher outcomes are consumed without a second census; authenticated target

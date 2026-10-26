@@ -1,5 +1,35 @@
 # Web And CLI
 
+## Startup health and finite thread API source — ROOT13137
+
+GET /api/v1/health remains liveness200, preserving status/active_runtime and the
+cached sanitized host_sessions block. Additive startup reports bounded state,
+phase, serving, recovery_ready, stopping, stable error_code/required_action,
+ready_commits, owner_to_serving_ns and null launcher_duration_ns. No raw cause,
+path, native handle or task/root collection is exposed. Owner-to-serving time
+is not launcher duration. Missing startup fields mean unknown on older daemons.
+GET /api/v1/health/ready returns200 only for the actual matching serving listener
+AND accepted recovery-ready epoch without stop/closed/failed/unbound ownership;
+otherwise503 reports unavailable with truthful startup/guidance. Liveness200
+alone grants neither readiness, setup acceptance nor launch permission.
+
+The ordinary health API namespace exports getHealthReady and matching types;
+503 follows the ordinary ApiError boundary, retaining its response in detail.
+No UI, polling, retry/replay or launcher behavior is implemented by this mapping.
+Only original authenticated thread list/detail/messages are early content reads;
+SSE, task/workflow reads and attachment download stay held. Real DTOs, paging,
+totals, participants, attachments/responders and reply_delivery are preserved.
+Finite early negative limits refuse503 startup_reader_unbounded_request; ready
+legacy semantics stay. Missing/replaced production bindings refuse503 instead
+of canonical DB fallback. Explicit busy/deadline/budget/unavailable/primary-close
+failures preserve existing authenticated404/pagination/cursor/malformed errors.
+Captured actual route/static identities govern pre-body admission; query strings,
+encoded raw targets and slash redirects do not add authority. Original bearer,
+OrgDep and loopback bootstrap rules remain. Root owns UI/launcher consumers,
+finite API/browser/resource proof and isolated canonical OpenAPI synchronization;
+this source handoff changes no test/assertion/snapshot and proves no behavior.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each

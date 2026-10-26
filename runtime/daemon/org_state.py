@@ -144,6 +144,7 @@ class OrgState:
     _startup_recovery: Any = field(init=False, default=None, repr=False)
     _startup_reads: Any = field(init=False, default=None, repr=False)
     _startup_read_revoked: bool = field(init=False, default=False, repr=False)
+    _startup_read_file: Any = field(init=False, default=None, repr=False)
 
     def _acquire_thread_release(self, operation) -> bool:
         a = self._thread_release_attachment
@@ -504,6 +505,11 @@ class OrgState:
                     "org %r: workflow authority startup publication remains fenced",
                     slug,
                 )
+            # P0, before publication: pin this validated attachment's file.
+            # Early requests do no filesystem work on the request loop and
+            # cannot adopt a replacement path while queued on their executor.
+            read_file = paths.db_path.stat()
+            state._startup_read_file = (db, root, paths.db_path, read_file.st_dev, read_file.st_ino)
             return state
         except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.

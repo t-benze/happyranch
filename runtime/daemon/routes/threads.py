@@ -5,7 +5,7 @@ import json as _json
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -1329,7 +1329,7 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
     )
 
 
-def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
+def _msg_to_dict(m: Any, responders: list[dict] | None = None, *, _budget: Any = None) -> dict:
     d = {
         "seq": m.seq,
         "speaker": m.speaker,
@@ -1338,21 +1338,20 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
         "decline_reason": m.decline_reason,
         "system_payload": m.system_payload,
         "attachments": [
-            attachment.model_dump(mode="json") for attachment in m.attachments
+            _checked_read_value(_budget, attachment.model_dump, mode="json") for attachment in m.attachments
         ],
         "created_at": m.created_at.isoformat(),
     }
     if responders is not None:
         d["responder_status"] = [
-            _responder_entry(e).model_dump(mode="json") for e in responders
+            _checked_read_value(_budget, _responder_entry, e).model_dump(mode="json") for e in responders
         ]
     else:
         d["responder_status"] = []
     return d
 
 
-def _thread_read_dto(db, build, *args, **kwargs):
-    budget = getattr(db, "_startup_read_budget", None)
+def _checked_read_value(budget: Any, build: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     if budget is not None:
         budget.check()
     value = build(*args, **kwargs)
@@ -1361,44 +1360,79 @@ def _thread_read_dto(db, build, *args, **kwargs):
     return value
 
 
-async def _early_thread_read(request, org, projection, *, unbounded=False):
-    """Auth/OrgDep already ran. Keep canonical DB/DTO work off the request loop.
+def _thread_read_dto(db: Any, build: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    budget = getattr(db, "_startup_read_budget", None)
+    if build is _msg_to_dict:
+        kwargs["_budget"] = budget
+    return _checked_read_value(budget, build, *args, **kwargs)
 
-    The complete encoded response is withheld until the worker proves its
-    connection closed. Disconnect cancels the waiter, never its native owner.
-    """
+
+async def _early_thread_read(
+    request: Request, org: Any, projection: Callable[..., Any], *, unbounded: bool = False,
+) -> Response | None:
+    """Original auth/OrgDep precede one finite, worker-owned read operation."""
     import asyncio
-    from runtime.daemon.startup_reads import StartupReadUnavailable
-    from runtime.daemon.startup_recovery import StartupRecovery
-    state = request.app.state.daemon
+    from runtime.daemon.startup_reads import StartupReadUnavailable, StartupReads
+    from runtime.daemon.startup_recovery import StartupRecovery, StartupUnavailable, public_startup_status
+    state = getattr(request.app.state, "daemon", None)
     gate = getattr(state, "_startup_recovery", None)
-    if not isinstance(gate, StartupRecovery) or gate.snapshot()["recovery_ready"]:
+    references = getattr(request.app.state, "startup_http", None)
+    # Explicitly unselected standalone helpers retain their original contract.
+    # A bound org/app or any gate reference can never select this offline case.
+    if (state is not None and gate is None and references is None and getattr(org, "_startup_state", None) is None
+            and getattr(org, "_startup_recovery", None) is None):
         return None
-    pool = getattr(state, "_startup_reads", None)
     operation = None
+    observed = False
     try:
+        if (not isinstance(gate, StartupRecovery) or references is None
+                or gate._http_references is not references):
+            raise StartupReadUnavailable("startup_reader_unavailable")
+        references.validate(request.scope)
+        gate.require_attachment(org)
+        if gate.snapshot()["recovery_ready"]:
+            gate.require_ready()  # Closed/stop must not select canonical DB.
+            return None
+        pool = getattr(state, "_startup_reads", None)
+        if (not isinstance(pool, StartupReads) or pool is not references.reads
+                or pool.recovery is not gate or pool.state is not state or org._startup_reads is not pool):
+            raise StartupReadUnavailable("startup_reader_unavailable")
         if unbounded:
             raise StartupReadUnavailable("startup_reader_unbounded_request")
-        if pool is None or pool.recovery is not gate:
-            raise StartupReadUnavailable("startup_reader_unavailable")
         operation = asyncio.create_task(pool.read(org, projection))
         while not operation.done():
             if await request.is_disconnected():
                 raise asyncio.CancelledError()
             await asyncio.wait((operation,), timeout=0.05)
-        encoded = await operation
-        return Response(content=encoded, media_type="application/json")
+        # Check caller departure even when native completion won the last wait.
+        if await request.is_disconnected():
+            raise asyncio.CancelledError()
+        observed = True
+        result = await operation
+        # No await from original reference/epoch/stop/deadline recheck to the
+        # complete encoded response. Filesystem readback already ran natively.
+        content = pool.content_for_publication(result)
+        request.scope["_startup_thread_read"] = (pool, result)
+        return Response(content=content, media_type="application/json")
+    except StartupUnavailable as exc:
+        unavailable = StartupReadUnavailable("startup_reader_unavailable")
+        raise HTTPException(status_code=503, detail=unavailable.detail(public_startup_status(state, request.app))) from exc
     except StartupReadUnavailable as exc:
-        raise HTTPException(status_code=503, detail=exc.detail(gate.snapshot())) from exc
+        raise HTTPException(status_code=503, detail=exc.detail(public_startup_status(state, request.app))) from exc
     finally:
-        if operation is not None and not operation.done():
+        if operation is not None and not observed:
             operation.cancel()
-            # pool.read's cancellation path retains its concurrent Future/slot
-            # until native finalization; observe the local waiter as well.
-            try:
-                await operation
-            except asyncio.CancelledError:
-                pass
+            # Observe the local wrapper; repeated cancellation never abandons
+            # the actual native Future/slot/connection retained by StartupReads.
+            while True:
+                try:
+                    await asyncio.shield(operation)
+                    break
+                except asyncio.CancelledError:
+                    if operation.done():
+                        break
+                except BaseException:
+                    break  # Original departure/error stays primary.
 
 
 # ---------------------------------------------------------------------------
@@ -1540,7 +1574,7 @@ def _project_thread_detail(db, thread_id):
         for m in msgs
     ]
     d["reply_delivery"] = [
-        p.model_dump(mode="json")
+        _thread_read_dto(db, p.model_dump, mode="json")
         for p in db.list_reply_delivery_projections(thread_id)
     ]
     return d
@@ -1594,7 +1628,7 @@ def _project_thread_messages(db, thread_id, since_seq, limit):
         "has_more": has_more,
         "next_since_seq": next_since_seq,
         "reply_delivery": [
-            p.model_dump(mode="json")
+            _thread_read_dto(db, p.model_dump, mode="json")
             for p in db.list_reply_delivery_projections(thread_id)
         ],
     }

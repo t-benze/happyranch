@@ -17,7 +17,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from runtime.daemon.startup_recovery import StartupRecovery
+from runtime.daemon.startup_recovery import StartupRecovery, StartupUnavailable
 from runtime.infrastructure.db.reply_delivery import ReplyDeliveryMixin
 from runtime.infrastructure.db.threads import ThreadsMixin
 
@@ -49,6 +49,9 @@ class _ReadBudget:
     opcodes: int = 0
     attachments: int = 0
     refusal: StartupReadUnavailable | None = None
+    cleanup_failures: int = 0
+    cleanup_primary: BaseException | None = None
+    cleanup_refusal: StartupReadUnavailable | None = None
 
     def refuse(self, code: str) -> None:
         if self.refusal is None:
@@ -221,63 +224,131 @@ class _ThreadReader:
         self._budget = budget
         self._startup_read_budget = budget
 
+    def _startup_read_cleanup(self, savepoint: str, primary: BaseException) -> None:
+        # This connection belongs to the read worker. Exhausted work can refuse
+        # even rollback/release; preserve the real original error and let the
+        # worker's actual close prove disposal of the entire read transaction.
+        self._budget.cleanup_primary = primary
+        self._budget.cleanup_refusal = self._budget.refusal
+        try:
+            self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException as secondary:
+            self._budget.cleanup_failures += 1
+            primary.add_note("Startup read snapshot cleanup incomplete: " + type(secondary).__name__)
+
 
 @dataclass
 class _Lease:
     org: Any
-    identity: tuple[Any, ...]
+    references: tuple[Any, ...]
     budget: _ReadBudget
+    identity: tuple[int, int] | None = None
+    retired: Future[None] = field(default_factory=Future)
     future: Future[bytes] | None = None
     close_proven: bool = False
     primary_error: BaseException | None = None
     close_error: BaseException | None = None
     started: bool = False
+    cancel_recorded: bool = False
     connection: sqlite3.Connection | None = None
 
 
-def _identity(org: Any) -> tuple[Any, ...]:
-    path = Path(org.db.db_path)
+@dataclass(frozen=True)
+class _ReadResult:
+    content: bytes
+    lease: _Lease
+
+
+def _file_identity(path: Path) -> tuple[int, int]:
+    # Called exclusively by the actual admitted native operation.
     try:
         current = path.stat()
     except OSError as exc:
         raise StartupReadUnavailable("startup_reader_unavailable") from exc
-    return (org, org.root, org.db, path, current.st_dev, current.st_ino,
-            org._thread_release_attachment)
+    return current.st_dev, current.st_ino
 
 
 class StartupReads:
     def __init__(self, state: Any, recovery: StartupRecovery) -> None:
         self.state = state
         self.recovery = recovery
+        self._app, self._epoch = recovery.app, recovery.epoch
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="startup-reader")
         self._lock = threading.Lock()
         self._leases: list[_Lease] = []
         self._closed = False
         self._counts = {name: 0 for name in (
             "admitted", "started", "closed", "refused", "cancelled", "failed", "deadline",
-            "rows", "raw_bytes", "response_bytes", "opcodes", "attachments")}
+            "rows", "raw_bytes", "response_bytes", "opcodes", "attachments", "cleanup_failures", "close_failed")}
 
-    def _validate(self, lease: _Lease) -> None:
+    def _references(self, org: Any) -> tuple[Any, ...]:
+        # Reference-only capture: no stat, DB call or canonical lock on the loop.
+        try:
+            return (org.slug, org.root, org.db, Path(org.db.db_path),
+                    org._thread_release_attachment, org._startup_admission_refs,
+                    self.recovery._loop, org._startup_read_file)
+        except (AttributeError, TypeError) as exc:
+            raise StartupReadUnavailable("startup_reader_unavailable") from exc
+
+    def _validate_references(self, lease: _Lease) -> None:
         lease.budget.check()
-        if (self.state.orgs.get(lease.org.slug) is not lease.org
-                or _identity(lease.org) != lease.identity
-                or lease.org._startup_read_revoked
-                or self.recovery.snapshot()["stopping"]):
+        try:
+            current = self._references(lease.org)
+            original = lease.references
+            self.recovery.require_attachment(lease.org)
+            valid = (self.state._startup_reads is self and self.state._startup_recovery is self.recovery
+                     and lease.org._startup_reads is self and self.recovery.state is self.state
+                     and self.recovery._http_references is not None
+                     and self.recovery._http_references.reads is self
+                     and self.recovery._http_references.state is self.state
+                     and self.recovery._http_references.gate is self.recovery
+                     and self.recovery._http_references.epoch == self._epoch
+                     and self._app.state is self.recovery._http_references.app_state
+                     and self._app.state.startup_http is self.recovery._http_references
+                     and self.recovery.app is self._app and self._app.state.daemon is self.state
+                     and self.recovery.epoch == self._epoch and self.recovery._publications.epoch == self._epoch
+                     and current[0] == original[0] and current[1] == original[1]
+                     and current[2] is original[2] and current[3] == original[3]
+                     and current[4] is original[4] and current[5] is original[5]
+                     and current[6] is original[6] and current[6] is not None
+                     and not current[6].is_closed() and current[6].is_running()
+                     and current[7] is original[7] and isinstance(original[7], tuple)
+                     and len(original[7]) == 5 and original[7][0] is original[2]
+                     and original[7][1] == original[1] and original[7][2] == original[3]
+                     and not lease.org._startup_read_revoked)
+            with self.recovery._lock:
+                valid &= not self.recovery._closed and not self.recovery._stop.is_set()
+            with self._lock:
+                valid &= not self._closed
+        except (StartupUnavailable, AttributeError, TypeError) as exc:
+            raise StartupReadUnavailable("startup_reader_unavailable") from exc
+        if not valid:
             lease.budget.refuse("startup_reader_unavailable")
         lease.budget.check()
 
-    async def read(self, org: Any, projection: Callable[[_ThreadReader, _ReadBudget], Any]) -> bytes:
-        # Original route auth/OrgDep must have completed before calling this.
+    def _validate(self, lease: _Lease) -> None:
+        self._validate_references(lease)
+        if lease.identity is None or _file_identity(lease.references[3]) != lease.identity:
+            lease.budget.refuse("startup_reader_unavailable")
+        lease.budget.check()
+
+    async def read(self, org: Any, projection: Callable[[_ThreadReader, _ReadBudget], Any]) -> _ReadResult:
+        # Original bearer/OrgDep precede this. One deadline includes reference
+        # capture, queue delay, native filesystem/DB/DTO/encoding and publication.
         deadline = time.monotonic() + 2.0
-        identity = _identity(org)
+        lease = _Lease(org, self._references(org), _ReadBudget(deadline))
+        self.validate_publication(lease)
+        if lease.references[6] is not asyncio.get_running_loop():
+            raise StartupReadUnavailable("startup_reader_unavailable")
         with self._lock:
             if self._closed or org._startup_read_revoked or len(self._leases) >= 4:
                 self._counts["refused"] += 1
                 raise StartupReadUnavailable("startup_reader_busy")
-            snapshot = self.recovery.snapshot()
-            if snapshot["stopping"] or snapshot["state"] == "ready":
-                raise StartupReadUnavailable("startup_reader_unavailable")
-            lease = _Lease(org, identity, _ReadBudget(deadline))
+            with self.recovery._lock:
+                if (self.recovery._stop.is_set() or self.recovery._closed
+                        or self.recovery._status == "ready"):
+                    raise StartupReadUnavailable("startup_reader_unavailable")
             self._leases.append(lease)
             self._counts["admitted"] += 1
             try:
@@ -285,20 +356,40 @@ class StartupReads:
             except BaseException:
                 self._leases.remove(lease)
                 raise
-            # The callback owns retirement; request cancellation never does.
+        # Callback owns retirement, outside pool lock (may run synchronously).
         lease.future.add_done_callback(lambda future: self._retire(lease, future))
         try:
             result = await asyncio.shield(asyncio.wrap_future(lease.future))
-            self._validate(lease)
+            await asyncio.shield(asyncio.wrap_future(lease.retired))
+            self.validate_publication(lease)
             if not lease.close_proven:
                 raise StartupReadUnavailable("startup_reader_close_failed")
-            return result
+            return _ReadResult(result, lease)
         except asyncio.CancelledError:
-            lease.budget.cancelled.set()
-            with self._lock:
-                self._counts["cancelled"] += 1
-            lease.future.cancel()  # False for running work; it retains its slot.
+            self._cancel(lease)
+            lease.future.cancel()  # Running native owner retains its slot.
             raise
+
+    def _cancel(self, lease: _Lease) -> None:
+        lease.budget.cancelled.set()
+        with self._lock:
+            if not lease.cancel_recorded:
+                self._counts["cancelled"] += 1
+                lease.cancel_recorded = True
+
+    def cancel_publication(self, result: _ReadResult) -> None:
+        self._cancel(result.lease)
+
+    def validate_publication(self, lease: _Lease) -> None:
+        # Filesystem readback stays on the native worker. This final loop-side
+        # segment rechecks original references/epoch/stop/deadline without I/O.
+        self._validate_references(lease)
+
+    def content_for_publication(self, result: _ReadResult) -> bytes:
+        self.validate_publication(result.lease)
+        if not result.lease.close_proven or not result.lease.retired.done():
+            raise StartupReadUnavailable("startup_reader_close_failed")
+        return result.content
 
     def _read(self, lease: _Lease, projection: Callable[[_ThreadReader, _ReadBudget], Any]) -> bytes:
         conn: sqlite3.Connection | None = None
@@ -307,8 +398,10 @@ class StartupReads:
             lease.started = True
             self._counts["started"] += 1
         try:
+            self._validate_references(lease)
+            lease.identity = lease.references[7][3:]
             self._validate(lease)
-            uri = Path(lease.org.db.db_path).absolute().as_uri() + "?mode=ro"
+            uri = lease.references[3].absolute().as_uri() + "?mode=ro"
             conn = sqlite3.connect(uri, uri=True, timeout=0.05)
             lease.connection = conn
             conn.row_factory = sqlite3.Row
@@ -325,7 +418,11 @@ class StartupReads:
             conn.execute("RELEASE SAVEPOINT startup_read")
             self._validate(lease)
         except BaseException as exc:
-            lease.primary_error = lease.budget.refusal or exc
+            # Budget interruption is SQLite's wrapper for the original refusal.
+            # Nested cleanup must not replace a genuine earlier decoder/SQL error.
+            refusal = (lease.budget.cleanup_refusal if lease.budget.cleanup_primary is exc
+                       else lease.budget.refusal)
+            lease.primary_error = refusal if isinstance(exc, sqlite3.Error) and refusal is not None else exc
         finally:
             # Only this worker can close its connection. A failed close remains
             # an owned incomplete lease even after its Future has completed.
@@ -336,6 +433,8 @@ class StartupReads:
                 lease.connection = None
             except BaseException as exc:
                 lease.close_error = exc
+                if lease.primary_error is not None:
+                    lease.primary_error.add_note("Startup reader close also failed: " + type(exc).__name__)
         if lease.primary_error is not None:
             if isinstance(lease.primary_error, sqlite3.Error):
                 raise StartupReadUnavailable("startup_reader_unavailable") from lease.primary_error
@@ -355,11 +454,15 @@ class StartupReads:
                 self._counts["failed"] += 1
             if isinstance(error, StartupReadUnavailable) and error.code == "startup_reader_deadline":
                 self._counts["deadline"] += 1
-            for name in ("rows", "raw_bytes", "response_bytes", "opcodes", "attachments"):
+            for name in ("rows", "raw_bytes", "response_bytes", "opcodes", "attachments", "cleanup_failures"):
                 self._counts[name] += getattr(lease.budget, name)
+            self._counts["close_failed"] += int(lease.close_error is not None)
             if lease.close_proven or (future.cancelled() and not lease.started):
                 self._counts["closed"] += int(lease.close_proven)
                 self._leases.remove(lease)
+            # Future.done() precedes callbacks. Acknowledge accounting in the
+            # same critical segment as removal, before assert_idle can pass.
+            lease.retired.set_result(None)
 
     def snapshot(self) -> dict[str, int]:
         with self._lock:
@@ -385,22 +488,24 @@ class StartupReads:
     async def drain(self, org: Any | None = None) -> None:
         self.revoke(org)
         with self._lock:
-            futures = [lease.future for lease in self._leases if org is None or lease.org is org]
+            leases = [lease for lease in self._leases if org is None or lease.org is org]
         cancellation: asyncio.CancelledError | None = None
-        for native in futures:
-            if native is None or native.cancelled():
-                continue
-            wrapped = asyncio.wrap_future(native)
-            while True:
-                try:
-                    await asyncio.shield(wrapped)
-                    break
-                except asyncio.CancelledError as exc:
-                    if native.cancelled():
+        for lease in leases:
+            # Both original native completion AND callback retirement matter.
+            for native in (lease.future, lease.retired):
+                if native is None or native.cancelled():
+                    continue
+                wrapped = asyncio.wrap_future(native)
+                while True:
+                    try:
+                        await asyncio.shield(wrapped)
                         break
-                    cancellation = cancellation or exc
-                except BaseException:
-                    break  # Outcome observed; incomplete close still refuses.
+                    except asyncio.CancelledError as exc:
+                        if native.cancelled():
+                            break
+                        cancellation = cancellation or exc
+                    except BaseException:
+                        break  # Actual error observed; close proof still required.
         self.assert_idle(org)
         if org is None:
             self._executor.shutdown(wait=True, cancel_futures=False)

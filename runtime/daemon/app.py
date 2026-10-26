@@ -616,7 +616,7 @@ def create_app(state: DaemonState) -> FastAPI:
             "code": exc.code, "operation_id": getattr(exc, "operation_id", None),
             "required_action": "Resolve the owning team-move hold or named admission owner before retrying",
         }})
-    from runtime.daemon.startup_recovery import StartupUnavailable, StartupAdmissionMiddleware
+    from runtime.daemon.startup_recovery import StartupUnavailable, StartupAdmissionMiddleware, StartupHTTPReferences
 
     @app.exception_handler(StartupUnavailable)
     async def startup_unavailable(request: Request, exc: StartupUnavailable) -> JSONResponse:
@@ -686,7 +686,10 @@ def create_app(state: DaemonState) -> FastAPI:
     # accepts ONLY registration-token auth (loopback + hrreg_ token).
     app.include_router(adapters.submit_router, prefix="/api/v1", tags=["adapters"])
     from runtime.daemon.routes import web_static
-    web_static.register(app, settings=state.settings)
+    static_references = web_static.register(app, settings=state.settings)
     # Exact route/static identities must exist before middleware captures them.
-    app.add_middleware(StartupAdmissionMiddleware, route_app=app, state=state)
+    references = StartupHTTPReferences(app, state, static_references)
+    app.state.startup_http = references
+    state._startup_recovery._http_references = references
+    app.add_middleware(StartupAdmissionMiddleware, references=references)
     return app

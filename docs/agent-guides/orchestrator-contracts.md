@@ -4505,8 +4505,45 @@ another census or a claim that preserved rows were repaired. Unknown returns or
 mandatory audit/cleanup errors fail before phase success. Legacy lifespan calls
 each shared family at its original interleaved worker-start position; native
 P7 starts no consumer, scheduler, job or session. The original lifecycle now
-connects P0-P9; root still owes complete launch/readiness/consumer auditing,
+connects P0-P9; root still owes final launch/UI/consumer instrumentation auditing,
 correctness execution and independent final acceptance.
+
+
+## HTTP startup admission and native read ownership — ROOT13137
+
+create_app captures actual ordered router declarations and the actual registered
+web root/assets/SPA handlers. Pre-body admission authenticates their original
+method/path/endpoint/app bindings with the SAME state/gate/epoch/read domain.
+Missing/replaced/duplicate references refuse. Only seven original early GETs plus
+GET /api/v1/health/ready and actual static handlers enter; original bearer/OrgDep/
+loopback remain additional controls. Ready restores original HTTP semantics,
+without weakening P2-P9, direct/native, owner/Pause/move or reviewer fences.
+
+The selected ten-function thread reader closure stays independent of canonical
+Database/locks and recovery/default executors. Two workers/four admissions retain
+one2s cooperative deadline including queue delay,2,000,000 opcode allowance,
+4096 fetched rows across queries,4MiB raw plus4MiB encoded,1MiB value and128
+attachment entries/checks. Workers alone perform path identity, read-only open,
+coherent snapshot, original decode/DTO/JSON and close. Original state/app/gate/
+epoch/org/path/domain renew before publication; no missing production gate may
+select canonical DB fallback. Early negative limits refuse; ready legacy defaults
+stay. Cancellation/disconnect/revocation retain the actual concurrent Future,
+connection and slot until positive native close or genuine queued cancellation.
+Distinct callback-accounting acknowledgement prevents Future.done from proving
+retirement prematurely; original drain/idle barriers still precede org/DB close.
+Failed close retains visible incomplete ownership and the original primary error.
+Selected nested read SAVEPOINT cleanup can itself refuse on an exhausted budget;
+it records that failure without masking the original and owes actual worker close.
+Ordinary Database/default transaction behavior is unchanged.
+
+Public /health remains liveness200 plus bounded startup scalars; /health/ready200
+requires actual matching serving and the accepted ready epoch without stop/close/
+failure/unbound ownership. No DB/history/probe is added, cached host health stays
+sanitized, and native causes/paths/IDs are private. owner_to_serving_ns is not a
+launcher duration; launcher_duration_ns remains null. TS API mapping is additive.
+Root owns remaining UI/launcher/consumer instrumentation, isolated OpenAPI snapshot
+sync and finite behavioral/resource/independent final acceptance. Runtime/proof
+NOT RUN, maker0/3 QA0/3 unchanged; source publication grants no activation.
 
 The native P6 source entry is `redeliver_native_on_startup(state, recovery)`
 in daemon `__main__`, called ONCE on the SAME retained native operation after

@@ -122,6 +122,8 @@ class StartupRecovery:
         self._preparation_complete = False
         self._dashboard_loads: set[Future] = set()
         self._services_signalled = False
+        self._http_references: StartupHTTPReferences | None = None
+        self._http_listener: Any = None
         from runtime.daemon.startup_publication import StartupPublications
         self._publications = StartupPublications(self)
 
@@ -1179,94 +1181,240 @@ def _bind_task_admission(owner: Any, state: Any, org: Any = None) -> None:
     owner._startup_recovery = state._startup_recovery
 
 
-class StartupAdmissionMiddleware:
-    """Resolve the actual route BEFORE receive, dependencies or body parsing.
+def public_startup_status(state: Any, app: Any) -> dict[str, Any]:
+    """Bounded public observations only; no native causes, IDs or history walk."""
+    unknown = {"state": "unknown", "serving": False, "recovery_ready": False,
+               "stopping": False, "phase": "unknown", "error_code": "startup_gate_unbound",
+               "required_action": _FAILED_ACTION, "ready_commits": 0,
+               "launcher_duration_ns": None, "owner_to_serving_ns": None}
+    gate = getattr(state, "_startup_recovery", None)
+    if not isinstance(gate, StartupRecovery) or gate.app is not app or gate.state is not state:
+        return unknown
+    try:
+        refs = gate._http_references
+        if (not isinstance(refs, StartupHTTPReferences) or getattr(app.state, "startup_http", None) is not refs
+                or refs.gate is not gate or refs.epoch != gate.epoch or refs.app is not app
+                or app.state is not refs.app_state or refs.state is not state
+                or state._startup_reads is not refs.reads or refs.reads.recovery is not gate):
+            return unknown
+        gate.require_attachment(state)
+    except (StartupUnavailable, AttributeError, TypeError):
+        return unknown
+    # Copy only finite scalars. Internal snapshot includes owned phase/counter
+    # details and epoch identity; it is not the unauthenticated wire format.
+    with gate._lock:
+        bound = (gate._loop is not None and gate._loop.is_running() and not gate._loop.is_closed()
+                 and gate._latch is not None
+                 and gate.epoch == gate._publications.epoch)
+        stopping = gate._stop.is_set() or gate._closed
+        status = "stopped" if stopping else gate._status if bound else "unknown"
+        serving = gate._serving and bound and not stopping and refs.listener_current()
+        if status == "ready" and not serving:
+            status = "unknown"
+        ready = (serving and gate._status == "ready" and gate._first_cause is None
+                 and gate._ready_commits == 1 and gate._preparation_complete
+                 and gate._latch is not None and gate._latch.is_set())
+        phase = gate._phase if gate._phase in (*_PHASES, "attachment", "ready") else "unknown"
+        # Raw first-cause/error text never enters a public response. The stable
+        # classification is sufficient to route unavailable startup to its owner.
+        code = ("daemon_stopped" if stopping else "daemon_recovery_failed"
+                if status == "recovery_failed" else "daemon_recovering"
+                if status == "recovering" else None if ready else "startup_gate_unbound")
+        return {"state": status, "serving": serving, "recovery_ready": ready,
+                "stopping": stopping, "phase": phase, "error_code": code,
+                "required_action": None if ready else _ACTION if status == "recovering" else _FAILED_ACTION,
+                "ready_commits": gate._ready_commits,
+                "launcher_duration_ns": None,
+                "owner_to_serving_ns": None if gate._serving_ns is None
+                else gate._serving_ns - gate._created_ns}
 
-    Matching never runs an endpoint. The seven early identities still enter
-    their original auth/OrgDep handlers. Neither query strings, slash redirects
-    nor a path-only method match can confer permission.
-    """
 
-    def __init__(self, app: Any, *, route_app: Any, state: Any) -> None:
+def _http_route_binding(route: Any) -> tuple:
+    """Relevant actual dispatch bindings, captured at registration, never by name."""
+    dependant = getattr(route, "dependant", None)
+    return (getattr(route, "path", None), getattr(route, "path_regex", None),
+            getattr(route, "path_format", None), getattr(route, "endpoint", None),
+            getattr(route, "app", None), frozenset(getattr(route, "methods", None) or ()),
+            dependant, getattr(dependant, "call", None))
+
+
+class StartupHTTPReferences:
+    """The original ordered router and static references, captured in create_app."""
+
+    def __init__(self, app: Any, state: Any, static: tuple) -> None:
         from runtime.daemon.routes import auth, health, orgs, runtime, threads
         from starlette.exceptions import HTTPException
-        self.app = app
-        self.route_app = route_app
-        self.state = state
-        self._early = {
+        self.app, self.state = app, state
+        self.app_state = app.state
+        self.gate, self.epoch = state._startup_recovery, state._startup_recovery.epoch
+        self.reads = state._startup_reads
+        self.router = app.router
+        self.routes = tuple(self.router.routes)
+        self.bindings = tuple(_http_route_binding(route) for route in self.routes)
+        self.static = static
+        self.fallback = app.exception_handlers.get(HTTPException)
+        self.listener: Any = None
+        self.listener_config: Any = None
+        expected = (
             ("/api/v1/health", health.health),
+            ("/api/v1/health/ready", health.health_ready),
             ("/api/v1/auth/bootstrap", auth.bootstrap),
             ("/api/v1/runtime", runtime.get_runtime),
             ("/api/v1/orgs", orgs.list_orgs),
             ("/api/v1/orgs/{slug}/threads", threads.list_threads_endpoint),
             ("/api/v1/orgs/{slug}/threads/{thread_id}", threads.get_thread_endpoint),
             ("/api/v1/orgs/{slug}/threads/{thread_id}/messages", threads.list_thread_messages_endpoint),
-        }
-        ready = getattr(health, "health_ready", None)
-        if ready is not None:
-            self._early.add(("/api/v1/health/ready", ready))
-        self._spa_fallback = route_app.exception_handlers.get(HTTPException)
-        if (self._spa_fallback is not None
-                and self._spa_fallback.__module__ != "runtime.daemon.routes.web_static"):
-            self._spa_fallback = None
+        )
+        early = []
+        for path, endpoint in expected:
+            candidates = [route for route in self.routes if getattr(route, "path", None) == path
+                          and "GET" in (getattr(route, "methods", None) or ())]
+            if len(candidates) == 1 and candidates[0].endpoint is endpoint:
+                early.append(candidates[0])
+        self.early = tuple(early)
 
-    def _allowed(self, scope: dict[str, Any]) -> bool:
-        from starlette.routing import Match, Mount
-        from starlette.staticfiles import StaticFiles
+    def listener_current(self) -> bool:
+        listener = self.listener
+        try:
+            return (listener is not None and self.gate._http_listener is listener
+                    and listener.config is self.listener_config
+                    and listener.config.app is self.app and listener._diagnostic_app is self.app
+                    and listener._diagnostic_signalled and listener.started
+                    and not listener.should_exit and not listener.lifespan.should_exit)
+        except AttributeError:
+            return False
+
+    def validate(self, scope: dict[str, Any]) -> None:
         from starlette.exceptions import HTTPException
+        if (scope.get("app") is not self.app or self.app.state is not self.app_state
+                or self.app.state.daemon is not self.state
+                or getattr(self.app.state, "startup_http", None) is not self
+                or self.gate._http_references is not self
+                or self.state._startup_recovery is not self.gate
+                or self.state._startup_reads is not self.reads or self.reads.recovery is not self.gate
+                or self.gate.app is not self.app or self.gate.epoch != self.epoch
+                or self.app.router is not self.router
+                or len(self.router.routes) != len(self.routes)
+                or any(current is not original or _http_route_binding(current) != binding
+                       for current, original, binding in zip(self.router.routes, self.routes, self.bindings, strict=True))
+                or self.app.exception_handlers.get(HTTPException) is not self.fallback
+                or self.fallback is not self.static[2]):
+            raise StartupUnavailable("startup_gate_unbound")
+        self.gate.require_attachment(self.state)
+
+    def allowed(self, scope: dict[str, Any]) -> bool:
+        from starlette.routing import Match
         from runtime.daemon.routes.web_static import _is_spa_route
         method = scope["method"]
         partial = False
-        for route in self.route_app.router.routes:
+        # Starlette chooses the first FULL even after an earlier PARTIAL. If no
+        # FULL exists the first PARTIAL wins before redirect/default handling.
+        for route in self.routes:
             match, _ = route.matches(scope)
             if match is Match.PARTIAL:
                 partial = True
             if match is not Match.FULL:
                 continue
-            if isinstance(route, Mount):
-                return (route.path == "/assets" and route.name == "assets"
-                        and isinstance(route.app, StaticFiles) and method in ("GET", "HEAD"))
-            endpoint = getattr(route, "endpoint", None)
-            identity = (getattr(route, "path", None), endpoint)
-            if method == "GET" and identity in self._early:
-                return True
-            # Only the registered real SPA root, never docs/OpenAPI/API GET.
-            return (method == "GET" and identity[0] == "/"
-                    and endpoint is not None
-                    and endpoint.__module__ == "runtime.daemon.routes.web_static"
-                    and endpoint.__name__ in ("_spa_root", "_placeholder_root"))
+            if route is self.static[1]:
+                return method in ("GET", "HEAD")
+            return method == "GET" and (any(route is early for early in self.early)
+                                        or route is self.static[0])
         path = scope.get("path", "")
         if (partial or method != "GET" or path == "/api" or path.startswith("/api/")
-                or not _is_spa_route(path) or self._spa_fallback is None
-                or self.route_app.exception_handlers.get(HTTPException) is not self._spa_fallback):
+                or path in ("/docs", "/redoc", "/openapi.json")
+                or not _is_spa_route(path) or self.fallback is None):
             return False
-        # Router slash redirects happen before the SPA 404 handler. A redirect
-        # to a held or method-only identity is not an early read exemption.
-        if path != "/":
+        if self.router.redirect_slashes and path != "/":
             redirect_scope = {**scope, "path": path.rstrip("/") if path.endswith("/") else path + "/"}
-            for route in self.route_app.router.routes:
+            for route in self.routes:
                 match, _ = route.matches(redirect_scope)
                 if match is not Match.NONE:
                     return False
         return True
+
+
+def bind_http_listener(app: Any, listener: Any) -> None:
+    """Only the original actual-listener success callback supplies this reference."""
+    refs = app.state.startup_http
+    refs.validate({"app": app})
+    if (refs.listener is not None or refs.gate._http_listener is not None
+            or listener.config.app is not app or listener._diagnostic_app is not app
+            or not listener._diagnostic_signalled or not listener.started
+            or listener.should_exit or listener.lifespan.should_exit):
+        raise StartupUnavailable("startup_listener_attachment_mismatch")
+    refs.listener, refs.listener_config = listener, listener.config
+    refs.gate._http_listener = listener
+
+
+class StartupAdmissionMiddleware:
+    """Original route identity policy before receive/dependencies/body parsing."""
+
+    def __init__(self, app: Any, *, references: StartupHTTPReferences) -> None:
+        self.app, self.references = app, references
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         from starlette.responses import JSONResponse
-        gate = getattr(self.state, "_startup_recovery", None)
-        if not isinstance(gate, StartupRecovery) or self.route_app.state.daemon is not self.state:
-            error = StartupUnavailable("startup_gate_unbound")
-        else:
-            snapshot = gate.snapshot()
-            if snapshot["recovery_ready"] and not snapshot["stopping"]:
-                await self.app(scope, receive, send)
-                return
-            if self._allowed(scope):
-                await self.app(scope, receive, send)
-                return
-            code = "daemon_recovering" if snapshot["state"] == "recovering" and not snapshot["stopping"] else "daemon_recovery_failed"
+        refs = self.references
+        try:
+            refs.validate(scope)
+            snapshot = public_startup_status(refs.state, refs.app)
+            allowed = snapshot["recovery_ready"] or refs.allowed(scope)
+            code = ("daemon_recovering" if snapshot["state"] == "recovering"
+                    and not snapshot["stopping"] else "daemon_recovery_failed")
             error = StartupUnavailable(code, snapshot)
+        except (StartupUnavailable, AttributeError, TypeError) as exc:
+            # Binding failure never selects ready or an offline route. Do not
+            # disclose internal attachment/cause text in a pre-auth response.
+            error = StartupUnavailable("startup_gate_unbound", public_startup_status(refs.state, refs.app))
+            error.__cause__ = exc
+            allowed = False
+        # Downstream original auth/validation/decoder errors retain their own
+        # handling. They are not attachment failures caught by this middleware.
+        if allowed:
+            from runtime.daemon.startup_reads import StartupReadUnavailable
+            started = False
+            departed = False
+
+            async def receive_admitted() -> Any:
+                nonlocal departed
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    departed = True
+                    publication = scope.get("_startup_thread_read")
+                    if publication is not None:
+                        publication[0].cancel_publication(publication[1])
+                return message
+
+            async def send_admitted(message: Any) -> None:
+                nonlocal started
+                publication = scope.get("_startup_thread_read")
+                if publication is not None:
+                    pool, result = publication
+                    if departed:
+                        pool.cancel_publication(result)
+                    if pool is not refs.reads:
+                        raise StartupReadUnavailable("startup_reader_unavailable")
+                    # Final outer send, after metrics/FastAPI await boundaries.
+                    # Content is already complete bytes; no filesystem/DB work.
+                    refs.validate(scope)
+                    pool.content_for_publication(result)
+                if message["type"] == "http.response.start":
+                    started = True
+                await send(message)
+
+            try:
+                await self.app(scope, receive_admitted, send_admitted)
+            except (StartupReadUnavailable, StartupUnavailable) as exc:
+                # Once headers were sent, abort rather than emit content under
+                # a closed owner. Never manufacture a second response start.
+                if started or departed or scope.get("_startup_thread_read") is None:
+                    raise
+                unavailable = exc if isinstance(exc, StartupReadUnavailable) else StartupReadUnavailable("startup_reader_unavailable")
+                detail = unavailable.detail(public_startup_status(refs.state, refs.app))
+                await JSONResponse({"detail": detail}, status_code=503)(scope, receive, send)
+            return
         headers = {"Retry-After": "2"} if error.code == "daemon_recovering" else None
         await JSONResponse({"detail": error.detail}, status_code=503, headers=headers)(scope, receive, send)

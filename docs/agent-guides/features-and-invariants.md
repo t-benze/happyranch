@@ -1,5 +1,39 @@
 # Features And Invariants
 
+## Startup HTTP and early-reader source invariants — ROOT13137
+
+Admission pins the actual ordered registered route/root/assets/SPA objects and
+rechecks their method/path/endpoint/app bindings before body/dependency work.
+Seven original early GETs plus GET /api/v1/health/ready and actual static handlers
+are the only exemptions; original bearer/loopback/OrgDep still authorize content.
+Missing/replaced references and duplicate registrations fail closed. Ready restores
+original routing/validation while native/direct/P2-P9 controls remain independent.
+
+Early list/detail/messages reuse exactly the ten canonical readers and real DTOs.
+Only native workers perform filesystem identity/SQLite open/use/close and complete
+snapshot/projection/JSON. Separate2 workers/4 admissions, original2s including
+queue delay,2,000,000 cooperative opcode allowance,4096 rows across all queries,
+4MiB raw+4MiB encoded,1MiB value and128 attachments bound the whole operation.
+Early negative limits refuse; ready defaults and legacy negatives are unchanged.
+Missing production gate/read domain never selects canonical DB fallback. Same
+app/state/gate/epoch/org/path/domain must agree before content publication. Native
+Future/slot/connection persist through cancellation; accounting acknowledgement
+precedes idle proof. Failed close remains incomplete, preserving a primary error.
+Selected nested SAVEPOINT cleanup cannot mask malformed/deadline/SQLite failure;
+ordinary Database cleanup/transactions remain unchanged. Cooperative allowances
+are not hard I/O/RSS/time certificates or a performance claim.
+
+/health is liveness200 plus bounded sanitized startup scalars; /health/ready200
+requires actual matching listener and accepted recovery-ready epoch, without
+stop/closed/failed/unbound ownership. Otherwise readiness503 includes truthful
+state/guidance. Cached host-session semantics remain, with no DB/history/probe
+or raw cause/path/native/task collection. Owner-to-serving time is not launcher
+duration; missing launcher evidence stays null. Source/static handoff, additive
+TS API and retained source are not runtime/proof PASS. Root owns UI/launcher/
+consumer instrumentation, isolated OpenAPI snapshot synchronization, finite
+verification and independent final source/QA/merge gates. No activation follows.
+
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded

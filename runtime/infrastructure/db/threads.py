@@ -261,9 +261,14 @@ class ThreadsMixin:
                       "next_cursor": next_cursor, "sampled_at": sampled_at}
             self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             return result
-        except BaseException:
-            self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-            self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException as exc:
+            cleanup = getattr(self, "_startup_read_cleanup", None)
+            if cleanup is None:
+                # Ordinary Database transaction/cleanup behavior is unchanged.
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            else:
+                cleanup(savepoint, exc)
             raise
 
     @_synchronized

@@ -334,10 +334,43 @@ the existing owned native executor after activation; its actual Future is joined
 before resource close. Existing periodic warm/cancellation behavior is unchanged.
 Stop closes intake before awaits and joins actual recovery/tail/binding/read and
 partial consumer owners before host/DB close; exchange reaper is included.
-This remains incomplete source delivery: root owns full direct/HTTP/readiness/UI/
-launcher closure, correctness execution and independent final review/same-head
+This remains incomplete source delivery: root owns UI/launcher/consumer and
+instrumentation closure, correctness execution and independent final review/same-head
 QA/guarded merge. Behavior/resource/performance/proof NOT RUN; under10s UNVERIFIED;
 no partial merge, live activation or new correctness allocation follows.
+
+HTTP startup admission captures actual registered early route/root/assets/SPA
+objects and their ordered dispatch bindings before middleware construction.
+Missing/replaced app/state/gate/read-domain/route references refuse pre-body;
+only the original seven early GETs, new GET /api/v1/health/ready and actual static
+contract enter. Auth/OrgDep/loopback remain original. HTTP query, unsupported
+method, unknown API or slash redirect never supplies permission. After ready,
+original routing/auth/validation and all native launch/reviewer controls apply.
+
+Early thread list/detail/messages use the same ten canonical readers/DTOs with
+worker-only filesystem identity, read-only SQLite snapshot and encoded response.
+Two workers/four admissions share one2s cooperative deadline including queue delay,
+2,000,000 opcode allowance,4096 fetched rows,4MiB raw plus4MiB encoded,1MiB value
+and128 attachment checks. Negative early limits refuse; ready legacy limits stay.
+Original state/app/gate/epoch/org/path/read-domain references renew before content
+publication; missing production bindings never fall back to canonical DB/lock.
+Actual native Future/connection/slot and callback-accounting acknowledgement remain
+through cancellation/drain; a completed Future alone is not retirement. Failed
+close retains an incomplete owner/count. Nested read SAVEPOINT cleanup preserves
+its original error even if exhausted cleanup also refuses; actual close is owed.
+These are finite cooperative work bounds, not hard OS-I/O/RSS timing guarantees.
+
+/health preserves liveness200/status/active_runtime and cached sanitized
+host_sessions, adding bounded startup state/phase/serving/readiness/stop/code/
+guidance and timing scalars. /health/ready returns200 only with matching actual
+listener AND accepted ready epoch; recovering/failed/stopped/unbound return503.
+No DB/history/probe runs for readiness, and no native cause/path/ID collection is
+public. owner_to_serving_ns starts at owner construction, never launcher start;
+launcher_duration_ns remains null pending root instrumentation. Absence of startup
+fields on old servers means unknown. TS mapping supplies no polling/activation.
+Root still owns UI/launcher consumers, instrumentation, isolated OpenAPI snapshot
+sync and finite behavioral acceptance. Source is not <10s or runtime acceptance.
+
 After return, ordinary callers own their later state and later allocations;
 original complete captures and stable ancestry identity remain validated, while
 all coding-owned current task rows still compare exactly. Returned graphs no
