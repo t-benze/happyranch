@@ -5,12 +5,13 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import signal
 from datetime import datetime, timedelta
 
 from cancellation import validate as validate_cancellation
-from run import BASELINE_ARTIFACTS, daily_admission, validate_admission, validate_timing
+from run import BASELINE_ARTIFACTS, daily_admission, validate_admission, validate_timing, scenario_fields
 from pathlib import Path
 import completed
 
@@ -93,7 +94,917 @@ def controls() -> dict:
     results.update(cancellation_controls())
     results.update(admission_controls())
     results.update(completed_controls())
+    results.update(original_controls())
+    results.update(failure_result_controls())
     return results
+
+
+def failure_result_controls() -> dict:
+    """Projection and real disposable-file shipping seams; native behavior NOT RUN."""
+    secret = 'PRIVATE_SENTINEL"\n'
+    original = dict(variants={'E05.compose-race':dict(status='FAIL',error=secret)},
+        scenario_phases=[], e07=None,
+        groups={'E05':dict(state='unknown',first_error_ref=0),
+                'E07':dict(state='refused',first_error_ref=1)},
+        e07_admission=dict(state='refused',refusal='missing original owner'),
+        failures=[dict(stage='controller-action',error='ValueError',at=1.),
+                  dict(stage='controller-action',error='AssertionError',at=2.)],
+        finalization=[dict(stage='browser-close',error_ref=2)],
+        ignored=secret)
+    expected = dict(variants={'E05.compose-race':dict(status='FAIL',error='[REDACTED]')},
+        scenario_phases=[], e07=None,
+        groups={'E05':dict(state='unknown',first_error_ref=0),
+                'E07':dict(state='refused',first_error_ref=1)},
+        e07_admission=dict(state='refused',refusal='missing original owner'),
+        failures=[dict(stage='controller-action',error='ValueError',at=1.),
+                  dict(stage='controller-action',error='AssertionError',at=2.)],
+        finalization=[dict(stage='browser-close',error_ref=2)])
+    safe = scenario_fields(original, lambda text:text.replace(secret,'[REDACTED]'))
+    assert safe == expected and 'PRIVATE_SENTINEL' not in json.dumps(safe)
+    original['groups']['E05']['state'] = 'reported_pass'
+    original['failures'].clear()
+    assert safe == expected  # Original producer mutations cannot rewrite retained state.
+    assert scenario_fields({'variants':{}},lambda text:text) == {'variants':{}}
+    results = {'B09-B12-detached-failure-fields':'actual bounded redaction projection; native fallback NOT RUN'}
+    for name,result in (('absent',None),('missing-variants',{}),('non-object',[]),
+                         ('nonfinite',dict(variants={},failures=[float('nan')])),
+                         ('unsupported',dict(variants={},groups=object())),('byte-cap',dict(variants={},groups='x'*(8*1024*1024+1))),
+                         ('fact-cap',dict(variants={},groups=[None]*200001))):
+        try:
+            scenario_fields(result,lambda text:text)
+        except ValueError:
+            results['B09-B12-projection-'+name] = 'refused; no raw fallback'
+        else:
+            raise AssertionError('unsafe scenario projection accepted: '+name)
+    nested = None
+    for _ in range(65):
+        nested = [nested]
+    try:
+        scenario_fields(dict(variants={},groups=nested),lambda text:text)
+    except ValueError as exc:
+        assert 'capacity refused' in str(exc)
+    else:
+        raise AssertionError('deep scenario projection accepted')
+    def unavailable(_text):
+        raise ValueError('complete redaction context unavailable')
+    try:
+        scenario_fields(dict(variants={},groups={'E05':{}}),unavailable)
+    except ValueError as exc:
+        assert 'redaction context unavailable' in str(exc)
+    else:
+        raise AssertionError('scenario retained without redaction')
+    # The already returned object stays detached; this is not proof that a
+    # native final failure actually reached failure_receipt or was published.
+    assert safe == expected
+    results['B09-B12-redaction-refused'] = 'projection refuses; previous detached bytes unchanged'
+    # Real writer -> literal files -> shipping collection/publication -> FAIL.
+    # These incomplete synthetic claims are never native/browser receipts.
+    import tempfile
+    import time
+    import shutil
+    from typing import Iterator
+    from contextlib import contextmanager
+    from controller import Controller
+    from run import (collect_evidence, publish_evidence, failure_receipt, publish_failure,
+                     _collection_line, _ordinary_evidence_error, _failure_error)
+
+    @contextmanager
+    def fixture() -> Iterator[tuple]:
+        with tempfile.TemporaryDirectory(prefix="e2e-failure-result-") as temporary:
+            base = Path(temporary)
+            root, output = base / "source", base / "output"
+            root.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            for name in ("raw", "coord", "daemon"):
+                (root / name).mkdir(mode=0o700)
+            token = 'SYNTHETIC_TOKEN'
+            context = [token, secret]
+            (root / 'daemon/daemon.token').write_text(token)
+            (root / 'coord/redaction-context.json').write_text(json.dumps(context))
+            controller = Controller.__new__(Controller)
+            controller.root, controller.token, controller.secrets = root, token, {secret}
+            controller.threads_active = False
+            controller.prepare_redaction()  # Never manually assert readiness.
+            controller.results = {'E05.compose-race':dict(status='FAIL',error=secret)}
+            controller.phases, controller.failures = [], copy.deepcopy(expected['failures'])
+            controller.groups = copy.deepcopy(expected['groups'])
+            controller.e07_admission = copy.deepcopy(expected['e07_admission'])
+            controller.finalization = copy.deepcopy(expected['finalization'])
+            controller.browser, controller.primary_error = None, None
+            controller.stage_small_evidence()
+            assert (root / 'scenario.json').is_file(), 'real stage_small_evidence did not write scenario'
+            controller._atomic_text(root / 'raw/failure.txt', 'safe before ' + secret + ' after\n')
+            controller._atomic_json(root / 'raw/safe.json', {'sample':'public'})
+            info, output_info = root.stat(), output.stat()
+            state = dict(token='',context=[],safe_scenario=dict(variants={}),fatal=False)
+            staged, published, failed_members, failures, export_errors = {}, {}, set(), [], []
+            row = dict(source_sha='1'*40,python='3.14',cleanup=dict(ok=True),
+                       signals=[],phases=[],timing=dict(cleanup=dict(ok=True)))
+            end = time.monotonic() + 30
+
+            def check() -> None:
+                if time.monotonic() >= end:
+                    raise TimeoutError('control original allowance exhausted')
+
+            def failed(error: BaseException | None, *, category: str, annotation: tuple) -> None:
+                failures.append((error, error.__traceback__ if error else None, category, state['window'], annotation))
+
+            def acquire() -> tuple:
+                return collect_evidence(root,(info.st_dev,info.st_ino),row,'baseline',staged,state,check,failed)
+
+            def drain() -> None:
+                publish_evidence(output,(output_info.st_dev,output_info.st_ino),staged,published,failed_members,
+                                 state,check,export_errors.append)
+
+            def commit() -> dict:
+                value = failure_receipt(row,state['safe_scenario'],{},None,None,'baseline',time.monotonic())
+                publish_failure(output,(output_info.st_dev,output_info.st_ino),value,check)
+                return json.loads((output / 'result.json').read_text())
+
+            yield (controller,root,output,state,staged,published,failed_members,failures,export_errors,
+                   row,check,acquire,drain,commit)
+
+    for case in ('R1a','R1b-missing','R1b-decode','R1c-txt','R1c-jsonl','R1c-malformed'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
+            # Independent literal oracle precedes the claimed collector seam.
+            assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+            if case == 'R1b-missing':
+                (root / 'scenario.json').unlink()
+            elif case == 'R1b-decode':
+                (root / 'scenario.json').write_text('{')
+            if case.startswith('R1c'):
+                name = 'unsupported.jsonl' if case == 'R1c-jsonl' else 'unsupported.txt'
+                writer._atomic_text(root / 'raw' / name, '{\\' if case == 'R1c-malformed' else 'public\\path\n')
+            complete, error = acquire()
+            drain()
+            value = commit()
+            assert not (output / 'observations.json').exists(), 'escaped raw observations unexpectedly published'
+            assert not errors and 'observations.json' not in staged
+            assert not (output / 'observations.json.tmp').exists()
+            assert (output / 'failure.txt').is_file(), 'ordinary refusal suppressed safe raw sibling'
+            assert not complete and not state['fatal'] and error is not None
+            assert (output / 'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            assert (output / 'safe.json').read_bytes() == b'{\n  "sample": "public"\n}'
+            assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False and value['timing']['cleanup']['ok'] is False
+            if case.startswith('R1b'):
+                assert value['variants'] == {} and 'groups' not in value
+                first = failures[0]
+                assert first[3] == ('SCENARIO_PRESENT' if case.endswith('missing') else 'SCENARIO_DECODE')
+                assert (first[0] is None if case.endswith('missing') else isinstance(first[0],json.JSONDecodeError))
+                assert first[1] is None if first[0] is None else first[1] is not None
+            else:
+                assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
+                for key in ('groups','e07_admission','failures','finalization','scenario_phases'):
+                    assert value[key] == expected[key]
+                assert failures[0][3] == 'REDACT'
+                assert failures[0][4][:2] == ('REDACT','VALUE')
+            if case.startswith('R1c'):
+                assert name not in staged and not (output/name).exists()
+            assert 'PRIVATE_SENTINEL' not in (output / 'result.json').read_text()
+            assert _collection_line('cleanup',failures[0][3],'F' if failures[0][0] else 'U',failures[0][4]).startswith(b'HRD1:C:CLEANUP:')
+            results['B09-B12-'+case] = 'literal source proven; unsafe raw withheld; safe siblings and actual FAIL committed'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        writer._atomic_json(root / 'raw/observations.json', {'sample':'public-v1'})
+        acquire(); drain(); commit()
+        earlier = (output / 'result.json').read_bytes()
+        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        snapshot = copy.deepcopy(state['safe_scenario'])
+        writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
+        assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+        (root / 'scenario.json').write_text('{')
+        writer._atomic_text(root / 'raw/new.txt','new safe sibling\n')
+        complete, error = acquire()  # Only the second original opportunity.
+        drain()
+        assert not complete and error is not None and state['safe_scenario'] == snapshot
+        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert not (output / 'observations.json.tmp').exists()
+        assert (output / 'new.txt').read_bytes() == b'new safe sibling\n'
+        # Genuine later serialization refusal leaves the initial actual result.
+        try:
+            publish_failure(output,(output.stat().st_dev,output.stat().st_ino),dict(bad=object()),check)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError('unserializable later result accepted')
+        assert (output / 'result.json').read_bytes() == earlier
+        results['B09-B12-R1d'] = 'old commit/snapshot exact; new safe sibling drained after later refusal; earlier FAIL exact'
+
+    # Complete-safe presence positive and empty-required negatives are distinct
+    # from the escaped source. None supplies native/content acceptance.
+    for empty in (None, 'observations.json', 'lifecycle.png'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            for name in BASELINE_ARTIFACTS:
+                if name.endswith('.png'):
+                    (root/'raw'/name).write_bytes(b'unchanged synthetic image bytes')
+                elif name.endswith('.jsonl'):
+                    writer._atomic_text(root/'raw'/name,'{}\n')
+                elif name.endswith('.json'):
+                    writer._atomic_json(root/'raw'/name,{'sample':'public'})
+                else:
+                    writer._atomic_text(root/'raw'/name,'safe log\n')
+            if empty is not None:
+                (root/'raw'/empty).write_bytes(b'')
+            complete, error = acquire(); drain(); value = commit()
+            assert complete is (empty is None) and error is None and not errors
+            assert failures == [] if empty is None else failures[0][3] == 'REQUIRED'
+            assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
+            if empty != 'observations.json':
+                assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public"\n}'
+            assert value['status'] == 'FAIL'
+            results['B09-B11-complete-safe-file' if empty is None else 'B09-B11-empty-required-'+empty] = 'actual safe presence/required emptiness and decoded FAIL publication; no native acceptance'
+
+    for case in ('valid-empty','zero-byte','absent','open-directory','invalid-utf8','missing-variants','non-object',
+                 'nonfinite','key-collision','deep','exact-cap','over-cap','multibyte-cap','long-prefix','raw-directory'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root / 'scenario.json'
+            if case == 'valid-empty': path.write_text('{"variants":{}}')
+            elif case == 'zero-byte': path.write_bytes(b'')
+            elif case == 'absent': path.unlink()
+            elif case == 'open-directory': path.unlink(); path.mkdir()
+            elif case == 'invalid-utf8': path.write_bytes(b'\xff')
+            elif case == 'missing-variants': path.write_text('{}')
+            elif case == 'non-object': path.write_text('[]')
+            elif case == 'nonfinite': path.write_text('{"variants":{},"failures":[NaN]}')
+            elif case == 'key-collision': path.write_text('{"variants":{},"groups":{"SYNTHETIC_TOKEN":1,"[REDACTED]":2}}')
+            elif case == 'deep': path.write_text('{"variants":{},"groups":' + '['*65 + 'null' + ']'*65 + '}')
+            elif case == 'exact-cap': path.write_text('{"variants":{}}' + ' '*(8388608-15))
+            elif case == 'over-cap': path.write_text('x'*8388609)
+            elif case == 'multibyte-cap': path.write_text('é'*4194305)
+            elif case == 'long-prefix': path.write_text('x'*8388619)
+            elif case == 'raw-directory': (root/'raw/broken.txt').mkdir()
+            (root/'raw/empty.txt').write_bytes(b'')
+            complete, error = acquire(); drain(); value = commit()
+            assert not complete and not state['fatal'] and not errors
+            assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            assert (output/'empty.txt').read_bytes() == b''
+            assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False
+            first = failures[0]
+            if case in ('valid-empty','exact-cap','raw-directory'):
+                assert value['variants'] == ({} if case != 'raw-directory' else {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}})
+                assert first[3] == ('TEXT_READ' if case == 'raw-directory' else 'REQUIRED')
+            elif case in ('over-cap','multibyte-cap','long-prefix'):
+                assert first[4][:2] == ('SCENARIO_CAPACITY','CAPACITY')
+                assert first[4][2:] == ((4194305,8388610) if case == 'multibyte-cap' else (8388609,8388609))
+            elif case in ('open-directory','invalid-utf8'):
+                assert first[4] == (('SCENARIO_OPEN','IO','U','U') if case == 'open-directory' else ('SCENARIO_READ','UNICODE','U','U'))
+            assert first[0] is error[0] if error is not None else first[0] is None
+            results['B09-B12-file-'+case] = 'real ordinary refusal/presence with independent sibling output and sticky FAIL'
+
+    for case in ('missing-token','empty-token','token-directory','missing-context','context-directory','malformed-context','not-list','incomplete-context',
+                 'changed-context','root-drift','marker-overlap','deadline','interruption'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            if case == 'missing-token': (root/'daemon/daemon.token').unlink()
+            elif case == 'empty-token': (root/'daemon/daemon.token').write_text('')
+            elif case == 'token-directory': (root/'daemon/daemon.token').unlink(); (root/'daemon/daemon.token').mkdir()
+            elif case == 'missing-context': (root/'coord/redaction-context.json').unlink()
+            elif case == 'context-directory': (root/'coord/redaction-context.json').unlink(); (root/'coord/redaction-context.json').mkdir()
+            elif case == 'malformed-context': (root/'coord/redaction-context.json').write_text('{')
+            elif case == 'not-list': (root/'coord/redaction-context.json').write_text('{}')
+            elif case == 'incomplete-context': (root/'coord/redaction-context.json').write_text('["wrong"]')
+            elif case == 'changed-context':
+                acquire()  # Retain the actual first complete context, not invented readiness.
+                (root/'coord/redaction-context.json').write_text('["SYNTHETIC_TOKEN","changed"]')
+            elif case == 'root-drift':
+                root.rename(root.with_name('original'))
+                shutil.copytree(root.with_name('original'),root)  # Valid context; only identity differs.
+            elif case == 'marker-overlap':
+                (root/'coord/redaction-context.json').write_text('["SYNTHETIC_TOKEN","REDACTED"]')
+                writer._atomic_text(root/'raw/safe.json','REDACTED')
+            try:
+                if case in ('deadline','interruption'):
+                    def stopped() -> None:
+                        raise TimeoutError('original allowance') if case == 'deadline' else InterruptedError('original interruption')
+                    collect_evidence(root,(root.stat().st_dev,root.stat().st_ino),row,'baseline',staged,state,stopped,
+                                     lambda error,**kw: failures.append((error,error.__traceback__,kw['category'],state['window'],kw['annotation'])))
+                else:
+                    acquire()
+            except BaseException as exc:
+                assert state['fatal'] and failures
+                if case == 'root-drift':
+                    assert str(exc) == 'owned evidence root identity changed'
+                assert _failure_error(exc) == ('timeout' if case == 'deadline' else 'interruption') if case in ('deadline','interruption') else True
+            else:
+                raise AssertionError('unsafe detailed collection admitted: '+case)
+            before = dict(staged)
+            try: drain()
+            except ValueError: pass
+            else: raise AssertionError('fatal state drained')
+            assert staged == before and not list(output.iterdir())
+            results['B10-B12-fatal-'+case] = 'actual safety/check stop; detailed publisher refused'
+
+    # Ordinary replace errors and actual result writes, without permission/fault knobs.
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        staged.update({'blocked.txt':b'safe blocked\n','sibling.txt':b'safe sibling\n'})
+        (output/'blocked.txt').mkdir()
+        drain()
+        assert len(errors) == 1 and failed_members == {'blocked.txt'}
+        assert (output/'sibling.txt').read_bytes() == b'safe sibling\n'
+        drain()
+        assert len(errors) == 1, 'second pass retried failed output member'
+        assert (output/'blocked.txt.tmp').read_bytes() == b'safe blocked\n'
+        results['B10-B11-output-member'] = 'ordinary replace refusal; safe sibling committed; failed member not retried'
+
+    for case in ('initial-failed-final-committed','both-results-unavailable'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            (output/'result.json').mkdir()
+            try: commit()
+            except IsADirectoryError: pass
+            else: raise AssertionError('initial result falsely committed')
+            staged['safe.txt'] = b'independent safe bytes\n'
+            drain()
+            assert (output/'safe.txt').read_bytes() == b'independent safe bytes\n'
+            if case == 'initial-failed-final-committed':
+                (output/'result.json').rmdir()
+                assert commit()['status'] == 'FAIL'
+            else:
+                try: commit()
+                except IsADirectoryError: pass
+                else: raise AssertionError('unavailable result falsely committed')
+                assert not (output/'result.json').is_file()
+            results['B10-B11-'+case] = 'only actual result replacement counts; independent raw bytes committed'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        writer._atomic_json(root/'raw/observations.json', {'sample':'public-v1'})
+        acquire(); drain()
+        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        writer._atomic_json(root/'raw/observations.json', {'sample':'public-v2'})
+        acquire()  # Original second acquisition, no extra source.
+        (output/'observations.json.tmp').mkdir()
+        drain()
+        assert len(errors) == 1 and 'observations.json' in failed_members
+        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert published['observations.json'] == b'{\n  "sample": "public-v1"\n}'
+        results['B10-B11-prior-member-precommit'] = 'actual pending-open refusal preserves old commit without a retry'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain()
+        old = (output/'safe.json').read_bytes()
+        output.rename(output.with_name('original-output'))
+        output.symlink_to(output.with_name('original-output'), target_is_directory=True)
+        staged['new.txt'] = b'never publish after destination drift'
+        try: drain()
+        except ValueError: pass
+        else: raise AssertionError('unsafe destination admitted')
+        assert state['fatal'] and not (output/'new.txt').exists()
+        assert (output/'safe.json').read_bytes() == old
+        results['B10-B12-fatal-destination'] = 'literal destination alias refused; old safe output unchanged'
+
+    for error in (TimeoutError(),InterruptedError(),KeyboardInterrupt(),SystemExit(),GeneratorExit(),MemoryError(),RecursionError()):
+        assert not _ordinary_evidence_error(error)
+    assert _ordinary_evidence_error(UnicodeError()) and _failure_error(UnicodeError()) == 'unicode'
+    assert _collection_line('cleanup','UNKNOWN','F',('UNKNOWN','UNKNOWN','U','U')) == b'HRD1:C:CLEANUP:UNKNOWN:F:D1:UNKNOWN:UNKNOWN:U:U\n'
+    assert _collection_line('cleanup','SCENARIO_READ','F',('SCENARIO_CAPACITY','CAPACITY',8388609,33554436)) == b'HRD1:C:CLEANUP:SCENARIO_READ:F:D1:SCENARIO_CAPACITY:CAPACITY:8388609:33554436\n'
+    results['B10-B12-diagnostic-grammar'] = 'closed literal D1 and subclass precedence; native one-shot fd2 delivery NOT RUN'
+    return results
+
+
+def original_controls() -> dict:
+    """Extend the existing raw-reader controls; no native/browser fixture runs."""
+    import tempfile
+    import threading
+    from transport import BrowserRelay
+    results = {}
+    text = '{"thread_id":"THR-007","pending_replies":["case_worker"]}'
+    raw = text.encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    record = dict(relay_id=0, method='POST', target='/api/v1/orgs/alpha/threads',
+        path='/api/v1/orgs/alpha/threads', ordinal=1, status=200, entered=2., delivered=6., closed=7.,
+        original=dict(schema=1,relay_id=0,required_kind='compose',started=2.,status=200,
+            framing=dict(content_type=['application/json'],content_encoding=[],content_length=[str(len(raw))],transfer_encoding=[],bodyless=False),
+            header_bytes=64,finished=3.,outcome='complete',byte_length=len(raw),sha256=digest,
+            first_error=None,capture_state='sealed',capture_refusal=None,
+            entity_copy=dict(representation='unchanged_utf8',text=text,copy_bytes=len(raw),copy_sha256=digest,original_byte_check='available')),
+        forwarding=dict(segments=[dict(offset=0,length=len(raw),sha256=digest,write_started=4.,write_returned=5.,flush_returned=5.5,written=len(raw))],
+                        byte_length=len(raw),sha256=digest,finished=5.7))
+    expected = {'thread_id':'THR-007','pending_replies':['case_worker']}
+    assert validate_original_member(record) == expected
+    # Actual capture/export methods on a bare test-harness owner: no constructor,
+    # server, socket, browser, HTTP parser or native ownership fixture is run.
+    # Literal bytes are independent finite scenario inputs to the real exporter.
+    def captured(data, outcome='complete', *, status=200, encoding=None):
+        relay = BrowserRelay.__new__(BrowserRelay)
+        relay.lock = threading.Lock()
+        relay.records = [dict(copy.deepcopy(record), method='GET',
+                             path='/api/v1/orgs/alpha/threads/THR-007',
+                             target='/api/v1/orgs/alpha/threads/THR-007',ordinal=None)]
+        relay.browser_requests, relay.originals, relay.capture_refusals = [], {}, []
+        relay.capture_bytes = relay.capture_facts = 0
+        relay.capture_closed = None
+        source = relay.records[0]
+        relay._capture_begin(source, False)
+        source['status'] = status
+        source['original'].update(status=status, framing=dict(content_type=['application/json'],
+            content_encoding=encoding or [], content_length=[str(len(data))],transfer_encoding=[],bodyless=outcome=='bodyless'),
+            header_bytes=64)
+        relay._capture_chunk(source,data)
+        if outcome in {'complete','empty','bodyless'}:
+            relay._capture_seal(source)
+        elif outcome in {'partial','error'}:
+            relay._capture_error(source,'read',OSError())
+        return relay
+    relay = captured(raw)
+    try:
+        relay.original_for(99)
+    except ValueError as exc:
+        assert 'Request identity unavailable' in str(exc)
+    else:
+        raise AssertionError('missing native Request accepted')
+    published = relay.snapshot(lambda value:value)[0]
+    entity = published['original']['entity_copy']
+    assert entity == dict(representation='unchanged_utf8',text=text,copy_bytes=len(raw),
+                          copy_sha256=digest,original_byte_check='available')
+    assert published['original']['sha256'] == digest and published['original']['byte_length'] == len(raw)
+    assert relay.browser_requests == []  # Export did not invent a browser join.
+    results['A03-A13-sealed-unpaired-export'] = 'actual capture/snapshot JSON seam; native forwarding NOT RUN'
+    safe_copy = captured(raw).snapshot(lambda value:value.replace('THR-007','THR-008'))[0]['original']['entity_copy']
+    assert safe_copy['representation'] == 'sanitized_utf8' and safe_copy['original_byte_check'] == 'unavailable'
+    assert safe_copy['copy_sha256'] == hashlib.sha256(safe_copy['text'].encode()).hexdigest() != digest
+    results['A13-sanitized-original-unavailable'] = 'sanitized copy cannot establish original equality'
+    for name,data,outcome in (('empty',b'','empty'),('bodyless',b'','bodyless'),
+                              ('partial',b'{','partial'),('error',b'','error'),('pending',b'','pending')):
+        relay = captured(data,outcome)
+        published = relay.snapshot(lambda value:value)[0]['original']
+        assert published['outcome'] == outcome
+        if outcome in {'empty','bodyless'}:
+            assert published['entity_copy']['text'] == '' and published['entity_copy']['copy_bytes'] == 0
+        else:
+            assert published['entity_copy']['representation'] == 'unavailable'
+        results['A03-A08-export-'+name] = 'explicit original outcome; never required JSON success'
+    for name,data,encoding in (('invalid-json',b'{',None),('invalid-utf8',b'\xff',None),
+                               ('duplicate-json',b'{"status":"open","status":"failed"}',None),
+                               ('nonfinite',b'{"seq":NaN}',None),('encoding',raw,['gzip']),
+                               ('sensitive',b'{"credential":"PRIVATE_SENTINEL"}',None)):
+        relay = captured(data,encoding=encoding)
+        assert relay.snapshot(lambda value:value)[0]['original']['entity_copy']['representation'] == 'unavailable'
+        before = relay.capture_bytes
+        assert relay.snapshot(lambda value:value)[0]['original']['entity_copy']['text'] is None
+        assert relay.capture_bytes == before  # Invalid parse never consumes a new copy allowance.
+        if relay.originals[0]['parse_error'] is not None:
+            counters = relay.capture_bytes,relay.capture_facts
+            for _ in range(2):
+                try:
+                    relay._parse_original(relay.records[0])
+                except (ValueError,UnicodeError,RecursionError):
+                    pass
+                else:
+                    raise AssertionError('previous parse refusal accepted')
+                assert (relay.capture_bytes,relay.capture_facts) == counters
+        results['A13-export-'+name] = 'unsafe/unparseable original withheld; parse work not repeated'
+    relay = captured(raw)
+    relay.capture_bytes = 8*1024*1024
+    refused = relay.snapshot(lambda value:value)[0]['original']
+    assert refused['capture_state'] == 'refused' and refused['capture_refusal'] is not None
+    assert refused['entity_copy']['representation'] == 'unavailable'
+    results['A07-A13-export-capacity'] = 'same snapshot retains sticky refusal and unavailable copy'
+    relay = captured(b'[' + b'0,'*17000 + b'0]')
+    assert relay.snapshot(lambda value:value)[0]['original']['entity_copy']['representation'] == 'unavailable'
+    assert relay.records[0]['original']['capture_state'] == 'refused'
+    assert relay.capture_refusals[0]['reason'] == 'fact-cap'
+    results['A07-A13-parse-fact-cap'] = 'parser facts reserved before retained JSON allocation'
+    relay = captured(raw)
+    relay.capture_facts = 16384
+    assert relay.snapshot(lambda value:value) == []
+    assert relay.capture_refusals[0]['reason'] == 'fact-cap'
+    assert relay.snapshot(lambda value:value) == [] and len(relay.capture_refusals) == 1
+    results['A07-A13-export-fact-cap'] = 'incomplete census; one sticky refusal'
+    relay = captured(b'{"status":"failed"}',status=503)
+    published = relay.snapshot(lambda value:value)[0]
+    assert published['original']['status'] == 503
+    assert published['original']['entity_copy']['text'] == '{"status":"failed"}'
+    try:
+        validate_original_member(published)
+    except ValueError as exc:
+        assert 'original status/timeline' in str(exc)
+    else:
+        raise AssertionError('non200 original became required success')
+    results['A03-A08-non200-original'] = 'safe original published; required success still refuses'
+    for outcome in ('partial','error','pending'):
+        relay = captured(b'{' if outcome == 'partial' else b'',outcome)
+        source = copy.deepcopy(relay.records[0]['original'])
+        published = relay.snapshot(lambda value:value)[0]['original']
+        assert all(published[k] == v for k,v in source.items())
+        assert published['entity_copy']['representation'] == 'unavailable'
+    results['A03-A08-prefix-identities'] = 'first error/status/framing/hash/length/outcome unchanged'
+
+    results['A01-original-reader-consistency'] = 'accepted original only; browser evidence unavailable'
+    mutations = {
+        'unknown-field':('closed original grammar',lambda r:r['original'].update(extra=True)),
+        'wrong-relay':('original identity',lambda r:r['original'].update(relay_id=1)),
+        'partial':('complete required original',lambda r:r['original'].update(outcome='partial')),
+        'empty':('complete required original',lambda r:r['original'].update(outcome='empty')),
+        'bodyless':('complete required original',lambda r:r['original'].update(outcome='bodyless')),
+        'pending':('complete required original',lambda r:r['original'].update(outcome='pending')),
+        'error':('complete required original',lambda r:r['original'].update(outcome='error',first_error=dict(stage='read',error='OSError',at=3.))),
+        'storage-refusal':('complete required original',lambda r:r['original'].update(capture_state='refused',capture_refusal=dict(reason='entity-cap',at=3.,relay_id=0))),
+        'nonidentity':('identity UTF8',lambda r:r['original']['framing'].update(content_encoding=['gzip'])),
+        'entity-cap':('entity/header bounds',lambda r:r['original'].update(byte_length=1048577)),
+        'header-cap':('entity/header bounds',lambda r:r['original'].update(header_bytes=65537)),
+        'sanitized-copy':('unchanged safe original',lambda r:r['original']['entity_copy'].update(representation='sanitized_utf8',original_byte_check='unavailable')),
+        'wrong-hash':('original entity bytes/hash',lambda r:r['original'].update(sha256='0'*64)),
+        'forward-gap':('contiguous full write',lambda r:r['forwarding']['segments'][0].update(offset=1)),
+        'short-write':('contiguous full write',lambda r:r['forwarding']['segments'][0].update(written=1)),
+        'wrong-segment':('forwarded original segment',lambda r:r['forwarding']['segments'][0].update(sha256='0'*64)),
+        'flush-missing':('separate actual write and flush',lambda r:r['forwarding']['segments'][0].update(flush_returned=None)),
+        'incomplete-forwarding':('complete forwarding',lambda r:r['forwarding'].update(byte_length=1)),
+    }
+    for name,(predicate,mutate) in mutations.items():
+        changed = copy.deepcopy(record)
+        mutate(changed)
+        try:
+            validate_original_member(changed)
+        except ValueError as exc:
+            assert predicate in str(exc), (name,str(exc))
+            results['A03-A08-A13-'+name] = str(exc)
+        else:
+            raise AssertionError('unsafe original accepted: '+name)
+    original = dict(body=expected,sha256=digest,bytes=len(raw))
+    measured = dict(original,browser_copy='measured-browser')
+    require_browser_copy(measured,original)
+    for origin in ('UNAVAILABLE','relay-original','sanitized_utf8',None):
+        try:
+            require_browser_copy(dict(measured,browser_copy=origin),original)
+        except ValueError as exc:
+            assert 'independent browser copy unavailable' in str(exc)
+            results['Q1-'+str(origin)] = str(exc)
+        else:
+            raise AssertionError('relay self-comparison admitted as browser proof: '+str(origin))
+    for key,value in (('body',{}),('sha256','0'*64),('bytes',True)):
+        try:
+            require_browser_copy(dict(measured,**{key:value}),original)
+        except ValueError as exc:
+            assert 'full body/hash/length mismatch' in str(exc)
+            results['Q1-measured-'+key] = str(exc)
+        else:
+            raise AssertionError('independent browser mismatch accepted: '+key)
+    # A full-window raw census control uses serialized observations only. This
+    # does not manufacture a healthy E05/native fixture or run any transport.
+    origin = 'http://127.0.0.1:4321'
+    events = [dict(event='request',request_id=0,url=origin+'/orgs/alpha/threads',method='GET',resource_type='document',navigation=True,main_frame=True,unredirected=True,document_request_id=None,pending_documents=[],at=0.),
+              dict(event='navigation',url=origin+'/orgs/alpha/threads',new_document=True,document_request_id=0,at=0.5),
+              dict(event='request',request_id=1,url=origin+record['target'],method='POST',resource_type='fetch',navigation=False,main_frame=True,unredirected=True,document_request_id=0,pending_documents=[],at=1.),
+              dict(event='compose-response',request_id=1,response_id=0,url=origin+record['target'],method='POST',status=200,browser_copy='UNAVAILABLE',body=None,sha256=None,bytes=None,at=6.),
+              dict(event='request-finished',request_id=1,url=origin+record['target'],method='POST',at=8.)]
+    reference = dict(original,origin='relay-original',relay_id=0,request_id=1,response_id=0)
+    observations = dict(capture_inventory=dict(refusals=[],closed=9.,retained_bytes=4096,retained_facts=100,requests=[dict(events[0],target='/orgs/alpha/threads'),dict(events[2],target=record['target'],terminals=[events[4]])]),thread_proxy=[record],thread_originals=[reference],
+                        durable=[dict(threads_cases=dict(transport=dict(browser_port=4321)))])
+    with tempfile.TemporaryDirectory(prefix='aggregate-original-controls-') as tmp:
+        directory = Path(tmp)
+        def read(obs,ledger):
+            (directory/'e05-browser-events.json').write_text(json.dumps(ledger))
+            return validate_e05_originals(obs,directory)
+        assert read(observations,events)[1] == reference
+        results['A04-full-window-reader'] = 'unique complete original join only; native behavior NOT RUN'
+        for name,predicate in (('duplicate-response','unique Response'),('boolean-response','unique Response'),('pending-document','pending document snapshot'),
+                               ('wrong-query','unique bijection'),('missing-terminal','native terminal'),
+                               ('late-member','every automatic'),('conflicting-window','every automatic')):
+            obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
+            if name == 'duplicate-response':
+                ledger.insert(4,copy.deepcopy(ledger[3]))
+            elif name == 'boolean-response':
+                ledger[3]['response_id'] = False
+            elif name == 'pending-document':
+                ledger[2]['pending_documents'] = [2]
+            elif name == 'wrong-query':
+                ledger[2]['url'] += '?different=1'
+                ledger[3]['url'] = ledger[4]['url'] = ledger[2]['url']
+            elif name == 'missing-terminal':
+                ledger.pop()
+            elif name == 'late-member':
+                obs['thread_proxy'][0]['closed'] = 10.
+            else:
+                obs['thread_proxy'].append(dict(copy.deepcopy(record),relay_id=1))
+            if name in {'pending-document','wrong-query','missing-terminal'}:
+                # Keep the serialized owner inventory coherent so the control
+                # reaches its original document/window/terminal predicate.
+                retained = obs['capture_inventory']['requests'][1]
+                retained.update(ledger[2],target=ledger[2]['url'][len(origin):])
+                if name == 'missing-terminal':
+                    retained.pop('terminals')
+                else:
+                    retained['terminals'] = [ledger[-1]]
+            try:
+                read(obs,ledger)
+            except ValueError as exc:
+                assert predicate in str(exc), (name,str(exc))
+                results['A05-A06-A09-'+name] = str(exc)
+            else:
+                raise AssertionError('ambiguous original census accepted: '+name)
+        for name,predicate in (('missing-request-inventory','complete original Request inventory'),
+                               ('missing-required-response','every required native Request'),
+                               ('membership-overflow','closed complete inventory'),
+                               ('fact-overflow','reserved byte/fact bounds'),('aggregate-overflow','reserved byte/fact bounds')):
+            obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
+            if name == 'missing-request-inventory':
+                obs['capture_inventory']['requests'] = []
+            elif name == 'missing-required-response':
+                issued = dict(ledger[2],request_id=2,url=origin+'/api/v1/orgs/alpha/threads/THR-007',method='GET',at=8.1)
+                terminal = dict(event='request-finished',request_id=2,url=issued['url'],method='GET',at=8.2)
+                ledger.extend([issued,terminal])
+                obs['capture_inventory']['requests'].append(dict(issued,target=issued['url'][len(origin):],terminals=[terminal]))
+            elif name == 'fact-overflow':
+                obs['capture_inventory']['retained_facts'] = 16385
+            elif name == 'aggregate-overflow':
+                obs['capture_inventory']['retained_bytes'] = 8*1024*1024+1
+            else:
+                obs['capture_inventory']['refusals'] = [dict(reason='membership-cap',at=8.5,relay_id=None)]
+            try:
+                read(obs,ledger)
+            except ValueError as exc:
+                assert predicate in str(exc), (name,str(exc))
+                results['R3-R5-'+name] = str(exc)
+            else:
+                raise AssertionError('incomplete census accepted: '+name)
+        def retain_inventory(obs, ledger):
+            obs['capture_inventory']['requests'] = []
+            for issued in (e for e in ledger if e['event'] == 'request'):
+                retained = dict(issued,target=issued['url'][len(origin):])
+                terminals = [e for e in ledger if e['event'] in {'request-finished','request-failed'}
+                             and e['request_id'] == issued['request_id']]
+                if terminals:
+                    retained['terminals'] = terminals
+                    if terminals[0]['event'] == 'request-failed':
+                        retained['failed'] = terminals[0]['at']
+                obs['capture_inventory']['requests'].append(retained)
+        document_cases = {
+            'future-document':'committed issuing document',
+            'superseded-document':'committed issuing document',
+            'nonGET-document':'GET document commit',
+            'missing-commit':'committed issuing document',
+            'mismatched-commit':'GET document commit',
+            'same-document-lineage':'same-document retains committed lineage',
+            'pending-transition':'unambiguous issuing document',
+            'pending-snapshot':'pending document snapshot',
+            'missing-frame-fact':'provenance available',
+            'non-main-frame':'GET document commit',
+            'redirected-document':'GET document commit',
+        }
+        for name,predicate in document_cases.items():
+            obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
+            if name == 'future-document':
+                ledger[2]['document_request_id'] = 2
+                ledger.append(dict(ledger[0],request_id=2,document_request_id=0,at=8.1))
+                ledger.append(dict(ledger[1],document_request_id=2,at=8.2))
+            elif name in {'superseded-document','pending-transition'}:
+                issued = dict(ledger[0],request_id=1,document_request_id=0,at=0.6)
+                # Request IDs remain contiguous in chronological issuance order.
+                for event in ledger[2:]:
+                    event['request_id'] = 2
+                obs['thread_originals'][0]['request_id'] = 2
+                ledger[2:2] = [issued]
+                if name == 'superseded-document':
+                    ledger.insert(3,dict(ledger[1],document_request_id=1,at=0.7))
+                else:
+                    ledger[3]['pending_documents'] = [1]
+            elif name == 'nonGET-document':
+                ledger[0]['method'] = 'PUT'
+            elif name == 'missing-commit':
+                ledger.pop(1)
+                ledger[1]['pending_documents'] = [0]
+            elif name == 'mismatched-commit':
+                ledger[1]['url'] += '/wrong'
+            elif name == 'same-document-lineage':
+                ledger.insert(2,dict(ledger[1],new_document=False,document_request_id=99,at=0.7))
+            elif name == 'pending-snapshot':
+                ledger[2]['pending_documents'] = [99]
+            elif name == 'missing-frame-fact':
+                ledger[0].pop('main_frame')
+            elif name == 'non-main-frame':
+                ledger[0]['main_frame'] = False
+            else:
+                ledger[0]['unredirected'] = False
+            retain_inventory(obs,ledger)
+            try:
+                read(obs,ledger)
+            except ValueError as exc:
+                assert predicate in str(exc), (name,str(exc))
+                results['F3-document-'+name] = str(exc)
+            else:
+                raise AssertionError('unsafe committed-document census accepted: '+name)
+        same_document = copy.deepcopy(events)
+        same_document.insert(2,dict(events[1],new_document=False,at=0.75))
+        assert read(observations,same_document)[1] == reference
+        results['F3-same-document-positive'] = 'serialized original committed lineage retained'
+        # Exercise compose AND thread Responses at this real reader boundary.
+        for kind in ('compose','thread'):
+            obs,ledger = copy.deepcopy(observations),copy.deepcopy(events)
+            if kind == 'thread':
+                for event in ledger[2:]:
+                    event['method'] = 'GET'
+                    event['url'] = origin+'/api/v1/orgs/alpha/threads/THR-007'
+                ledger[3]['event'] = 'thread-response'
+                wire = obs['thread_proxy'][0]
+                wire.update(method='GET',target='/api/v1/orgs/alpha/threads/THR-007',
+                            path='/api/v1/orgs/alpha/threads/THR-007',ordinal=None)
+                wire['original']['required_kind'] = 'detail'
+            retain_inventory(obs,ledger)
+            assert read(obs,ledger)[1] == reference
+            results['F3-'+kind+'-response-positive'] = 'serialized committed-document/Response interval only'
+            for name,at in (('before-request',0.75),('after-terminal',8.5)):
+                changed = copy.deepcopy(ledger)
+                changed[3]['at'] = at
+                changed.sort(key=lambda e:e['at'])
+                try:
+                    read(obs,changed)
+                except ValueError as exc:
+                    assert 'Request <= Response <= successful terminal interval' in str(exc), (kind,name,str(exc))
+                    results['F3-'+kind+'-'+name] = str(exc)
+                else:
+                    raise AssertionError('Response outside its original interval accepted: '+kind+' '+name)
+        assert read(observations,events)[1] == reference
+    # Serialized body-independent owner grammar at the SAME reader boundary.
+    # These literal facts establish reader sensitivity only; no native owner is
+    # constructed, and these inputs are never Product/native closure receipts.
+    header = dict(status=200,transfer_encoding=[],content_length=['0'],content_type=['text/css'],chunked=False,length=0)
+    checkpoint = dict(kind='between',received=0,delivered=0,chunk_left=None,delimiter=None,remaining=None)
+    names = ['connection','original','duplicate','wake_read','wake_write','selector','raw','buffer','file','response']
+    acquired = [2.0,2.1,2.2,2.3,2.3,2.5,2.6,2.7,2.8,3.2]
+    owner = dict(runtime=dict(implementation='cpython',version=[3,14,4]),generation=1,end=10.,
+        resources=[dict(name=n,acquired=t,closed=4.5) for n,t in zip(names,acquired)],
+        registrations=[dict(name=n,registered=2.55,unregistered=4.3) for n in ('duplicate','wake_read')],
+        trace=[dict(event='checkpoint',at=2.9,kind='before-response',received=0,delivered=0,chunk_left=None,delimiter=None,remaining=None),
+               dict(event='checkpoint',at=3.6,**checkpoint)],
+        operations=[dict(id=1,kind='getresponse',read_id=None,started=3.,finished=3.5,outcome='returned',result=header)],
+        received=0,delivered=0,forced=None,terminal=None,mode=dict(original_blocking=False,duplicate_blocking=False,at=2.4),errors=[],finished=4.6)
+    request = dict(event='request',request_id=0,url=origin+'/asset.css',method='GET',resource_type='stylesheet',navigation=False,main_frame=True,unredirected=True,document_request_id=0,pending_documents=[],at=0.)
+    proxy = dict(relay_id=0,method='GET',path='/asset.css',target='/asset.css',ordinal=None,entered=1.,forwarded=2.,closed=5.,delivered=4.7,
+                 browser_request_id=0,owner_generation=1,io_owner=owner,response_outcome=header,status=200,streaming=False,upstream_operation=owner['operations'][0])
+    lifecycle = [dict(event='context-closing',request_ids=[],at=7.),dict(event='proxy-streams-shutdown',streams=[],at=7.1),
+                 dict(event='context-close',at=7.2),dict(event='context-closed',at=7.3)]
+    ledger = [request,dict(event='request-finished',request_id=0,url=request['url'],method='GET',at=6.),*lifecycle]
+    obs = dict(thread_proxy=[proxy],durable=[dict(threads_cases=dict(transport=dict(browser_port=4321),entered=0.,cleanup_finished=9.)),
+        dict(thread_proxy_closure=dict(port=4321,entered=8.,finished=8.5,workers_alive=0,listener_alive=False,connections=0,errors=[]))])
+    validate_e05_safety(obs,ledger)
+    results['R1-serialized-GET-owner'] = 'complete original-owner grammar accepted; native closure NOT RUN'
+    stopped = copy.deepcopy(obs)
+    r = stopped['thread_proxy'][0]
+    o = r['io_owner']
+    abort = dict(event='request-failed',request_id=0,url=request['url'],method='GET',failure='net::ERR_ABORTED',at=3.8)
+    o['operations'].append(dict(id=2,kind='stop',read_id=None,started=4.,finished=4.2,outcome='cancelled'))
+    r.update(error='Stopped',failure_operation='upstream',failure_at=4.4,browser_abort=dict(abort,target=r['target']),stop_settled=5.1)
+    del r['delivered']
+    r['upstream_operation'] = o['operations'][-1]
+    r['stop_intent'] = dict(kind='navigation',request_id=0,method='GET',target=r['target'],generation=1,event=r['browser_abort'],operation_id=1,enqueued=3.9,end=10.)
+    r['stop_ack'] = dict(generation=1,request_id=0,operation_id=2,previous_operation_id=1,read_id=None,previous_read_id=None,
+        checkpoint=checkpoint,received=0,delivered=0,buffered=0,since_checkpoint=0,would_block=False,started=4.,finished=4.1,outcome='already-complete')
+    stop_ledger = [request,abort,*lifecycle]
+    validate_e05_safety(stopped,stop_ledger)
+    results['R1-serialized-controlled-stop'] = 'original checkpoint grammar accepted; native cancellation NOT RUN'
+    for name,predicate,base,source_events in (
+        ('missing-owner','required original GET owner',obs,ledger),('empty-resources','every original/duplicate',obs,ledger),
+        ('empty-registrations','selector registrations',obs,ledger),('wrong-generation','positive GET owner',obs,ledger),
+        ('wrong-read-accounting','full raw/buffer accounting',obs,ledger),
+        ('duplicate-generation','positive GET owner generation',obs,ledger),
+        ('stale-stop','acknowledgement matches actual last',stopped,stop_ledger),
+        ('buffered-stop','empty entire buffered checkpoint',stopped,stop_ledger),
+        ('unsafe-browser-event','closed original browser event grammar',obs,ledger)):
+        changed,changed_events = copy.deepcopy(base),copy.deepcopy(source_events)
+        r = changed['thread_proxy'][0]
+        if name == 'missing-owner': del r['io_owner']
+        elif name == 'empty-resources': r['io_owner']['resources'] = []
+        elif name == 'empty-registrations': r['io_owner']['registrations'] = []
+        elif name == 'wrong-generation': r['owner_generation'] = 2
+        elif name == 'wrong-read-accounting': r['io_owner']['received'] = 1
+        elif name == 'duplicate-generation':
+            duplicate = copy.deepcopy(r)
+            duplicate.update(relay_id=1,browser_request_id=1)
+            changed['thread_proxy'].append(duplicate)
+            changed_events.insert(1,dict(request,request_id=1,at=0.1))
+            changed_events.insert(3,dict(ledger[1],request_id=1,at=6.1))
+        elif name == 'stale-stop': r['stop_ack']['checkpoint']['kind'] = 'finite'
+        elif name == 'buffered-stop': r['stop_ack']['buffered'] = 1
+        else: changed_events.insert(-1,dict(event='origin-bypass',url='http://elsewhere/',method='GET',resource_type='fetch',at=7.25))
+        try:
+            validate_e05_safety(changed,changed_events)
+        except ValueError as exc:
+            assert predicate in str(exc), (name,str(exc))
+            results['R1-R3-'+name] = str(exc)
+        else:
+            raise AssertionError('unsafe serialized owner accepted: '+name)
+    # A pre-E05 checkpoint owns no C/N/D command or closure. Counts cannot
+    # manufacture receipts even at this empty selected-operation boundary.
+    prefix = dict(starts=[dict(session=str(i)) for i in range(29)],witnesses=[dict(kind='stub') for _ in range(29)],command_count=0,thread_frame={})
+    before = dict(durable=[dict(threads_cases={})],thread_commands=[],thread_attempts=[],provider_commands=[],launch_witnesses=prefix['witnesses'])
+    validate_e05_operations({},before,prefix,[])
+    before['thread_commands'] = [{}]
+    try:
+        validate_e05_operations({},before,prefix,[])
+    except ValueError as exc:
+        assert 'finite eleven provider CLI actions' in str(exc)
+        results['R2-pre-E05-no-invented-command'] = str(exc)
+    else:
+        raise AssertionError('pre-E05 invented command accepted')
+    groups = {name:dict(state='reported_pass',begin=1.,end=2.,first_error_ref=None,
+              variants=MANIFEST['variants'][start:end],checkpoint_ref=None,admission_ref=None)
+              for name,start,end in (('E05',48,53),('E07',53,56))}
+    group_result = dict(groups=groups)
+    group_observations = dict(groups=copy.deepcopy(groups),failures=[])
+    group_result['groups']['E05']['state'] = 'invalid'
+    validate_groups(group_result,group_observations,'E07')
+    try:
+        validate_groups(group_result,group_observations)
+    except ValueError as exc:
+        assert 'group export equality' in str(exc)
+        results['B09-E05-metadata-isolation'] = 'E07 own metadata valid; global E05 conflict refused, independent content still required'
+    else:
+        raise AssertionError('invalid E05 metadata promoted globally')
+    group_result['groups']['E07']['variants'] = []
+    try:
+        validate_groups(group_result,group_observations,'E07')
+    except ValueError as exc:
+        assert 'selected group export equality' in str(exc)
+        results['B09-E07-own-metadata-required'] = str(exc)
+    else:
+        raise AssertionError('invalid own E07 metadata accepted')
+    # Serialized attribution inputs exercise the SAME shipping predicate called
+    # by validate_e07. They are not manufactured complete E07/native receipts.
+    owner = dict(state='unknown',begin=1.,end=5.,first_error_ref=0,
+        variants=MANIFEST['variants'][48:53],checkpoint_ref=None,admission_ref=None)
+    later = dict(state='reported_pass',begin=6.,end=9.,first_error_ref=None,
+        variants=MANIFEST['variants'][53:],checkpoint_ref='D',admission_ref='e07_admission')
+    caught = dict(site='threads.exercise',error_ref=0,caught=3.2,ordinary=True,primary=True)
+    e05 = dict(entered=2.,failure=caught,cleanup_finished=4.,cleanup_deadline=4.5,
+        case_outcomes={v:dict(status='UNKNOWN',error_ref=None) for v in MANIFEST['variants'][48:53]})
+    observed = dict(groups=dict(E05=owner,E07=later),observer_error=None,
+        failures=[dict(stage='controller-action',error='ValueError',at=3.1)],
+        durable=[dict(threads_cases=e05)],e07=dict(entered=7.,finished=8.),
+        e07_admission=dict(entered=6.1,finished=6.3),
+        finalization=dict(entered=10.,finished=12.,attempts=[]))
+    archived = dict(groups=copy.deepcopy(observed['groups']),failures=copy.deepcopy(observed['failures']),
+        durable=copy.deepcopy(observed['durable']),observer_state=dict(cutoff=6.2))
+    archived['groups']['E07'].update(state='running',end=None,checkpoint_ref=None,admission_ref=None)
+    def attribution_input(earlier: bool, final: bool) -> tuple[dict,dict]:
+        o,a = copy.deepcopy(observed),copy.deepcopy(archived)
+        if not earlier:
+            o['failures'],a['failures'] = [],[]
+            o['groups']['E05'].update(state='reported_pass',first_error_ref=None)
+            a['groups']['E05'] = copy.deepcopy(o['groups']['E05'])
+            del o['durable'][0]['threads_cases']['failure']
+            a['durable'] = copy.deepcopy(o['durable'])
+        if final:
+            ref = len(o['failures'])
+            o['failures'].extend([dict(stage='bounded',error='OSError',at=11.4),
+                                  dict(stage='daemon-log-close',error='OSError',at=11.5)])
+            o['finalization']['attempts'] = [dict(owner='Controller.close',operation='daemon-log-close',
+                entered=11.,finished=11.8,failure_refs=[ref,ref+1],same_cause=True,ordinary=True,main_thread=True)]
+        return o,a
+    for name,earlier,final in (('healthy-no-errors',False,False),('E05-unknown-first-cause',True,False),
+                              ('final-log-only',False,True),('E05-plus-final-log',True,True)):
+        o,a = attribution_input(earlier,final)
+        try:
+            validate_e07_failures(copy.deepcopy(o),o,a,[])
+        except (ValueError,KeyError,TypeError) as exc:
+            raise AssertionError('valid E07 failure attribution rejected: '+name) from exc
+        results['B09-B11-attribution-'+name] = 'attribution predicate only; full native/content/completion gates still required'
+    o,a = attribution_input(True,False)
+    o['groups']['E05']['state'] = a['groups']['E05']['state'] = 'failed'
+    validate_e07_failures(copy.deepcopy(o),o,a,[])
+    results['B09-attribution-E05-failed-first-cause'] = 'original failed E05 retained'
+    counterexamples = {
+        'missing-catch':('original E05 catch export',lambda o,a:o['durable'][0]['threads_cases'].pop('failure')),
+        'foreign-ref':('original ordinary E05 first cause',lambda o,a:[d[0]['threads_cases']['failure'].update(error_ref=1) for d in (o['durable'],a['durable'])]),
+        'false-primary':('original ordinary E05 first cause',lambda o,a:[d[0]['threads_cases']['failure'].update(primary=False) for d in (o['durable'],a['durable'])]),
+        'nonordinary':('original ordinary E05 first cause',lambda o,a:[d[0]['threads_cases']['failure'].update(ordinary=False) for d in (o['durable'],a['durable'])]),
+        'unknown-stage':('original ordinary E05 first cause',lambda o,a:[f[0].update(stage='unknown') for f in (o['failures'],a['failures'])]),
+        'prefix-drift':('original failure prefix',lambda o,a:a['failures'][0].update(error='AssertionError')),
+        'nonfinite':('closed finite original failure',lambda o,a:[f[0].update(at=float('inf')) for f in (o['failures'],a['failures'])]),
+        'overlap':('E05 catch and cleanup before E07',lambda o,a:[g['E05'].update(end=6.5) for g in (o['groups'],a['groups'])]),
+        'reversed-admission':('original admission, prefix',lambda o,a:o['e07_admission'].update(finished=6.15)),
+        'E07-error':('unattributed or E07 failure',lambda o,a:o['failures'].append(dict(stage='controller-action',error='AssertionError',at=7.5))),
+        'E07-group-error':('original running E07',lambda o,a:o['groups']['E07'].update(first_error_ref=0)),
+        'bad-final-ref':('final failure reference',lambda o,a:o['finalization']['attempts'][0].update(failure_refs=[99])),
+        'mixed-final-cause':('source-owned final attempt interval',lambda o,a:o['finalization']['attempts'][0].update(same_cause=False)),
+        'required-resource-error':('unrelated final log descriptor',lambda o,a:o['finalization']['attempts'][0].update(operation='thread-proxy-close')),
+        'required-export-error':('source-owned final attempt interval',lambda o,a:o['finalization']['attempts'][0].update(operation='export-e07')),
+        'early-final':('original finalization export',lambda o,a:o['finalization'].update(entered=7.)),
+        'final-time-drift':('unrelated final log descriptor',lambda o,a:o['failures'][-1].update(at=11.9)),
+        'reversed-failures':('ordered original failures',lambda o,a:o['failures'][-1].update(at=11.3)),
+        'interrupted-final':('unrelated final log descriptor',lambda o,a:o['finalization']['attempts'][0].update(ordinary=False)),
+        'observer-error':('complete browser stream',lambda o,a:o.update(observer_error='unavailable')),
+    }
+    final_names = {'bad-final-ref','mixed-final-cause','required-resource-error','required-export-error',
+                   'early-final','final-time-drift','reversed-failures','interrupted-final'}
+    for name,(reason,change) in counterexamples.items():
+        o,a = attribution_input(True,name in final_names)
+        change(o,a)
+        try:
+            validate_e07_failures(copy.deepcopy(o),o,a,[])
+        except ValueError as exc:
+            assert reason in str(exc), (name,str(exc))
+            results['B04-B08-B09-attribution-'+name] = str(exc)
+        else:
+            raise AssertionError('unsafe E07 failure attribution accepted: '+name)
+    o,a = attribution_input(True,False)
+    try:
+        validate_e07_failures(copy.deepcopy(o),o,a,None)
+    except ValueError as exc:
+        assert 'complete browser stream' in str(exc)
+        results['B09-attribution-missing-browser-stream'] = str(exc)
+    else:
+        raise AssertionError('missing browser stream accepted')
+    return results
+
 
 
 def completed_controls() -> dict:
@@ -207,6 +1118,41 @@ def completed_controls() -> dict:
             else:
                 raise AssertionError("unsafe completed path accepted")
         assert not (root / "outside").exists()
+        # Actual existing completion publisher, with genuine sparse manifest
+        # indices. These are consistency controls, never case/native acceptance.
+        sparse = root/'sparse'
+        (sparse/'coord').mkdir(parents=True,mode=0o700)
+        controller.root = sparse
+        controller.results = {}
+        controller.completed = dict(schema=1,identity=controller.completed_identity,cases=[])
+        controller.completed_files = {}
+        for variant in MANIFEST['variants'][:48]+MANIFEST['variants'][53:]:
+            controller.mark(variant)
+        ledger,_ = completed.read_bundle(sparse/'coord',controller.completed_identity)
+        result = dict(controller.completed_identity,completed_cases=ledger,variants=controller.results)
+        scoped_completed_join(ledger,result,MANIFEST['variants'][53:])
+        assert len(ledger['cases']) == 51 and ledger['cases'][48]['manifest_index'] == 53
+        results['B09-B11-sparse-scoped-completion'] = 'E07 consistency join accepted; independent content still required'
+        for label,action,predicate in (
+            ('missing-E05',lambda:scoped_completed_join(ledger,result,MANIFEST['variants'][48:53]),'scoped completed cases unavailable'),
+            ('whole56',lambda:completed.join_results(ledger,result),'complete case/result join unavailable'),
+        ):
+            try:
+                action()
+            except ValueError as exc:
+                assert predicate in str(exc)
+                results['B09-B11-'+label] = str(exc)
+            else:
+                raise AssertionError('sparse completion falsely admitted: '+label)
+        changed = copy.deepcopy(result)
+        changed['variants'][MANIFEST['variants'][53]]['at'] += 1
+        try:
+            scoped_completed_join(ledger,changed,MANIFEST['variants'][53:])
+        except ValueError as exc:
+            assert 'scoped completed original result conflict' in str(exc)
+            results['B09-scoped-time-conflict'] = str(exc)
+        else:
+            raise AssertionError('scoped original result conflict accepted')
     return results
 
 
@@ -613,12 +1559,12 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
           "scenario/observation disagreement or observer failure")
     starts, commands = observations["starts"], observations["provider_commands"]
     durable, observer = observations["durable"], observations["provider_observer"]
-    check(len(starts) == 38 and len({s["session"] for s in starts[:29]}) == 29, "retained29 genuine prefix providers;38 C composition")
+    check(len(starts) >= 29 and len({s["session"] for s in starts[:29]}) == 29, "independently owned29 genuine E04 prefix providers")
     check(len(observer) >= 2 and all(0 < b["at"] - a["at"] <= 1 for a, b in zip(observer, observer[1:])),
           "continuous provider observer interval")
     check(all(a["stubs"] <= b["stubs"] and a["calls"] <= b["calls"] for a, b in zip(observer, observer[1:])),
           "observer counter rollback")
-    check(observer[-1]["stubs"] == 38 and not observer[-1]["pending"], "observer composed final closure")
+    check(any(o['stubs'] == 29 and not o['pending'] for o in observer), 'actual closed E04 observer prefix')
     http = observations["http"]
     anchors = [r["jobs_anchor"] for r in durable if "jobs_anchor" in r and not r["jobs_anchor"]["name"].startswith("E05:")]
     check(len(anchors) == 27 and len({a["name"] for a in anchors}) == 27, "complete unique boot/case/drain anchors")
@@ -1120,8 +2066,1230 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                    and w["argv_sha256"] == digest]) == 1, "provider child/PID/argv source witness")
 
 
+def require_browser_copy(event: dict, original: dict) -> None:
+    """A measured independent browser input is mandatory, including full JSON."""
+    if event.get('browser_copy') != 'measured-browser':
+        raise ValueError('E05 browser evidence UNKNOWN: independent browser copy unavailable')
+    if (event.get('body') != original['body'] or event.get('sha256') != original['sha256']
+            or type(event.get('bytes')) is not int or event['bytes'] != original['bytes']):
+        raise ValueError('E05 browser evidence FAIL: original/browser full body/hash/length mismatch')
+
+
+def validate_original_member(record: dict) -> object:
+    """Independent bounded original/forwarding grammar, not browser receipt."""
+    def check(value, reason):
+        if not value:
+            raise ValueError('E05 original: ' + reason)
+    def number(value):
+        return type(value) in (int,float) and math.isfinite(value)
+    o,f = record['original'], record['forwarding']
+    check(set(o) == {'schema','relay_id','required_kind','started','status','framing','header_bytes','finished',
+                     'outcome','byte_length','sha256','first_error','capture_state','capture_refusal','entity_copy'}, 'closed original grammar')
+    check(type(o['schema']) is int and o['schema'] == 1 and type(o['relay_id']) is int
+          and o['relay_id'] == record['relay_id'] and o['required_kind'] in {'compose','detail','messages'}, 'original identity')
+    check(o['outcome'] in {'complete','empty','bodyless','partial','error','pending'}
+          and o['capture_state'] in {'open','sealed','refused'}, 'distinct original outcome')
+    check(o['capture_state'] == 'sealed' and o['capture_refusal'] is None
+          and o['first_error'] is None and o['outcome'] == 'complete', 'complete required original, never partial/empty/error/refusal')
+    check(type(o['status']) is int and o['status'] == record['status'] == 200
+          and number(o['started']) and number(o['finished'])
+          and o['started'] == record['entered'] <= o['finished'] <= record['closed'], 'original status/timeline')
+    framing = o['framing']
+    check(set(framing) == {'content_type','content_encoding','content_length','transfer_encoding','bodyless'}
+          and all(type(framing[k]) is list and len(framing[k]) <= 1 and all(type(v) is str for v in framing[k])
+                  for k in ('content_type','content_encoding','content_length','transfer_encoding'))
+          and type(framing['bodyless']) is bool and not framing['bodyless']
+          and framing['content_encoding'] in ([],['identity'])
+          and len(framing['content_type']) == 1 and framing['content_type'][0].split(';')[0] == 'application/json', 'identity UTF8 JSON framing')
+    check(type(o['header_bytes']) is int and 0 <= o['header_bytes'] <= 65536
+          and type(o['byte_length']) is int and 0 < o['byte_length'] <= 1048576, 'entity/header bounds')
+    entity = o['entity_copy']
+    check(set(entity) == {'representation','text','copy_bytes','copy_sha256','original_byte_check'}
+          and entity['representation'] == 'unchanged_utf8' and entity['original_byte_check'] == 'available'
+          and type(entity['text']) is str, 'unchanged safe original bytes available; sanitized copy is not original proof')
+    raw = entity['text'].encode('utf8')
+    check(len(raw) == o['byte_length'] == entity['copy_bytes']
+          and hashlib.sha256(raw).hexdigest() == o['sha256'] == entity['copy_sha256'], 'original entity bytes/hash')
+    check(not framing['content_length'] or framing['content_length'][0].isascii()
+          and framing['content_length'][0].isdecimal() and int(framing['content_length'][0]) == len(raw), 'complete declared entity length')
+    check(set(f) == {'segments','byte_length','sha256','finished'} and type(f['segments']) is list
+          and len(f['segments']) <= 16384, 'closed forwarding grammar')
+    offset = 0
+    for segment in f['segments']:
+        check(set(segment) == {'offset','length','sha256','write_started','write_returned','flush_returned','written'}
+              and type(segment['offset']) is int and type(segment['length']) is int
+              and segment['offset'] == offset and segment['length'] > 0
+              and type(segment['written']) is int and segment['written'] == segment['length'], 'actual contiguous full write prefix')
+        part = raw[offset:offset+segment['length']]
+        check(len(part) == segment['length'] and hashlib.sha256(part).hexdigest() == segment['sha256'], 'forwarded original segment digest')
+        check(all(number(segment[k]) for k in ('write_started','write_returned','flush_returned'))
+              and record['entered'] <= segment['write_started'] <= segment['write_returned'] <= segment['flush_returned'] <= record['delivered'], 'separate actual write and flush returns')
+        offset += segment['length']
+    check(offset == f['byte_length'] == o['byte_length'] and f['sha256'] == o['sha256']
+          and number(f['finished']) and o['finished'] <= f['finished'] <= record['delivered'] <= record['closed'], 'complete forwarding, never browser receipt')
+    def pairs(items):
+        result = {}
+        for k,v in items:
+            check(k not in result, 'duplicate original JSON key')
+            result[k] = v
+        return result
+    def constant(_value):
+        raise ValueError('E05 original: nonfinite original JSON')
+    return json.loads(raw.decode('utf8'), object_pairs_hook=pairs, parse_constant=constant)
+
+
+def validate_e05_originals(observations: dict, directory: Path) -> dict:
+    """Census every required native Response and independently recompute joins."""
+    import re
+    def check(value, reason):
+        if not value:
+            raise ValueError('E05 originals: ' + reason)
+    events = json.loads((directory/'e05-browser-events.json').read_text())
+    inventory = observations['capture_inventory']
+    check(set(inventory) == {'refusals','closed','requests','retained_bytes','retained_facts'} and inventory['refusals'] == []
+          and type(inventory['closed']) in (int,float) and math.isfinite(inventory['closed']), 'closed complete inventory, no refusal')
+    check(type(inventory['retained_bytes']) is int and 0 <= inventory['retained_bytes'] <= 8*1024*1024
+          and type(inventory['retained_facts']) is int and 0 <= inventory['retained_facts'] <= 16384,
+          'whole-context reserved byte/fact bounds')
+    requests = [e for e in events if e['event'] == 'request']
+    check([e['request_id'] for e in requests] == list(range(len(requests)))
+          and all(type(e['request_id']) is int for e in requests), 'unique complete Request census')
+    check(len(requests) <= 512 and len(events) <= 16384 and len(inventory['requests']) == len(requests)
+          and all(len(e['url'].encode('utf8')) <= 8192 for e in requests), 'complete original Request inventory')
+    case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
+    origin = 'http://127.0.0.1:' + str(case['transport']['browser_port'])
+    for issued, retained in zip(requests,inventory['requests']):
+        check(issued['url'].startswith(origin+'/'), 'native Request origin safety')
+        expected = dict(issued,target=issued['url'][len(origin):])
+        terminals = [e for e in events if e['event'] in {'request-failed','request-finished'} and e['request_id'] == issued['request_id']]
+        check(len(terminals) <= 1, 'unique original Request terminal')
+        if terminals:
+            expected['terminals'] = terminals
+            if terminals[0]['event'] == 'request-failed':
+                expected['failed'] = terminals[0]['at']
+        check(retained == expected, 'exact original Request/terminal inventory')
+    required_requests = [e for e in requests if
+        e['method'] == 'POST' and e['url'].split('?')[0] == origin+'/api/v1/orgs/alpha/threads'
+        or e['method'] == 'GET' and re.fullmatch(re.escape(origin)+r'/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?',e['url'].split('?')[0])]
+    native = [e for e in events if e['event'] in {'compose-response','thread-response'}]
+    check([e['response_id'] for e in native] == list(range(len(native)))
+          and all(type(e['response_id']) is int and type(e['request_id']) is int for e in native)
+          and len({e['request_id'] for e in native}) == len(native) <= 512, 'exact unique Response objects')
+    check({e['request_id'] for e in required_requests} == {e['request_id'] for e in native}
+          and len(required_requests) == len(native), 'every required native Request has its own Response')
+    # Replay the ORIGINAL order, never search a future Request to establish an
+    # issuing document. Main-frame/unredirected facts come from native objects;
+    # the pinned main-frame commit callback supplies the commit observation.
+    check(all(type(e['at']) in (int,float) and math.isfinite(e['at']) for e in events)
+          and all(a['at'] <= b['at'] for a,b in zip(events,events[1:])), 'chronological native document ledger')
+    seen, committed, pending = {}, set(), set()
+    current_document = None
+    for event in events:
+        if event['event'] == 'request':
+            check(all(type(event.get(k)) is bool for k in ('navigation','main_frame','unredirected')),
+                  'native main-frame and redirect provenance available')
+            check(type(event['pending_documents']) is list
+                  and all(type(i) is int for i in event['pending_documents'])
+                  and event['pending_documents'] == sorted(pending), 'consistent original pending document snapshot')
+            expected_document = current_document if event['main_frame'] and event['unredirected'] else None
+            check(event['document_request_id'] is None if expected_document is None else
+                  type(event['document_request_id']) is int and event['document_request_id'] == expected_document,
+                  'actual committed issuing document at Request issuance')
+            if event in required_requests:
+                check(event['main_frame'] and event['unredirected'] and current_document is not None and not pending,
+                      'unambiguous issuing document at issue time')
+            seen[event['request_id']] = event
+            if event['navigation'] and event['main_frame']:
+                pending.add(event['request_id'])
+        elif event['event'] == 'navigation':
+            document_id = event['document_request_id']
+            check(type(event['new_document']) is bool and type(document_id) is int
+                  and event['url'].startswith(origin+'/'), 'typed same-origin native document commit lineage')
+            if event['new_document']:
+                document = seen.get(document_id)
+                check(document is not None and document_id not in committed and document_id in pending
+                      and document['navigation'] and document['main_frame'] and document['unredirected']
+                      and document['resource_type'] == 'document' and document['method'] == 'GET'
+                      and document['url'] == event['url'] and document['at'] <= event['at'],
+                      'actual earlier unredirected main-frame GET document commit')
+                committed.add(document_id)
+                pending.remove(document_id)
+                current_document = document_id
+            else:
+                check(current_document is not None and document_id == current_document and not pending,
+                      'same-document retains committed lineage without pending navigation')
+    proxies = observations['thread_proxy']
+    check(len(proxies) <= 512 and [r['relay_id'] for r in proxies] == list(range(len(proxies))), 'complete relay membership including late requests')
+    def required(r):
+        return (r['method'] == 'POST' and r['ordinal'] is not None
+                or r['method'] == 'GET' and re.fullmatch(r'/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?',r['target'].split('?')[0]))
+    members = [r for r in proxies if required(r)]
+    check(len(members) == len(native) <= 512 and all('original' in r for r in members)
+          and all(r['closed'] <= inventory['closed'] for r in members), 'every automatic/view/revisit required original is retained')
+    check(sum(r['original']['byte_length']+r['original']['header_bytes'] for r in members) <= 8*1024*1024
+          and sum(len(r['forwarding']['segments'])+1 for r in members) <= 16384, 'whole-context original bounds')
+    check(sum(r['original']['byte_length']+r['original']['header_bytes'] for r in members) <= inventory['retained_bytes']
+          and len(proxies)+len(requests)+sum(len(r['forwarding']['segments'])+4 for r in members) <= inventory['retained_facts'],
+          'complete retained membership has original byte/fact reservations')
+    case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
+    origin = 'http://127.0.0.1:' + str(case['transport']['browser_port'])
+    def candidates(e, response):
+        terminal = [t for t in events if t['event'] in {'request-finished','request-failed'} and t['request_id'] == e['request_id']]
+        check(len(terminal) == 1 and terminal[0]['event'] == 'request-finished'
+              and terminal[0]['url'] == e['url'] and terminal[0]['method'] == e['method'], 'exact successful original native terminal')
+        check(e['at'] <= response['at'] <= terminal[0]['at']
+              and events.index(e) <= events.index(response) <= events.index(terminal[0]),
+              'exact Request <= Response <= successful terminal interval')
+        return [r for r in members if r['method'] == e['method'] and origin+r['target'] == e['url']
+                and r['entered'] <= terminal[0]['at'] and r['closed'] >= e['at']]
+    matches = {}
+    for response in native:
+        issued = [e for e in requests if e['request_id'] == response['request_id']]
+        check(len(issued) == 1 and issued[0]['url'] == response['url'] and issued[0]['method'] == response['method'], 'exact Response.request identity')
+        issued = issued[0]
+        check(type(issued.get('document_request_id')) is int and issued.get('pending_documents') == [], 'unambiguous issuing document at issue time')
+        options = candidates(issued, response)
+        check(len(options) == 1 and options[0]['relay_id'] not in {r['relay_id'] for r in matches.values()}, 'full-window unique bijection; no URL/ordinal fallback')
+        wire = options[0]
+        check(response['status'] == wire['status'] == 200 and wire['original']['required_kind'] ==
+              ('compose' if response['event'] == 'compose-response' else 'messages' if wire['path'].endswith('/messages') else 'detail'), 'required response kind/status')
+        matches[response['request_id']] = wire
+    check(len({r['relay_id'] for r in matches.values()}) == len(members), 'no omitted or reused required member')
+    originals = observations['thread_originals']
+    check(len(originals) == len(native), 'final original observations include every response')
+    bodies = {}
+    for response, original in zip(native, originals):
+        wire = matches[response['request_id']]
+        body = validate_original_member(wire)
+        check(set(original) == {'relay_id','request_id','origin','body','bytes','sha256','response_id'}
+              and original['origin'] == 'relay-original' and original['relay_id'] == wire['relay_id']
+              and original['request_id'] == response['request_id'] and original['response_id'] == response['response_id']
+              and original['body'] == body and original['bytes'] == wire['original']['byte_length']
+              and original['sha256'] == wire['original']['sha256'], 'full original object/content reference')
+        bodies[response['request_id']] = original
+    return bodies
+
+
+def validate_e05_safety(observations: dict, events: list[dict]) -> None:
+    """Body-independent native census and COMPLETE original GET/stop proof."""
+    def check(value, reason):
+        if not value:
+            raise ValueError('E05 safety: ' + reason)
+    durable = observations['durable']
+    case = next(d['threads_cases'] for d in durable if 'threads_cases' in d)
+    case_end = case.get('finished', case['cleanup_finished'])
+    transport = case['transport']
+    origin = f"http://127.0.0.1:{transport['browser_port']}"
+    def number(value: object) -> bool:
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def natural(value: object) -> bool:
+        return type(value) is int and value >= 0
+
+    def same(left: object, right: object) -> bool:
+        # JSON equality must preserve bool/int/float distinctions in snapshots.
+        return json.dumps(left,sort_keys=True,allow_nan=False) == json.dumps(right,sort_keys=True,allow_nan=False)
+
+    event_fields = {
+        'request': 'request_id url method resource_type navigation main_frame unredirected document_request_id pending_documents',
+        'request-failed': 'request_id url method failure', 'request-finished': 'request_id url method',
+        'stream-response': 'request_id url method status',
+        'context-closing': 'request_ids', 'proxy-streams-shutdown': 'streams',
+        'context-close': '', 'context-closed': '',
+        'compose-request': 'url method sha256 bytes payload', 'compose-response': 'url method status request_id response_id browser_copy sha256 bytes body',
+        'compose-created': 'thread dialog_count list_rows url list_url',
+        'navigation': 'url new_document document_request_id', 'deliberate-revisit': 'url',
+        'snapshot': 'name', 'event-batch': 'rows guard_sensitivity', 'thread-response': 'url method status request_id response_id browser_copy sha256 bytes body',
+        'thread-view': 'thread body original_body original_ref messages_original_ref request_id response_id messages_request_id messages_response_id browser_copy text screenshot url response_url method status messages_body original_messages_body messages_url messages_status messages_method rendered_messages',
+    }
+    check(all(e.get('event') in event_fields and set(e) == {'event', 'at', *event_fields[e['event']].split()}
+              for e in events), 'R2 closed original browser event grammar')
+    check(all(type(e['at']) in (int,float) and math.isfinite(e['at']) for e in events)
+          and [e['at'] for e in events] == sorted(e['at'] for e in events),
+          'R2 complete chronological native browser ledger')
+    native_requests = [e for e in events if e['event'] == 'request']
+    check([e['request_id'] for e in native_requests] == list(range(len(native_requests)))
+          and all(type(e['request_id']) is int for e in native_requests), 'R2 unique native Request ledger')
+    for event in events:
+        if event['event'] in {'request-failed', 'request-finished', 'stream-response'}:
+            issued = [e for e in native_requests if e['request_id'] == event['request_id']]
+            check(type(event['request_id']) is int and len(issued) == 1 and issued[0]['url'] == event['url']
+                  and issued[0]['method'] == event['method'] and issued[0]['at'] <= event['at'],
+                  'R2 native response/terminal event belongs to original Request')
+    for issued in native_requests:
+        terminals = [e for e in events if e['event'] in {'request-failed', 'request-finished'}
+                     and e['request_id'] == issued['request_id']]
+        check(len(terminals) <= 1, 'R2 no duplicate or contradictory native Request terminal')
+        check(all(r['at'] <= t['at'] for r in events if r['event'] == 'stream-response'
+                  and r['request_id'] == issued['request_id'] for t in terminals),
+              'R2 native response precedes its exact Request terminal')
+    check(events and events[-1]['event'] == 'context-closed', 'real browser origin/closure')
+    closure = [d["thread_proxy_closure"] for d in durable if "thread_proxy_closure" in d]
+    check(len(closure) == 1 and closure[0]["port"] == transport["browser_port"] and not closure[0]["errors"]
+          and closure[0]["workers_alive"] == closure[0]["connections"] == 0 and closure[0]["listener_alive"] is False, "bounded proxy/socket/listener closure")
+    check(set(closure[0]) == {'port','entered','finished','workers_alive','listener_alive','connections','errors'}
+          and type(closure[0]['port']) is int and type(closure[0]['workers_alive']) is int
+          and type(closure[0]['connections']) is int and closure[0]['errors'] == []
+          and number(closure[0]['entered']) and number(closure[0]['finished']),
+          'R2 closed typed original proxy closure')
+    check(case.get('final_entered',case['entered']) <= events[-1]['at'] <= closure[0]['entered'] <= closure[0]['finished'] <= case_end,
+          'R2 browser and proxy close within original E05 final allowance')
+    lifecycle = [e for e in events if e['event'] in {'context-closing', 'proxy-streams-shutdown', 'context-close', 'context-closed'}]
+    check([e['event'] for e in lifecycle] == ['context-closing', 'proxy-streams-shutdown', 'context-close', 'context-closed']
+          and case.get('final_entered',case['entered']) <= lifecycle[0]['at'] <= lifecycle[1]['at'] <= lifecycle[2]['at']
+          <= lifecycle[3]['at'] <= closure[0]['entered'], 'R2 initiating owner, native context close and actual return')
+    closing, shutdown_event, native_close, returned = lifecycle
+    streams = [e for e in events if e['event'] == 'stream-response']
+    check(len({e['request_id'] for e in streams}) == len(streams)
+          and all(e['method'] == 'GET' and type(e['status']) is int and e['status'] == 200
+                  and e['url'].startswith(origin+'/') for e in streams), 'R2 unique native same-origin SSE responses')
+    live = sorted(e['request_id'] for e in streams if e['at'] <= closing['at']
+                  and not any(t['event'] in {'request-failed','request-finished'} and t['request_id'] == e['request_id']
+                              and t['at'] <= closing['at'] for t in events))
+    check(closing['request_ids'] == live and all(type(i) is int for i in closing['request_ids'])
+          and not any(e['at'] > closing['at'] for e in streams), 'R2 exact still-live native SSE set before owner shutdown')
+    shutdowns = shutdown_event['streams']
+    check(isinstance(shutdowns, list) and len({s['intent']['request_id'] for s in shutdowns}) == len(shutdowns)
+          and sorted(s['intent']['request_id'] for s in shutdowns) == live, 'R2 every original live native stream shutdown accounted')
+    for shutdown in shutdowns:
+        check(type(shutdown) is dict and set(shutdown) == {'intent','ack','settled'},
+              'R2 closed worker stream acknowledgement')
+        owners = [p for p in observations['thread_proxy']
+                  if same(p.get('stop_intent'), shutdown['intent']) and same(p.get('stop_ack'), shutdown['ack'])
+                  and same(p.get('stop_settled'), shutdown['settled'])]
+        check(len(owners) == 1 and shutdown['intent']['kind'] == 'context'
+              and same(shutdown['intent']['event'], closing) and shutdown['ack']['outcome'] == 'shutdown'
+              and shutdown['settled'] <= shutdown_event['at'], 'R2 exact complete stream worker acknowledgement join')
+    def validate_io_owner(proxied: dict) -> None:
+        owner = proxied['io_owner']
+        generation = proxied['owner_generation']
+        check(type(generation) is int and generation > 0 and generation not in owner_generations
+              and type(owner) is dict
+              and set(owner) == {'runtime','generation','end','resources','registrations','trace','operations','received','delivered','forced','terminal','mode','errors','finished'}
+              and type(owner['generation']) is int and owner['generation'] == generation and owner['forced'] is None and owner['errors'] == []
+              and number(owner['end']) and number(owner['finished'])
+              and proxied['entered'] <= owner['finished'] <= proxied['closed'] <= owner['end']
+              and proxied['method'] == 'GET' and proxied['ordinal'] is None,
+              'R2 original positive GET owner generation, deadline and sticky closure')
+        check(all(number(proxied[k]) for k in ('entered','forwarded','closed')),
+              'R2 original owner times have strict finite numeric types')
+        owner_generations.add(generation)
+        runtime = owner['runtime']
+        check(type(runtime) is dict and set(runtime) == {'implementation','version'}
+              and runtime['implementation'] == 'cpython' and type(runtime['version']) is list
+              and len(runtime['version']) == 3 and all(natural(v) for v in runtime['version'])
+              and runtime['version'][:2] in ([3,12],[3,14]),
+              'R2 supported exact-minor private parser owner')
+        mode = owner['mode']
+        check(type(mode) is dict and set(mode) == {'original_blocking','duplicate_blocking','at'}
+              and mode['original_blocking'] is False and mode['duplicate_blocking'] is False
+              and number(mode['at']) and proxied['forwarded'] <= mode['at'] <= owner['finished'],
+              'R2 actual shared original/duplicate nonblocking descriptor modes')
+        resources = owner['resources']
+        check(type(resources) is list and len(resources) == 10
+              and {r.get('name') for r in resources}
+              == {'connection','original','duplicate','wake_read','wake_write','selector','raw','buffer','file','response'},
+              'R2 every original/duplicate/parser/buffer/selector/wake owner inventoried')
+        check(all(set(r) == {'name','acquired','closed'} and number(r['acquired']) and number(r['closed'])
+                  and proxied['entered'] <= r['acquired'] <= r['closed'] <= owner['finished'] for r in resources)
+              and [r['acquired'] for r in resources] == sorted(r['acquired'] for r in resources),
+              'R2 complete actual per-handle closure, never workers-zero inference')
+        by_name = {r['name']:r for r in resources}
+        check(by_name['connection']['acquired'] <= by_name['original']['acquired']
+              <= by_name['duplicate']['acquired'] <= mode['at']
+              and by_name['raw']['acquired'] <= by_name['buffer']['acquired']
+              <= by_name['file']['acquired'] <= by_name['response']['acquired'],
+              'R2 mode and parser wrappers belong to their already-acquired underlying handles')
+        registrations = owner['registrations']
+        check(type(registrations) is list and len(registrations) == 2
+              and {r.get('name') for r in registrations} == {'duplicate','wake_read'}
+              and all(set(r) == {'name','registered','unregistered'} and number(r['registered'])
+                      and number(r['unregistered'])
+                      and max(by_name['selector']['acquired'],by_name[r['name']]['acquired'],mode['at'])
+                      <= r['registered'] <= by_name['file']['acquired']
+                      and r['registered'] <= r['unregistered']
+                      <= min(h['closed'] for h in resources) for r in registrations),
+              'R2 actual selector registrations removed before any acquired handle close')
+        trace = owner['trace']
+        check(type(trace) is list and 0 < len(trace) <= 16384
+              and all(type(t) is dict and number(t.get('at')) for t in trace)
+              and [t['at'] for t in trace] == sorted(t['at'] for t in trace)
+              and proxied['forwarded'] <= trace[0]['at'] <= trace[-1]['at'] <= owner['finished'],
+              'R2 chronological raw original reader accounting')
+        received = delivered = 0
+        checkpoints = []
+        last_file = None
+        chunk_remaining = None
+        size_pending = False
+        eof_seen = False
+        chunk_terminal_seen = False
+        trailer_ended = False
+        for fact in trace:
+            if fact['event'] == 'receive':
+                check(set(fact) == {'event','at','bytes','received'} and natural(fact['bytes']) and fact['bytes'] <= 65536, 'R2 original socket receive including actual EOF')
+                check(not eof_seen and not trailer_ended, 'R2 no receive after native EOF or complete chunk terminal')
+                eof_seen = fact['bytes'] == 0
+                received += fact['bytes']
+                check(fact['received'] == received and type(fact['received']) is int,
+                      'R2 actual cumulative socket receive count')
+            elif fact['event'] == 'would-block':
+                check(set(fact) == {'event','at','received','delivered'}
+                      and natural(fact['received']) and natural(fact['delivered'])
+                      and fact['received'] == received and fact['delivered'] == delivered,
+                      'R2 actual would-block observation preserves buffered progress')
+            elif fact['event'] in {'chunk-terminal','trailer-end'}:
+                extra = 'size' if fact['event'] == 'chunk-terminal' else 'delimiter'
+                check(set(fact) == {'event','at','received','delivered',extra}
+                      and natural(fact['received']) and natural(fact['delivered'])
+                      and fact['received'] == received and fact['delivered'] == delivered
+                      and last_file is not None and last_file['method'] == 'readline',
+                      'R2 original terminal chunk/trailer counters')
+                if fact['event'] == 'chunk-terminal':
+                    check(not chunk_terminal_seen and type(fact['size']) is int and fact['size'] == 0 and size_pending
+                          and last_file['bytes'] >= 3, 'R2 actual parsed terminal zero chunk')
+                    chunk_terminal_seen = True
+                    size_pending = False
+                    chunk_remaining = 0
+                else:
+                    check(chunk_terminal_seen and not trailer_ended and fact['delimiter'] == '0d0a'
+                          and chunk_remaining == 0 and last_file['bytes'] == 2,
+                          'R2 actual complete trailer terminator')
+                    trailer_ended = True
+            elif fact['event'] == 'file-return':
+                check(not trailer_ended and (not chunk_terminal_seen or fact['method'] == 'readline'),
+                      'R2 terminal chunk permits only its original trailer reads')
+                check(set(fact) == {'event','at','method','bytes','delivered'}
+                      and fact['method'] in {'read','read1','readline'} and natural(fact['bytes']),
+                      'R2 closed parser file-return counters')
+                delivered += fact['bytes']
+                check(type(fact['delivered']) is int and fact['delivered'] == delivered <= received,
+                      'R2 buffered and pending file bytes never vanish')
+                if fact['method'] == 'read':
+                    check(fact['bytes'] == 2, 'R2 original parser consumes exactly the chunk CRLF')
+                if fact['method'] == 'read1' and proxied.get('response_outcome', {}).get('chunked') is True:
+                    check(type(chunk_remaining) is int and 0 < fact['bytes'] <= chunk_remaining,
+                          'R2 body return consumes only known current chunk payload')
+                    chunk_remaining -= fact['bytes']
+                last_file = fact
+            elif fact['event'] == 'checkpoint':
+                check(set(fact) == {'event','at','kind','received','delivered','chunk_left','delimiter','remaining'}
+                      and fact['kind'] in {'before-response','between','chunk-size','payload','finite'}
+                      and natural(fact['received']) and natural(fact['delivered'])
+                      and fact['received'] == received and fact['delivered'] == delivered,
+                      'R2 raw semantic checkpoint counters and closed grammar')
+                kind = fact['kind']
+                check(not chunk_terminal_seen or trailer_ended and kind == 'between',
+                      'R2 terminal chunk cannot reopen a cancellable parser checkpoint')
+                check((fact['chunk_left'] is None or type(fact['chunk_left']) is int and fact['chunk_left'] > 0)
+                      and (fact['remaining'] is None or type(fact['remaining']) is int and fact['remaining'] > 0)
+                      and (kind == 'payload') == (fact['chunk_left'] is not None)
+                      and (kind == 'finite') == (fact['remaining'] is not None)
+                      and (kind == 'chunk-size' or fact['delimiter'] is None),
+                      'R2 checkpoint-specific framing/finite shape')
+                if kind == 'before-response':
+                    check(not checkpoints and received == delivered == 0, 'R2 entire-response byte-zero checkpoint')
+                if kind == 'chunk-size':
+                    check(fact['delimiter'] is None and chunk_remaining is None
+                          or fact['delimiter'] == '0d0a' and chunk_remaining == 0 and last_file is not None
+                          and last_file['method'] == 'read' and last_file['bytes'] == 2,
+                          'R2 fresh chunk-size waits follow actual validated CRLF')
+                    size_pending = True
+                if kind == 'payload':
+                    check((size_pending and last_file is not None and last_file['method'] == 'readline'
+                           and last_file['bytes'] >= 3)
+                          or (not size_pending and chunk_remaining is not None
+                              and fact['chunk_left'] == chunk_remaining),
+                          'R2 fresh parsed positive size or exact retained chunk remainder')
+                    chunk_remaining = fact['chunk_left']
+                    size_pending = False
+                checkpoints.append(fact)
+            else:
+                check(False, 'R2 unknown or sticky failed raw reader event')
+        check(natural(owner['received']) and natural(owner['delivered'])
+              and owner['received'] == received and owner['delivered'] == delivered,
+              'R2 full raw/buffer accounting retained through closure')
+        operations = owner['operations']
+        check(type(operations) is list and operations
+              and [o.get('id') for o in operations] == list(range(1,len(operations)+1))
+              and same(proxied.get('upstream_operation'), operations[-1]),
+              'R2 complete unique current/prior operation identities')
+        reads = []
+        previous = None
+        for op in operations:
+            check(type(op['id']) is int and set(op) in (
+                      {'id','kind','read_id','started','finished','outcome','result'},
+                      {'id','kind','read_id','started','finished','outcome'})
+                  and op['kind'] in {'getresponse','read','stop'}
+                  and number(op['started']) and number(op['finished'])
+                  and proxied['forwarded'] <= op['started'] <= op['finished'] <= owner['finished']
+                  and (previous is None or previous['finished'] <= op['started'])
+                  and op.get('outcome') in {'returned','cancelled'},
+                  'R2 complete chronological operations; earlier error is never laundered')
+            if op['kind'] == 'read':
+                check(type(op['read_id']) is int and op['read_id'] == len(reads)+1,
+                      'R2 positive distinct actual read identity')
+                reads.append(op)
+            else:
+                check(op['read_id'] is None, 'R2 only actual body read owns a read ID')
+            if op['outcome'] == 'cancelled':
+                check(op is operations[-1] and set(op) == {'id','kind','read_id','started','finished','outcome'},
+                      'R2 explicit current cancellation never invents returned bytes')
+            elif op['kind'] == 'getresponse':
+                check(op is operations[0] and same(op['result'], proxied.get('response_outcome')),
+                      'R2 original returned headers retained verbatim')
+            else:
+                check(op['kind'] == 'read' and previous is not None and previous['outcome'] == 'returned',
+                      'R2 returned body follows complete validated headers')
+                result = op['result']
+                check(set(result) == {'bytes','remaining_before','remaining_after','closed','eof'}
+                      and natural(result['bytes']) and result['bytes'] <= 65536 and type(result['closed']) is bool and type(result['eof']) is bool
+                      and result['eof'] == (result['bytes'] == 0)
+                      and all(v is None or natural(v) for v in (result['remaining_before'],result['remaining_after'])),
+                      'R2 original returned bytes/EOF/length facts')
+                before, after = result['remaining_before'], result['remaining_after']
+                expected = (proxied['response_outcome']['length'] if previous['kind'] == 'getresponse'
+                            else previous['result']['remaining_after'])
+                check(before == expected and (before is None and after is None or before is not None
+                      and after == before-result['bytes'])
+                      and (not (result['closed'] or result['eof']) or after in (None,0))
+                      and (after != 0 or result['closed']) and (not result['eof'] or result['closed'])
+                      and (not proxied['streaming'] or not result['closed'] and not result['eof'])
+                      and (previous['kind'] != 'read' or not previous['result']['closed']),
+                      'R2 every prior finite/stream outcome validates before any stop')
+            body_returns = [t for t in trace if t['event'] == 'file-return' and t['method'] == 'read1'
+                            and op['started'] <= t['at'] <= op['finished']]
+            if op['outcome'] == 'cancelled':
+                check(not body_returns and not any(t['event'] in {'chunk-terminal','trailer-end'}
+                      and op['started'] <= t['at'] <= op['finished'] for t in trace),
+                      'R2 no returned body or terminal chunk outcome is discarded by cancellation')
+            elif op['kind'] == 'read':
+                terminal_facts = [t for t in trace if op['started'] <= t['at'] <= op['finished']
+                                  and t['event'] in {'chunk-terminal','trailer-end'}]
+                check((len(body_returns) == 1 and body_returns[0]['bytes'] == op['result']['bytes'])
+                      or (not body_returns and op['result']['bytes'] == 0 and op['result']['closed'] is True
+                          and op['result']['eof'] is True and not proxied['streaming']
+                          and proxied['response_outcome']['chunked'] is True
+                          and [t['event'] for t in terminal_facts] == ['chunk-terminal','trailer-end']),
+                      'R2 actual parser body return equals retained operation bytes')
+            else:
+                check(not body_returns, 'R2 header operation cannot consume body payload')
+            previous = op
+        # These are final explicit successful close acknowledgements, rather
+        # than HTTPConnection detach or HTTPResponse's automatic file close.
+        # Every inventoried owner and registration is retained until finally,
+        # after the last operation (including any shutdown ack) and checkpoint.
+        last_use = max(operations[-1]['finished'], trace[-1]['at'])
+        check(all(last_use <= r['closed'] for r in resources)
+              and all(last_use <= r['unregistered'] for r in registrations),
+              'R2 final handle closure and unregister follow all worker I/O, validation and shutdown')
+        first = operations[0]
+        check(first['kind'] == 'getresponse' and trace[0]['event'] == 'checkpoint'
+              and trace[0]['kind'] == 'before-response'
+              and all(r['acquired'] <= trace[0]['at'] for r in resources if r['name'] != 'response')
+              and trace[0]['at'] <= first['started'] <= by_name['response']['acquired'] <= first['finished']
+              and all(by_name['response']['acquired'] <= op['started'] for op in operations[1:]),
+              'R2 initialized reader precedes first call and response is acquired inside getresponse before later uses')
+        for index, op in enumerate(operations):
+            completed = [c for c in checkpoints if c['kind'] == 'between'
+                         and op['finished'] <= c['at']
+                         and (index+1 == len(operations) or c['at'] <= operations[index+1]['started'])]
+            check(len(completed) == (1 if op['outcome'] == 'returned' else 0),
+                  'R2 each validated return establishes its own between checkpoint before the next operation')
+        if proxied.get('streaming') and reads:
+            read = proxied.get('stream_read')
+            last = reads[-1]
+            check(type(read) is dict and read['id'] == last['read_id']
+                  and type(read['id']) is int and number(read['started']) and number(read['finished'])
+                  and read['started'] == last['started'] and read['finished'] == last['finished']
+                  and (set(read) == {'id','started','finished','bytes'} and last['outcome'] == 'returned'
+                       and natural(read['bytes']) and read['bytes'] == last['result']['bytes']
+                       or set(read) == {'id','started','finished','outcome'} and read['outcome'] == last['outcome'] == 'cancelled'),
+                  'R2 current/prior stream read remains validated even with null stop read ID')
+        else:
+            check('stream_read' not in proxied, 'R2 genuine no-prior-stream-read state')
+        for index, fact in enumerate(trace):
+            if fact['event'] != 'checkpoint':
+                check(len([op for op in operations if op['kind'] != 'stop'
+                           and op['started'] <= fact['at'] <= op['finished']]) == 1
+                      and by_name['response']['acquired'] <= fact['at'],
+                      'R2 raw I/O belongs to exactly one actual parser operation')
+            elif fact['kind'] == 'between':
+                establishing = [op for i, op in enumerate(operations) if op['outcome'] == 'returned'
+                                and op['finished'] <= fact['at']
+                                and (i+1 == len(operations) or fact['at'] <= operations[i+1]['started'])]
+                check(len(establishing) == 1,
+                      'R2 between checkpoint follows its exact completed validation, outside later operations')
+            elif fact['kind'] != 'before-response':
+                establishing = [op for op in reads if op['started'] <= fact['at'] <= op['finished']]
+                check(len(establishing) == 1 and establishing[0]['id'] > 1,
+                      'R2 framing checkpoint belongs to one actual body read after headers')
+                current_read = establishing[0]
+                preceding = operations[current_read['id']-2]
+                check(preceding['outcome'] == 'returned' and preceding['finished'] <= current_read['started'],
+                      'R2 framing checkpoint preserves the distinct prior validated operation')
+                raw_before = [t for t in trace[:index] if t['event'] != 'checkpoint'
+                              and current_read['started'] <= t['at']]
+                files_before = [t for t in raw_before if t['event'] == 'file-return']
+                if fact['kind'] == 'finite':
+                    remaining = (preceding['result']['remaining_after'] if preceding['kind'] == 'read'
+                                 else proxied['response_outcome']['length'])
+                    check(proxied['response_outcome']['chunked'] is False and not raw_before
+                          and type(remaining) is int and remaining > 0 and fact['remaining'] == remaining,
+                          'R2 finite checkpoint precedes raw work in its exact remaining-length read')
+                else:
+                    check(proxied['response_outcome']['chunked'] is True,
+                          'R2 chunk framing checkpoints require actual chunked headers')
+                    if fact['kind'] == 'chunk-size':
+                        check(not raw_before if fact['delimiter'] is None else
+                              bool(files_before) and files_before[-1]['method'] == 'read'
+                              and files_before[-1]['bytes'] == 2,
+                              'R2 size checkpoint follows its own read delimiter validation or first chunk entry')
+                    else:
+                        check(not raw_before or bool(files_before) and files_before[-1]['method'] == 'readline',
+                              'R2 payload checkpoint follows its own parsed size or retained chunk entry')
+        eof_facts = [t for t in trace if t['event'] == 'receive' and t['bytes'] == 0]
+        last_return = next((o for o in reversed(operations) if o.get('outcome') == 'returned'),None)
+        check((owner['terminal'] is None and not eof_facts)
+              or (owner['terminal'] == 'EOF' and len(eof_facts) == 1
+                  and last_return is not None and last_return['kind'] == 'read'
+                  and last_return['result']['eof'] is True and not proxied['streaming']
+                  and proxied['response_outcome']['length'] is None
+                  and (operations[-1] is last_return or operations[-1]['kind'] == 'stop')),
+              'R2 native EOF/error stays sticky; only real complete finite EOF can settle')
+        intent, ack = proxied.get('stop_intent'), proxied.get('stop_ack')
+        if intent is None:
+            check(ack is None and 'stop_settled' not in proxied and 'browser_abort' not in proxied
+                  and operations[-1]['outcome'] == 'returned' and received == delivered, 'R2 no detached stop facts or discarded buffer')
+            return
+        check(type(intent) is dict and set(intent) == {'kind','request_id','method','target','generation','event','operation_id','enqueued','end'}
+              and intent['kind'] in {'navigation','context'} and intent['method'] == 'GET'
+              and type(intent['request_id']) is int and intent['request_id'] == proxied.get('browser_request_id')
+              and intent['target'] == proxied['target'] and type(intent['generation']) is int
+              and intent['generation'] == generation and number(intent['enqueued']) and number(intent['end'])
+              and proxied['entered'] <= intent['enqueued'] <= intent['end'] <= owner['end']
+              and intent['event']['at'] <= intent['enqueued'],
+              'R2 exact original Request/target/generation stop intent')
+        observed_operations = [op for op in operations if op['started'] <= intent['enqueued']]
+        check(intent['operation_id'] == (observed_operations[-1]['id'] if observed_operations else None)
+              and (intent['operation_id'] is None or type(intent['operation_id']) is int),
+              'R2 original operation identity at intent enqueue, distinct from later stop')
+        check(type(ack) is dict and set(ack) == {'generation','request_id','operation_id','previous_operation_id','read_id',
+              'previous_read_id','checkpoint','received','delivered','buffered','since_checkpoint','would_block','started','finished','outcome'}
+              and type(ack['generation']) is int and ack['generation'] == generation
+              and type(ack['request_id']) is int and ack['request_id'] == intent['request_id']
+              and number(ack['started']) and number(ack['finished'])
+              and intent['enqueued'] <= ack['started'] <= ack['finished'] <= operations[-1]['finished']
+              <= proxied.get('failure_at',-1) <= owner['finished'] <= proxied['closed'] <= proxied.get('stop_settled',-1)
+              <= intent['end'] and proxied.get('error') == 'Stopped' and 'delivered' not in proxied
+              and proxied.get('failure_operation') in {'upstream','downstream'}
+              and (operations[-1]['kind'] == 'stop' or proxied['failure_operation'] == 'upstream'),
+              'R2 actual original worker stop and complete owner acknowledgement under original end')
+        current = operations[-1]
+        prior = operations[-2] if len(operations) > 1 else None
+        check(type(ack['operation_id']) is int and ack['operation_id'] == current['id'] and current['outcome'] == 'cancelled'
+              and ack['previous_operation_id'] == (prior['id'] if prior else None)
+              and ack['read_id'] == current['read_id'] and ack['previous_read_id'] == (prior['read_id'] if prior else None)
+              and all(v is None or type(v) is int and v > 0 for v in
+                      (ack['previous_operation_id'],ack['read_id'],ack['previous_read_id']))
+              and all(natural(ack[k]) for k in ('received','delivered','buffered','since_checkpoint'))
+              and ack['received'] == received == ack['delivered'] == delivered
+              and ack['buffered'] == ack['since_checkpoint'] == 0 and type(ack['would_block']) is bool,
+              'R2 distinct real current/prior IDs and empty entire buffered checkpoint')
+        candidates = [c for c in checkpoints if c['at'] <= ack['started']]
+        check(candidates and same(ack['checkpoint'], {k:v for k,v in candidates[-1].items() if k not in {'event','at'}})
+              and candidates[-1]['received'] == received and candidates[-1]['delivered'] == delivered
+              and not any(t['at'] > ack['started'] for t in trace),
+              'R2 acknowledgement matches actual last validated checkpoint, with no hidden progress')
+        cp = ack['checkpoint']
+        check(ack['outcome'] in {'shutdown','already-complete'}
+              and (cp['kind'] == 'between') == (current['kind'] == 'stop' and ack['would_block'] is False),
+              'R2 wait boundary requires actual would-block; completed boundary stays separate')
+        if cp['kind'] != 'between':
+            check(ack['would_block'] is True and trace[-1]['event'] == 'would-block'
+                  and current['started'] <= trace[-1]['at'] <= ack['started']
+                  and (cp['kind'] == 'before-response' or current['started'] <= candidates[-1]['at']), 'R2 actual nonblocking wait observation')
+        if cp['kind'] == 'before-response':
+            check(len(operations) == 1 and current['kind'] == 'getresponse' and received == delivered == 0
+                  and intent['kind'] == 'navigation' and 'response_outcome' not in proxied
+                  and not any(k in proxied for k in ('status','streaming','stream_read')),
+                  'R2 genuine cancelled-before-response, no fabricated status/read/header outcome')
+        else:
+            check(prior is not None and prior['outcome'] == 'returned' and 'response_outcome' in proxied,
+                  'R2 actual prior validated outcome survives cancellation')
+            if cp['kind'] in {'chunk-size','payload'}:
+                check(current['kind'] == 'read' and proxied['response_outcome']['chunked'] is True,
+                      'R2 fresh chunk boundary belongs to actual chunked read')
+            if cp['kind'] == 'finite':
+                expected = (prior['result']['remaining_after'] if prior['kind'] == 'read'
+                            else proxied['response_outcome']['length'])
+                check(current['kind'] == 'read' and proxied['response_outcome']['chunked'] is False
+                      and type(expected) is int and expected > 0 and cp['remaining'] == expected,
+                      'R2 fresh finite-body wait preserves known remaining length')
+        complete = (prior is not None and cp['kind'] == 'between'
+                    and (prior['kind'] == 'getresponse' and proxied['response_outcome']['length'] == 0
+                         or prior['kind'] == 'read' and prior['result']['closed']))
+        check((ack['outcome'] == 'already-complete') == complete,
+              'R2 complete finite/bodyless outcome survives separately from delivery')
+        issued = [r for r in native_requests if r['request_id'] == intent['request_id']]
+        terminals = [t for t in events if t['event'] in {'request-failed','request-finished'}
+                     and t['request_id'] == intent['request_id']]
+        check(len(issued) == 1 and issued[0]['method'] == 'GET' and issued[0]['url'] == origin+proxied['target']
+              and issued[0]['at'] <= intent['enqueued'], 'R2 original native owner still joins its full target')
+        if intent['kind'] == 'context':
+            check(same(intent['event'], closing) and intent['request_id'] in live
+                  and not any(t['at'] <= ack['started'] for t in terminals)
+                  and proxied.get('status') == 200 and proxied.get('streaming') is True
+                  and ack['outcome'] == 'shutdown' and proxied['stop_settled'] <= shutdown_event['at']
+                  and any(same(dict(intent=intent,ack=ack,settled=proxied['stop_settled']),s) for s in shutdowns)
+                  and 'browser_abort' not in proxied, 'R2 native stream stays live until its OWN worker initiation')
+        else:
+            abort = proxied.get('browser_abort')
+            check(len(terminals) == 1 and same(abort,dict(terminals[0],target=proxied['target'])) and same(abort,intent['event'])
+                  and abort['failure'] == 'net::ERR_ABORTED' and abort['method'] == 'GET'
+                  and proxied['entered'] <= abort['at'] <= intent['enqueued']
+                  and intent['request_id'] not in used_aborts, 'R2 one genuine native navigation abort, never timeout/error retagging')
+            used_aborts.add(intent['request_id'])
+
+    used_aborts = set()
+    paired_requests = set()
+    owner_generations = set()
+    for proxied in observations['thread_proxy']:
+        check(set(proxied) <= set(('relay_id original forwarding method path target ordinal entered browser_request_id forwarded status streaming delivered closed '
+                                  'request_sha256 request_bytes upstream_complete response_sha256 response_bytes content_type request '
+                                  'invalid_request_json response commit committed held release_observed error client_disconnected failure_operation '
+                                  'failure_at browser_abort abort_shutdown_error '
+                                  'stream_read upstream_operation response_outcome '
+                                  'response_close_error connection_close_error owner_generation io_owner stop_intent stop_ack stop_settled').split())
+              and not any(k in proxied for k in ('response_close_error','connection_close_error','abort_shutdown_error')),
+              'R2 closed proxy evidence grammar; failed ownership never exempt')
+        check(proxied['method'] != 'GET' or type(proxied.get('io_owner')) is dict,
+              'R2 required original GET owner is missing')
+        check(proxied['entered'] <= proxied['closed'] <= closure[0]['finished'], 'R2 every actual browser request settled')
+        if 'stream_read' in proxied and 'io_owner' not in proxied:
+            read = proxied['stream_read']
+            check(type(read.get('id')) is int and read['id'] > 0
+                  and set(read) in ({'id','started','finished','error'}, {'id','started','finished','bytes'})
+                  and all(type(read[k]) in (int, float) for k in ('started','finished'))
+                  and proxied.get('streaming') is True and proxied['forwarded'] <= read['started'] <= read['finished'] <= proxied['closed']
+                  and ('error' in read and type(read['error']) is str
+                       or type(read.get('bytes')) is int and 0 <= read['bytes'] <= 65536),
+                  'R2 closed original upstream stream read evidence')
+        operation = proxied.get('upstream_operation')
+        response = proxied.get('response_outcome')
+        if response is not None:
+            check(type(response) is dict
+                  and set(response) == {'status','transfer_encoding','content_length','content_type','chunked','length'}
+                  and type(response['status']) is int and 200 <= response['status'] <= 599
+                  and type(response['chunked']) is bool
+                  and all(type(response[k]) is list and len(response[k]) <= 1
+                          and all(type(v) is str for v in response[k])
+                          for k in ('transfer_encoding','content_length','content_type')),
+                  'R2 original safe response status/header facts, not a validation Boolean')
+            transfer, lengths = response['transfer_encoding'], response['content_length']
+            check((not transfer or transfer[0].strip().lower() == 'chunked' and not lengths)
+                  and (not lengths or lengths[0].isascii() and lengths[0].isdecimal())
+                  and response['chunked'] == bool(transfer), 'R2 original unambiguous supported transfer framing')
+            length = (0 if proxied['method'] == 'HEAD' or response['status'] in {204,304}
+                      else int(lengths[0]) if lengths else None)
+            check((response['length'] is None if length is None else
+                   type(response['length']) is int and response['length'] == length)
+                  and type(proxied.get('status')) is int and proxied['status'] == response['status']
+                  and proxied.get('streaming') is ((response['content_type'][0] if response['content_type'] else '')
+                                                 .split(';')[0] == 'text/event-stream'),
+                  'R2 native response parser and retained status/content/length agree')
+        boundary = False
+        if operation is not None and 'io_owner' not in proxied:
+            check(set(operation) in ({'kind','read_id','started','finished','outcome','result'},
+                                     {'kind','read_id','started','finished','error'},
+                                     {'kind','read_id','started','finished','error','result'})
+                  and operation['kind'] in {'getresponse', 'read'}
+                  and all(type(operation[k]) in (int, float) for k in ('started', 'finished'))
+                  and proxied['forwarded'] <= operation['started'] <= operation['finished'] <= proxied['closed']
+                  and (operation['read_id'] is None or type(operation['read_id']) is int and operation['read_id'] > 0)
+                  and (operation['read_id'] is None or 'stream_read' in proxied)
+                  and (operation['kind'] != 'getresponse' or operation['read_id'] is None)
+                  and (operation.get('outcome') == 'returned' or type(operation.get('error')) is str),
+                  'R2 complete original upstream operation outcome, not later handler publication')
+            if operation.get('outcome') == 'returned':
+                check(response is not None and type(operation['result']) is dict,
+                      'R2 successful publication requires original validated response facts')
+                result = operation['result']
+                if operation['kind'] == 'getresponse':
+                    check(json.dumps(result, sort_keys=True, allow_nan=False)
+                          == json.dumps(response, sort_keys=True, allow_nan=False) and 'stream_read' not in proxied,
+                          'R2 no-first-read outcome retains actual status and framing')
+                    boundary = True
+                else:
+                    check(set(result) == {'bytes','remaining_before','remaining_after','closed','eof'}
+                          and type(result['bytes']) is int and result['bytes'] >= 0
+                          and type(result['closed']) is bool and type(result['eof']) is bool
+                          and result['eof'] == (result['bytes'] == 0)
+                          and all(v is None or type(v) is int and v >= 0
+                                  for v in (result['remaining_before'],result['remaining_after'])),
+                          'R2 original finite/stream read byte/EOF/remaining-length facts')
+                    before, after = result['remaining_before'], result['remaining_after']
+                    check((before is None and after is None if response['length'] is None else
+                           before is not None and after is not None and before <= response['length']
+                           and after == before-result['bytes'])
+                          and (not (result['closed'] or result['eof']) or after in (None,0))
+                          and (after != 0 or result['closed'])
+                          and (not result['eof'] or result['closed'])
+                          and (not proxied['streaming'] or not result['eof'] and not result['closed']),
+                          'R2 premature finite EOF and streaming EOF refuse before cancellation')
+                    if 'stream_read' in proxied:
+                        check(result['bytes'] == proxied['stream_read'].get('bytes'),
+                              'R2 retained stream bytes equal original operation outcome')
+                    boundary = result['bytes'] > 0 and not result['closed']
+            if 'stream_read' in proxied:
+                read = proxied['stream_read']
+                check(operation['kind'] == 'read' and operation['read_id'] == read['id']
+                      and operation['started'] == read['started'] and operation['finished'] == read['finished']
+                      and (operation.get('error') == read.get('error') and 'error' in read
+                           or operation.get('outcome') == 'returned' and 'bytes' in read),
+                      'R2 exact native upstream operation/read outcome identity')
+        if 'browser_request_id' in proxied:
+            request_id = proxied['browser_request_id']
+            issued = [e for e in events if e['event'] == 'request' and e['request_id'] == request_id]
+            check(type(request_id) is int and request_id not in paired_requests and len(issued) == 1
+                  and issued[0]['url'] == origin + proxied['target'] and issued[0]['method'] == proxied['method'],
+                  'R2 one actual native Request per paired original proxy request')
+            paired_requests.add(request_id)
+        if 'io_owner' in proxied:
+            validate_io_owner(proxied)
+        else:
+            check(proxied['method'] != 'GET'
+                  and not any(k in proxied for k in ('owner_generation','stop_intent','stop_ack','stop_settled')),
+                  'R2 only GET owns the nonblocking reader and stop protocol')
+        failure = proxied.get('error') or proxied.get('client_disconnected')
+        if not failure:
+            check('delivered' in proxied and 'stop_intent' not in proxied and 'browser_abort' not in proxied,
+                  'R2 complete original response delivery without contradictory cancellation')
+            check(response is not None and not proxied['streaming'] and operation is not None
+                  and operation.get('outcome') == 'returned'
+                  and (operation['kind'] == 'getresponse' and response['length'] == 0
+                       or operation['kind'] == 'read' and operation['result']['closed']
+                       and operation['result']['remaining_after'] in (None,0)),
+                  'R2 finite delivery requires completed body or original bodyless response, never progress alone')
+            if proxied['ordinal'] is not None:
+                check(operation['kind'] == 'read' and type(proxied.get('response_bytes')) is int
+                      and operation['result']['bytes'] == proxied['response_bytes']
+                      and operation['result']['remaining_before'] == response['length'],
+                      'R2 selected compose delivery retains original complete read outcome and byte count')
+            continue
+        check(('error' in proxied) != ('client_disconnected' in proxied)
+              and ('client_disconnected' in proxied) == (failure in {'BrokenPipeError','ConnectionResetError','RemoteDisconnected'})
+              and type(proxied.get('failure_at')) in (int, float)
+              and proxied['entered'] <= proxied.get('failure_at', -1) <= proxied['closed'],
+              'R2 literal original failure/time, never a later cleanup timestamp')
+        check('io_owner' in proxied and failure == 'Stopped' and 'stop_intent' in proxied,
+              'R2 only original worker-acknowledged controlled stop is exempt')
+    check(paired_requests == {e['request_id'] for e in native_requests},
+          'R2 every native Request has an original paired relay owner')
+
+
+def validate_e05_operations(row: dict, observations: dict, point: dict, groups: list[dict]) -> None:
+    """Independently authenticate the selected original C/N/D command closure."""
+    def check(value, reason):
+        if not value:
+            raise ValueError('E05 operations: ' + reason)
+    durable = observations['durable']
+    case = next(d['threads_cases'] for d in durable if 'threads_cases' in d)
+    check([g['name'] for g in groups] == ['C','N','D'][:len(groups)], 'finite selected operation order')
+    C = groups[0] if groups else None
+    N = groups[1] if len(groups) > 1 else None
+    D = groups[2] if len(groups) > 2 else None
+    expected_count = (0,4,5,11)[len(groups)]
+    expected_starts = (29,32,33,36)[len(groups)]
+    starts = point['starts']
+    witnesses = point['witnesses']
+    providers = [p for g in groups for p in g['providers']]
+    all_providers = providers + ([D['task']] if D is not None else [])
+    check(len(starts) == expected_starts and len({p['session'] for p in starts}) == expected_starts
+          and len(all_providers) == expected_starts-29
+          and {p['session'] for p in all_providers} == {p['session'] for p in starts[29:]}
+          and all(p in starts and p['org'] == 'alpha' and p['pid_start'] for p in all_providers),
+          'complete actual selected providers and unique sessions')
+    final = point['thread_frame']
+    expected_messages = [[(1,'founder','message','E05 opening\nliteral beta'),(2,'case_manager','message','E05 reply\n@case_worker received')]]
+    T, sid = (D['task']['task'],D['task']['session']) if D is not None else (None,None)
+    def identity(value: dict, name: str) -> None:
+        digest = value.get('canonical_definition_revision')
+        check(type(digest) is str and len(digest) == 64 and all(c in '0123456789abcdef' for c in digest),
+              'R1 canonical definition digest')
+        check(value == dict(canonical_id=name, kind='agent', lifecycle='active', addressable_name=name,
+                            name_revision=1, canonical_definition_revision=digest, naming_status='ready')
+              and type(value['name_revision']) is int, 'R1 complete current agent identity')
+
+    def resolution(wire: dict, name: str, context: str) -> None:
+        check(wire['request'] == dict(addresses=[name], context=context)
+              and set(wire['response']) == {'resolutions'} and len(wire['response']['resolutions']) == 1,
+              'R1 exact naming preflight request/response')
+        resolved = wire['response']['resolutions'][0]
+        identity(resolved['identity'], name)
+        check(resolved == dict(address=name, status='resolved', identity=resolved['identity'], eligible=True)
+              and resolved['eligible'] is True, 'R1 actual eligible current canonical resolution')
+
+    def wire_window(wires: list[dict], expected: list[tuple], entered: float, finished: float) -> None:
+        check([(w['method'], w['path']) for w in wires] == expected
+              and all(w in observations['relay'] and w['dropped'] is False
+                      and entered <= w['entered'] <= finished
+                      and json.loads(w['response_text']) == w['response'] for w in wires)
+              and all(a['entered'] <= b['entered'] for a, b in zip(wires, wires[1:])),
+              'R1 complete exact ordered shipping wire window')
+        for wire in wires:
+            if wire['path'] == '/api/v1/orgs':
+                manifest = next(d['executable_manifest'] for d in observations['durable'] if 'executable_manifest' in d)
+                check(wire['request'] is None and wire['status'] == 200
+                      and wire['response'] == dict(orgs=[dict(slug=org, root=str(Path(manifest['root']) / 'runtime/orgs' / org))
+                                                        for org in ('alpha', 'beta')], broken=[]), 'R1 exact org discovery')
+
+    expected_messages = [
+        [(1,"founder","message","E05 opening\nliteral beta"),(2,"case_manager","message","E05 reply\n@case_worker received")],
+        [(1,"founder","message","E05 denial anchor")],
+        [(1,"founder","message","E05 do one task"),(2,"case_manager","system",None),(3,"case_manager","message","E05 task accepted"),
+         (4,"case_manager","system",None),(5,"case_manager","message","E05 task complete")]]
+    for group, expected, subject, turns, names in zip(groups,expected_messages,("E05 compose race","E05 denial venue","E05 dispatch"),
+                                                    (2,1,3), ({"case_manager","case_worker"},{"case_worker"},{"case_manager"})):
+        tid = group["thread"]
+        thread = [t for t in final["threads"] if t["id"] == tid]
+        check(len(thread) == 1 and thread[0]["subject"] == subject and thread[0]["status"] == "open"
+              and thread[0]["turns_used"] == turns and thread[0]["turn_cap"] == 500, "literal thread fields")
+        messages = [m for m in final["thread_messages"] if m["thread_id"] == tid]
+        check([(m["seq"],m["speaker"],m["kind"],m["body_markdown"]) for m in messages] == expected, "literal message timeline")
+        participants = [p for p in final["thread_participants"] if p["thread_id"] == tid]
+        check({p["agent_name"] for p in participants} == names and len(participants) == len(names), "literal participants")
+        invs = [i for i in final["thread_invocations"] if i["thread_id"] == tid]
+        public = group["settled"]["public"]
+        check(any(h["method"] == "GET" and h["path"] == f"/api/v1/orgs/alpha/threads/{tid}" and h["status"] == 200
+                  and h["response"] == public for h in observations["http"]), "actual public response reference")
+        check(public["thread_id"] == tid and public["subject"] == subject and public["turns_used"] == turns
+              and not public["reply_delivery"] and set(public["participants"]) == names and len(public["messages"]) == len(messages), "actual public thread projection")
+        check(json.loads(group["settled"]["cli"]["stdout"]) == public and group["settled"]["cli"] in observations["commands"]
+              and group["settled"]["cli"]["exit"] == 0, "actual CLI readback")
+        check(group["settled"]["messages_page"]["messages"] == public["messages"] and group["settled"]["messages_page"]["has_more"] is False,
+              "actual complete message page")
+        for message, projected in zip(messages,public["messages"]):
+            check(all(message[k] == projected[k] for k in ("seq","speaker","kind","body_markdown"))
+                  and projected["attachments"] == [], "public literal message content")
+            responders = [i for i in invs if i["triggering_seq"] == message["seq"]]
+            check(sorted((r["agent_name"],r["purpose"],r["status"]) for r in projected["responder_status"])
+                  == sorted((i["agent_name"],i["purpose"],"replied" if i["status"] == "consumed" else "declined") for i in responders),
+                  "public authentic responder purpose/outcome; no invented SID")
+        for provider in group["providers"]:
+            matches = [i for i in invs if i["invocation_token"] == "sha256:" + provider["token_sha256"]]
+            check(len(matches) == 1, "genuine delivered token digest")
+            i = matches[0]
+            check(i["session_id"] == provider["session"] and i["agent_name"] == provider["agent"] and i["purpose"] == provider["purpose"]
+                  and i["started_at"] and i["consumed_at"], "distinct genuine runtime identity")
+            expected_reply = (2 if tid == C["thread"] else 5 if i["purpose"] == "task_followup" else 3) if i["agent_name"] == "case_manager" else None
+            check(i["reply_message_seq"] == expected_reply and i["status"] == ("consumed" if expected_reply else "declined"), "exact reply linkage and decline outcomes")
+            if i["purpose"] == "reply":
+                claims = [json.loads(a["payload"]) for a in final["audit_log"] if a["action"] == "thread_reply_wake_claimed"
+                          and a["task_id"] == tid and json.loads(a["payload"]).get("token_prefix") == i["token_prefix"]]
+                seq = 2 if tid == C["thread"] and i["agent_name"] == "case_worker" and i["triggering_seq"] == 2 else 1
+                check(len(claims) == 1 and claims[0]["agent_name"] == i["agent_name"]
+                      and claims[0]["from_seq"] == claims[0]["through_seq"] == seq, "exact admitted delivery range")
+        for delivery in [r for r in final["thread_reply_delivery_state"] if r["thread_id"] == tid]:
+            watermark = 2 if tid == C["thread"] and delivery["agent_name"] == "case_worker" else 1
+            check(delivery["acknowledged_through_seq"] == delivery["required_through_seq"] == watermark
+                  and all(delivery[k] is None for k in ("queued_invocation_token","running_invocation_token","running_from_seq","running_through_seq")), "exact settled delivery watermarks")
+
+    if D is not None:
+        T, sid = D["task"]["task"], D["task"]["session"]
+        dispatched = [t for t in final["tasks"] if t["dispatched_from_thread_id"] is not None]
+        check(len(dispatched) == 1, "one sourced task only")
+        t = dispatched[0]
+        check(t["id"] == T and t["dispatched_from_thread_id"] == D["thread"] and t["assigned_agent"] == "case_manager"
+              and t["team"] == "engineering" and t["brief"] == "E05 one owned task" and t["status"] == "completed"
+              and t["completed_at"] and t["current_session_id"] == sid and t["orchestration_step_count"] == 1
+              and t["note"] == "E05 task complete" and all(t[k] is None for k in ("parent_task_id","block_kind","active_chain","active_fanout","final_output_dir")), "actual single completed root")
+        result = [r for r in final["task_results"] if r["task_id"] == T]
+        check(len(result) == 1 and type(result[0]["id"]) is int and result[0]["session_id"] == sid
+              and result[0]["status"] == "completed" and result[0]["output_summary"] == "E05 task complete"
+              and json.loads(result[0]["decision_json"]) == {"action":"done","summary":"E05 task complete"}, "one genuine accepted task result")
+        task_audit = [a for a in final["audit_log"] if a["task_id"] == T]
+        required = [next((a for a in task_audit if a["action"] == name),None) for name in ("session_start","session_end","completion_report","orchestration_step")]
+        check(all(required) and all(sum(a["action"] == name for a in task_audit) == 1 for name in ("session_start","session_end","completion_report","orchestration_step"))
+              and [a["id"] for a in required] == sorted(a["id"] for a in required), "one ordered task lifecycle/consumption")
+        systems = [json.loads(m["system_payload_json"]) for m in final["thread_messages"] if m["thread_id"] == D["thread"] and m["kind"] == "system"]
+        dispatch_audit = [a for a in final["audit_log"] if a["action"] == "thread_dispatch"]
+        check(len(dispatch_audit) == 1 and dispatch_audit[0]["task_id"] == D["thread"]
+              and json.loads(dispatch_audit[0]["payload"])["task_id"] == T
+              and json.loads(dispatch_audit[0]["payload"])["dispatcher"] == "case_manager", "real original dispatch audit ownership")
+        check([i["dispatched_task_id"] for i in final["thread_invocations"] if i["dispatched_task_id"]] == [T]
+              and not any(a["action"] in {"thread_followup_skipped","thread_invocation_failed"} for a in final["audit_log"]), "no duplicate/recursive dispatch or lost followup")
+        check(systems == [dict(kind_tag="task_dispatched",task_id=T,dispatcher="case_manager",target_agent="case_manager",team="engineering",brief_preview="E05 one owned task"),
+                          dict(kind_tag="task_completed",task_id=T,original_task_id=T,root_task_id=T,status="completed",final_output_summary="E05 task complete",final_output_dir=None,cancelled=False,revisit_chain_length=1,revisit_task_id=None)], "both literal system payloads")
+        check(len(D["tasks_projection"]) == 1 and D["tasks_projection"][0]["id"] == T, "actual thread task link")
+
+    negatives = []
+    if C is not None:
+        negatives.append((C['replay'],409,dict(code='invocation_token_consumed',status='consumed')))
+    if D is not None:
+        negatives.append((D['denial'],403,dict(code='not_a_participant',composer='case_manager')))
+    for negative, status, detail in negatives:
+        before, after, cmd = negative["before"], negative["after"], negative["command"]
+        check(before["content"] == after["content"] and before["samples"][-1]["at"] <= cmd["entered"] <= cmd["finished"] <= after["samples"][0]["at"], "coherent negative causal window")
+        for f in (before,after):
+            check(len(f["samples"]) >= 2 and f["samples"][-1]["content"] == f["samples"][-2]["content"] == f["content"], "two stable full frames")
+        check(cmd["exit"] == 1 and cmd["selected_response"] == {"detail":detail}
+              and len([w for w in cmd["wire"] if w["method"] == "POST" and w["status"] == status and w["response"] == {"detail":detail}]) == 1, "literal409/403 real CLI denial")
+    if C is not None:
+        check(C["reply"]["argv"] == C["replay"]["command"]["argv"] and C["reply"]["payload_sha256"] == C["replay"]["command"]["payload_sha256"], "exact same retained live reply file")
+
+    commands, attempts = observations["thread_commands"], observations["thread_attempts"]
+    check(len(commands) == len(attempts) == expected_count and [a["command_index"] for a in attempts] == list(range(expected_count)), "finite eleven provider CLI actions")
+    boundary = dict(witness_records=len(witnesses),
+                    command_count=point['command_count'])
+    check(witnesses == observations["launch_witnesses"][:len(witnesses)] and len([w for w in witnesses if w["kind"] == "stub"]) == expected_starts, "complete actual executable witnesses")
+    calls = [w for w in witnesses if w["kind"] == "callback"]
+    check(len(calls) == boundary["command_count"]+len(observations["provider_commands"])+len(commands), "every CLI accounted")
+    closures = [d["thread_process_closed"] for d in durable if "thread_process_closed" in d]
+    check(len(closures) == len(all_providers) and {r["session"] for r in closures} == {p["session"] for p in all_providers}, "seven actual natural process closures")
+    for provider in all_providers:
+        closure = next(r for r in closures if r["session"] == provider["session"])
+        key = "token_sha256" if "thread" in provider else "session"
+        own = [cmd for cmd in commands if cmd["provider"].get(key) == provider[key]]
+        check(closure["pid"] == provider["pid"] and closure["start"] == provider["pid_start"] != closure["observed_start"]
+              and len(closure["children"]) == len(own) and all(ch["pid"] == cmd["child_pid"] and ch["start"] == cmd["child_start"] != ch["observed_start"]
+              for ch,cmd in zip(closure["children"],own)), "actual provider and CLI child PID/start closure")
+        paths = [cmd["argv"][cmd["argv"].index("--from-file")+1] for cmd in own if "--from-file" in cmd["argv"]]
+        check(closure["private_files"] == [dict(path=path,exists=False) for path in paths], "actual named private payload absence")
+    barriers = []
+    if C is not None:
+        barriers.append((C['worker_closed'],19,18,C['reply']['entered']))
+    if D is not None:
+        barriers.append((D['dispatcher_closed'],23,22,D['denial']['command']['entered']))
+    for barrier, admitted, released, command_start in barriers:
+        check(barrier in [d["thread_live_boundary"] for d in durable if "thread_live_boundary" in d]
+              and barrier["finished"] <= command_start and len(barrier["samples"]) >= 2, "actual intermediate host barrier")
+        for sample in barrier["samples"][-2:]:
+            m = sample["metrics"]
+            a,r = m["host_sessions"]["admission"],m["host_sessions"]["receipts"]
+            check((a["admitted_total"],a["released_total"],r["published_total"],a["active"],a["queue_depth"]) == (admitted,released,released,1,0)
+                  and any(h["path"] == "/api/v1/metrics" and h["response"] == m for h in observations["http"]), "two actual release/publication/live samples")
+    if C is not None:
+        check(C["held_worker"]["provider"] == C["providers"][2] and C["held_worker"]["before"] == C["held_worker"]["after"] == C["providers"][2]["pid_start"], "W2 held across same-process replay")
+    for cmd,a in zip(commands,attempts):
+        keys = ("thread","token_sha256","agent","org","purpose","pid") if "thread" in a["provider"] else ("task","session","agent","org","pid")
+        check(cmd["provider"] == {k:a["provider"][k] for k in keys} and a["provider"] in starts, "actual provider receipt identity")
+        check(cmd["source_sha"] == row["source_sha"] and cmd["timed_out"] is False and cmd["output_truncated"] is False and a["observed_start"] == a["provider"]["pid_start"]
+              and a["entered"] <= cmd["entered"] <= cmd["finished"] <= a["finished"] < a["instruction"]["deadline"]
+              <= a["entered"] + 10 and cmd["execution_deadline"] == a["instruction"]["deadline"] - 1, "original live owner/deadline")
+        check(all(w in observations["relay"] and w["dropped"] is False for w in cmd["wire"]) and cmd["wire"], "actual complete relay references")
+        check(all(type(cmd[k + '_bytes']) is int and cmd[k + '_bytes'] >= 0
+                  and cmd[k + '_truncated'] == (cmd[k + '_bytes'] > 16384)
+                  and len(cmd[k].encode()) <= 16384 for k in ('stdout','stderr'))
+              and cmd['output_truncated'] == (cmd['stdout_truncated'] or cmd['stderr_truncated']),
+              'R3 original byte counts and per-stream truncation diagnostics')
+        manifest = next(d['executable_manifest'] for d in durable if 'executable_manifest' in d)
+        check(cmd['argv'][0] == manifest['callback'] and cmd['callback_sha256'] == manifest['callback_sha256']
+              and cmd['python'] == manifest['python']
+              and type(cmd['child_pid']) is int and type(cmd['child_start']) is str and cmd['child_start'].isdigit(),
+              'actual original executable/interpreter/child generation binding')
+        digest = hashlib.sha256(json.dumps(cmd["argv"][1:]).encode()).hexdigest()
+        check(len([w for w in calls if w["pid"] == cmd["child_pid"] and w["ppid"] == cmd["provider"]["pid"]
+                   and w["argv_sha256"] == digest and w["source_sha"] == row["source_sha"]
+                   and w["cli_sha256"] == hashlib.sha256((Path(__file__).resolve().parents[1]/"cli/main.py").read_bytes()).hexdigest()]) == 1, "independent actual CLI child/source join")
+    expected_actions = [["thread-reply","thread-reply"],["thread-decline"],["thread-decline"],["thread-decline"],
+                        ["thread-dispatch","thread-reply"],["thread-task-read","thread-reply"],["thread-task-send","thread-task-final"]]
+    for provider, actions in zip(all_providers,expected_actions):
+        key = "token_sha256" if "thread" in provider else "session"
+        own = [cmd for cmd in commands if cmd["provider"].get(key) == provider[key]]
+        check([cmd["action"] for cmd in own] == actions, "finite per-provider action order/final callback last")
+    if D is not None:
+        check(D["callback"]["selected_response"] == {"ok":True} and D["callback"]["exit"] == 0
+              and D["callback"] in commands and D["followup"] in commands and D["read"] in commands
+              and D["callback"]["finished"] <= D["providers"][1]["at"] <= D["read"]["entered"] <= D["followup"]["entered"], "task callback to natural D2 read/reply")
+    # Fixed case receipts must be the actual eleven ledger entries, each joined
+    # to its original finite instruction. Durable acceptance alone is not CLI success.
+    specifications = []
+    if C is not None:
+        specifications += [
+            (C['initial_decline'], C['providers'][1], 'thread-decline', dict(reason='E05 initial observed', in_response_to_seq=1), 200, None),
+            (C['reply'], C['providers'][0], 'thread-reply', dict(body_markdown='E05 reply\n@case_worker received', in_response_to_seq=1), 200, 2),
+            (C['replay']['command'], C['providers'][0], 'thread-reply', dict(body_markdown='E05 reply\n@case_worker received', in_response_to_seq=1), 409, None),
+            (C['last_decline'], C['providers'][2], 'thread-decline', dict(reason='E05 reply observed', in_response_to_seq=2), 200, None),
+        ]
+    if N is not None:
+        specifications += [
+            (N['decline'], N['providers'][0], 'thread-decline', dict(reason='E05 denial venue observed', in_response_to_seq=1), 200, None),
+        ]
+    if D is not None:
+        specifications += [
+            (D['dispatch'], D['providers'][0], 'thread-dispatch', dict(brief='E05 one owned task', target_agent='case_manager', team='engineering'), 200, None),
+            (D['reply'], D['providers'][0], 'thread-reply', dict(body_markdown='E05 task accepted', in_response_to_seq=1), 200, 3),
+            (D['denial']['command'], D['task'], 'thread-task-send', dict(body_markdown='E05 forbidden post'), 403, None),
+            (D['callback'], D['task'], 'thread-task-final', dict(status='completed', confidence=90, summary='E05 task complete', decision=dict(action='done', summary='E05 task complete')), 200, None),
+            (D['read'], D['providers'][1], 'thread-task-read', None, 200, None),
+            (D['followup'], D['providers'][1], 'thread-reply', dict(body_markdown='E05 task complete', in_response_to_seq=4), 200, 5),
+        ]
+    check([s[0] for s in specifications] == commands, 'R1 every named receipt equals canonical ordered command ledger')
+    for index, (cmd, provider, action, supplied, status, seq) in enumerate(specifications):
+        attempt = attempts[index]
+        expected_instruction = dict(action=action, deadline=attempt['instruction']['deadline'], execution_deadline=cmd['execution_deadline'])
+        if supplied is not None:
+            expected_instruction['payload'] = supplied
+        if action == 'thread-task-send':
+            expected_instruction['thread'] = N['thread']
+        if action == 'thread-task-read':
+            expected_instruction['task'] = T
+        check(attempt['provider'] == provider and attempt['instruction'] == expected_instruction and cmd['action'] == action,
+              'R1 named owner/action/original instruction equality')
+        tid = provider.get('thread')
+        expected_payload = None
+        if action in {'thread-reply', 'thread-decline', 'thread-dispatch'}:
+            operation = action.removeprefix('thread-')
+            expected_payload = dict(supplied, thread_id=tid, invocation_token='[REDACTED]')
+            expected_payload['dispatcher' if operation == 'dispatch' else 'speaker'] = provider['agent']
+            args = ['threads', operation, '--org', 'alpha', '--thread-id', tid]
+            method, path = 'POST', f'/api/v1/orgs/alpha/threads/{tid}/{operation}'
+            request_body = expected_payload
+        elif action == 'thread-task-send':
+            expected_payload = dict(supplied, composer='case_manager')
+            args = ['threads', 'send', '--thread-id', N['thread'], '--task-id', T, '--session-id', sid, '--org', 'alpha']
+            method, path = 'POST', f"/api/v1/orgs/alpha/threads/{N['thread']}/send"
+            request_body = dict(expected_payload, task_id=T, session_id=sid)
+        elif action == 'thread-task-final':
+            expected_payload = dict(supplied, task_id=T, session_id=sid, agent='case_manager')
+            args = ['report-completion', '--org', 'alpha']
+            method, path = 'POST', f'/api/v1/orgs/alpha/tasks/{T}/completion'
+            request_body = dict(session_id=sid, agent='case_manager', status='completed', confidence=90,
+                                output_summary='E05 task complete', risks_flagged=[], dependencies=[],
+                                suggested_reviewer_focus=[], decision=dict(action='done', summary='E05 task complete'))
+        else:
+            args = ['details', '--org', 'alpha', T]
+            method, path, request_body = 'GET', f'/api/v1/orgs/alpha/tasks/{T}', None
+        if expected_payload is not None:
+            private_path = cmd['argv'][-1]
+            check(Path(private_path).is_absolute() and Path(private_path).parent == Path(cmd['argv'][0]).parent.parent / 'coord'
+                  and Path(private_path).name.startswith('e05-private-'), 'R1 actual private payload argv scope')
+            args += ['--from-file', private_path]
+        check(cmd['argv'][1:] == args and cmd['payload'] == expected_payload and cmd['exit'] == (0 if status == 200 else 1)
+              and cmd['stderr'] == '', 'R1 exact CLI argv/payload/success or denial exit and stderr')
+        selected = [w for w in cmd['wire'] if w['method'] == method and w['path'] == path]
+        check(len(selected) == 1, 'R1 exact selected method and endpoint')
+        wire = selected[0]
+        check(wire['status'] == status and wire['request'] == request_body and wire['response'] == cmd['selected_response']
+              and json.loads(wire['response_text']) == wire['response'], 'R1 request/status/selected actual response equality')
+        expected_window = [] if action == 'thread-task-final' else [('GET', '/api/v1/orgs')]
+        if action == 'thread-reply' and supplied['body_markdown'] == 'E05 reply\n@case_worker received':
+            expected_window += [('POST', '/api/v1/orgs/alpha/identities/resolve'),
+                                ('GET', f'/api/v1/orgs/alpha/threads/{tid}')]
+        expected_window.append((method, path))
+        if action == 'thread-task-read':
+            expected_window.append(('GET', '/api/v1/orgs/alpha/identities'))
+        wire_window(cmd['wire'], expected_window, cmd['entered'], cmd['finished'])
+        if action == 'thread-reply' and len(expected_window) == 4:
+            naming, preview = cmd['wire'][1:3]
+            check(naming['status'] == preview['status'] == 200 and preview['request'] is None,
+                  'R1 successful naming and roster preflight')
+            resolution(naming, 'case_worker', 'lookup')
+            check(preview['response']['thread_id'] == tid and preview['response']['subject'] == 'E05 compose race'
+                  and preview['response']['participants'] == ['case_manager', 'case_worker']
+                  and preview['response']['turns_used'] == (1 if status == 200 else 2)
+                  and [(m['seq'], m['speaker'], m['body_markdown']) for m in preview['response']['messages']]
+                  == [(seq, speaker, body) for seq, speaker, _, body in expected_messages[0]][:1 if status == 200 else 2],
+                  'R1 actual current thread roster and complete pre-action messages')
+        if action == 'thread-task-read':
+            naming = cmd['wire'][-1]
+            check(naming['status'] == 200 and naming['request'] is None
+                  and set(naming['response']) == {'identities', 'naming_diagnostic'}
+                  and naming['response']['naming_diagnostic'] is None,
+                  'R1 exact task-details presentation lookup')
+            identities = naming['response']['identities']
+            check([i['canonical_id'] for i in identities] == ['founder', 'case_manager', 'case_worker', 'code_reviewer'],
+                  'R1 complete current presentation roster')
+            check(identities[0] == dict(canonical_id='founder', kind='founder', lifecycle='founder', addressable_name='founder',
+                                       name_revision=1, canonical_definition_revision=None, naming_status='ready')
+                  and type(identities[0]['name_revision']) is int, 'R1 exact founder presentation')
+            for item in identities[1:]:
+                identity(item, item['canonical_id'])
+            for receipt in commands:
+                for prior in receipt['wire']:
+                    if prior['path'] == '/api/v1/orgs/alpha/identities/resolve':
+                        for resolved in prior['response']['resolutions']:
+                            check(resolved['identity'] in identities, 'R1 resolution agrees with independent presentation read')
+        if status != 200:
+            expected = {'detail': {'code':'invocation_token_consumed','status':'consumed'} if status == 409 else {'code':'not_a_participant','composer':'case_manager'}}
+            stdout = f"Error ({status}): {wire['response_text']}\n"
+        elif action == 'thread-decline':
+            expected, stdout = dict(thread_id=tid, status='declined'), f'ok: declined on {tid}\n'
+        elif action == 'thread-reply':
+            expected, stdout = dict(thread_id=tid, seq=seq, kind='message'), f'ok: reply seq={seq} on {tid}\n'
+        elif action == 'thread-dispatch':
+            expected = dict(task_id=T, team='engineering', assigned_agent='case_manager', dispatched_from_thread_id=D['thread'], system_message_seq=2, superseded_task_id=None)
+            stdout = f"ok: dispatched {T} from {D['thread']}\n"
+        elif action == 'thread-task-final':
+            expected, stdout = {'ok':True}, ''
+        else:
+            details = wire['response']
+            actual_task, results = details['task'], details['results']
+            check(all(actual_task[k] == v for k,v in dict(task_id=T, status='completed', assigned_agent='case_manager',
+                  team='engineering', brief='E05 one owned task', dispatched_from_thread_id=D['thread'], parent_task_id=None).items())
+                  and len(results) == 1 and all(results[0][k] == v for k,v in dict(task_id=T, session_id=sid, agent='case_manager',
+                  status='completed', confidence_score=90, output_summary='E05 task complete').items()), 'R1 D2 actual dispatched completed task/result summary')
+            lines = cmd['stdout'].splitlines()
+            check(all(line in lines for line in (f'Task:       {T}', 'Team:       engineering', 'Status:     completed',
+                  'Agent:      case_manager · case_manager', 'Brief:      E05 one owned task', 'Results (1):',
+                  '  - [case_manager · case_manager] confidence=90  E05 task complete')), 'R1 D2 shipping literal details lines')
+            expected, stdout = details, cmd['stdout']
+        check(wire['response'] == expected and cmd['stdout'] == stdout, 'R1 literal selected outcome and shipping stdout')
+
+    for group in groups:
+        settled = group['settled']
+        cmd, wires = settled['cli'], settled['wire_records']
+        check(observations['commands'][settled['command_index']] == cmd and observations['commands'].count(cmd) == 1
+              and cmd['argv'][1:] == ['threads','show','--org','alpha',group['thread'],'--json']
+              and cmd['exit'] == 0 and cmd['stderr'] == '', 'R1 named settled read canonical ledger and literal CLI')
+        check(len(wires) == 2 and [(w['method'],w['path']) for w in wires] == [('GET','/api/v1/orgs'),('GET',f"/api/v1/orgs/alpha/threads/{group['thread']}")]
+              and all(w in observations['relay'] and w['status'] == 200 and w['request'] is None and w['dropped'] is False
+                      and settled['cli_entered'] <= w['entered'] <= settled['cli_finished'] for w in wires)
+              and wires[-1]['response'] == settled['public'] == json.loads(cmd['stdout']), 'R1 settled read full canonical actual wire window')
+
+    for group, subject, recipient, body in [(g,subject,recipient,body) for g,subject,recipient,body in
+            ((N,'E05 denial venue','case_worker','E05 denial anchor'),
+             (D,'E05 dispatch','case_manager','E05 do one task')) if g is not None]:
+        compose = group['compose']
+        cmd, wire = compose['command'], compose['wire']
+        check(observations['commands'].count(cmd) == 1 and wire in observations['relay'] and wire['dropped'] is False,
+              'R1 named N/D compose joins canonical command and relay')
+        check(cmd['argv'][1:] == ['threads','compose','--org','alpha','--subject',subject,'--recipients',recipient,'--body',body]
+              and cmd['exit'] == 0 and cmd['stderr'] == '' and wire['method'] == 'POST' and wire['path'] == '/api/v1/orgs/alpha/threads'
+              and wire['status'] == 200 and wire['request'] == dict(subject=subject, recipients=[recipient], body_markdown=body)
+              and wire['response'] == compose['response'], 'R1 N/D exact compose command/request/response')
+        check(observations['commands'][compose['command_index']] == cmd and len(compose['wire_records']) == 3
+              and compose['wire_records'][-1] == wire
+              and [(w['method'],w['path']) for w in compose['wire_records']] == [('GET','/api/v1/orgs'),('POST','/api/v1/orgs/alpha/identities/resolve'),('POST','/api/v1/orgs/alpha/threads')]
+              and compose['wire_records'][0]['request'] is None
+              and all(w in observations['relay'] and w['status'] == 200 and w['dropped'] is False
+                      and compose['entered'] <= w['entered'] <= compose['finished'] for w in compose['wire_records']),
+              'R1 N/D complete canonical wire and command-index window')
+        wire_window(compose['wire_records'], [('GET', '/api/v1/orgs'), ('POST', '/api/v1/orgs/alpha/identities/resolve'),
+                                             ('POST', '/api/v1/orgs/alpha/threads')], compose['entered'], compose['finished'])
+        resolution(compose['wire_records'][1], recipient, 'thread_recipient')
+        response = compose['response']
+        stored = next(r for r in final['threads'] if r['id'] == group['thread'])
+        check(response == dict(thread_id=group['thread'], started_at=stored['started_at'], pending_replies=[recipient]),
+              'R1 N/D original compose identity and literal pending list')
+        # Producer records the child-local formatted timestamp; independently
+        # validate its UTC offset conversion against the actual stored instant.
+        from datetime import datetime, timedelta, timezone
+        stamp = datetime.fromisoformat(response['started_at'].replace('Z', '+00:00'))
+        offset = compose['utc_offset_seconds']
+        check(type(offset) is int and abs(offset) < 86400, 'R1 compose local timezone evidence')
+        formatted = stamp.astimezone(timezone(timedelta(seconds=offset))).strftime('%Y-%m-%d %H:%M:%S')
+        check(cmd['stdout'] == f"{group['thread']}  started={formatted}  pending={[recipient]}\n",
+              'R1 full shipping founder compose stdout')
+        digest = hashlib.sha256(json.dumps(cmd['argv'][1:]).encode()).hexdigest()
+        check(len([w for w in calls if w['argv_sha256'] == digest and w['source_sha'] == row['source_sha']]) == 1,
+              'R1 N/D independent executable source/argv witness')
+
+
+
 def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     """Independent literal-content consumer, never import the scenario oracle."""
+    originals = validate_e05_originals(observations, directory)
     import hashlib
     from collections import Counter
 
@@ -1134,14 +3302,14 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(len(cases) == 1, "one finite C/N/D record")
     case = cases[0]
     variants = ["E05.compose-race", "E05.reply-natural", "E05.self-dispatch-followup", "E05.consumed-token", "E05.nonparticipant-task-send"]
-    check(case["source_sha"] == row["source_sha"] and case["variants"] == variants
-          and all(row["variants"][v]["evidence"]["threads"] == case for v in variants), "five actual-content references")
-    check(case["final_entered"] <= case["finished"] <= case["final_deadline"] <= case["final_entered"]+4, "bounded final evidence allowance")
+    check(case["source_sha"] == row["source_sha"] and case["variants"] == variants, "five actual-content references")
+    case_end = case.get('finished', case['cleanup_finished'])
+    check(case["final_entered"] <= case_end <= case["final_deadline"] <= case["final_entered"]+4, "bounded final evidence allowance")
     groups = case["groups"]
     check([g["name"] for g in groups] == ["C", "N", "D"], "exact finite group order")
     C, N, D = groups
     starts = observations["starts"]
-    check(len(starts) == 38 and len({s["session"] for s in starts[:36]}) == 36, "36 unique prefix sessions;38 C composition")
+    check(len(starts) in {36,38} and len({s["session"] for s in starts[:36]}) == 36, "independently owned36 unique E05 prefix sessions")
     providers = C["providers"] + N["providers"] + D["providers"]
     check(len(providers) == 6 and len({p["token_sha256"] for p in providers}) == 6
           and {s["session"] for s in starts[29:36]} == {p["session"] for p in providers + [D["task"]]}, "six genuine thread tokens and one task")
@@ -1209,285 +3377,12 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
           "thread_reply_breaker_receipts","thread_message_attachments","thread_scoped_attachments","task_attachments","files")), "no extra effect/attachment/breaker")
     check(Counter(i["status"] for i in final["thread_invocations"]) == {"consumed":3,"declined":3}
           and Counter(i["purpose"] for i in final["thread_invocations"]) == {"reply":5,"task_followup":1}, "terminal invocation outcome/purpose")
-    expected_messages = [
-        [(1,"founder","message","E05 opening\nliteral beta"),(2,"case_manager","message","E05 reply\n@case_worker received")],
-        [(1,"founder","message","E05 denial anchor")],
-        [(1,"founder","message","E05 do one task"),(2,"case_manager","system",None),(3,"case_manager","message","E05 task accepted"),
-         (4,"case_manager","system",None),(5,"case_manager","message","E05 task complete")]]
-    for group, expected, subject, turns, names in zip(groups,expected_messages,("E05 compose race","E05 denial venue","E05 dispatch"),
-                                                    (2,1,3), ({"case_manager","case_worker"},{"case_worker"},{"case_manager"})):
-        tid = group["thread"]
-        thread = [t for t in final["threads"] if t["id"] == tid]
-        check(len(thread) == 1 and thread[0]["subject"] == subject and thread[0]["status"] == "open"
-              and thread[0]["turns_used"] == turns and thread[0]["turn_cap"] == 500, "literal thread fields")
-        messages = [m for m in final["thread_messages"] if m["thread_id"] == tid]
-        check([(m["seq"],m["speaker"],m["kind"],m["body_markdown"]) for m in messages] == expected, "literal message timeline")
-        participants = [p for p in final["thread_participants"] if p["thread_id"] == tid]
-        check({p["agent_name"] for p in participants} == names and len(participants) == len(names), "literal participants")
-        invs = [i for i in final["thread_invocations"] if i["thread_id"] == tid]
-        public = group["settled"]["public"]
-        check(any(h["method"] == "GET" and h["path"] == f"/api/v1/orgs/alpha/threads/{tid}" and h["status"] == 200
-                  and h["response"] == public for h in observations["http"]), "actual public response reference")
-        check(public["thread_id"] == tid and public["subject"] == subject and public["turns_used"] == turns
-              and not public["reply_delivery"] and set(public["participants"]) == names and len(public["messages"]) == len(messages), "actual public thread projection")
-        check(json.loads(group["settled"]["cli"]["stdout"]) == public and group["settled"]["cli"] in observations["commands"]
-              and group["settled"]["cli"]["exit"] == 0, "actual CLI readback")
-        check(group["settled"]["messages_page"]["messages"] == public["messages"] and group["settled"]["messages_page"]["has_more"] is False,
-              "actual complete message page")
-        for message, projected in zip(messages,public["messages"]):
-            check(all(message[k] == projected[k] for k in ("seq","speaker","kind","body_markdown"))
-                  and projected["attachments"] == [], "public literal message content")
-            responders = [i for i in invs if i["triggering_seq"] == message["seq"]]
-            check(sorted((r["agent_name"],r["purpose"],r["status"]) for r in projected["responder_status"])
-                  == sorted((i["agent_name"],i["purpose"],"replied" if i["status"] == "consumed" else "declined") for i in responders),
-                  "public authentic responder purpose/outcome; no invented SID")
-        for provider in group["providers"]:
-            matches = [i for i in invs if i["invocation_token"] == "sha256:" + provider["token_sha256"]]
-            check(len(matches) == 1, "genuine delivered token digest")
-            i = matches[0]
-            check(i["session_id"] == provider["session"] and i["agent_name"] == provider["agent"] and i["purpose"] == provider["purpose"]
-                  and i["started_at"] and i["consumed_at"], "distinct genuine runtime identity")
-            expected_reply = (2 if tid == C["thread"] else 5 if i["purpose"] == "task_followup" else 3) if i["agent_name"] == "case_manager" else None
-            check(i["reply_message_seq"] == expected_reply and i["status"] == ("consumed" if expected_reply else "declined"), "exact reply linkage and decline outcomes")
-            if i["purpose"] == "reply":
-                claims = [json.loads(a["payload"]) for a in final["audit_log"] if a["action"] == "thread_reply_wake_claimed"
-                          and a["task_id"] == tid and json.loads(a["payload"]).get("token_prefix") == i["token_prefix"]]
-                seq = 2 if tid == C["thread"] and i["agent_name"] == "case_worker" and i["triggering_seq"] == 2 else 1
-                check(len(claims) == 1 and claims[0]["agent_name"] == i["agent_name"]
-                      and claims[0]["from_seq"] == claims[0]["through_seq"] == seq, "exact admitted delivery range")
-        for delivery in [r for r in final["thread_reply_delivery_state"] if r["thread_id"] == tid]:
-            watermark = 2 if tid == C["thread"] and delivery["agent_name"] == "case_worker" else 1
-            check(delivery["acknowledged_through_seq"] == delivery["required_through_seq"] == watermark
-                  and all(delivery[k] is None for k in ("queued_invocation_token","running_invocation_token","running_from_seq","running_through_seq")), "exact settled delivery watermarks")
-
-    T, sid = D["task"]["task"], D["task"]["session"]
-    dispatched = [t for t in final["tasks"] if t["dispatched_from_thread_id"] is not None]
-    check(len(dispatched) == 1, "one sourced task only")
-    t = dispatched[0]
-    check(t["id"] == T and t["dispatched_from_thread_id"] == D["thread"] and t["assigned_agent"] == "case_manager"
-          and t["team"] == "engineering" and t["brief"] == "E05 one owned task" and t["status"] == "completed"
-          and t["completed_at"] and t["current_session_id"] == sid and t["orchestration_step_count"] == 1
-          and t["note"] == "E05 task complete" and all(t[k] is None for k in ("parent_task_id","block_kind","active_chain","active_fanout","final_output_dir")), "actual single completed root")
-    result = [r for r in final["task_results"] if r["task_id"] == T]
-    check(len(result) == 1 and type(result[0]["id"]) is int and result[0]["session_id"] == sid
-          and result[0]["status"] == "completed" and result[0]["output_summary"] == "E05 task complete"
-          and json.loads(result[0]["decision_json"]) == {"action":"done","summary":"E05 task complete"}, "one genuine accepted task result")
-    task_audit = [a for a in final["audit_log"] if a["task_id"] == T]
-    required = [next((a for a in task_audit if a["action"] == name),None) for name in ("session_start","session_end","completion_report","orchestration_step")]
-    check(all(required) and all(sum(a["action"] == name for a in task_audit) == 1 for name in ("session_start","session_end","completion_report","orchestration_step"))
-          and [a["id"] for a in required] == sorted(a["id"] for a in required), "one ordered task lifecycle/consumption")
-    systems = [json.loads(m["system_payload_json"]) for m in final["thread_messages"] if m["thread_id"] == D["thread"] and m["kind"] == "system"]
-    dispatch_audit = [a for a in final["audit_log"] if a["action"] == "thread_dispatch"]
-    check(len(dispatch_audit) == 1 and dispatch_audit[0]["task_id"] == D["thread"]
-          and json.loads(dispatch_audit[0]["payload"])["task_id"] == T
-          and json.loads(dispatch_audit[0]["payload"])["dispatcher"] == "case_manager", "real original dispatch audit ownership")
-    check([i["dispatched_task_id"] for i in final["thread_invocations"] if i["dispatched_task_id"]] == [T]
-          and not any(a["action"] in {"thread_followup_skipped","thread_invocation_failed"} for a in final["audit_log"]), "no duplicate/recursive dispatch or lost followup")
-    check(systems == [dict(kind_tag="task_dispatched",task_id=T,dispatcher="case_manager",target_agent="case_manager",team="engineering",brief_preview="E05 one owned task"),
-                      dict(kind_tag="task_completed",task_id=T,original_task_id=T,root_task_id=T,status="completed",final_output_summary="E05 task complete",final_output_dir=None,cancelled=False,revisit_chain_length=1,revisit_task_id=None)], "both literal system payloads")
-    check(len(D["tasks_projection"]) == 1 and D["tasks_projection"][0]["id"] == T, "actual thread task link")
-
-    for negative, status, detail in ((C["replay"],409,dict(code="invocation_token_consumed",status="consumed")),
-                                     (D["denial"],403,dict(code="not_a_participant",composer="case_manager"))):
-        before, after, cmd = negative["before"], negative["after"], negative["command"]
-        check(before["content"] == after["content"] and before["samples"][-1]["at"] <= cmd["entered"] <= cmd["finished"] <= after["samples"][0]["at"], "coherent negative causal window")
-        for f in (before,after):
-            check(len(f["samples"]) >= 2 and f["samples"][-1]["content"] == f["samples"][-2]["content"] == f["content"], "two stable full frames")
-        check(cmd["exit"] == 1 and cmd["selected_response"] == {"detail":detail}
-              and len([w for w in cmd["wire"] if w["method"] == "POST" and w["status"] == status and w["response"] == {"detail":detail}]) == 1, "literal409/403 real CLI denial")
-    check(C["reply"]["argv"] == C["replay"]["command"]["argv"] and C["reply"]["payload_sha256"] == C["replay"]["command"]["payload_sha256"], "exact same retained live reply file")
-
-    commands, attempts = observations["thread_commands"], observations["thread_attempts"]
-    check(len(commands) == len(attempts) == 11 and [a["command_index"] for a in attempts] == list(range(11)), "finite eleven provider CLI actions")
-    boundary = observations["e07"]["prefix"]
-    witnesses = observations["launch_witnesses"][:boundary["witness_records"]]
-    check(case["witnesses"] == witnesses and len([w for w in witnesses if w["kind"] == "stub"]) == 36, "complete actual executable witnesses")
-    calls = [w for w in witnesses if w["kind"] == "callback"]
-    check(len(calls) == boundary["command_count"]+len(observations["provider_commands"])+len(commands), "every CLI accounted")
-    closures = [d["thread_process_closed"] for d in durable if "thread_process_closed" in d]
-    check(len(closures) == 7 and {r["session"] for r in closures} == {p["session"] for p in providers+[D["task"]]}, "seven actual natural process closures")
-    for provider in providers+[D["task"]]:
-        closure = next(r for r in closures if r["session"] == provider["session"])
-        key = "token_sha256" if "thread" in provider else "session"
-        own = [cmd for cmd in commands if cmd["provider"].get(key) == provider[key]]
-        check(closure["pid"] == provider["pid"] and closure["start"] == provider["pid_start"] != closure["observed_start"]
-              and len(closure["children"]) == len(own) and all(ch["pid"] == cmd["child_pid"] and ch["start"] == cmd["child_start"] != ch["observed_start"]
-              for ch,cmd in zip(closure["children"],own)), "actual provider and CLI child PID/start closure")
-        paths = [cmd["argv"][cmd["argv"].index("--from-file")+1] for cmd in own if "--from-file" in cmd["argv"]]
-        check(closure["private_files"] == [dict(path=path,exists=False) for path in paths], "actual named private payload absence")
-    for barrier, admitted, released, command_start in ((C["worker_closed"],19,18,C["reply"]["entered"]),
-                                                      (D["dispatcher_closed"],23,22,D["denial"]["command"]["entered"])):
-        check(barrier in [d["thread_live_boundary"] for d in durable if "thread_live_boundary" in d]
-              and barrier["finished"] <= command_start and len(barrier["samples"]) >= 2, "actual intermediate host barrier")
-        for sample in barrier["samples"][-2:]:
-            m = sample["metrics"]
-            a,r = m["host_sessions"]["admission"],m["host_sessions"]["receipts"]
-            check((a["admitted_total"],a["released_total"],r["published_total"],a["active"],a["queue_depth"]) == (admitted,released,released,1,0)
-                  and any(h["path"] == "/api/v1/metrics" and h["response"] == m for h in observations["http"]), "two actual release/publication/live samples")
-    check(C["held_worker"]["provider"] == C["providers"][2] and C["held_worker"]["before"] == C["held_worker"]["after"] == C["providers"][2]["pid_start"], "W2 held across same-process replay")
-    for cmd,a in zip(commands,attempts):
-        keys = ("thread","token_sha256","agent","org","purpose","pid") if "thread" in a["provider"] else ("task","session","agent","org","pid")
-        check(cmd["provider"] == {k:a["provider"][k] for k in keys} and a["provider"] in starts, "actual provider receipt identity")
-        check(cmd["source_sha"] == row["source_sha"] and cmd["timed_out"] is False and cmd["output_truncated"] is False and a["observed_start"] == a["provider"]["pid_start"]
-              and a["entered"] <= cmd["entered"] <= cmd["finished"] <= a["finished"] < a["instruction"]["deadline"]
-              <= a["entered"] + 10 and cmd["execution_deadline"] == a["instruction"]["deadline"] - 1, "original live owner/deadline")
-        check(all(w in observations["relay"] and w["dropped"] is False for w in cmd["wire"]) and cmd["wire"], "actual complete relay references")
-        check(all(type(cmd[k + '_bytes']) is int and cmd[k + '_bytes'] >= 0
-                  and cmd[k + '_truncated'] == (cmd[k + '_bytes'] > 16384)
-                  and len(cmd[k].encode()) <= 16384 for k in ('stdout','stderr'))
-              and cmd['output_truncated'] == (cmd['stdout_truncated'] or cmd['stderr_truncated']),
-              'R3 original byte counts and per-stream truncation diagnostics')
-        digest = hashlib.sha256(json.dumps(cmd["argv"][1:]).encode()).hexdigest()
-        check(len([w for w in calls if w["pid"] == cmd["child_pid"] and w["ppid"] == cmd["provider"]["pid"]
-                   and w["argv_sha256"] == digest and w["source_sha"] == row["source_sha"]]) == 1, "independent actual CLI child/source join")
-    expected_actions = [["thread-reply","thread-reply"],["thread-decline"],["thread-decline"],["thread-decline"],
-                        ["thread-dispatch","thread-reply"],["thread-task-read","thread-reply"],["thread-task-send","thread-task-final"]]
-    for provider, actions in zip(providers+[D["task"]],expected_actions):
-        key = "token_sha256" if "thread" in provider else "session"
-        own = [cmd for cmd in commands if cmd["provider"].get(key) == provider[key]]
-        check([cmd["action"] for cmd in own] == actions, "finite per-provider action order/final callback last")
-    check(D["callback"]["selected_response"] == {"ok":True} and D["callback"]["exit"] == 0
-          and D["callback"] in commands and D["followup"] in commands and D["read"] in commands
-          and D["callback"]["finished"] <= D["providers"][1]["at"] <= D["read"]["entered"] <= D["followup"]["entered"], "task callback to natural D2 read/reply")
-    # Fixed case receipts must be the actual eleven ledger entries, each joined
-    # to its original finite instruction. Durable acceptance alone is not CLI success.
-    specifications = [
-        (C['initial_decline'], C['providers'][1], 'thread-decline', dict(reason='E05 initial observed', in_response_to_seq=1), 200, None),
-        (C['reply'], C['providers'][0], 'thread-reply', dict(body_markdown='E05 reply\n@case_worker received', in_response_to_seq=1), 200, 2),
-        (C['replay']['command'], C['providers'][0], 'thread-reply', dict(body_markdown='E05 reply\n@case_worker received', in_response_to_seq=1), 409, None),
-        (C['last_decline'], C['providers'][2], 'thread-decline', dict(reason='E05 reply observed', in_response_to_seq=2), 200, None),
-        (N['decline'], N['providers'][0], 'thread-decline', dict(reason='E05 denial venue observed', in_response_to_seq=1), 200, None),
-        (D['dispatch'], D['providers'][0], 'thread-dispatch', dict(brief='E05 one owned task', target_agent='case_manager', team='engineering'), 200, None),
-        (D['reply'], D['providers'][0], 'thread-reply', dict(body_markdown='E05 task accepted', in_response_to_seq=1), 200, 3),
-        (D['denial']['command'], D['task'], 'thread-task-send', dict(body_markdown='E05 forbidden post'), 403, None),
-        (D['callback'], D['task'], 'thread-task-final', dict(status='completed', confidence=90, summary='E05 task complete', decision=dict(action='done', summary='E05 task complete')), 200, None),
-        (D['read'], D['providers'][1], 'thread-task-read', None, 200, None),
-        (D['followup'], D['providers'][1], 'thread-reply', dict(body_markdown='E05 task complete', in_response_to_seq=4), 200, 5),
-    ]
-    check([s[0] for s in specifications] == commands, 'R1 every named receipt equals canonical ordered command ledger')
-    for index, (cmd, provider, action, supplied, status, seq) in enumerate(specifications):
-        attempt = attempts[index]
-        expected_instruction = dict(action=action, deadline=attempt['instruction']['deadline'], execution_deadline=cmd['execution_deadline'])
-        if supplied is not None:
-            expected_instruction['payload'] = supplied
-        if action == 'thread-task-send':
-            expected_instruction['thread'] = N['thread']
-        if action == 'thread-task-read':
-            expected_instruction['task'] = T
-        check(attempt['provider'] == provider and attempt['instruction'] == expected_instruction and cmd['action'] == action,
-              'R1 named owner/action/original instruction equality')
-        tid = provider.get('thread')
-        expected_payload = None
-        if action in {'thread-reply', 'thread-decline', 'thread-dispatch'}:
-            operation = action.removeprefix('thread-')
-            expected_payload = dict(supplied, thread_id=tid, invocation_token='[REDACTED]')
-            expected_payload['dispatcher' if operation == 'dispatch' else 'speaker'] = provider['agent']
-            args = ['threads', operation, '--org', 'alpha', '--thread-id', tid]
-            method, path = 'POST', f'/api/v1/orgs/alpha/threads/{tid}/{operation}'
-            request_body = expected_payload
-        elif action == 'thread-task-send':
-            expected_payload = dict(supplied, composer='case_manager')
-            args = ['threads', 'send', '--thread-id', N['thread'], '--task-id', T, '--session-id', sid, '--org', 'alpha']
-            method, path = 'POST', f"/api/v1/orgs/alpha/threads/{N['thread']}/send"
-            request_body = dict(expected_payload, task_id=T, session_id=sid)
-        elif action == 'thread-task-final':
-            expected_payload = dict(supplied, task_id=T, session_id=sid, agent='case_manager')
-            args = ['report-completion', '--org', 'alpha']
-            method, path = 'POST', f'/api/v1/orgs/alpha/tasks/{T}/completion'
-            request_body = dict(session_id=sid, agent='case_manager', status='completed', confidence=90,
-                                output_summary='E05 task complete', risks_flagged=[], dependencies=[],
-                                suggested_reviewer_focus=[], decision=dict(action='done', summary='E05 task complete'))
-        else:
-            args = ['details', '--org', 'alpha', T]
-            method, path, request_body = 'GET', f'/api/v1/orgs/alpha/tasks/{T}', None
-        if expected_payload is not None:
-            private_path = cmd['argv'][-1]
-            check(Path(private_path).is_absolute() and Path(private_path).parent == Path(cmd['argv'][0]).parent.parent / 'coord'
-                  and Path(private_path).name.startswith('e05-private-'), 'R1 actual private payload argv scope')
-            args += ['--from-file', private_path]
-        check(cmd['argv'][1:] == args and cmd['payload'] == expected_payload and cmd['exit'] == (0 if status == 200 else 1)
-              and cmd['stderr'] == '', 'R1 exact CLI argv/payload/success or denial exit and stderr')
-        selected = [w for w in cmd['wire'] if w['method'] == method and w['path'] == path]
-        check(len(selected) == 1, 'R1 exact selected method and endpoint')
-        wire = selected[0]
-        check(wire['status'] == status and wire['request'] == request_body and wire['response'] == cmd['selected_response']
-              and json.loads(wire['response_text']) == wire['response'], 'R1 request/status/selected actual response equality')
-        discovery = [w for w in cmd['wire'] if w != wire]
-        check(len(discovery) == (0 if action == 'thread-task-final' else 1)
-              and all(w['method'] == 'GET' and w['path'] == '/api/v1/orgs' and w['request'] is None and w['status'] == 200 for w in discovery)
-              and all(cmd['entered'] <= w['entered'] <= cmd['finished'] for w in cmd['wire']), 'R1 full command wire window; only shipping org discovery')
-        if status != 200:
-            expected = {'detail': {'code':'invocation_token_consumed','status':'consumed'} if status == 409 else {'code':'not_a_participant','composer':'case_manager'}}
-            stdout = f"Error ({status}): {wire['response_text']}\n"
-        elif action == 'thread-decline':
-            expected, stdout = dict(thread_id=tid, status='declined'), f'ok: declined on {tid}\n'
-        elif action == 'thread-reply':
-            expected, stdout = dict(thread_id=tid, seq=seq, kind='message'), f'ok: reply seq={seq} on {tid}\n'
-        elif action == 'thread-dispatch':
-            expected = dict(task_id=T, team='engineering', assigned_agent='case_manager', dispatched_from_thread_id=D['thread'], system_message_seq=2, superseded_task_id=None)
-            stdout = f"ok: dispatched {T} from {D['thread']}\n"
-        elif action == 'thread-task-final':
-            expected, stdout = {'ok':True}, ''
-        else:
-            details = wire['response']
-            actual_task, results = details['task'], details['results']
-            check(all(actual_task[k] == v for k,v in dict(task_id=T, status='completed', assigned_agent='case_manager',
-                  team='engineering', brief='E05 one owned task', dispatched_from_thread_id=D['thread'], parent_task_id=None).items())
-                  and len(results) == 1 and all(results[0][k] == v for k,v in dict(task_id=T, session_id=sid, agent='case_manager',
-                  status='completed', confidence_score=90, output_summary='E05 task complete').items()), 'R1 D2 actual dispatched completed task/result summary')
-            lines = cmd['stdout'].splitlines()
-            check(all(line in lines for line in (f'Task:       {T}', 'Team:       engineering', 'Status:     completed',
-                  'Agent:      case_manager', 'Brief:      E05 one owned task', 'Results (1):',
-                  '  - [case_manager] confidence=90  E05 task complete')), 'R1 D2 shipping literal details lines')
-            expected, stdout = details, cmd['stdout']
-        check(wire['response'] == expected and cmd['stdout'] == stdout, 'R1 literal selected outcome and shipping stdout')
-
-    for group in groups:
-        settled = group['settled']
-        cmd, wires = settled['cli'], settled['wire_records']
-        check(observations['commands'][settled['command_index']] == cmd and observations['commands'].count(cmd) == 1
-              and cmd['argv'][1:] == ['threads','show','--org','alpha',group['thread'],'--json']
-              and cmd['exit'] == 0 and cmd['stderr'] == '', 'R1 named settled read canonical ledger and literal CLI')
-        check(len(wires) == 2 and [(w['method'],w['path']) for w in wires] == [('GET','/api/v1/orgs'),('GET',f"/api/v1/orgs/alpha/threads/{group['thread']}")]
-              and all(w in observations['relay'] and w['status'] == 200 and w['request'] is None and w['dropped'] is False
-                      and settled['cli_entered'] <= w['entered'] <= settled['cli_finished'] for w in wires)
-              and wires[-1]['response'] == settled['public'] == json.loads(cmd['stdout']), 'R1 settled read full canonical actual wire window')
-
-    for group, subject, recipient, body in ((N,'E05 denial venue','case_worker','E05 denial anchor'),
-                                            (D,'E05 dispatch','case_manager','E05 do one task')):
-        compose = group['compose']
-        cmd, wire = compose['command'], compose['wire']
-        check(observations['commands'].count(cmd) == 1 and wire in observations['relay'] and wire['dropped'] is False,
-              'R1 named N/D compose joins canonical command and relay')
-        check(cmd['argv'][1:] == ['threads','compose','--org','alpha','--subject',subject,'--recipients',recipient,'--body',body]
-              and cmd['exit'] == 0 and cmd['stderr'] == '' and wire['method'] == 'POST' and wire['path'] == '/api/v1/orgs/alpha/threads'
-              and wire['status'] == 200 and wire['request'] == dict(subject=subject, recipients=[recipient], body_markdown=body)
-              and wire['response'] == compose['response'], 'R1 N/D exact compose command/request/response')
-        check(observations['commands'][compose['command_index']] == cmd and len(compose['wire_records']) == 2
-              and compose['wire_records'][-1] == wire
-              and [(w['method'],w['path']) for w in compose['wire_records']] == [('GET','/api/v1/orgs'),('POST','/api/v1/orgs/alpha/threads')]
-              and compose['wire_records'][0]['request'] is None
-              and all(w in observations['relay'] and w['status'] == 200 and w['dropped'] is False
-                      and compose['entered'] <= w['entered'] <= compose['finished'] for w in compose['wire_records']),
-              'R1 N/D complete canonical wire and command-index window')
-        response = compose['response']
-        stored = next(r for r in final['threads'] if r['id'] == group['thread'])
-        check(response == dict(thread_id=group['thread'], started_at=stored['started_at'], pending_replies=[recipient]),
-              'R1 N/D original compose identity and literal pending list')
-        # Producer records the child-local formatted timestamp; independently
-        # validate its UTC offset conversion against the actual stored instant.
-        from datetime import datetime, timedelta, timezone
-        stamp = datetime.fromisoformat(response['started_at'].replace('Z', '+00:00'))
-        offset = compose['utc_offset_seconds']
-        check(type(offset) is int and abs(offset) < 86400, 'R1 compose local timezone evidence')
-        formatted = stamp.astimezone(timezone(timedelta(seconds=offset))).strftime('%Y-%m-%d %H:%M:%S')
-        check(cmd['stdout'] == f"{group['thread']}  started={formatted}  pending={[recipient]}\n",
-              'R1 full shipping founder compose stdout')
-        digest = hashlib.sha256(json.dumps(cmd['argv'][1:]).encode()).hexdigest()
-        check(len([w for w in calls if w['argv_sha256'] == digest and w['source_sha'] == row['source_sha']]) == 1,
-              'R1 N/D independent executable source/argv witness')
+    T, sid = D['task']['task'],D['task']['session']
+    systems = [json.loads(m['system_payload_json']) for m in final['thread_messages'] if m['thread_id'] == D['thread'] and m['kind'] == 'system']
+    validate_e05_operations(row,observations,case['checkpoints'][-1],groups)
 
     events = json.loads((directory / "e05-browser-events.json").read_text())
+    validate_e05_safety(observations, events)
     check(C["created"] in events and C["created"]["dialog_count"] == 0 and C["created"]["list_rows"] == 1, "actual dialog closure and one list row")
     check(events and events[-1]["event"] == "context-closed" and not any(e["event"] in {"pageerror","origin-bypass"} for e in events), "real browser origin/closure")
     requests = [e for e in events if e["event"] == "compose-request"]
@@ -1503,8 +3398,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
           and wire["target"] == "/api/v1/orgs/alpha/threads" and request["method"] == wire["method"] == "POST"
           and request["payload"] == wire["request"] == {"subject":"E05 compose race","recipients":["case_manager","case_worker"],"body_markdown":"E05 opening\nliteral beta"}
           and request["sha256"] == wire["request_sha256"] and request["bytes"] == wire["request_bytes"], "exact end-to-end compose bytes")
-    check(wire["status"] == response["status"] == 200 and wire["response"] == response["body"]
-          and wire["response_sha256"] == response["sha256"] and wire["response_bytes"] == response["bytes"]
+    check(wire["status"] == response["status"] == 200 and wire["response"] == originals[response['request_id']]["body"]
+          and wire["response_sha256"] == originals[response['request_id']]["sha256"] and wire["response_bytes"] == originals[response['request_id']]["bytes"]
           and wire["response"]["thread_id"] == C["thread"] and set(wire["response"]["pending_replies"]) == {"case_manager","case_worker"}, "original actual200 identity/payload")
     check(C["armed"]["at"] <= wire["forwarded"] <= wire["upstream_complete"] <= wire["committed"] <= wire["held"] <= C["released"]
           <= wire["delivered"] <= wire["closed"] <= C["armed"]["deadline"] <= C["armed"]["at"]+5, "single bounded hold/release timeline")
@@ -1522,15 +3417,43 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     inbox = origin + '/orgs/alpha/threads'
     # Classify EVERY navigation, including intentional revisits. An extra event
     # anywhere in the full ledger cannot be hidden by a case snapshot.
-    navigation = [(e['event'], e['url']) for e in events if e['event'] in {'navigation','deliberate-revisit'}]
-    expected_navigation = [('navigation',inbox), ('navigation',detail)]
+    navigation, entries = [], []
+    document_id, document_url, current_url, initialized = None, None, None, False
+    documents = set()
+    for event in events:
+        if event['event'] == 'deliberate-revisit':
+            navigation.append(('deliberate-revisit', event['url'], None))
+        elif event['event'] == 'navigation':
+            check(type(event['new_document']) is bool and type(event['document_request_id']) is int,
+                  'R2 typed native document lineage')
+            if event['new_document']:
+                document_id = event['document_request_id']
+                issued = [e for e in events if e['event'] == 'request' and e['request_id'] == document_id]
+                check(document_id not in documents and len(issued) == 1 and issued[0]['navigation'] is True
+                      and issued[0]['resource_type'] == 'document' and issued[0]['method'] == 'GET'
+                      and issued[0]['url'] == event['url'] and issued[0]['at'] <= event['at'],
+                      'R2 each new document has its own actual unredirected browser GET')
+                documents.add(document_id)
+                document_url, current_url, initialized = event['url'], event['url'], False
+            else:
+                check(document_id is not None and event['document_request_id'] == document_id,
+                      'R2 same-document event retains actual original Request')
+                if event['url'] == current_url:
+                    check(not initialized and current_url == document_url,
+                          'R2 at most one nondeparting initialization per actual document')
+                    initialized = True
+                    continue  # Raw event remains in the complete ledger.
+                current_url = event['url']
+            navigation.append(('navigation', event['url'], event['new_document']))
+            entries.append(event)
+    expected_navigation = [('navigation',inbox,True), ('navigation',detail,False)]
     for target in (inbox, detail, detail, origin + f"/orgs/alpha/threads/{D['thread']}"):
-        expected_navigation += [('deliberate-revisit',target), ('navigation',target)]
+        expected_navigation += [('deliberate-revisit',target,None), ('navigation',target,True)]
     check(navigation == expected_navigation, 'R2 one automatic detail entry and four explicitly paired later revisits; no extras')
     check(not any(e['at'] < wire['release_observed'] and (e['event'] == 'compose-response'
                   or (e['event'] == 'navigation' and e['url'] != inbox)) for e in events),
           'R2 zero held response/detail navigation recomputed from full ledger')
-    auto_entry = [e for e in events if e['event'] == 'navigation'][1]
+    auto_entry = entries[1]
     first_revisit = next(e for e in events if e['event'] == 'deliberate-revisit')
     check(response['at'] <= auto_entry['at'] <= C['released_events'][-1]['at'] <= first_revisit['at']
           and C['created']['url'] == detail and C['created']['list_url'] == inbox,
@@ -1545,13 +3468,14 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     for view, group, count, name in zip(views, (C,C,D), (1,2,5), ('e05-compose.png','e05-reply.png','e05-dispatch.png')):
         tid = group['thread']
         public = group['settled']['public']
-        body = view['body']
+        body = view['original_body']
+        check(view['original_ref'] == originals[view['request_id']] and view['messages_original_ref'] == originals[view['messages_request_id']], 'R2 exact view Response object/original references')
         check(view['screenshot'] == name and (directory/name).read_bytes().startswith(b'\x89PNG\r\n\x1a\n'),
               'R2 named PNG bytes only; rendered semantics checked separately')
         view_index = events.index(dict(event='thread-view', **view))
         revisit_index = max(i for i,e in enumerate(events[:view_index]) if e['event'] == 'deliberate-revisit')
         response_rows = [e for e in events[revisit_index+1:view_index] if e['event'] == 'thread-response'
-                         and e['url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}' and e['body'] == body]
+                         and e['url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}' and e['request_id'] == view['request_id'] and e['response_id'] == view['response_id'] and originals[e['request_id']]['body'] == body]
         check(view['url'] == origin + f'/orgs/alpha/threads/{tid}' and view['response_url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}'
               and view['method'] == 'GET' and view['status'] == 200 and response_rows
               and response_rows[0]['method'] == 'GET' and response_rows[0]['status'] == 200,
@@ -1564,17 +3488,17 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
             check(all(actual[k] == expected[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload')),
                   'R2 rendered response literal message and complete system-payload projection')
         message_rows = [e for e in events[revisit_index+1:view_index] if e['event'] == 'thread-response'
-                        and e['url'] == view['messages_url'] and e['body'] == view['messages_body']]
+                        and e['url'] == view['messages_url'] and e['request_id'] == view['messages_request_id'] and e['response_id'] == view['messages_response_id'] and originals[e['request_id']]['body'] == view['original_messages_body']]
         check(view['messages_url'].split('?')[0] == origin + f'/api/v1/orgs/alpha/threads/{tid}/messages'
               and view['messages_status'] == 200 and view['messages_method'] == 'GET' and message_rows
               and message_rows[0]['status'] == 200 and message_rows[0]['method'] == 'GET'
-              and len(view['messages_body']['messages']) == count and view['messages_body']['has_more'] is False,
+              and len(view['original_messages_body']['messages']) == count and view['original_messages_body']['has_more'] is False,
               'R2 actual browser message-page response joins displayed projection')
-        for detail_message, page_message in zip(body['messages'], view['messages_body']['messages']):
+        for detail_message, page_message in zip(body['messages'], view['original_messages_body']['messages']):
             check(all(detail_message[k] == page_message[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload','created_at')),
                   'R2 detail/message-page immutable content equality; initial responder state may advance')
         if count != 1:
-            check(view['messages_body']['messages'] == public['messages'], 'R2 settled message-page full public projection')
+            check(view['original_messages_body']['messages'] == public['messages'], 'R2 settled message-page full public projection')
         expected_bubbles = [m for m in body['messages'] if m['kind'] == 'message']
         check(len(view['rendered_messages']) == len(expected_bubbles), 'R2 exact rendered message bubble count')
         for rendered, message in zip(view['rendered_messages'], expected_bubbles):
@@ -1592,15 +3516,23 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
                   'R2 full D dispatched/completed payloads and summary')
         check(all(' '.join(literal.split()) in normalized for literal in literals),
               'R2 every full opening/reply/dispatch/followup/summary literal rendered (DOM whitespace normalized)')
-    closure = [d["thread_proxy_closure"] for d in durable if "thread_proxy_closure" in d]
-    check(len(closure) == 1 and closure[0]["port"] == transport["browser_port"] and not closure[0]["errors"]
-          and closure[0]["workers_alive"] == closure[0]["connections"] == 0 and closure[0]["listener_alive"] is False, "bounded proxy/socket/listener closure")
     final_orgs = [d for d in durable if "threads_final_org" in d]
     check(len(final_orgs) == 2 and {d["threads_final_org"] for d in final_orgs} == {"alpha","beta"}, "both final orgs")
     for d in final_orgs:
         expected = (20,29) if d["threads_final_org"] == "alpha" else (1,1)
         check((len(d["snapshot"]["tasks"]),len(d["snapshot"]["results"])) == expected
               and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks30results")
+
+    for event in events:
+        if event['event'] in {'compose-response','thread-response'}:
+            require_browser_copy(event, originals[event['request_id']])
+    for view in views:
+        check(view.get('browser_copy') == 'measured-browser', 'mandatory independent browser view JSON unavailable')
+        check(view['body'] == view['original_body'] and view['messages_body'] == view['original_messages_body'],
+              'original independent full browser detail/message-page projection')
+        # Includes created_at, has_more, all system payloads and rendered-response
+        # equality already checked above for the full original entity.
+    check(all(row['variants'][v]['evidence']['threads'] == case for v in variants), 'five actual completed case references')
 
 
 def e07_sql_date(value: str | None) -> str | None:
@@ -1709,6 +3641,249 @@ def e07_public_state(sample: dict, http: list[dict]) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+def validate_e07_admission(row: dict, observations: dict, directory: Path) -> tuple[int,int,dict]:
+    """Reconstruct finite operation ownership from full raw source/action joins."""
+    from collections import Counter
+    def check(value, reason):
+        if not value:
+            raise ValueError('E07 admission content: ' + reason)
+    def same(a,b):
+        return json.dumps(a,sort_keys=True,allow_nan=False) == json.dumps(b,sort_keys=True,allow_nan=False)
+    # Original first48 are a real dependency of these finite checkpoints, not
+    # invented prefix receipts. Reuse their complete existing independent reader.
+    validate_e04(row,observations,json.loads((directory/'browser-events.json').read_text()),directory)
+    a = observations['e07_admission']
+    check(a['state'] == 'accepted' and a['refusal'] is None and a == observations['e07']['admission'] == row['e07_admission'], 'actual admission export equality')
+    check(a['checkpoint'] in {'pre-E05','C','N','D'}, 'finite genuine checkpoint')
+    name = a['checkpoint']
+    S,H = {'pre-E05':(29,17),'C':(32,20),'N':(33,21),'D':(36,24)}[name]
+    check(type(a['starts']) is int and type(a['host']) is int and (a['starts'],a['host']) == (S,H), 'source-selected checkpoint totals')
+    case = next(d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d)
+    point = case['checkpoints'][-1]
+    check(all(type(t) in (int,float) and math.isfinite(t) for t in
+              (case['entered'],point['at'],case['cleanup_finished'],case['cleanup_deadline'],
+               a['entered'],a['finished'],observations['e07']['scenario_deadline']))
+          and same(point,a['point']) and point['name'] == name
+          and case['entered'] <= point['at'] <= case['cleanup_finished'] <= a['entered'] < a['finished']
+          and case['cleanup_finished'] <= case['cleanup_deadline'], 'original settled operation and original cleanup end')
+    check(a['finished']+50 < observations['e07']['scenario_deadline'], 'full50s original work remains after admission')
+    check(all(f['stage'] == 'controller-action' for f in observations['failures'] if f['at'] <= a['finished']), 'no pre-admission safety/teardown/export failure')
+    boots = observations['boots']
+    check(len(boots) == 2 and same(a['boots'],boots) and point['anchor']['daemon_pid'] == boots[1]['pid']
+          and point['anchor']['daemon_start'] == boots[1]['start'], 'same two real boots/current index1 generation')
+    check(set(case['source_hashes']) == {
+        'e2e/threads.py','e2e/thread_provider.py','e2e/provider.py','e2e/controller.py','e2e/browser.py',
+        'e2e/transport.py','e2e/oracles.py','e2e/aggregate.py','tests/integration/fake_claude.sh','cli/commands/threads.py',
+        'runtime/daemon/routes/threads.py','runtime/daemon/thread_runner.py','web/src/shared/threads/NewThreadDialog.tsx',
+        'cli/_shared.py','cli/commands/tasks.py','runtime/daemon/routes/tasks.py','web/src/features/threads/ThreadsPage.tsx',
+        'web/src/design-system/patterns/MessageBubble.tsx','web/src/design-system/patterns/Markdown.tsx',
+        'web/src/design-system/patterns/AgentChip.tsx'}, 'complete original source membership')
+    source = Path(__file__).resolve().parents[1]
+    check(a['source_sha'] == row['source_sha'] and a['python'] == observations['e07']['python']
+          and all(hashlib.sha256((source/n).read_bytes()).hexdigest() == digest for n,digest in case['source_hashes'].items()), 'original source/interpreter equality')
+    transport = case['transport']
+    check(len({transport[k] for k in ('daemon_port','cli_port','browser_port')}) == 3
+          and a['ports'] == transport['ports'] and all(transport[k] in a['ports'] for k in ('daemon_port','cli_port','browser_port'))
+          and (transport['daemon_pid'],transport['daemon_start']) == (boots[1]['pid'],boots[1]['start']), 'original D/L/P registry and daemon identity')
+    closures = [d['thread_proxy_closure'] for d in observations['durable'] if 'thread_proxy_closure' in d]
+    check(len(closures) == 1 and not any(closures[0][k] for k in ('errors','connections','workers_alive','listener_alive'))
+          and closures[0]['finished'] <= case['cleanup_finished'], 'positive proxy listener/worker/socket closure')
+    events = json.loads((directory/'e05-browser-events.json').read_text())
+    validate_e05_safety(observations, events)
+    validate_e05_originals(observations,directory)
+    current = a['frame']
+    check(same(current['sql'],point['frame']['sql'])
+          and e07_public_state(current,observations['http']) == e07_public_state(point['frame'],observations['http']), 'stable full checkpoint SQL/files/public/rawHTTP')
+    check(not current['pending'] and not point['frame']['pending'], 'no unknown peer')
+    operation_count = {'pre-E05':0,'C':1,'N':2,'D':3}[name]
+    check(not any('mutation_entered' in g for g in case['groups'][operation_count:]), 'no later unclassified mutating attempt')
+    groups = case['groups'][:operation_count]
+    check(not groups or same(point['thread_frame'],groups[-1]['settled']['content']),
+          'full checkpoint values equal genuine last settled operation')
+    check([g['name'] for g in groups] == ['C','N','D'][:len(groups)], 'complete selected operations in source order')
+    validate_e05_operations(row,observations,point,groups)
+    providers = [p for g in groups for p in g['providers']+([g['task']] if g['name'] == 'D' else [])]
+    check(len(providers) == S-29 and len(point['starts']) == S
+          and point['starts'] == observations['starts'][:S]
+          and {p['session'] for p in providers} == {p['session'] for p in point['starts'][29:]}, 'full task/thread provider membership')
+    check(len(point['processes']) == S-29
+          and {(p['pid'],p['start']) for p in point['processes']} == {(p['pid'],p['pid_start']) for p in point['starts'][29:]},
+          'complete original PID-generation/process membership')
+    group_paths = set()
+    for process in point['processes']:
+        check(set(process) == {'pid','start','state','ppid','argv','cgroup','at'}
+              and type(process['pid']) is int and type(process['ppid']) is int
+              and type(process['start']) is str and process['start'].isdigit()
+              and process['at'] <= point['at'], 'actual bound provider process grammar')
+        paths = [line[3:] for line in process['cgroup'].splitlines() if line.startswith('0::')]
+        check(len(paths) == 1 and paths[0].rsplit('/',1)[-1].startswith('happyranch-')
+              and paths[0].endswith(('.service','.scope')), 'actual pinned provider containment group')
+        group_paths.add(paths[0])
+    check(set(point['provider_groups']) == set(a['provider_groups']) == group_paths
+          and all(not point['provider_groups'][path]['pids'] and not a['provider_groups'][path]['pids']
+                  and point['provider_groups'][path]['at'] <= point['at'] <= a['provider_groups'][path]['at'] <= a['finished']
+                  for path in group_paths), 'positive pinned groups empty at both checkpoint and admission')
+    check(point['thread_command_count'] == point['thread_attempt_count'] == len(observations['thread_commands']) == {29:0,32:4,33:5,36:11}[S]
+          and all(a.get('command_index') == i and 'finished' in a for i,a in enumerate(observations['thread_attempts'])), 'exact complete source command and attempt inventory')
+    closed_providers = [d['thread_process_closed'] for d in observations['durable'] if 'thread_process_closed' in d]
+    check(len(closed_providers) == S-29 and {r['session'] for r in closed_providers} == {p['session'] for p in providers}
+          and all(r['observed_start'] != r['start'] and all(not f['exists'] for f in r['private_files'])
+                  and all(ch['observed_start'] != ch['start'] for ch in r['children']) for r in closed_providers), 'every genuine provider and child/private-file closure')
+    known = []
+    for g,subject,messages,turns,host_total in zip(groups,
+            ('E05 compose race','E05 denial venue','E05 dispatch'),
+            (((1,'founder','message','E05 opening\nliteral beta'),(2,'case_manager','message','E05 reply\n@case_worker received')),
+             ((1,'founder','message','E05 denial anchor'),),
+             ((1,'founder','message','E05 do one task'),(2,'case_manager','system',None),(3,'case_manager','message','E05 task accepted'),(4,'case_manager','system',None),(5,'case_manager','message','E05 task complete'))),
+            (2,1,3),(20,21,24)):
+        settled = g['settled']
+        frame = settled['content']
+        thread = next(t for t in frame['threads'] if t['id'] == g['thread'])
+        check(thread['subject'] == subject and thread['turns_used'] == turns and thread['status'] == 'open'
+              and thread['turn_cap'] == 500, 'literal settled operation state')
+        actual = [m for m in frame['thread_messages'] if m['thread_id'] == g['thread']]
+        check([(m['seq'],m['speaker'],m['kind'],m['body_markdown']) for m in actual] == list(messages), 'full finite source-owned message content/order')
+        check(settled['public']['messages'] == settled['messages_page']['messages']
+              and settled['messages_page']['has_more'] is False and not settled['public']['reply_delivery']
+              and not settled['messages_page']['reply_delivery'] and json.loads(settled['cli']['stdout']) == settled['public']
+              and settled['cli']['exit'] == 0, 'full public/messages/actual CLI operation content')
+        check(any(h['response'] == settled['public'] and h['path'] == f"/api/v1/orgs/alpha/threads/{g['thread']}" and h['status'] == 200 for h in observations['http']), 'actual public original rawHTTP')
+        inv = [r for r in frame['thread_invocations'] if r['thread_id'] == g['thread']]
+        check(len(inv) == len(g['providers']) and {r['session_id'] for r in inv} == {p['session'] for p in g['providers']}
+              and all(r['started_at'] and r['consumed_at'] and r['status'] in {'consumed','declined'} for r in inv), 'complete genuine terminal invocation membership')
+        delivery = [r for r in frame['thread_reply_delivery_state'] if r['thread_id'] == g['thread']]
+        check(len(delivery) == len({p['agent'] for p in g['providers']}) and all(
+              r['required_through_seq'] == r['acknowledged_through_seq'] and all(r[k] is None for k in
+              ('queued_invocation_token','running_invocation_token','running_from_seq','running_through_seq')) for r in delivery)
+              and all(not frame[k] for k in ('thread_reply_exchange','thread_exchange_deferrals','thread_reply_breaker_episodes','thread_reply_breaker_receipts')), 'no delivery/exchange/breaker residue')
+        anchor = g['anchor']
+        check(anchor['total'] == host_total and anchor['provider_count'] == {'C':32,'N':33,'D':36}[g['name']]
+              and anchor in [d['jobs_anchor'] for d in observations['durable'] if 'jobs_anchor' in d], 'actual source-owned operation anchor')
+        known.append(g['thread'])
+    check([t['id'] for t in point['thread_frame']['threads']] == known
+          and len(point['thread_frame']['thread_messages']) == {'pre-E05':0,'C':2,'N':3,'D':8}[name]
+          and len(point['thread_frame']['thread_invocations']) == {'pre-E05':0,'C':3,'N':4,'D':6}[name], 'entire finite thread/message/invocation inventory')
+    for org in ('alpha','beta'):
+        old = next(d['snapshot'] for d in observations['durable'] if d.get('jobs_final_org') == org)
+        tables = current['sql'][org]['tables']
+        extra = groups[-1]['task']['task'] if name == 'D' and org == 'alpha' else None
+        check(same([t for t in tables['tasks'] if t['id'] != extra],old['tasks'])
+              and same([r for r in tables['task_results'] if r['task_id'] != extra],old['results'])
+              and len(tables['tasks']) == len(old['tasks'])+bool(extra)
+              and len(tables['task_results']) == len(old['results'])+bool(extra)
+              and all(t['status'] == 'completed' for t in tables['tasks']), 'independently reconstructed complete task/result originals ' + org)
+        if extra:
+            result = next(r for r in tables['task_results'] if r['task_id'] == extra)
+            callback = groups[-1]['callback']
+            check(result['session_id'] == groups[-1]['task']['session'] and result['status'] == 'completed'
+                  and result['output_summary'] == callback['payload']['summary'] == 'E05 task complete'
+                  and callback in observations['thread_commands'] and callback['selected_response'] == {'ok':True}, 'one genuine D INTEGER callback result')
+    check(point['anchor']['total'] == H and point['anchor']['provider_count'] == S
+          and Counter(w['kind'] for w in point['witnesses']) == {'stub':S,'callback':point['command_count']+len(observations['provider_commands'])+len(observations['thread_commands'])}, 'full independent prefix witness inventory')
+    return S,H,point
+
+
+def validate_e07_failures(row: dict, observations: dict, archive: dict, trace: object) -> None:
+    """The complete reader's error boundary, using original catch/operation joins.
+
+    This does not establish admission, content, source, export or completion by
+    itself. validate_e07 retains all those independent gates around this call.
+    """
+    def check(value: bool, reason: str) -> None:
+        if not value:
+            raise ValueError('E07 failure attribution: ' + reason)
+    def same(a: object, b: object) -> bool:
+        return json.dumps(a,sort_keys=True,allow_nan=False) == json.dumps(b,sort_keys=True,allow_nan=False)
+    def number(value: object) -> bool:
+        return type(value) in (int,float) and math.isfinite(value) and value >= 0
+
+    check(type(trace) is list and observations['observer_error'] is None,
+          'complete browser stream and no observer error')
+    failures, original = observations['failures'], archive['failures']
+    check(type(failures) is list and type(original) is list, 'original failure lists')
+    for failure in failures + original:
+        check(type(failure) is dict and set(failure) == {'stage','error','at'}
+              and type(failure['stage']) is str and type(failure['error']) is str
+              and bool(failure['error']) and number(failure['at']), 'closed finite original failure')
+    check(same(row['failures'],failures) and same(original,failures[:len(original)]),
+          'original failure prefix and final export equality')
+    check(all(a['at'] <= b['at'] for a,b in zip(failures,failures[1:])), 'ordered original failures')
+    group = observations['groups']['E07']
+    prior_group = archive['groups']['E07']
+    case, admission = observations['e07'], observations['e07_admission']
+    check(same(row['groups']['E07'],group) and group['state'] == 'reported_pass'
+          and group['first_error_ref'] is None and prior_group['state'] == 'running'
+          and prior_group['first_error_ref'] is None and prior_group['end'] is None
+          and same(prior_group['begin'],group['begin'])
+          and prior_group['variants'] == group['variants'] == MANIFEST['variants'][53:],
+          'original running E07 and completed error-free group')
+    cutoff = archive['observer_state']['cutoff']
+    times = (group['begin'], admission['entered'], cutoff, admission['finished'],
+             case['entered'], case['finished'], group['end'])
+    check(all(number(t) for t in times) and all(a <= b for a,b in zip(times,times[1:])),
+          'original admission, prefix and complete E07 chronology')
+    if original:
+        cases = [d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d]
+        archived = [d['threads_cases'] for d in archive['durable'] if 'threads_cases' in d]
+        check(len(cases) == len(archived) == 1 and same(cases[0],archived[0]), 'original E05 catch export')
+        e05, owner = cases[0], observations['groups']['E05']
+        caught = e05['failure']
+        check(len(original) == 1 and type(caught) is dict
+              and set(caught) == {'site','error_ref','caught','ordinary','primary'}
+              and caught['site'] == 'threads.exercise' and type(caught['error_ref']) is int
+              and caught['error_ref'] == 0 and caught['ordinary'] is True and caught['primary'] is True
+              and original[0]['stage'] == 'controller-action'
+              and type(owner['first_error_ref']) is int and owner['first_error_ref'] == 0
+              and owner['state'] in {'failed','unknown'}
+              and same(owner,archive['groups']['E05']) and same(owner,row['groups']['E05'])
+              and owner['variants'] == MANIFEST['variants'][48:53], 'original ordinary E05 first cause')
+        times = (owner['begin'], e05['entered'], original[0]['at'], caught['caught'],
+                 e05['cleanup_finished'], owner['end'], group['begin'])
+        check(all(number(t) for t in (*times,e05['cleanup_deadline']))
+              and all(a <= b for a,b in zip(times,times[1:]))
+              and e05['cleanup_finished'] <= e05['cleanup_deadline'], 'E05 catch and cleanup before E07')
+        for outcome in e05['case_outcomes'].values():
+            check(outcome['error_ref'] is None or
+                  (outcome['status'] == 'FAIL' and type(outcome['error_ref']) is int
+                   and outcome['error_ref'] == 0), 'E05 case error reference')
+
+    final = observations['finalization']
+    check(type(final) is dict and set(final) == {'entered','finished','attempts'}
+          and same(final,row['finalization']) and number(final['entered']) and number(final['finished'])
+          and group['end'] <= final['entered'] <= final['finished']
+          and type(final['attempts']) is list, 'original finalization export and interval')
+    # This action owns only the controller's log descriptor. Resource, browser,
+    # observer, source and evidence writers are not unrelated final operations.
+    accounted = list(range(len(original)))
+    previous = final['entered']
+    operations = {'thread-proxy-release','late-transport-release','provider-observer-join','browser-teardown',
+        'thread-proxy-close','late-transport-close','peer-socket-shutdown','peer-stream-close','peer-socket-close',
+        'provider-server-close','provider-socket-unlink','cli-relay-close','daemon-term','daemon-wait','daemon-log-close'}
+    for attempt in final['attempts']:
+        check(type(attempt) is dict and set(attempt) ==
+              {'owner','operation','entered','finished','failure_refs','same_cause','ordinary','main_thread'}
+              and attempt['owner'] == 'Controller.close' and type(attempt['operation']) is str
+              and attempt['operation'] in operations
+              and number(attempt['entered']) and number(attempt['finished'])
+              and previous <= attempt['entered'] <= attempt['finished'] <= final['finished']
+              and attempt['main_thread'] is True and attempt['same_cause'] is True
+              and type(attempt['failure_refs']) is list, 'source-owned final attempt interval')
+        previous = attempt['finished']
+        refs = attempt['failure_refs']
+        check(all(type(ref) is int and 0 <= ref < len(failures) for ref in refs), 'final failure reference')
+        if not refs:
+            check(attempt['ordinary'] is None, 'successful final attempt has no error')
+            continue
+        check(attempt['operation'] == 'daemon-log-close' and attempt['ordinary'] is True
+              and refs == list(range(len(accounted),len(accounted)+len(refs)))
+              and [failures[ref]['stage'] for ref in refs] in
+                  (['daemon-log-close'],['bounded','daemon-log-close'])
+              and all(attempt['entered'] <= failures[ref]['at'] <= attempt['finished'] for ref in refs),
+              'unrelated final log descriptor failure and exact cause references')
+        accounted.extend(refs)
+    check(accounted == list(range(len(failures))), 'unattributed or E07 failure remains')
+
+
 def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     """Reopen serialized C evidence; no producer oracle or expected helper import."""
     import hashlib
@@ -1719,12 +3894,13 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
         if not condition:
             raise ValueError("E07 content: " + message)
 
+    S,H,point = validate_e07_admission(row, observations, directory)
     case = json.loads((directory / "e07.json").read_text())
     check(case == observations["e07"] == row["e07"], "actual raw/observations/scenario export equality")
     check(case["launch_record_failures"] == [], "missing/malformed/incomplete/unexpected private launch record")
     variants = ["E07.cancel-cascade-browser","E07.cancel-terminal-unchanged","E07.cancelled-late-cli"]
-    check(case["variants"] == variants and len(row["variants"]) == 56
-          and list(row["variants"])[-3:] == variants and case["prefix"]["variants"] == list(row["variants"])[:53]
+    check(case["variants"] == variants and case["prefix"]["variants"] in (MANIFEST['variants'][:48],MANIFEST['variants'][:53])
+          and list(row["variants"]) == case["prefix"]["variants"] + variants
           and case["design_sha256"] == MANIFEST["e07_c_design_sha256"]
           and case["source_sha"] == row["source_sha"], "exact C manifest/design/source/preserved53")
     for name in variants:
@@ -1742,16 +3918,16 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     archive_raw = (directory/"e07-prefix.json").read_bytes()
     archive = json.loads(archive_raw)
     check(hashlib.sha256(archive_raw).hexdigest() == boundary["archive_sha256"]
-          and archive["starts"] == observations["starts"][:36]
+          and archive["starts"] == observations["starts"][:S]
           and archive["commands"] == observations["commands"][:boundary["command_count"]]
           and archive["provider_commands"] == observations["provider_commands"]
           and archive["thread_commands"] == observations["thread_commands"]
           and archive["provider_observer"] == observations["provider_observer"][:boundary["observer_end"]]
           and archive["variants"] == {k:observations["variants"][k] for k in boundary["variants"]},
           "actual pre-C archived original53 outcomes and command/observer prefix")
-    check(case["anchors"] == [dict(name="E05-end-B24",samples=[case["baseline"]]),
-          dict(name="P-success-W-live-B25",samples=case["live"]),dict(name="cancelled-B26",samples=case["freeze"]),
-          dict(name="final-B26",samples=[case["final"]])], "dedicated complete E07 boundary content")
+    check(case["anchors"] == [dict(name='E05-end-B24' if len(case['prefix']['variants']) == 53 else f"E05-checkpoint-{point['name']}-B{H}",samples=[case["baseline"]]),
+          dict(name=f"P-success-W-live-B{H+1}",samples=case["live"]),dict(name=f"cancelled-B{H+2}",samples=case["freeze"]),
+          dict(name=f"final-B{H+2}",samples=[case["final"]])], "dedicated complete E07 boundary content")
     raw = (directory / "launch-witnesses.jsonl").read_bytes()
     check(raw.endswith(b"\n") and len(raw) == observations["witness_bytes"]
           and hashlib.sha256(raw).hexdigest() == observations["witness_sha256"], "complete actual final append-only bytes")
@@ -1759,19 +3935,20 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     prefix_raw = raw[:boundary["witness_bytes"]]
     check(prefix_raw.endswith(b"\n") and hashlib.sha256(prefix_raw).hexdigest() == boundary["witness_sha256"]
           and len(prefix_raw.splitlines()) == boundary["witness_records"]
-          and [json.loads(line) for line in prefix_raw.splitlines()] == e05["witnesses"]
+          and [json.loads(line) for line in prefix_raw.splitlines()] == point["witnesses"]
           and all_witness == observations["launch_witnesses"] and observations["witness_incomplete_line"] is False,
           "genuine E05 byte/record boundary with exact original content")
-    check(boundary["e05_finished"] == e05["finished"] <= case["entered"]
-          and observations["provider_observer"][boundary["observer_end"]-1]["stubs"] == 36,
+    check(boundary["e05_finished"] == e05.get("finished")
+          and (boundary['e05_finished'] is None or boundary['e05_finished'] <= case['entered'])
+          and observations["provider_observer"][boundary["observer_end"]-1]["stubs"] == S,
           "original E05 observer boundary, no final38 substitution")
     starts = observations["starts"]
     parent,worker = case["parent"],case["worker"]
     P,W = parent["task"],worker["task"]
-    check(len(starts) == len({s["session"] for s in starts}) == 38 and starts[36:] == [parent,worker]
+    check(len(starts) == len({s["session"] for s in starts}) == S+2 and starts[S:] == [parent,worker]
           and P != W and parent["agent"] == "case_manager" and worker["agent"] == "case_worker"
           and parent["org"] == worker["org"] == "alpha", "exact two genuine suffix starts")
-    check(Counter(w["kind"] for w in all_witness) == {"stub":38,"callback":len(observations["commands"])+len(observations["provider_commands"])+len(observations["thread_commands"])+4}, "all old/new executable witnesses accounted")
+    check(Counter(w["kind"] for w in all_witness) == {"stub":S+2,"callback":len(observations["commands"])+len(observations["provider_commands"])+len(observations["thread_commands"])+4}, "all old/new executable witnesses accounted")
     commands = observations["e07_commands"]
     check(commands == case["commands"] and [c["action"] for c in commands] == ["e07-parent","e07-held","terminal-cancel","terminal-cancel"], "dedicated exact four-command ledger")
     suffix = all_witness[boundary["witness_records"]:]
@@ -1805,10 +3982,10 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           "actual immutable source/stub/task-plan bindings")
     stubs = [w for w in suffix if w["kind"] == "stub"]
     for witness in stubs:
-        check(set(witness) == {"kind","provider","stub_sha256","source_sha","plan_sha256","argc","flags"}
-              and type(witness["argc"]) is int and witness == dict(
+        check(set(witness) == {"kind","provider","stub_sha256","source_sha","plan_sha256","argc","flags","format_json"}
+              and witness["format_json"] is False and type(witness["argc"]) is int and witness == dict(
                   kind="stub", provider="claude", stub_sha256=stub_sha, source_sha=row["source_sha"],
-                  plan_sha256=plan_sha, argc=7, flags=["-p","--output-format"]),
+                  plan_sha256=plan_sha, argc=7, flags=["-p","--output-format"], format_json=False),
               "complete new stub record and concrete fresh Claude launch contract")
     source_names = ["e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
         "e2e/thread_provider.py","e2e/pause_browser.py","runtime/daemon/__main__.py","runtime/daemon/paths.py","e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
@@ -1915,10 +4092,13 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
         check(r["recent"][released-tail["published_total"]:] == tail["recent"] and not frame["pending"], "entire ordered duplicate-preserving tail/no peer")
         return {"admission":a,"receipts":r,"executor_sessions_active":active,"run_step_queue_depth":0}
 
+    check(case['baseline']['sql'] == case['admission']['frame']['sql']
+          and e07_public_state(case['baseline'],observations['http']) == e07_public_state(case['admission']['frame'],observations['http']),
+          'actual baseline full checkpoint content before the exact P/W suffix')
     live = case["live"]
-    prior = e05["final_anchor"]["projection"]["receipts"]
-    projection(case["baseline"],24,24,0,prior)
-    check(len(live) == 2 and projection(live[0],26,25,1,prior) == projection(live[1],26,25,1,prior), "two B26/25/25/1 projections")
+    prior = point["anchor"]["projection"]["receipts"]
+    projection(case["baseline"],H,H,0,prior)
+    check(len(live) == 2 and projection(live[0],H+2,H+1,1,prior) == projection(live[1],H+2,H+1,1,prior), "two B26/25/25/1 projections")
     check(live[1]["metrics"]["host_sessions"]["receipts"]["recent"][0]["terminal_reason"] == "success", "P success distinct from active cancellation")
     result = case["parent_result"]
     check(type(result["id"]) is int and result["task_id"] == P and result["session_id"] == parent["session"]
@@ -1928,12 +4108,14 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(live_tasks[P]["status"] == live_tasks[W]["status"] == "in_progress" and live_tasks[P]["block_kind"] == "delegated"
           and live_tasks[W]["block_kind"] is None and live_tasks[W]["parent_task_id"] == P, "actual parked/live tree")
     freeze,second = case["freeze"]
-    check(projection(freeze,26,26,0,live[1]["metrics"]["host_sessions"]["receipts"]) == projection(second,26,26,0,live[1]["metrics"]["host_sessions"]["receipts"]), "two settled B26 projections")
+    check(projection(freeze,H+2,H+2,0,live[1]["metrics"]["host_sessions"]["receipts"]) == projection(second,H+2,H+2,0,live[1]["metrics"]["host_sessions"]["receipts"]), "two settled B26 projections")
     newest = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
     check(newest["terminal_reason"] == "cancelled" and newest["invocation_kind"] == "task", "one W active cancellation receipt")
     tables = freeze["sql"]["alpha"]["tables"]
     tasks = {t["id"]:t for t in tables["tasks"]}
-    check(len(tasks) == 22 and len(tables["task_results"]) == 30 and Counter(t["status"] for t in tasks.values()) == {"completed":20,"cancelled":2}
+    check(len(tasks) == (22 if point['name'] == 'D' else 21)
+          and len(tables["task_results"]) == (30 if point['name'] == 'D' else 29)
+          and Counter(t["status"] for t in tasks.values()) == {"completed":20 if point['name'] == 'D' else 19,"cancelled":2}
           and len(freeze["sql"]["beta"]["tables"]["tasks"]) == len(freeze["sql"]["beta"]["tables"]["task_results"]) == 1, "global23/31 and21completed/two cancelled")
     for task,start in ((P,parent),(W,worker)):
         t = tasks[task]
@@ -1974,7 +4156,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(len(tables["jobs"]) == 7 and freeze["sql"]["alpha"]["files"] == baseline["alpha"]["files"], "unchanged7 jobs/seven scripts and product files")
     for sample in [second,case["after_refusals"],*case["window"]["samples"],case["final"]]:
         check(sample["sql"] == freeze["sql"] and e07_public_state(sample, observations["http"]) == e07_public_state(freeze, observations["http"]), "full task/result/audit/lineage/job/thread/public unchanged")
-        projection(sample,26,26,0,freeze["metrics"]["host_sessions"]["receipts"])
+        projection(sample,H+2,H+2,0,freeze["metrics"]["host_sessions"]["receipts"])
     tree = case["tree"]
     check(tree["chain"][0]["pid"] == worker["pid"] and tree["chain"][-1]["pid"] == tree["launch_pid"] == live_tasks[W]["executor_pid"]
           and tree["launch_pid"] != worker["pid"] and all(a["ppid"] == b["pid"] for a,b in zip(tree["chain"],tree["chain"][1:])), "separate real launch root/plan ancestry")
@@ -2075,8 +4257,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
           and any(d.get("python_version", "").startswith(row["python"]+".")
                   for d in observations["durable"]), "actual cell/interpreter version")
     trace = strict_file("browser-events.json")
-    check(type(trace) is list and observations["failures"] == [] and observations["observer_error"] is None,
-          "complete browser stream and no recorded ownership errors")
+    validate_e07_failures(row, observations, strict_file('e07-prefix.json'), trace)
     ref = listing["roots_observation"]
     check(type(ref) is dict and set(ref) == {"group_id", "checkpoint_site", "selected_request_sequence", "query", "accepted_at"}
           and type(ref["group_id"]) is int and ref["group_id"] > 0
@@ -2562,6 +4743,52 @@ def _diagnostic_cancellation(raw: object, raw_facts: tuple, row: object, row_fac
             raise ValueError("invalid diagnostic metadata")
 
 
+def scoped_completed_join(accepted: dict, result: dict, variants: list[str]) -> None:
+    """Consistency of a named scope, AFTER its complete independent content read.
+
+    The existing whole56 completed.join_results remains the overall gate.
+    """
+    if completed.binding(accepted['identity']) != completed.binding(result) or result.get('completed_cases') != accepted:
+        raise ValueError('scoped completed source/run/lane conflict')
+    rows = [r for r in accepted['cases'] if r['variant'] in variants]
+    if [r['variant'] for r in rows] != variants:
+        raise ValueError('scoped completed cases unavailable')
+    for observed in rows:
+        actual = result['variants'].get(observed['variant'])
+        if (actual is None or actual['status'] != 'PASS' or type(actual['at']) is not type(observed['at'])
+                or actual['at'] != observed['at']):
+            raise ValueError('scoped completed original result conflict')
+
+
+def validate_groups(result: dict, observations: dict, selected: str | None = None) -> None:
+    groups = result['groups']
+    if selected is None and (groups != observations['groups'] or set(groups) != {'E05','E07'}):
+        raise ValueError('group export equality/identity mismatch')
+    for name,start,end in (('E05',48,53),('E07',53,56)):
+        if selected is not None and name != selected:
+            continue
+        group = groups[name]
+        if group != observations['groups'][name]:
+            raise ValueError('selected group export equality mismatch')
+        if (set(group) != {'state','begin','end','first_error_ref','variants','checkpoint_ref','admission_ref'}
+                or group['state'] not in {'not_started','running','reported_pass','failed','refused','unknown'}
+                or group['variants'] != MANIFEST['variants'][start:end]):
+            raise ValueError('closed group state/variant grammar')
+        for key in ('begin','end'):
+            value = group[key]
+            if value is not None and (type(value) not in (int,float) or not math.isfinite(value)):
+                raise ValueError('group original time unavailable')
+        if group['end'] is not None and (group['begin'] is None or group['end'] < group['begin']):
+            raise ValueError('group original interval conflict')
+        ref = group['first_error_ref']
+        if ref is not None and (type(ref) is not int or not 0 <= ref < len(observations['failures'])):
+            raise ValueError('group original error reference unavailable')
+        if group['state'] in {'failed','refused','unknown'} and ref is None:
+            raise ValueError('group first original error unavailable')
+        if group['state'] == 'reported_pass' and (ref is not None or group['begin'] is None or group['end'] is None):
+            raise ValueError('group pass conflicts with original error/interval')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--controls", action="store_true")
@@ -2582,7 +4809,7 @@ def main() -> int:
     names = ["e2e-" + version for version in expected] + ["e2e-cancel-TERM", "e2e-cancel-INT"]
     health = dict(status="FAIL", event=None, source_sha=None,
                   requested_event=args.event, requested_source_sha=args.source,
-                  cells=expected, artifacts=names, errors=[], completed_cases={})
+                  cells=expected, artifacts=names, errors=[], completed_cases={}, groups={}, recorded_failures={})
     try:
         admission = daily_admission(Path(__file__).resolve().parents[1])
         health.update(admission)
@@ -2597,11 +4824,13 @@ def main() -> int:
         for version in expected:
             directory = args.artifacts / ("e2e-" + version)
             accepted = None
+            health['completed_cases'][version] = [dict(variant=v,status='UNKNOWN') for v in MANIFEST['variants']]
+            health['groups'][version] = {n:dict(producer=None,reader='UNKNOWN',error=None) for n in ('E04','E05','E07')}
             try:
                 accepted, _ = completed.read_bundle(directory, dict(admission, python=version, exercise="baseline"))
-                health["completed_cases"][version] = [dict(row, status="UNKNOWN") for row in accepted["cases"]]
+                metadata = {r['variant']:r for r in accepted['cases']}
+                health['completed_cases'][version] = [dict(metadata.get(v,dict(variant=v)),status='UNKNOWN') for v in MANIFEST['variants']]
             except (OSError, ValueError, KeyError, TypeError, UnicodeError):
-                health["completed_cases"][version] = []
                 health["errors"].append(f"e2e-{version}: completed case evidence unavailable")
             required_evidence_accepted = True
             for name in required + phase_logs:
@@ -2638,17 +4867,58 @@ def main() -> int:
                         complete_join = True
                     except (ValueError, KeyError, TypeError, IndexError):
                         health["errors"].append(f"e2e-{version}: complete case/result join unavailable")
+                    # Each content reader executes independently. Full56, global
+                    # artifact/diagnostic/cleanup gates cannot short-circuit a
+                    # separately complete group's own content/source/case joins.
                     try:
-                        validate_e04(result, json.loads((directory / "observations.json").read_text()),
-                                     json.loads((directory / "browser-events.json").read_text()), directory)
-                        validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
-                        validate_e07(result, json.loads((directory / "observations.json").read_text()), directory)
-                        # No case attribution exists for these lane-wide gates.
-                        # Retain UNKNOWN if required evidence was not admitted.
-                        if complete_join and required_evidence_accepted and diagnostic_accepted:
-                            content_accepted.add(version)
-                    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
-                        health["errors"].append(f"e2e-{version}: {exc}")
+                        observations = json.loads((directory/'observations.json').read_text())
+                        validate_admission(result, admission)
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        health['errors'].append(f'e2e-{version}: scoped source/group evidence unavailable: {exc}')
+                        observations = None
+                    if observations is not None:
+                        health['recorded_failures'][version] = observations['failures']
+                        if observations['failures']:
+                            health['errors'].append(f'e2e-{version}: original controller failures retained; global Health fails')
+                        try:
+                            validate_groups(result, observations)
+                        except (ValueError,KeyError,TypeError) as exc:
+                            health['errors'].append(f'e2e-{version}: group metadata: {exc}')
+                        thread_cases = [d['threads_cases'] for d in observations['durable'] if 'threads_cases' in d]
+                        if len(thread_cases) == 1:
+                            for item in health['completed_cases'][version]:
+                                failure = thread_cases[0].get('case_outcomes',{}).get(item['variant'])
+                                if failure and failure.get('status') == 'FAIL':
+                                    ref = failure.get('error_ref')
+                                    if type(ref) is int and 0 <= ref < len(observations['failures']):
+                                        item.update(status='FAIL',reported_error=observations['failures'][ref])
+                    scoped = set()
+                    readers = (
+                        ('E04',MANIFEST['variants'][:48],lambda:validate_e04(result,observations,json.loads((directory/'browser-events.json').read_text()),directory)),
+                        ('E05',MANIFEST['variants'][48:53],lambda:validate_e05(result,observations,directory)),
+                        ('E07',MANIFEST['variants'][53:],lambda:validate_e07(result,observations,directory)),
+                    )
+                    for group,named,reader in readers:
+                        outcome = health['groups'][version][group]
+                        outcome['producer'] = result.get('groups',{}).get(group)
+                        try:
+                            if observations is None or accepted is None:
+                                raise ValueError('required scoped source/completion evidence unavailable')
+                            if group != 'E04':
+                                validate_groups(result,observations,group)
+                            reader()
+                            scoped_completed_join(accepted,result,named)
+                        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                            outcome.update(reader='UNKNOWN' if isinstance(exc,(OSError,KeyError)) or 'UNKNOWN' in str(exc) or 'unavailable' in str(exc) else 'FAIL',error=str(exc))
+                            health['errors'].append(f'e2e-{version}: {group}: {exc}')
+                        else:
+                            outcome['reader'] = 'scoped acceptance'
+                            scoped.add(group)
+                            for item in health['completed_cases'][version]:
+                                if item['variant'] in named:
+                                    item['status'] = 'PASS'
+                    if scoped == {'E04','E05','E07'} and complete_join and required_evidence_accepted and diagnostic_accepted:
+                        content_accepted.add(version)
         unexpected = set(path.name for path in args.artifacts.glob("e2e-*") if path.is_dir()) - set(names)
         if unexpected:
             health["errors"].append("unexpected artifact directories: " + ", ".join(sorted(unexpected)))

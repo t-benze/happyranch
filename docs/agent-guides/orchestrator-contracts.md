@@ -4239,12 +4239,26 @@ gaps. No callback or native ownership writer changes.
 
 ## Task memory render and impression (THR-091)
 
+Task-start consultation (THR-091 seq633) is defined by
+`runtime/skills/bundled/start-task/SKILL.md` step 2: before the first substantive
+decision, select and read up to two memories pertinent to the actual task and
+apply their relevant constraints. Zero is appropriate when none is relevant;
+bodies already in context, including full-body directives, need no reread.
+No ritual fetch/search or quota of two is required. Search is available for
+relevant missing recall. Task history, explicit referenced-task recall and KB
+obligations remain. The digest gives a short canonical `happyranch memory get`
+cue; this wording changes neither ranking nor packing. Copy length can change
+actual exposure at budget boundaries, so compare rendered pointer/full-body
+metadata rather than assuming identical shown sets.
+
 `_run_agent` retains the structured `MemoryStore.render_memory_digest` result
 through prompt construction. `build_memory_digest` remains a string/None
 wrapper. Selection/rendering occurs once; only appended item blocks contribute
 exposure. Fit directives are full bodies, fallback directives are pointers;
 body/title/header/nudge mentions and nonrendered candidates are not item IDs.
-Text, ranking, character budget, ordering and nudge behavior stay unchanged.
+Ranking, character budget, ordering and nudge placement stay unchanged;
+intro/nudge copy carries the task-start cue above. Actual shown sets can differ
+when wording length changes; exposure comes from this render, not rank alone.
 
 Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
 

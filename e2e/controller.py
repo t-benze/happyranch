@@ -156,6 +156,9 @@ class Controller:
         self.primary_error: BaseException | None = None
         self.primary_traceback: Any = None
         self.failures: list[dict] = []
+        self.finalization = dict(entered=None, finished=None, attempts=[])
+        self._final_attempt = None
+        self._final_attempt_cause = None
         self._failure_raw: dict[str, tuple] = {}
         self._failure_slots: dict[str, tuple] = {}
         self._failure_check: dict[str, tuple] = {}
@@ -188,6 +191,12 @@ class Controller:
         self.relay = None
         self.browser = None
         self.browser_relay = None
+        self.groups = {name: dict(state='not_started', begin=None, end=None, first_error_ref=None,
+                                 variants=[v for v in completed.VARIANTS if v.startswith(name+'.')], checkpoint_ref=None, admission_ref=None)
+                       for name in ('E05','E07')}
+        self.interrupted = False
+        self.e05_checkpoint = None
+        self.e07_admission = None
         self.e07: dict = {}
         self.e07_commands: list[dict] = []
         self.late_transport = None
@@ -865,7 +874,7 @@ class Controller:
         self.stores[start["org"]].result(self.payloads[wire["session_id"]])
 
     def release(self, start: dict) -> None:
-        connection, stream = self.holds.pop(start["session"])
+        connection, stream = self.holds[start["session"]]
         # The caller owns the existing finite I/O cap: E05 sets 5s; other
         # callers retain start/command's socket cap. Never replace it with 30s.
         cap = connection.gettimeout()
@@ -889,6 +898,10 @@ class Controller:
             stream.close()
             connection.close()
             self.remaining()
+        # Ownership ends only after the complete acknowledged release. A
+        # partial write/read/close retains both inventories for final teardown.
+        self.peer_connections.remove((connection, stream))
+        del self.holds[start["session"]]
 
     def finish(self, org: str, task: str) -> dict:
         begin = time.monotonic()
@@ -934,7 +947,7 @@ class Controller:
         except BaseException:
             pass  # Diagnostic interruption must not replace capture/invalidation.
 
-    def record_error(self, stage: str, error: BaseException) -> None:
+    def record_error(self, stage: str, error: BaseException) -> int:
         # Select actual object/traceback before time, legacy diagnostics or I/O.
         # Literal-key setdefault prevents a nested callback replacing the winner.
         candidate = (error, error.__traceback__, _failure_stage(stage))
@@ -952,7 +965,15 @@ class Controller:
                     self._failure_slots.setdefault("first_observed", slot)
             except BaseException:
                 pass  # Raw winner is authoritative even if category completion fails.
+            index = len(self.failures)
             self.failures.append(dict(stage=stage, error=type(error).__name__, at=time.monotonic()))
+            if self._final_attempt is not None:
+                self._final_attempt['failure_refs'].append(index)
+                if self._final_attempt_cause is None:
+                    self._final_attempt_cause = error
+                elif self._final_attempt_cause is not error:
+                    self._final_attempt['same_cause'] = False
+            return index
         finally:
             self._diagnostic_recorder_active = prior_recording
 
@@ -1168,6 +1189,17 @@ class Controller:
             self._failure_writer_active = False
 
     def _attempt(self, stage: str, action: Callable[[], Any], *, blocking: bool = True) -> Any:
+        # Only the actual direct close call site owns these final-operation
+        # receipts. A stage label or an error during E07 cannot acquire one.
+        final = (sys._getframe(1).f_code is Controller.close.__code__
+                 and self.finalization['entered'] is not None)
+        attempt = None
+        if final:
+            attempt = dict(owner='Controller.close', operation=stage, entered=time.monotonic(),
+                           finished=None, failure_refs=[], same_cause=True, ordinary=None,
+                           main_thread=threading.current_thread() is threading.main_thread())
+            self.finalization['attempts'].append(attempt)
+            self._final_attempt, self._final_attempt_cause = attempt, None
         try:
             if blocking:
                 end = self.effective_end()
@@ -1177,7 +1209,14 @@ class Controller:
             return action()
         except BaseException as exc:
             self.record_error(stage, exc)
+            if attempt is not None:
+                attempt['ordinary'] = (isinstance(exc, Exception) and not isinstance(exc, TimeoutError)
+                                       and not self.interrupted)
             return None
+        finally:
+            if attempt is not None:
+                attempt['finished'] = time.monotonic()
+                self._final_attempt, self._final_attempt_cause = None, None
 
     def prepare_redaction(self) -> None:
         self.redaction_ready = False
@@ -1212,6 +1251,7 @@ class Controller:
             return
         self._attempt("stage-scenario", lambda: self._atomic_json(self.root / "scenario.json",
                       dict(variants=self.results, scenario_phases=self.phases, failures=self.failures,
+                           groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
                            evidence_state="partial/unvalidated")), blocking=False)
         self._attempt("stage-browser-trace", self.stage_browser_trace, blocking=False)
         if self.primary_error is not None:
@@ -1252,10 +1292,10 @@ class Controller:
             self.record_error("provider-observer-incomplete", RuntimeError("observer error/live at cutoff"))
         if self.browser:
             self._attempt("browser-teardown", self.browser.close, blocking=False)
-        if self.browser_relay:
+        if self.browser_relay and not getattr(self, "browser_relay_closed", False):
             closure = self._attempt("thread-proxy-close", lambda: self.browser_relay.close(self.effective_end()))
             if closure is not None:
-                self.browser_relay_closed = True
+                self.browser_relay_closed = not (closure['workers_alive'] or closure['listener_alive'] or closure['connections'])
                 self.durable.append(dict(thread_proxy_closure=closure))
                 if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
                     self.record_error("thread-proxy-closure", RuntimeError("proxy closure/transport failure"))
@@ -1265,18 +1305,26 @@ class Controller:
                 self.e07["transport_closure"] = closure
                 if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
                     self.record_error("late-transport-closure", RuntimeError("late transport closure failure"))
-        for connection, stream in self.peer_connections:
+        for connection, stream in list(self.peer_connections):
             if self.effective_end() <= time.monotonic():
                 self._attempt("peer-socket-shutdown", lambda connection=connection: connection.shutdown(socket.SHUT_RDWR), blocking=False)
+            closed = []
             def close_stream(connection: Any = connection, stream: Any = stream) -> None:
-                cap = connection.gettimeout()
-                require(cap is not None and cap > 0, "peer retains finite socket cap")
-                left = self.effective_end()-time.monotonic()
-                require(left > 0, "peer stream close has existing positive time")
-                connection.settimeout(min(cap, left))
+                if not stream.closed:
+                    cap = connection.gettimeout()
+                    require(cap is not None and cap > 0, "peer retains finite socket cap")
+                    left = self.effective_end()-time.monotonic()
+                    require(left > 0, "peer stream close has existing positive time")
+                    connection.settimeout(min(cap, left))
                 stream.close()
+                closed.append('stream')
+            def close_socket(connection: Any = connection) -> None:
+                connection.close()
+                closed.append('socket')
             self._attempt("peer-stream-close", close_stream)
-            self._attempt("peer-socket-close", connection.close, blocking=False)
+            self._attempt("peer-socket-close", close_socket, blocking=False)
+            if closed == ['stream', 'socket']:
+                self.peer_connections.remove((connection, stream))
         self._attempt("provider-server-close", self.server.close, blocking=False)
         self._attempt("provider-socket-unlink", lambda: self.socket_path.unlink(missing_ok=True), blocking=False)
         if self.relay:
@@ -1356,7 +1404,7 @@ class Controller:
             failures.append(dict(reason="unexpected"))
         return records, failures
 
-    def evidence(self) -> None:
+    def evidence(self, *, require_success: bool = True) -> None:
         # cancellation_hold calls this nonterminally: do not stop/join observer.
         self.prepare_redaction()
         self.stage_small_evidence()
@@ -1367,7 +1415,8 @@ class Controller:
                     http=self.http, durable=self.durable, relay=list(self.relay.records) if self.relay else [],
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
                     provider_observer=observer, observer_error=self.observer_error, observer_state=state,
-                    failures=self.failures)
+                    failures=self.failures, groups=self.groups, e07_admission=self.e07_admission,
+                    finalization=self.finalization)
         if self.e07:
             def e07_evidence() -> None:
                 launches, failures = self.collect_e07_launches()
@@ -1376,7 +1425,12 @@ class Controller:
             self._attempt("export-e07", e07_evidence, blocking=False)
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
-                    thread_proxy=list(self.browser_relay.records) if self.browser_relay else [])
+                    thread_proxy=self.browser_relay.snapshot(self.sanitize) if self.browser_relay else [],
+                    thread_originals=getattr(self.browser, 'thread_originals', []),
+                    capture_inventory=dict(refusals=list(self.browser_relay.capture_refusals),
+                        retained_bytes=self.browser_relay.capture_bytes, retained_facts=self.browser_relay.capture_facts,
+                        closed=self.browser_relay.capture_closed,
+                        requests=list(self.browser_relay.browser_requests)) if self.browser_relay else None)
         witness = self.root / "witness/identities.jsonl"
         if witness.exists():
             def witness_evidence() -> None:
@@ -1391,11 +1445,13 @@ class Controller:
         self._attempt("export-observations", lambda: self._atomic_json(self.root / "raw/observations.json", rows), blocking=False)
         self._attempt("export-scenario", lambda: self._atomic_json(self.root / "scenario.json",
             dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, failures=self.failures,
+                 groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
                  observer_state=state)), blocking=False)
         self._attempt("export-browser-trace", self.stage_browser_trace, blocking=False)
         # All available evidence attempts precede the existing final assertion.
         require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
-        require(not self.failures, "evidence/cleanup failed", self.failures)
+        if require_success:
+            require(not self.failures, "evidence/cleanup failed", self.failures)
 
 
 def cancellation_hold(controller: Controller) -> None:
@@ -1565,6 +1621,7 @@ def main(_terminal: dict | None = None) -> None:
     args._diagnostic_alarm_code = expired.__code__
     controller = Controller(args)
     def interrupted(signum: int, _frame: object) -> None:
+        controller.interrupted = True
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
         raise RuntimeError(f"controller interrupted by signal {signum}")
@@ -1588,14 +1645,47 @@ def main(_terminal: dict | None = None) -> None:
                 exercise_pause(controller)
                 exercise_jobs(controller)
                 from threads import exercise as exercise_threads
-                exercise_threads(controller)
-                from e07 import exercise as exercise_cancellation
-                exercise_cancellation(controller)
+                from threads import VARIANTS as thread_variants
+                controller.groups['E05'].update(state='running', begin=time.monotonic(), variants=list(thread_variants))
+                try:
+                    exercise_threads(controller)
+                except BaseException as exc:
+                    # Preserve failures even before E05's own try was entered.
+                    if controller.primary_error is None:
+                        index = len(controller.failures)
+                        controller.record_error('controller-action', exc)
+                        controller.groups['E05'].update(state='failed', first_error_ref=index)
+                    if (not isinstance(exc, Exception) or isinstance(exc, TimeoutError)
+                            or controller.interrupted or controller.browser.poisoned):
+                        raise
+                    # Ordinary assertion failure still needs the entire positive
+                    # admission conjunction below; no exception grants safety.
+                else:
+                    controller.groups['E05']['state'] = 'reported_pass'
+                finally:
+                    controller.groups['E05']['end'] = time.monotonic()
+                from e07 import exercise as exercise_cancellation, VARIANTS as cancellation_variants
+                controller.groups['E07'].update(state='running', begin=time.monotonic(), variants=list(cancellation_variants))
+                try:
+                    exercise_cancellation(controller)
+                except BaseException as exc:
+                    index = len(controller.failures)
+                    controller.record_error('controller-action', exc)
+                    controller.groups['E07'].update(state='failed' if controller.e07 else 'refused',
+                        first_error_ref=controller.groups['E07']['first_error_ref'] if controller.groups['E07']['first_error_ref'] is not None else index)
+                    raise
+                else:
+                    controller.groups['E07']['state'] = 'reported_pass'
+                finally:
+                    controller.groups['E07']['end'] = time.monotonic()
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException as exc:
         # Save the actual first exception/traceback before any cleanup/export.
         controller.record_error("controller-action", exc)
+        if controller.groups['E05']['state'] != 'not_started' and controller.groups['E07']['state'] == 'not_started':
+            controller.groups['E07'].update(state='refused', first_error_ref=len(controller.failures)-1,
+                                           begin=time.monotonic(), end=time.monotonic())
         try:
             controller._stage_failure_categories()
         finally:
@@ -1603,11 +1693,13 @@ def main(_terminal: dict | None = None) -> None:
                 controller.browser.poison(exc)  # No dispatcher re-entry after interruption.
     finally:
         begin = time.monotonic()
+        controller.finalization['entered'] = begin
         try:
             controller.close()
         except BaseException as exc:
             controller.record_error("controller-close", exc)
         finally:
+            controller.finalization['finished'] = time.monotonic()
             controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
         controller._stage_failure_categories()
         try:

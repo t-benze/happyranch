@@ -43,6 +43,14 @@
   src: url('/fonts/Newsreader-Italic-opsz-wght.ttf') format('truetype');
 }
 
+@font-face {
+  font-family: 'Baloo 2';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/Baloo2-wght.ttf') format('truetype');
+}
+
 @import "tailwindcss";
 
 @theme {

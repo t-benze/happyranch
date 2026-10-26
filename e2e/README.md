@@ -1,5 +1,244 @@
 # Daily product E2E health
 
+## Current bounded originals and E05/E07 outcomes — TASK13118 / ROOT13112
+
+Founder THR291seq495 and manager step3 acceptance select test-only BrowserRelay
+original capture plus safe continuation on the SAME runtime. Playwright/Chromium,
+the shared native bridge, product/auth/schema/permissions, dependencies and CI
+triggers are unchanged. The compound E07 pin is
+`af66320ba7059a27e9b7a8a990fe3f544f043dcb687a4ca015add45df1ceb70d`
+(SHA256 of the accepted TASK13113 design, controlling step2 disposition and case
+delta concatenated in that order). Original design pins/receipts remain historical.
+
+The sole existing worker captures the already executing response, its status and
+ordered parsed headers, or its first original error. It records complete, empty,
+bodyless, partial, error and pending separately; capture refusal is not an invented
+I/O error. One request remains one request. GET raw receives stay at most65536;
+the buffered reader explicitly uses8192. Selected compose reads at most remaining
+admitted capacity plus one detection byte before proof/hold. Required originals
+have1MiB entity,64KiB headers,8MiB aggregate,512 members and16384 fact refusal bounds.
+Forwarded ranges retain actual write/flush prefixes and digests. Neither a complete
+original nor a returned flush proves browser receipt, rendering or native closure.
+
+Every automatic/detail/messages/revisit response is inventoried. Native views
+retain exact Request/Response objects/IDs; original joins are recomputed over the
+complete causal window, with exact method/query/origin and issuing document.
+Ambiguous concurrent targets, pending document transitions, redirects, missing
+terminals, late members and inconsistent identities refuse; no latest-URL fallback,
+retry, replacement fetch or forced serialization is used. Held/released snapshots
+are deep immutable prefixes. F1 inventories precede context acquisition and its
+real close listener attaches immediately; D2 leaves publication with the existing
+prepared-redaction exporter. Notifier identity/latch and original owner cancellation
+rules remain. Safe exported copies explicitly distinguish unchanged/sanitized/
+unavailable UTF8. Sanitized copies cannot satisfy original byte equality.
+
+The TASK13130 recovery removes publication's dependency on a successful browser
+join. Every sealed complete original is parsed at most once at this same capture/
+snapshot seam, including a remembered parse refusal; a safely selected original
+can be exported even with no Request join. Empty/bodyless originals publish their
+actual zero bytes, while pending/partial/error originals remain explicitly
+unavailable. Invalid UTF8/JSON, duplicate keys, nonfinite values, unsupported
+encoding and sensitive/unknown fields never publish a replacement entity.
+Storage/fact refusal remains sticky and is visible in the same snapshot or an
+explicit incomplete census. Status, framing, first error, original length/hash
+and actual forwarding prefixes keep their original identities and meanings.
+A non200 safely selected entity is still not required-response success.
+
+The launcher retains a detached safe scenario projection after acquiring the
+complete original token/redaction context and before subsequent raw reads or
+required-artifact checks. Existing variants, scenario phases, e07, groups,
+admission/refusal, failures and finalization can survive later collection/export/
+cleanup failure in the existing FAIL result. Projection redacts individual strings
+before JSON escaping; it refuses unsupported/nonfinite values, key collisions,
+depth above64, more than200000 facts, or input/output beyond8MiB. The string
+copy work allowance is8MiB across original and sanitized strings. These are
+publication safety limits, not altered case predicates. Assignment happens only
+after a full safe projection; a later refused projection cannot replace an
+already detached safe snapshot. Without safely acquired inputs the fallback
+has variants={} and no invented groups. No raw rescue, e07.json, screenshot or
+completion prefix is manufactured. Producer claims remain unvalidated until the
+existing independent content/source/completion readers accept them. Global FAIL,
+strict completed.join_results/full56, false cleanup/export and first-cause/error
+history remain controlling.
+
+The current B09-B12/A02 correction supersedes older blanket variants={} and
+all-or-nothing collection/export descriptions below only at these bounded
+failure-preservation seams. Historical receipts and narrower controls keep their
+original attribution. `failure_result_controls` additionally uses unchanged real
+Controller.prepare_redaction/_atomic_text/_atomic_json/stage_small_evidence and
+the shipping collect_evidence/publish_evidence/failure_receipt/publish_failure
+operations on literal disposable files. The escaped quote+LF negative asserts
+unredacted source bytes before collection, then unsafe member/output/pending
+absence, exact safe siblings and decoded-safe committed FAIL. The separate
+literal positive and public-v1/unsafe-newer case preserve prior commits. Ordinary
+file/replace failures exercise sibling continuation and actual commit accounting.
+These component controls do not establish native main ordering, signal races,
+cleanup/ownership, independent browser evidence or full-reader acceptance.
+Unsupported OS/interleaving proofs remain NOT RUN/PROOF NOT RUN. All original
+full-content/source/completed/browser predicates and strict Health remain.
+
+The eight historical Request/document/relay/Response joins still lack exact
+issuing observations. Callback timestamps and earlier same-URL records do not
+supply that identity. BrokenPipe/physically zero owners do not establish the
+positive matching GET/I/O stop acknowledgement. These native findings remain
+UNKNOWN/refused; this correction changes no identity or owner predicate and
+allocates no E07 work on unproved safety.
+
+TASK13130 extends the existing A03-A08/A13 and B09-B12 controls:
+
+| Cases / actual boundary | Observable contract and credible regression | Nearest keeper / distinct gap | Test-only product seam |
+| --- | --- | --- | --- |
+| A03-A08/A13 capture/snapshot: sealed unpaired, safe non200, empty/bodyless/partial/error/pending, invalid JSON/UTF8/duplicates/nonfinite/encoding/sensitive, byte/fact exhaustion, repeated refusal | Literal original text/hash/length/status/error survives only safe export; parsed_ready-only publication drops unpaired bytes; parse retry spends again; overflow must not hide refusal. | original_controls serialized original grammar starts already exported; extend it with real bare-owner capture/snapshot methods. It cannot prove native read/forward/parser/socket behavior. | None; no constructor, server, browser or native fixture. |
+| B09-B12 scenario_fields: safe claims/first cause/refusal/finalization, detachment, escaped secret, absent/invalid/redaction-refused/capped/deep input | Literal independently expected safe field tree; dropping groups loses the original cause, raw JSON redaction misses escaped strings, mutable retention rewrites history. | Existing group/error controls start with result fields populated; extend controls with the real shipping projection. Native collection/fallback/publication after actual failure remains NOT RUN. | None; real launcher projection, no product injection. |
+
+Existing-support intended failure/restored pass is recorded in TASK13130 task/PR
+evidence, with byte-exact restoration. These are bare-owner/serialized controls,
+not native I/O, browser, admission, full-reader, cleanup or Health proof. Those
+remain NOT RUN/PROOF NOT RUN. No failing control is removed or skipped.
+
+**Known open item:** independent browser body/hash/length/full JSON projection
+proof is UNAVAILABLE in this selected observation design. Healthy E05/full56
+remains an unmet strict specification. Relay/public/SQL/DOM values never fill a
+browser-input slot. All old compose/detail/messages/has_more/created_at/system
+payload/rendered-response obligations remain mandatory; the reader preserves the
+full original comparison for a genuine measured browser input. Other available
+original/native/DOM/public/durable assertions still run. Missing evidence stays
+UNKNOWN; actual failed assertions stay FAIL. E05 cannot report pass here.
+
+The complete E07 reader attributes recorded errors using the immutable original
+`e07-prefix.json`, the E05 catch's actual first-cause reference and ordinary/
+primary-object facts, matching final group/case exports, and ordered finite
+catch/cleanup/admission/group intervals. A `controller-action` label, producer
+group state or timestamp alone cannot qualify an earlier error. The producer
+also requires that original E05 catch before allocating P/W. Missing, foreign,
+conflicting or ambiguous attribution refuses; every original failure remains.
+
+Finalization records direct `Controller.close` attempts with their actual failure
+references, same-exception identity, main-thread/ordinary facts and intervals
+after complete E07. Only a failed `daemon-log-close` is independently unrelated:
+it owns the controller log descriptor, not E07 content or resource/export proof.
+Its nested bounded record and outer operation record must name the same original
+exception. Other final errors remain blocking without proved independence;
+browser/observer/resource/export errors never acquire this exclusion. Complete
+safe E07 bytes, all original source/ownership/closure checks and its scoped case
+join are still required. Health retains the entire recorded failure list and
+stays FAIL/nonzero even when E07 earns scoped acceptance. Missing or corrupted
+required exports cannot be supplied by an otherwise unrelated final failure.
+
+The existing aggregate controls exercise this shipping attribution predicate
+with healthy, earlier failed/unknown E05 and final-log inputs, plus source/ref/
+chronology/observer/resource/export counterexamples. This is serialized reader
+evidence only. Complete native E07 admission/content/finalization/export proof
+remains NOT RUN / PROOF NOT RUN; no complete healthy native receipt is fabricated.
+
+The E05 first exception is recorded before its own cleanup. A later E07 result or
+final cleanup/export error appends without replacing that original object/traceback
+or erasing separately complete safe scoped evidence. E07 admission is the entire
+positive state/action/owner/resource/source/boot/receipt/export/time conjunction,
+not a failure-class shortcut. Missing/partial/unclassified work, blocked I/O,
+poison/watchdog/interruption, expired E05 cleanup end, failed forwarding/redaction/
+export or less than a full remaining50s of ORIGINAL480 work REFUSES before P/W.
+There is no fresh runtime, boot, deadline renewal, fabricated53 outcomes or36 starts.
+
+| Genuine settled operation | Prefix starts / current host released | Global task/result prefix | Final starts / global tasks/results |
+| --- | --- | --- | --- |
+| E04 before E05 |29 /17 |20/29 |31 /22/30 |
+| C |32 /20 |20/29 |34 /22/30 |
+| N |33 /21 |20/29 |35 /22/30 |
+| D |36 /24 |21/30 |38 /23/31 |
+
+These are strict finite source-owned memberships and full content, not count-only
+admission. Each admitted E07 suffix is exactly TWO actual P/W starts, FOUR original
+commands and ONE real P result, with complete old rows/files/public state retained.
+Both actual boots/current index1, source/interpreter/root/D-L-P registry, ordered
+receipt tails, positively closed providers/children/private files and pinned
+containment groups remain mandatory. Healthy53/36/38/23/31/B24→26 stays the original
+strict specification. E04 independently owns its29-provider/seven-job prefix; E05
+owns its C/N/D operations; E07 owns its full raw content and exact suffix.
+
+Scenario, observations and result carry closed E05/E07 producer groups and actual
+admission/refusal. Aggregate readers execute separately; complete own content plus
+scoped original completion/source joins are required for scoped acceptance. Sparse
+manifest indices are already supported by the unchanged completed reader. The
+strict completed.join_results/full56 gate is unchanged. Health enumerates all56
+EACH3.12/3.14 and stays FAIL/nonzero for any failed/missing/refused required case,
+artifact/provenance/diagnostic/export/cleanup result. Missing unrelated E05 PNGs
+cannot suppress otherwise complete E07 inspection. No Boolean or marker earns PASS.
+
+The TASK13120 source correction reuses the complete body-independent native
+GET-owner/stop and selected C/N/D operation readers for E07 admission. Ten exact
+resources, two registrations, original generations, parser/read checkpoints,
+received/delivered/buffered counters, original command/instruction/argv/wire/source
+witnesses, derived child/private-file membership and the genuine D INTEGER
+result/lifecycle/public projections are required even when E05 lacks browser-copy
+input. No GET owner or empty resource list is optional. Producer admission checks
+the complete native Request census, required Responses and relay/document joins,
+including safety events, before P/W allocation.
+
+TASK13122 corrects three independent reader boundaries. Selected C/N/D command
+`python` is an absolute executable path, bound to `executable_manifest.python`;
+result `python` remains the independently measured3.12/3.14 minor label. Existing
+source/manifest/argv/callback/CLI-child joins and the actual cell version guard
+remain mandatory. Cleanup must complete within its unchanged original end and
+no later than admission; unused future allowance need not elapse. Original
+checkpoint/cleanup/admission chronology and full50s work reserve remain required.
+
+The native Request ledger now explicitly records main-frame and unredirected
+observations from the original Request object. Producer admission and the shared
+independent originals reader replay Requests and native main-frame commits in
+original order, validating pending snapshots and same-document lineage. A future
+or superseded document cannot own an earlier required Request; missing frame or
+redirect provenance refuses rather than inferring it. Compose and thread Responses
+both require their exact original Request <= Response <= successful terminal
+interval and ledger order. Full E05's navigation sequence/initialization/hold/race
+assertions remain separately mandatory. Existing full-window serialized controls
+include a prior real commit in their reader grammar, coherent negative inventories,
+future/superseded/nonGET/missing/mismatched/same-document/pending/frame/redirect
+counterexamples and both Response intervals. They establish reader sensitivity
+only; native producer/Chromium behavior is NOT RUN. Complete selected C/N/D and
+cleanup/admission fault proof remain PROOF NOT RUN without a genuine runnable
+prefix; empty pre-E05 controls do not cover those branches.
+
+A native read that returns a bounded prefix and then fails framing validation
+retains that prefix once and its first error/length/prefix digest. Native
+IncompleteRead.partial is used only when the read itself did not return. Such a
+digest describes retained incomplete bytes; it never seals, parses or forwards
+them as a valid response. Capture reserves member/forwarding/refusal metadata
+before retention. One constant-size sticky overflow makes membership incomplete;
+later traffic keeps its original local forwarding/closure owner without an
+uncharged per-request capture tail. Native inventory callbacks, snapshots and
+exports consume the same lifetime allowance. The closed capture inventory
+publishes retained_bytes/retained_facts, which the reader checks against the
+8MiB/16384 limits and the retained membership's minimum reservations. These are
+cooperative evidence bounds, not hard RSS or native execution certification.
+
+All five E05/three E07 variants and original first48 remain. Preserve480/240/720/
+60/120/900,31s cache, C16/28/36/42/50, full1s/BOTH50ms, all content/closure/liveness/
+GC assertions, TERM3.12/INT3.14, four archives and daily19UTC. Source Boundary Lint
+and Web Lint(Node24) remain the only required automated PR AND main checks.
+
+The existing accepted A01-A14/B01-B12 case record and controlling Q1 delta remain
+in the PR, including all four authoring answers and TASK13100 keeper ownership.
+Changed reader controls extend the existing `python -B e2e/aggregate.py --controls`
+boundary: complete original consistency, distinct partial/refused/sanitized states,
+forwarding, native identity ambiguity, mandatory browser-input rejection and actual
+sparse publisher/scoped joins. H real capture/forward/cancel/closure, R serialized
+counterexamples and P safe publication own distinct risks; R cannot prove H or P.
+No product-only seam/export/flag or new venue is introduced. The Q1 coherent relay
+self-comparison regression produced intended exit1; byte-exact restoration returned0.
+Reader controls are not native or Product PASS. Native H NOT RUN and unsupported
+proof PROOF NOT RUN; fit UNMEASURED and100MiB suffix UNPROVED. Integration INCLUDING
+actual CLI callback/lifespan/SessionTracker SKIPPED24342/211270-271; units RETIRED.
+
+Historical40240701225 remains FAIL BOTH/48metadata EACH/56UNKNOWN EACH/zeroaccepted
+PASS/HealthFAIL17; baseline artifacts/export/cleanup unaccepted and TERM/INT only
+diagnostic successes. Eight exact historical original joins remain UNAVAILABLE.
+All preparation/custody/cleanup/dashboard503/serving-source/protected12/repetition/
+abruptR/E04cap/persistentStop/Mac unknowns and limits remain. Manager owns independent
+review/QA, guarded merge/main lints, genuine main-only Product and full assessment;
+this source change does not close that operational objective.
+
+
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
 `bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564`).
@@ -377,18 +616,43 @@ exceed60s; timeout fails honestly and retains observed ownership, without a
 claim of absence. If cleanup fails, export may read partial diagnostics but
 performs no more teardown or actions.
 
-The first nonempty readable daemon token remains the redaction context through
-partial data removal; later collection cannot erase it or replace sanitized
-staging with raw text. If no trustworthy context was captured (missing, empty
-or unreadable token), raw diagnostics and the detailed receipt are withheld.
-Known-safe staging is retained where available; bounded incomplete metadata
-has variants={} and reports FAIL, even when owned-root cleanup succeeds. This
-failure path does not establish complete evidence or runtime sanitation safety.
+Detailed collection requires the literal owned root/identity, the complete
+original nonempty redaction context containing its daemon token, and the same
+original phase end. A later actual context read must equal the retained context;
+partial, changed or unsafe context never replaces it. Without a safe projection,
+the bounded FAIL has variants={} and no invented groups. A fully detached earlier
+safe scenario survives later refusal; it remains an unvalidated producer claim.
+
+Collection stays scenario-first: its single bounded read, UTF8 byte guard,
+decode and full projection precede the existing raw enumeration. Ordinary
+scenario absence/open/read/Unicode/capacity/decode/projection refusal reserves
+its original first error/traceback/category/diagnostic claim before independent
+raw acquisition. Ordinary member failure preserves safe siblings and earlier
+staging. Enumeration failure ends that enumeration without retry. Timeout and
+interruption precede OSError; UnicodeError precedes ValueError. Unsafe root,
+context or destination, sanitation failure, expired allowance and unexpected
+BaseException latch a fatal detailed-I/O stop: no further detailed acquisition,
+drain or export recollection. Existing independently guarded teardown order
+remains. A category alone grants no continuation, and slow errors cannot renew
+the original allowance. These are cooperative checks, without hard OS-I/O/RSS
+bounds.
+
+At the existing returned .txt/.json/.jsonl buffer, any U+005C (backslash)
+withholds the WHOLE candidate before sanitation, encoding or staging. This
+conservatively refuses benign escapes/backslash paths too. Under intact
+eligibility it is the fixed ordinary REDACT/VALUE refusal. Literal admitted text
+still traverses the original full-context redactor and must contain neither a
+backslash nor a nonempty original secret afterward; sanitation exceptions or
+failed postconditions are fatal. No alternate decoding/parser or arbitrary
+encoding/image-sanitation guarantee is added. PNG custody is unchanged. A
+refused newer candidate never reaches output/pending bytes or replaces an older
+safe commit. Old staged presence never clears sticky incompleteness or supplies
+new full-content equality. Required missing/stale content stays FAIL/UNKNOWN.
 
 Export has its own end `min(export entry + 120, original start + 900)`.
-It writes a metadata-only FAIL first, then sanitized detailed artifacts and
+It attempts a closed FAIL first, then sanitized detailed artifacts and
 the final receipt, keeping the last second of that same allowance for a bounded
-failure receipt. Each metadata-only receipt copies timing with cleanup.ok=false
+failure receipt. Each closed failure receipt copies timing with cleanup.ok=false
 alongside its false cleanup flag; it cannot certify incomplete detail as cleanup
 acceptance. This copy does not rewrite an actually complete in-memory cleanup
 outcome. Serialization, sanitation, required-detail checks and the pending-file
@@ -402,9 +666,19 @@ an actually published initial FAIL when replacement does not commit; failed
 initial persistence is never claimed as a remote receipt. The existing bounded
 FAIL fallback restores the alarm and checks the original export end before
 replacement; success does not depend on that write. Export failure is sticky.
-Recollection is read-only, never teardown, and cannot erase prior
-staging/closure/cleanup failure. Incomplete detail still publishes variants={},
-with both cleanup flags false, even if safe partial members were written.
+The two original staged-publication passes surround the original conditional
+read-only recollection. Ordinary collection/export failure is deferred so newly
+admitted safe bytes retain their second-pass opportunity; fatal loss stops the
+drain. No publication handler acquires a source. Unchanged committed bytes are
+skipped; a failed member is never retried by the second pass. Same-directory
+sanitized pending bytes precede eligibility checking and replacement, preserving
+a prior committed member on precommit failure. Pending bytes earn no credit.
+An ordinary initial FAIL write refusal also leaves independent safe members
+eligible. Only actual replacement establishes result persistence; if neither
+FAIL attempt commits, the result is unavailable. Recollection cannot erase prior
+staging/closure/cleanup failure. Incomplete FAIL uses only detached safe scenario
+fields (or variants={} before any safe projection), with both cleanup flags
+false, even if safe partial members were written.
 Known serialization, missing-data or precommit expiry failures cannot admit PASS.
 No fresh120s is granted after900. Fractional `setitimer` alarms enforce positive
 remainders without integer truncation. Timing receipts retain original ends,
@@ -417,6 +691,25 @@ by a crash; there is no postcommit rollback, hard OS-I/O timing, fsync or crash
 durability guarantee. Hosted upload shares the remaining outer900s/15-minute job
 envelope; a terminal launcher commit does not establish upload or actual product
 acceptance.
+
+The one optional collection fd2 opportunity preserves the prefix
+`HRD1:C:<CLEANUP|EXPORT>:<WINDOW>:<F|U>` and appends exactly
+`:D1:<OP>:<REASON>:<CHARS>:<UTF8_BYTES>\n`, within512 bytes. OP is ROOT,
+TOKEN_READ, TOKEN_EMPTY, CONTEXT_PRESENT, CONTEXT_READ, CONTEXT_DECODE,
+CONTEXT_VALIDATE, SCENARIO_PRESENT, SCENARIO_OPEN, SCENARIO_READ, SCENARIO_UTF8,
+SCENARIO_CAPACITY, SCENARIO_DECODE, SCENARIO_PROJECT, RAW_ENUM, TEXT_READ,
+REDACT, TEXT_UTF8, IMAGE_READ, REQUIRED or UNKNOWN. Scenario open/UTF8/capacity
+retain WINDOW=SCENARIO_READ; project uses SCENARIO_MERGE; TEXT_UTF8 uses REDACT.
+REASON is IO, UNICODE, VALUE, CAPACITY, DECODE, MISSING, UNSAFE, DEADLINE,
+INTERRUPTION, OTHER or UNKNOWN. Counts are U until the respective single bounded
+scenario read/encoding returns, then canonical nonnegative decimals (characters
+<=8388609, UTF8 bytes<=33554436). They describe only the RETURNED SLICE, never
+complete-file size or raw-member lengths. The real first claim freezes facts;
+an earlier completed-ledger failure stays UNKNOWN rather than adopting later
+scenario facts. Claim and output are charged before optional write eligibility;
+failed/short/unavailable output has no retry. No text/path/URL/exception/secret
+excerpt or new resource enters the suffix. Old lines without D1 keep their old
+broad meaning; absent diagnostics supply no acceptance or historical inference.
 
 The optional `result.json.failure_categories` is a closed primitive-only channel,
 independent of raw detail sanitation. It is omitted without an admitted lowercase
@@ -811,7 +1104,8 @@ only through its immediate reviewed caller. The saved walk is at most32 TB
 nodes; missing/unrecognized leaf/caller or overflow yields UN without guessing
 an ancestor. No frame/text/locals/path/context/error/clock/token is exported.
 Same-source `_diagnostic_packet` refuses old21-byte HRD1:S packets; retained
-old logs keep their original meaning. HRD1:C collection markers are unchanged.
+old logs keep their original meaning. HRD1:C retains its original prefix; the
+current optional D1 suffix is defined above.
 
 BB=01..1F labels effective-minimum ties among actual present G=01,C=02,L=04,
 O=08,I=10 owners. Absent fallback attributes own no tie; only original inactive
@@ -866,7 +1160,8 @@ Each complete eligible observation consumes ONE <=512B fixed-ASCII unbuffered
 `os.write(2,line)` opportunity to unchanged inherited launcher fd2. Existing
 regular cancellation launcher.log and blocking native pipe are permitted.
 Controller lines use `HRD1:controller:` plus the exact packet; collection lines
-are `HRD1:C:CLEANUP:LL:K\n` or `HRD1:C:EXPORT:LL:K\n`, K=F/U. LL is ROOT,
+historically are `HRD1:C:CLEANUP:LL:K\n` or `HRD1:C:EXPORT:LL:K\n`, K=F/U;
+new collection lines append the bounded D1 suffix defined above. LL is ROOT,
 TOKEN_READ,TOKEN_EMPTY,CONTEXT_PRESENT,CONTEXT_READ,CONTEXT_DECODE,
 CONTEXT_VALIDATE,SCENARIO_PRESENT,SCENARIO_READ,SCENARIO_DECODE,SCENARIO_MERGE,
 RAW_ENUM,TEXT_READ,REDACT,IMAGE_READ,REQUIRED,UNKNOWN. Labels describe completed
@@ -1741,8 +2036,9 @@ an independent commit, with one arm deadline at most5s. Ordinary content and
 SSE are forwarded as bytes, without bootstrap/auth substitution or manufactured
 responses. Partial evidence includes actual network/navigation/eligibility
 records. Disabled controls do not prove handler reentry or causal guard
-sensitivity. Owned context, listener, connections and workers close before daemon
-teardown; missing/unknown closure fails daily health.
+sensitivity. Owned context, listener, connections and workers close inside the
+existing E05 final4 allowance, before E07 and daemon teardown; error paths retain
+the original case/scenario end. Missing/unknown closure fails daily health.
 
 The forwarding loop checks actual HTTP response completion before touching the
 saved upstream socket again: `read1` can close that socket while returning the
@@ -1788,6 +2084,131 @@ assertion sensitivity remains **UNEXECUTED**.
 | `thread_provider.redaction_context/command`; Controller sanitation/export closure | Validate private retained context before and after capture, including current/old bearer and invocation tokens; sanitize full binary streams before16384-byte clipping or JSON/socket output; original byte counts/flags, safe digest identities | Boundary-straddling credential, multibyte output, timeout suffix or missing/unsafe/lost context cannot take the old clip-before-redact path; unknown context raises fixed text and withholds output | Existing full-string exporter cannot repair a fragment already clipped by a producer; sanitation and timeout behavior remain unproved | NO |
 | `aggregate.validate_e05`, threads command/compose/settled producers, browser response/DOM producers | Reopen existing artifacts and recompute actual command, public response, full ledger and rendered content joins; PNG signature proves file format only | Metadata-only or valid durable rows cannot substitute for public outcome/content | Extends the existing actual-content consumer; no executed controls or full test-authoring PASS | NO |
 
+The run40206029791 owner/reader correction extends these SAME five cases:
+
+| Existing keeper | Observable contract | Credible regression | Nearest keeper and distinct gap | Test-only production seam |
+| --- | --- | --- | --- | --- |
+| BrowserRelay request lifetime and E05 raw browser ledger | Pair unique original GET Request/full target and positive owner generation. Callbacks enqueue/wake only; one worker owns nonblocking receive, the existing http.client parser, mandatory status/framing/finite EOF validation, publication and actual shutdown. Its operation gate spans that work. Cancel only at a byte-zero entire response (navigation only), a completed validated return, or an empty fresh size/payload/finite wait. Real returned bytes/EOF/errors precede intent handling; partial/buffered or unknown parser work refuses. Original same-connection duplicate and original descriptor share verified nonblocking mode; no later timeout call changes it. Unexpected parser methods refuse. Original compose200 remains unconditional. | Reintroducing cross-thread busy shutdown, accepting would-block as EOF, resetting buffered progress, null-ID laundering, invalid headers/short finite length or an earlier native failure must refuse. Literal exception names and timestamps alone cannot establish cancellation. | SAME five E05 cases and independent validate_e05; producer observes native I/O, reader rejects contradictory serialization. CLI loss relay has no browser/SSE owner. Native I/O/interleaving/restoration/repetition NOT RUN/PROOF NOT RUN. | NO |
+| E05 final4 context owner, BrowserRelay owned SSE reads, validate_e05 | Before native context.close, enqueue exact still-live native SSE200 Requests. Each worker rechecks original Request terminals at its OWN actual initiation. A local coroutine awaits complete owner acknowledgements through unchanged _native while native event delivery continues; it never blocks the browser loop or waits under relay.lock. Retain distinct previous/current operation and read IDs, numeric received/delivered/buffered/checkpoint/framing/remaining-length facts, native context-close event AND successful return, and independent closure of original/duplicate/response/raw/buffer/selector registrations/wake pair. Forced teardown is latched before cleanup and never proves cooperation. All original ends remain shared. | Missing/failed/late acknowledgements, terminal before per-worker initiation, stale/extra/retyped/reordered facts, earlier EOF/error, partial framing, failed handle close or live worker/listener refuse even with producer success or zero counts. Native close is still attempted after stop failure only within the SAME end; first/subsequent errors persist. Main browser remains separately owned. | Extends SAME E05 cases and independent raw reader; navigation does not prove final-context ownership. Native lifecycle/fail-restored/repetition NOT RUN/PROOF NOT RUN; historical failed runs remain failed. | NO |
+| Controller.release/close, all existing provider callers | Only complete acknowledged stream AND socket close removes the owned pair and hold. Partial release remains inventoried; teardown retains failures and attempts remaining owners. | Retiming already released sockets, dropping a failed release, or treating absent descriptors as settlement. | Existing peer registration, provider observer/host/process closure remain; Owned launcher cleanup cannot certify controller protocol release. Native normal/active/partial-close cases are NOT RUN/PROOF NOT RUN. | NO |
+| validate_e05 R1 provider/compose/show readers | Exact ordered current shipping preflights, bodies, statuses, response text, selected outcome, canonical argv/private payload and witnesses; denied full durable/file frames unchanged. | An extra/reordered preflight, wrong naming context/identity, dropped raw request or old name-only details line. | Existing eleven-command ledger, two founder composes and three JSON show reads remain. Archived R1 prefix rejects old source and accepts corrected reader on BOTH original lanes; full E05 still refuses original origin evidence. | NO |
+
+The sole-worker cancellation correction extends that SAME record and the SAME
+five E05 variants; it adds no manifest variant, suite, test-only seam or native
+execution venue. Acquired resource `closed` times acknowledge explicit successful
+close calls, not the first physical descriptor closure. Selector registrations
+are removed after the worker's last operation/checkpoint and before final
+descriptor closes; every final explicit close must also follow that work,
+including the actual shutdown acknowledgement. Initialization precedes the
+first checkpoint/call, while the response is acquired inside getresponse before
+parser I/O. Original-socket detach and automatic response-file close remain
+separate from those final explicit acknowledgements. Each returned operation
+establishes its own between checkpoint after completed validation and before
+the next operation. Size/payload/finite checkpoints belong to their exact body
+read and its validated framing/remaining length, retaining distinct prior/current
+IDs. A complete finite/bodyless outcome
+may be cancelled after completion; its returned bytes/length remain and it is
+never labeled downstream delivery.
+
+| Affected finite inputs in the existing five-case keeper | Expected independent boundary result | Level, isolation and available proof |
+| --- | --- | --- |
+| No first SSE body, repeated earlier data, fresh chunk-size after validated CRLF, fresh positive-size payload or known finite-body wait | Same-worker shutdown only with zero unread/accumulated progress, actual would-block and distinct prior/current IDs; preserve earlier returns | Native Product plus serialized raw-reader controls. Native requires original Requests, disposable hosted Ubuntu and BOTH3.12/3.14; native NOT RUN/PROOF NOT RUN. |
+| Zero entire response vs partial/interim/buffered status/headers; positive/partial/full/bodyless finite returns | Only genuine byte-zero navigation gets cancelled-before-response without invented response/status/read. Partial state refuses. Previously complete finite outcome remains distinct from delivery | Same owner/reader keeper. Serialized controls observe exported consistency only; no actual socket/EOF/parser execution proof. |
+| Returned-but-unpublished bytes, earlier exception/EOF, short finite length, invalid/duplicate/conflicting headers, partial/negative size/delimiter/trailer/zero chunk/SSE EOF, null prior/current read ID | Worker processes actual result and validation before stop; all prior errors/EOF and unvalidated progress remain failures | Earlier delayed-error/null-ID/unvalidated-return counterexamples remain keepers. Interleaving and native intended-fail/restored proof NOT RUN/PROOF NOT RUN. |
+| Live final SSE, first/later blocked read, terminal after context-closing but before per-worker start, terminal during/after real start | Earlier terminal refuses; later terminal alone supplies no acceptance. Every exact acknowledgement, actual context event AND return and full ownership closure must join | Existing final4/context owner, same original end and separate main browser. Native lifecycle/repetition NOT RUN/PROOF NOT RUN. |
+| Missing/duplicate/wrong Request, query target, method, owner/generation, original selected POST, ERR_FAILED or no native event | Refuse reassignment, nonGET/POST exemption, synthetic terminal and exception-name substitution | Existing five cases and independent raw ledger; no production flag/export/injection seam. |
+| Partial setup/registration, wake/ack/shutdown/close failure, late callback, forced teardown, expired original end or surviving worker/listener | Retain first/subsequent errors and unresolved inventory; attempt every acquired close. A late notification cannot resume an ended browser bridge | Same disposable owner. Static inspection is not actual closure; native proof NOT RUN/PROOF NOT RUN. |
+| Final explicit close of any of the ten resources or unregister of either selector interest before later read/validation/shutdown; late or reversed acquisition | Refuse at the independent lifetime/acquisition predicate. Preserve legitimate original-socket detach and automatic finite/bodyless/EOF file closure; final explicit close at the completed worker boundary remains admissible | Same serialized keeper, including navigation/context premature-close counterexamples and each handle/registration. Native use-after-close is NOT reproduced. |
+| Between checkpoint before its header/body validation or inside the next read; size/payload/finite checkpoint outside its own read | Refuse at the exact establishing-operation predicate. A between checkpoint at its own validation finish and existing valid framing waits remain admissible | Existing raw reader controls; no obsolete grammar or unrelated early refusal supplies new sensitivity proof. |
+| Native bridge exits before local acknowledgement coroutine cleanup resumes, or an already queued signal runs after exit | Synchronous finally deactivates the shared local latch and detaches only this exact notifier; coroutine finally is idempotent. Inactive notifications schedule nothing and queued signals cannot set the ended owner's event | Source failure-path assessment only. No shared bridge change, cancellation drain, additional wait or renewed deadline. Native cancellation/interleaving proof NOT RUN/PROOF NOT RUN. |
+| Missing/extra/retyped/reordered/stale/detached/forged counters, framing, identities, operations, native events or closure facts with producer success | Independent closed grammar reconstructs counts, finite lengths, chunk transitions, prior results and intent/ack/native/owner joins; historical failed full runs stay refused | Existing exact-source serialized-clause technique over isolated inputs. Scoped acceptance is NEVER whole-reader/native/Product PASS. |
+| Original one held compose POST200/body/hash/independent commit/release/delivery, automatic navigation/four revisits, public/raw-origin/durable C/N/D | All original assertions remain unconditional in all five original variants | Existing compose/content keeper; GET cancellation supplies no substitute. Native NOT RUN/PROOF NOT RUN. |
+
+Four authoring answers apply to every affected row above: (1) observe actual
+original native Request/terminal, full target, worker I/O/cancel/close and exported
+content/durable boundaries, or the independent serialized reader's refusal;
+(2) the credible regressions are the specific omissions/reorderings/state loss in
+each row; (3) extend the SAME five E05 cases/validate_e05 because old between-call
+controls do not observe blocked raw/parser/ack work, while the CLI relay and
+TERM/INT cover different ownership; (4) NO test-only production seam. Native
+I/O ownership and independently rejected contradictory exports are distinct
+risks, so neither layer replaces the other. For the added lifetime/checkpoint
+rows, the credible regression is omitting the final-use/acquisition or exact
+establishing-operation join. For notifier ownership it is relying solely on
+coroutine finally or clearing a different owner's notifier. The nearest existing
+keeper inspected final counts/times or successful coroutine teardown; it did not
+reject these contradictory lifetimes or cover a bridge exit without a resumed
+coroutine. Scoped serialized intended-fail and
+restored results, where available, belong to these rows only. Missing native
+proof is NOT RUN/PROOF NOT RUN, never behavioral acceptance. The four historical
+owned/navigation no-first-read/between-read positive semantic contracts and all
+41 named negative families remain keepers; obsolete-grammar rejection alone is
+not targeted sensitivity evidence. Python units remain RETIRED; general and
+actual CLI callback/lifespan/SessionTracker integration remain SKIPPED.
+
+The retained negative families are: unobserved, wrong-target, wrong-method,
+nonGET, selectedPOST, missing-request, wrong-request-id, late-shutdown,
+remote-downstream, wrong-error-field, native-timeout, wrong-native-failure,
+earlier-EOF, earlier-failure, missing-native-response, missing-context-close,
+partial-context, missing-shutdown, failed-shutdown, detached-receipt, wrong-read,
+framing, timeout, wrong-order, expired-end, unknown-event, unknown-receipt-field,
+unknown-proxy-field, unknown-read-field, prior-native-SSE-error,
+failed-shutdown-owner, false-read-identity, false-status, missing-read,
+wrong-live-context, idle-unexpected-error, idle-failure-before-shutdown,
+duplicate-request, duplicate-proxy, duplicate-failed, workers-zero-errors.
+
+The original maker at the rejected source observed 69 distinct current-protocol inputs:
+15 clause acceptances and 54 refusals, with four additional case-label aliases
+reusing the same keeper observations. The ten cancellation shapes, four finite
+completion/delivery shapes and selected-delivery clause do not execute I/O.
+The actual native-terminal predicate was deliberately removed once for an
+intended refusal-control failure, then restored byte-exactly and rechecked with
+its positive keeper. A further contradictory terminal-zero-chunk/further-read
+input exposed a missing reader latch; that input now refuses while completed
+finite chunked responses remain admissible. These are scoped serialized results,
+not native/whole-reader/test-authoring behavioral PASS. Full original failed
+archives still refuse before the changed grammar, so those whole-reader refusals
+supply no targeted sensitivity evidence. Actual CPython 3.12.14/3.14.4 method
+inspection and compile-only checks do not certify hosted parser execution.
+Native I/O/interleaving/lifecycle/fail-restored/repetition remain NOT RUN/PROOF
+NOT RUN; local/hosted lint and independent source review/QA are separate gates.
+
+The lifetime/checkpoint correction preserves all original 73 labels and their
+69 distinct inputs/15 scoped acceptances/54 refusals/four aliases as historical
+source observations. The extended same-record evaluation has 101 labels over
+96 distinct inputs: 18 scoped acceptances and 78 refusals, with five aliases.
+The original 73 label outcomes remain unchanged. Both independent premature-close
+inputs, the early-between observation, each final handle/registration control,
+acquisition-order controls and stale framing checkpoints now refuse at their
+owning predicates; the rejected-source clauses accepted those contradictions.
+Valid final-close and completed-validation boundaries remain admissible, along
+with the original pre-header, finite/bodyless/EOF completion and framing keepers.
+One exploratory delivered-owner-without-Request-pointer clause input remains
+accepted as in the review; it is not a positive whole-reader contract or native
+observation. No production source was temporarily mutated for this pre-fix/fixed
+comparison. Notifier cleanup has source assessment only; its native failure,
+restoration and repetition proof remain NOT RUN/PROOF NOT RUN.
+
+Mention-bearing C reply AND replay perform org discovery, exact
+`identities/resolve` lookup, selected thread GET and original reply POST. Plain
+reply/decline/dispatch/task-send perform org discovery then their exact action.
+Task-final sends only its completion POST. Task-read performs org discovery,
+details GET and identities GET and prints `case_manager · case_manager` for
+agent/result presentation. Founder N/D compose resolves its exact recipient
+between discovery and original POST; JSON show remains discovery then GET.
+The reader permits no arbitrary extras or prefix family.
+
+Original browser origin failures remain failures. Future origin-bypass records
+retain URL/method/resource type; historical records lacked these facts. At this
+checkpoint the HTML referenced external Google fonts, a concrete outside-radius
+owner dependency, not permission to relax the whole-origin predicate. The page
+source later self-hosts that Baloo 2 face locally; attribution of the earlier
+origin failures to fonts remains UNKNOWN and none is reclassified. New navigation records retain the pinned native new-document Request lineage.
+The reader permits at most one nondeparting same-URL initialization per actual
+document and still requires the exact automatic detail entry/four real revisits;
+extra documents or changed targets refuse. Historical repeated same-URL events
+lack that lineage and receive no inferred browser acceptance.
+
 The CLI relay captures request JSON/response text only after E05 starts; the
 original baseline/Pause/E04 wire receipts keep their prior shape. The controller
 sanitizes retained observations with the complete credential context; the
@@ -1813,7 +2234,9 @@ restart coverage and eventual daily acceptance remain root-owned and unproven.
 
 Accepted TASK10763 design
 `5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7`
-adds C only after the fully evaluated and archived E05 end. Exactly three
+originally added C only after the fully evaluated and archived E05 end. The
+current bounded admission contract above also admits genuine safe failed-E05
+checkpoints; the healthy acceptance specification remains unchanged. Exactly three
 variants bring the authored total to56: `E07.cancel-cascade-browser`,
 `E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli`. These are source
 assertions, not observed behavior. R/full composition remains HELD; no crash,
@@ -2367,7 +2790,7 @@ R1–R5 correction contracts (TASK10778):
 | --- | --- | --- | --- | --- |
 | E05 aggregate transport | Original daemon/CLI/browser D/L/P keys and registered ports only; independent E07 listener/upstream predicate stays in E07 | Valid E05 fails on nonexistent E07 keys | Misplaced predicate disagreed with unchanged E05 producer | `threads.exercise` serialized transport |
 | Browser cancel and independent aggregate | Full literal `{ok:true, task_id:P, cancelled:[P,W], killed:[{task_id:W,agent:case_worker}]}` with exact order and membership | Reject real successful200 or accept incomplete response | Prior literal omitted ok/task_id | Shipping `tasks.cancel_task` and actual dialog POST |
-| Both new stub witnesses | Closed seven-field records, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag or unknown-field corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch, original `fake_claude.sh` argv and unchanged executable guard |
+| Both new stub witnesses | Closed eight-field records including real Boolean `format_json:false`, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag, missing/extra field or false-as-zero corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch uses `--output-format`, while the unchanged guard's Boolean checks literal `--format json` |
 | E07 ownership updates | Atomic temporary/replace union retains all earlier PIDs; register before process observations/waits | Watcher reads truncated JSON or failure loses an observed ancestor | New direct overwrites differed from atomic `Controller.start` | Existing `Owned.sample/observe` with unchanged PID-start/cgroup/unit checks |
 | Private launch writer and final collector | mode0600 temporary creation/replace, initial PID record retained until full acknowledgement commits; each issued command requires a record; retain valid siblings and valid initial records with fixed missing/malformed/incomplete/unexpected diagnostics | Interrupted write destroys all later evidence or glob hides missing record | Unguarded comprehension and truncate/chmod publication | Genuine provider Popen and acknowledgement, `Controller.evidence`, existing run e07 whitelist/export, independent aggregate |
 
@@ -2380,6 +2803,19 @@ failure and independently requires both complete records in command order.
 Sanitation remains outside parse catches: unavailable retained context still
 refuses export, and incomplete records never fabricate an acknowledgement.
 These source corrections add no dedicated control or execution evidence.
+
+For the eight-key correction, existing archived-reader calls reject the old
+seven-key oracle on BOTH run40206029791 lanes and accept the corrected E07
+content prefix through the native-admission boundary, retaining original source
+pins. Full reader invocation still refuses missing native admission; no hosted
+identity/environment was fabricated. The exact existing stub predicate rejects
+integer0, true, string/null, missing/extra keys and wrong source/plan/argv/argc on
+in-memory copies, then accepts the unmodified original witness. This is scoped
+ARCHIVED-READER evidence, not full E07, native launch or test-authoring PASS.
+Whole original runs remain FAIL/zero accepted PASS/56 UNKNOWN EACH, HealthFAIL3.
+All BOTH50ms/full1s/full-content/host/witness/closure checks, original bounds,
+daily19UTC/full56 EACH3.12/3.14/TERM3.12/INT3.14 are unchanged. No worker Product,
+native lifecycle campaign, protected mutation or repetition was run.
 
 All dedicated sensitivity controls remain **UNAUTHORED**; behavior, assertion
 sensitivity, transport provenance, delivery/persistence, fit, process closure
