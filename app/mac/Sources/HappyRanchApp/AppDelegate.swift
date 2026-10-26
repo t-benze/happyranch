@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Internal to allow tests to inject a handle for termination-path coverage.
     var currentHandle: (any ProcessHandle)?
 
+    private var healthObservationTask: Task<Void, Never>?
+    private var healthObservationID: UUID?
+
     @Published var webViewURL: String?
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
@@ -133,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        cancelHealthObservation()
         // Terminate the managed daemon if it's still alive.
         // External daemons are NEVER terminated on quit.
         if supervisor.isManagedBySelf,
@@ -253,9 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 refreshDerivedState()
 
                 // Probe health before loading the URL
-                Task {
-                    await probeAndLoad(port: port)
-                }
+                beginHealthObservation(pid: pid, port: port)
                 return
             } else {
                 // Stale PID
@@ -306,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func stopDaemon(confirmed: Bool = false) {
         do {
             try supervisor.stop(confirmed: confirmed)
+            cancelHealthObservation()
             refreshDerivedState()
 
             // Only terminate the managed process; external daemons are never touched
@@ -462,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         if let stdout = stdout {
                             self.diagnostics.recordDaemonStdout(stdout)
                         }
+                        self.cancelHealthObservation()
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
                         self.refreshDerivedState()
@@ -477,9 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
             diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
 
-            Task {
-                await healthProbeLoop(pid: pid)
-            }
+            beginHealthObservation(pid: pid)
         } catch {
             currentHandle = nil
             diagnostics.recordLaunchLog("Launch failed (bundled): \(error.localizedDescription)")
@@ -527,6 +529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         if let stdout = stdout {
                             self.diagnostics.recordDaemonStdout(stdout)
                         }
+                        self.cancelHealthObservation()
                         self.supervisor.onProcessExited(exitCode: exitCode, signal: signal)
                         self.diagnostics.recordExit(exitCode: exitCode, signal: signal)
                         self.refreshDerivedState()
@@ -547,9 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             diagnostics.recordDaemonState(pid: pid, port: 0, bindHost: "127.0.0.1", state: "starting")
 
             // Start health probing loop
-            Task {
-                await healthProbeLoop(pid: pid)
-            }
+            beginHealthObservation(pid: pid)
         } catch {
             currentHandle = nil
             diagnostics.recordLaunchLog("Launch failed (dev): \(error.localizedDescription)")
@@ -595,64 +596,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: - Health probe loop
 
-    private func healthProbeLoop(pid: Int32) async {
-        let home = daemonHome()
-        let portFile = URL(fileURLWithPath: "\(home)/daemon.port")
+    private func cancelHealthObservation() {
+        healthObservationID = nil
+        healthObservationTask?.cancel()
+        healthObservationTask = nil
+        supervisor.onStartupObservation(.unknown)
+        diagnostics.recordStartupObservation(.unknown)
+    }
+
+    private func beginHealthObservation(pid: Int32, port: UInt16? = nil) {
+        cancelHealthObservation()
+        let id = UUID()
+        healthObservationID = id
+        refreshDerivedState()
+        healthObservationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.healthProbeLoop(pid: pid, fixedPort: port, id: id)
+        }
+    }
+
+    /// Explicit read-only renewal after the bounded observation window expires.
+    func checkDaemonStatus() {
+        if let handle = currentHandle, handle.isRunning, supervisor.isManagedBySelf {
+            beginHealthObservation(pid: handle.processIdentifier)
+        } else if supervisor.state == .externalRunning, let pid = supervisor.observedPid,
+                  let port = supervisor.observedPort, processIsAlive(pid: pid) {
+            beginHealthObservation(pid: pid, port: port)
+        }
+    }
+
+    private func healthProbeLoop(pid: Int32, fixedPort: UInt16?, id: UUID) async {
+        let portFile = URL(fileURLWithPath: "\(daemonHome())/daemon.port")
         let reader = PortReader()
-
-        // Poll for port file and health check
-        for _ in 0..<30 { // 30 attempts, ~15 seconds total
-            guard supervisor.state == .starting || supervisor.state == .unhealthy else {
-                break
+        let managedHandle = supervisor.isManagedBySelf ? currentHandle : nil
+        var selectedPort = fixedPort
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(120))
+        func current() -> Bool {
+            guard !Task.isCancelled, healthObservationID == id,
+                  supervisor.state == .starting || supervisor.state.isRunning else { return false }
+            if let handle = managedHandle {
+                guard currentHandle === handle, handle.isRunning else { return false }
+            } else {
+                guard !supervisor.isManagedBySelf, supervisor.observedPid == pid else { return false }
             }
-
-            // Try to read the port
+            return processIsAlive(pid: pid)
+        }
+        defer {
+            if healthObservationID == id {
+                healthObservationID = nil
+                healthObservationTask = nil
+            }
+        }
+        while current(), clock.now < deadline {
             if let port = try? reader.readPort(from: portFile) {
+                if let selectedPort, selectedPort != port { break }
+                selectedPort = port
                 let baseURL = localTransport.baseURL(for: port)
-                let probe = HealthProbe(baseURL: baseURL)
-                let (success, latencyMs, errorMessage) = await probe.check()
-
-                await MainActor.run {
-                    if success {
-                        let wasRecovering = (supervisor.state != .running)
-                        supervisor.onHealthCheckPassed(pid: pid, port: port)
-                        diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
-                        diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
-                        refreshDerivedState()
-                        webViewURL = baseURL
-                        if wasRecovering {
-                            dismissDiagnosticsOnRecovery()
-                        }
-                    } else {
-                        supervisor.onHealthCheckFailed()
-                        diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
-                        refreshDerivedState()
-                    }
+                let observation = await HealthProbe(baseURL: baseURL).observe()
+                // Recheck ORIGINAL owner and port after every suspension. A stopped,
+                // replaced or detached observation cannot publish a stale ready.
+                guard current(), clock.now < deadline,
+                      (try? reader.readPort(from: portFile)) == port else { break }
+                if observation.success {
+                    supervisor.onHealthCheckPassed(pid: pid, port: port)
+                    supervisor.onStartupObservation(observation.startup)
+                    webViewURL = baseURL  // Readable UI is useful while recovery is held.
+                } else {
+                    supervisor.onHealthCheckFailed()
                 }
+                diagnostics.recordHealthProbe(success: observation.success, latencyMs: observation.latencyMs,
+                                              errorMessage: observation.errorMessage)
+                diagnostics.recordStartupObservation(supervisor.startup)
+                diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: supervisor.state.description)
+                refreshDerivedState()
+                if observation.startup.ready {
+                    dismissDiagnosticsOnRecovery()
+                    return
+                }
+                if observation.startup.recovery == .recovery_failed || observation.startup.recovery == .stopping { return }
+            } else {
+                supervisor.onStartupObservation(.unknown)
+                diagnostics.recordStartupObservation(.unknown)
+                refreshDerivedState()
             }
-
-            // Only continue if still in a state that warrants probing
-            guard supervisor.state == .starting || supervisor.state == .unhealthy else {
-                break
-            }
-
-            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { break }
+        }
+        if healthObservationID == id {
+            supervisor.onStartupObservation(.unknown)
+            diagnostics.recordStartupObservation(.unknown)
+            refreshDerivedState()
         }
     }
 
     func probeAndLoad(port: UInt16) async {
-        let baseURL = localTransport.baseURL(for: port)
-        let probe = HealthProbe(baseURL: baseURL)
-        let (success, latencyMs, errorMessage) = await probe.check()
-
-        await MainActor.run {
-            if success {
-                diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
-                webViewURL = baseURL
-            } else {
-                diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
-            }
-        }
+        guard let pid = supervisor.observedPid else { return }
+        beginHealthObservation(pid: pid, port: port)
     }
 
     // MARK: - Role preference
@@ -680,6 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
             // Reset supervisor to notConfigured so the daemon-related
             // UI (controls, health probes) gracefully degrades
+            cancelHealthObservation()
             supervisor.forceState(.notConfigured)
             refreshDerivedState()
         case .undetermined:
@@ -953,17 +993,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// across all supervisor states.
     func refreshDerivedState() {
         stateText = supervisor.state.description
+        if supervisor.state.isRunning || supervisor.state == .starting {
+            stateText += "; " + supervisor.startup.label
+        }
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)
         canStop = s.canStop
         canRestart = canStop && supervisor.isManagedBySelf
     }
 
-    /// Dismiss the diagnostics sheet when the daemon recovers to a healthy state.
-    /// Called from healthProbeLoop after a successful health check pass during
-    /// recovery (non-.running → .running). Internal for test coverage.
+    /// Dismiss only after actual recovery-ready, independently of HTTP liveness.
+    /// Called from the owned observation loop. Internal for existing callers.
     func dismissDiagnosticsOnRecovery() {
-        if supervisor.state == .running {
+        if supervisor.state == .running && supervisor.startup.ready {
             showDiagnostics = false
         }
     }

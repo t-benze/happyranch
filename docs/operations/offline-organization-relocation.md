@@ -982,7 +982,7 @@ normal discovery/health:
 ```bash
 set -euo pipefail
 scripts/daemon.sh start
-scripts/daemon.sh status     # expect "running (pid …, port …)"
+scripts/daemon.sh status     # process identity + startup serving/recovery line
 happyranch orgs              # the relocated slug must appear with its root
 happyranch web               # verifies GET /api/v1/health is reachable
 ```
@@ -1141,16 +1141,22 @@ selection** — the script never installs uv, never points the daemon at a
 different toolchain or a copied binary, and its failure diagnostics only
 reference commands that actually exist (`command -v uv`, `uv --version`,
 `uv run python --version`, `uv sync`, `uv python install`,
-`scripts/daemon.sh start`). `cmd_stop` / `cmd_status` / `cmd_maintenance`
-are unchanged.
+`scripts/daemon.sh start`). Stop and maintenance retain their original contract;
+status adds the finite startup observation described below.
 
 After launch, `cmd_start` waits for the configured bind host's public
 `GET /api/v1/health` endpoint, not merely the port file. The wait is controlled
 by the positive-integer `HAPPYRANCH_DAEMON_START_TIMEOUT` (default 120 seconds),
 and wildcard binds are probed through loopback. A dead launch fails fast; a
-dead launch or timeout prints the last 20 daemon-log lines. If `curl` is
-unavailable, the script announces its fallback to the fresh `daemon.port`
-file. This readiness wait does not replace the relocation gates above.
+dead launch or timeout prints the last20 daemon-log lines. Curl is required
+before launch; no port-file fallback is accepted. Start/status append the finite
+startup line: only `serving=yes recovery=ready launches=admitted` reports recovery
+readiness. Start may return serving/recovering with launches held; status exit0
+is process alive only. Before dependent discovery/mutations require fresh positive
+recovery readiness AND all relocation/source/native gates above. Held/failure/
+unknown retains original ownership without automatic restart/import/replay.
+See [consumer contract](../agent-guides/web-and-cli.md) for exact finite outputs
+and separately authorized launcher/API/browser observation requirements.
 
 **Daemon-child CLI parity (after start, before any agent work) — accurately
 bounded.** Agent callbacks and skills invoke bare `happyranch` inside

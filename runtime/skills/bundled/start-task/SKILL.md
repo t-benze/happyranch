@@ -188,6 +188,19 @@ unavailable. Historical disabled checkpoints later in this skill retain their
 original-head evidence; this paragraph governs current settings-pinned execution.
 Your genuine current-session report-completion remains the FINAL action.
 
+## Serving versus recovery readiness
+
+Shell start/status output has process identity plus one finite startup line.
+Exit0 or HTTP health alone is not recovery-ready. Only a fresh valid
+`serving=yes recovery=ready launches=admitted` observation reports startup
+readiness, still subject to existing authorization. Held/failed/unknown recovery
+preserves original process/task/SID/operation ownership; never restart or replay
+a callback/write automatically. CLI web can open readable threads while held;
+ordinary startup503 means not accepted, not queued. Complete the genuine current
+session callback through its original transport; this note adds no preflight,
+retry, launch, deployment or permission authority. See maintained
+`docs/agent-guides/web-and-cli.md` for setup/Mac and operator observation limits.
+
 ## Steps
 
 Each attachment storage_key can be claimed by one task only, including within

@@ -97,9 +97,42 @@ _preflight_uv() {
     fi
 }
 
+# Keep configured bind/IPv6 routing identical for start and status.
+_probe_host() {
+    local bind_host="$1" probe_host
+    case "$bind_host" in
+        ""|"*"|"0.0.0.0") probe_host="127.0.0.1" ;;
+        "::"|"[::]") probe_host="[::1]" ;;
+        \[*\]) probe_host="$bind_host" ;;
+        *:*) probe_host="[$bind_host]" ;;
+        *) probe_host="$bind_host" ;;
+    esac
+    echo "$probe_host"
+}
+
+_startup_observation() {
+    local probe_host="$1" port="$2" body observation
+    local unknown='startup serving=unknown recovery=unknown launches=held'
+    if [[ ! "$port" =~ ^[1-9][0-9]*$ ]] || (( ${#port} > 5 )) || (( port > 65535 )); then
+        echo "$unknown"
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1 || ! body=$(curl --max-time 0.2 --max-filesize 16384 -fsS \
+        "http://${probe_host}:${port}/api/v1/health" 2>/dev/null); then
+        echo "$unknown"
+        return 1
+    fi
+    # Script is stdlib-only; bounded body, no credentials or DB probing.
+    if ! observation=$(printf '%s' "$body" | uv run --no-sync --offline --project "$SCRIPT_DIR" python "$SCRIPT_DIR/cli/client/startup.py" 2>/dev/null); then
+        echo "$unknown"
+        return 0  # HTTP was observed; recovery remains unknown.
+    fi
+    echo "$observation"
+}
+
 cmd_start() {
     local start_timeout="${HAPPYRANCH_DAEMON_START_TIMEOUT-120}"
-    local bind_host probe_host bg_pid port deadline
+    local bind_host probe_host bg_pid port deadline observation
 
     if [[ ! "$start_timeout" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: HAPPYRANCH_DAEMON_START_TIMEOUT must be a positive integer (got '$start_timeout')." >&2
@@ -122,13 +155,12 @@ cmd_start() {
         echo "ERROR: could not resolve daemon_bind_host from HappyRanch settings." >&2
         exit 1
     fi
-    case "$bind_host" in
-        ""|"*"|"0.0.0.0") probe_host="127.0.0.1" ;;
-        "::"|"[::]") probe_host="[::1]" ;;
-        \[*\]) probe_host="$bind_host" ;;
-        *:*) probe_host="[$bind_host]" ;;
-        *) probe_host="$bind_host" ;;
-    esac
+    probe_host=$(_probe_host "$bind_host")
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "ERROR: curl is required to observe serving; no daemon was launched. Install curl and use the normal launcher." >&2
+        exit 1
+    fi
 
     # No live PID remains, so an old port file cannot describe this launch.
     rm -f "$PORT_FILE"
@@ -147,21 +179,21 @@ cmd_start() {
         fi
         if [[ -f "$PORT_FILE" ]]; then
             port=$(cat "$PORT_FILE")
-            if command -v curl >/dev/null 2>&1; then
-                if curl --max-time 0.2 -fsS \
-                    "http://${probe_host}:${port}/api/v1/health" >/dev/null 2>&1; then
-                    echo "daemon started (pid $bg_pid, port $port)"
-                    exit 0
+            if observation=$(_startup_observation "$probe_host" "$port"); then
+                if ! kill -0 "$bg_pid" 2>/dev/null; then
+                    continue  # Original child exit owns the next disposition.
                 fi
-            else
-                echo "curl not found; falling back to daemon.port readiness check" >&2
+                if [[ "$(cat "$PORT_FILE" 2>/dev/null)" != "$port" ]] || (( SECONDS >= deadline )); then
+                    break
+                fi
                 echo "daemon started (pid $bg_pid, port $port)"
+                echo "$observation"
                 exit 0
             fi
         fi
         sleep 0.25
     done
-    echo "daemon failed to start within ${start_timeout}s — see $LOG_FILE" >&2
+    echo "daemon serving unobserved within ${start_timeout}s; preserve the original process, do not start again — see $LOG_FILE" >&2
     tail -n 20 "$LOG_FILE" >&2 || true
     exit 1
 }
@@ -216,6 +248,17 @@ cmd_status() {
     fi
     port=$(cat "$PORT_FILE" 2>/dev/null || echo "?")
     echo "running (pid $pid, port $port)"
+    local bind_host probe_host observation
+    if bind_host=$(cd "$SCRIPT_DIR" && uv run --no-sync --offline python -c 'from runtime.config import Settings; print(Settings().daemon_bind_host)' 2>/dev/null); then
+        probe_host=$(_probe_host "$bind_host")
+        observation=$(_startup_observation "$probe_host" "$port") || true
+    else
+        observation='startup serving=unknown recovery=unknown launches=held'
+    fi
+    if ! kill -0 "$pid" 2>/dev/null || [[ "$(cat "$PID_FILE" 2>/dev/null)" != "$pid" ]] || [[ "$(cat "$PORT_FILE" 2>/dev/null)" != "$port" ]]; then
+        observation='startup serving=unknown recovery=unknown launches=held'
+    fi
+    echo "$observation"
 }
 
 cmd_maintenance() {

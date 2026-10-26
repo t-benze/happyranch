@@ -1,5 +1,53 @@
 # Runtime And Configuration
 
+## Launcher consumers — serving and recovery readiness
+
+Shell start/status preserve their process identity line and append exactly one
+`startup serving=YES recovery=STATE launches=DISPOSITION` line (actual values
+are lowercase). `serving` is `yes|no|unknown`; recovery is
+`ready|recovering|recovery_failed|stopping|unknown`; launches is `admitted` ONLY
+for serving=yes + recovery=ready, otherwise `held`. Admitted here reports startup
+readiness, never overrides original authorization/Pause/native controls. Only
+fresh exact Boolean serving/recovery_ready/not-stopping plus state=ready is ready;
+HTTP200/PID/port alone is insufficient. Missing/malformed/old-server data and
+failed probes are unknown. Start returns after observed HTTP serving and may
+report recovery held; its exit0 does not mean fully recovered. Status exit0
+means process alive only. No curl means start refuses before launching; status
+reports unknown. Timeout/failed recovery preserves the original process and
+uncertainty, with no automatic restart or second start/import.
+
+`happyranch web` opens the readable thread UI while recovery is held/failed and
+prints the actual disposition. Offline `doctor` remains an editable-pointer
+check with no daemon. Ordinary startup503 is explicitly not accepted/exit1;
+no queue/retry/replay or global client preflight is added, including callbacks.
+Setup accepts only the complete finite two-line output, authenticates the ORIGINAL
+wrapper/Python pair independently, and requires fresh positive recovery readiness
+before dependent reads/import and Settings handoff, alongside every existing
+source/native/schema/backup/cooperative-window fence. A held attempt keeps its
+receipts and original owner; it authorizes no second start or import.
+
+Mac keeps HTTP/process ownership separate from its typed recovery observation.
+An alive recovering/failed/unknown daemon is never crashed/restarted for readiness;
+2xx can load the original WebView. One cancellable observation window (120s,
+2s spacing, each request/resource <=5s and body <=16KiB) checks original handle/
+PID/port/state/generation after suspension. Stop/exit/replacement invalidates it;
+failed observation clears prior ready. Ready/failure ends the window with labelled
+last observation; expiry/detachment is unknown. Daemon → Check Daemon Status
+explicitly renews it without launching. Labels/diagnostics distinguish liveness,
+serving and recovery; no raw private cause or credential is added.
+
+Source delivery is separate from activation. ROOT13137 retains launcher origin/
+phase/cache instrumentation, isolated OpenAPI/test convergence, finite execution,
+full independent review/same-head QA, coherent PR/guarded merge/exact-main lints.
+All runtime/platform/race cases here are NOT RUN; maker0/3 QA0/3 unchanged;
+under10s remains UNVERIFIED. Before any separately authorized operator restart,
+use exact reviewed source and capture external parent monotonic time BEFORE the
+normal launcher, usable authenticated thread API AND real browser transcript,
+independent pre-ready launch refusal, later ready and separate recovery duration.
+Health, shell exit and bind alone are insufficient. Absent launcher duration stays
+unavailable; this consumer stage supplies no new launch clock or activation.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -2869,10 +2917,11 @@ scheduler, API and CLI behavior do not depend on them. See
 waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `120`, positive
 integers only) for `GET /api/v1/health` to answer on the configured bind host.
 Wildcard bind addresses are probed through their loopback equivalent. If the
-background process exits or readiness times out, startup exits 1 and prints
-the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
-fallback to the fresh `daemon.port` file. Timeout can leave a possible launch
-running; actual-Python lifetime duplicate-start protection remains separate.
+background process exits or serving observation times out, startup exits1 and
+prints the last20 daemon-log lines. Curl is required before launch; no port-file
+fallback establishes serving. The finite startup line above reports recovery
+separately; timeout retains any possible launch. Actual-Python lifetime
+duplicate-start protection remains separate.
 
 After genuine successful Server startup, the serving lifespan's private diagnostic
 coordinator schedules one bounded off-loop pass; startup/readiness never waits
@@ -4066,7 +4115,10 @@ layout/command evidence and original recovery owner; no automatic restart.
 Start prints the uv wrapper PID; daemon.pid contains its Python child PID.
 The coordinator authenticates both against checked process observations, selected
 executables/source/home/custody, the pre-start boundary and direct parent/start
-relationship. Status must report the actual daemon PID and daemon.port value.
+relationship. Status must report the actual daemon PID and daemon.port value,
+followed by the closed startup observation line described above. Recovery-ready
+is freshly required before dependent reads/import/Settings handoff; held/failed/
+unknown preserves this original attempt without a second start/import.
 Repeated pair/file observations bracket status and serving/import checks; absent,
 unrelated, reused or moving identities hold without restart. The saved
 receipts/started-processes.json contains only closed identity evidence.

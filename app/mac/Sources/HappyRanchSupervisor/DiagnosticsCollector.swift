@@ -25,6 +25,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     public private(set) var daemonLogTailContent: String?
     public private(set) var daemonStderrContent: String?
     public private(set) var daemonStdoutContent: String?
+    public private(set) var startupObservation: StartupObservation = .unknown
     public private(set) var lastHealthProbeSuccess: Bool?
     public private(set) var lastHealthProbeLatencyMs: Int?
     public private(set) var lastHealthProbeError: String?
@@ -67,6 +68,10 @@ public final class DiagnosticsCollector: @unchecked Sendable {
 
     public func recordDaemonLogTail(_ log: String) {
         daemonLogTailContent = DiagnosticsRedactor.redact(log)
+    }
+
+    public func recordStartupObservation(_ observation: StartupObservation) {
+        startupObservation = observation
     }
 
     public func recordHealthProbe(success: Bool, latencyMs: Int, errorMessage: String?) {
@@ -180,6 +185,9 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         }
         logLinesLock.unlock()
 
+        bundle["startup_recovery"] = startupObservation.recovery.rawValue
+        bundle["startup_recovery_label"] = startupObservation.label
+        bundle["startup_serving"] = startupObservation.serving.map { $0 ? "yes" : "no" } ?? "unknown"
         if let success = lastHealthProbeSuccess {
             bundle["last_health_probe_success"] = success
         }

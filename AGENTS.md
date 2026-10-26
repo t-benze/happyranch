@@ -36,10 +36,26 @@ actual matching serving AND accepted ready epoch, without stop/close/failure or
 missing owner; otherwise503 includes truthful startup disposition and guidance.
 No raw cause/path/native handle/task collection is public. Owner-to-serving time
 is not launcher duration; absent launcher evidence stays null. Ordinary TS API
-mapping is additive; absent startup on older servers means unknown. Launcher/
-consumer instrumentation, finite behavioral verification and isolated OpenAPI
+mapping is additive; absent startup on older servers means unknown. Remaining launcher/phase/cache
+instrumentation, finite behavioral verification and isolated OpenAPI
 snapshot synchronization remain root-owned. This is source only: runtime/proof
 NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED; no activation follows.
+
+Launcher consumer source (TASK13274): shell start/status add one closed startup
+line after original PID/port identity; only serving=yes/recovery=ready admits
+startup, all missing/malformed/failed/stopping observations hold. Curl is required
+before start; status exit0 is process liveness only. CLI web still opens readable
+threads while held and prints disposition; startup503s are not accepted, never
+queued/replayed. Offline doctor/current callback transport are unchanged. Setup
+parses the complete finite output, keeps original wrapper/daemon custody and
+requires fresh recovery-ready alongside all original source/native/backup/import
+fences. Mac retains separate process and typed recovery state, one cancellable
+bounded120s observation window with post-await original owner/port checks and
+explicit read-only status renewal; alive held recovery keeps readable WebView,
+never triggers automatic restart. Labels/diagnostics show recovery separately.
+See docs/agent-guides/web-and-cli.md for output/observation contract. Runtime/Mac
+execution NOT RUN; root still owns instrumentation/test/OpenAPI convergence,
+independent final gates and separately authorized operator acceptance.
 
 Web recovery source (TASK13273): the app shell owns ONE shared `['health']`
 observation (2s while unavailable, 30s once ready); `web/src/lib/startup.ts`

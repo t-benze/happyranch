@@ -13,6 +13,51 @@ AND accepted recovery-ready epoch without stop/closed/failed/unbound ownership;
 otherwise503 reports unavailable with truthful startup/guidance. Liveness200
 alone grants neither readiness, setup acceptance nor launch permission.
 
+Shell start/status preserve their process identity line and append exactly one
+`startup serving=YES recovery=STATE launches=DISPOSITION` line (actual values
+are lowercase). `serving` is `yes|no|unknown`; recovery is
+`ready|recovering|recovery_failed|stopping|unknown`; launches is `admitted` ONLY
+for serving=yes + recovery=ready, otherwise `held`. Admitted here reports startup
+readiness, never overrides original authorization/Pause/native controls. Only
+fresh exact Boolean serving/recovery_ready/not-stopping plus state=ready is ready;
+HTTP200/PID/port alone is insufficient. Missing/malformed/old-server data and
+failed probes are unknown. Start returns after observed HTTP serving and may
+report recovery held; its exit0 does not mean fully recovered. Status exit0
+means process alive only. No curl means start refuses before launching; status
+reports unknown. Timeout/failed recovery preserves the original process and
+uncertainty, with no automatic restart or second start/import.
+
+`happyranch web` opens the readable thread UI while recovery is held/failed and
+prints the actual disposition. Offline `doctor` remains an editable-pointer
+check with no daemon. Ordinary startup503 is explicitly not accepted/exit1;
+no queue/retry/replay or global client preflight is added, including callbacks.
+Setup accepts only the complete finite two-line output, authenticates the ORIGINAL
+wrapper/Python pair independently, and requires fresh positive recovery readiness
+before dependent reads/import and Settings handoff, alongside every existing
+source/native/schema/backup/cooperative-window fence. A held attempt keeps its
+receipts and original owner; it authorizes no second start or import.
+
+Mac keeps HTTP/process ownership separate from its typed recovery observation.
+An alive recovering/failed/unknown daemon is never crashed/restarted for readiness;
+2xx can load the original WebView. One cancellable observation window (120s,
+2s spacing, each request/resource <=5s and body <=16KiB) checks original handle/
+PID/port/state/generation after suspension. Stop/exit/replacement invalidates it;
+failed observation clears prior ready. Ready/failure ends the window with labelled
+last observation; expiry/detachment is unknown. Daemon → Check Daemon Status
+explicitly renews it without launching. Labels/diagnostics distinguish liveness,
+serving and recovery; no raw private cause or credential is added.
+
+Source delivery is separate from activation. ROOT13137 retains launcher origin/
+phase/cache instrumentation, isolated OpenAPI/test convergence, finite execution,
+full independent review/same-head QA, coherent PR/guarded merge/exact-main lints.
+All runtime/platform/race cases here are NOT RUN; maker0/3 QA0/3 unchanged;
+under10s remains UNVERIFIED. Before any separately authorized operator restart,
+use exact reviewed source and capture external parent monotonic time BEFORE the
+normal launcher, usable authenticated thread API AND real browser transcript,
+independent pre-ready launch refusal, later ready and separate recovery duration.
+Health, shell exit and bind alone are insufficient. Absent launcher duration stays
+unavailable; this consumer stage supplies no new launch clock or activation.
+
 The ordinary health API namespace exports getHealthReady and matching types;
 503 follows the ordinary ApiError boundary, retaining its response in detail.
 The mapping itself adds no polling, retry/replay or launcher behavior.
@@ -51,7 +96,7 @@ of canonical DB fallback. Explicit busy/deadline/budget/unavailable/primary-clos
 failures preserve existing authenticated404/pagination/cursor/malformed errors.
 Captured actual route/static identities govern pre-body admission; query strings,
 encoded raw targets and slash redirects do not add authority. Original bearer,
-OrgDep and loopback bootstrap rules remain. Root owns UI/launcher consumers,
+OrgDep and loopback bootstrap rules remain. Root owns remaining instrumentation and
 finite API/browser/resource proof and isolated canonical OpenAPI synchronization;
 this source handoff changes no test/assertion/snapshot and proves no behavior.
 

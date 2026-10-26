@@ -21,7 +21,15 @@ def _ok(r) -> bool:
     except ValueError:
         pass
     code = detail.get("code")
-    if code == "no_active_runtime":
+    if r.status_code == 503 and isinstance(code, str) and (
+        code in {"daemon_recovering", "daemon_recovery_failed", "daemon_stopped"}
+        or code.startswith("startup_")
+    ):
+        print("Error (503): request not accepted; daemon recovery is unavailable. "
+              "Read threads or check daemon status; preserve the original input/operation. "
+              "This response is not an acceptance or queue acknowledgement; "
+              "reconcile any prior uncertain send. Nothing is automatically retried.")
+    elif code == "no_active_runtime":
         print("No active runtime. Run `happyranch use <runtime-path>` first (see `happyranch init`).")
     elif code == "active_tasks_in_flight":
         print(f"Cannot proceed: tasks still in flight ({detail.get('task_ids')}).")

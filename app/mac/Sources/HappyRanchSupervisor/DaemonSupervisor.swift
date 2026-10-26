@@ -41,6 +41,13 @@ public final class DaemonSupervisor: @unchecked Sendable {
     /// Start command used to launch the daemon.
     public private(set) var startCommand: String?
 
+    /// Latest startup observation; never changes process or stop ownership.
+    public private(set) var startup: StartupObservation = .unknown
+
+    public func onStartupObservation(_ observation: StartupObservation) {
+        startup = observation
+    }
+
     // MARK: - Init
 
     public init() {}
@@ -50,6 +57,7 @@ public final class DaemonSupervisor: @unchecked Sendable {
     /// Configure the supervisor with a daemon home directory.
     /// Moves from `.notConfigured` to `.stopped`.
     public func configure(homeDir: String) {
+        startup = .unknown
         self.homeDir = homeDir
         transition(to: .stopped)
     }
@@ -112,6 +120,7 @@ public final class DaemonSupervisor: @unchecked Sendable {
 
     /// Called when an external (not app-launched) daemon is detected.
     public func onExternalDaemonDetected(pid: Int32, port: UInt16) {
+        startup = .unknown
         observedPid = pid
         observedPort = port
         isManagedBySelf = false
@@ -141,6 +150,7 @@ public final class DaemonSupervisor: @unchecked Sendable {
 
     /// Called when a health check against the daemon fails.
     public func onHealthCheckFailed() {
+        startup = .unknown
         switch state {
         case .running:
             transition(to: .unhealthy)
@@ -156,6 +166,7 @@ public final class DaemonSupervisor: @unchecked Sendable {
 
     /// Called when the daemon process exits.
     public func onProcessExited(exitCode: Int32, signal: Int32?) {
+        startup = .unknown
         lastExitCode = exitCode
         lastExitSignal = signal
 
@@ -184,6 +195,7 @@ public final class DaemonSupervisor: @unchecked Sendable {
 
     /// Called when a PID file exists but the referenced process is dead.
     public func onStalePidDetected(pid: Int32) {
+        startup = .unknown
         observedPid = pid
         transition(to: .stalePid)
     }
@@ -192,12 +204,14 @@ public final class DaemonSupervisor: @unchecked Sendable {
 
     /// Forces a specific state (for testing and escalation).
     public func forceState(_ newState: DaemonState) {
+        startup = .unknown
         state = newState
     }
 
     // MARK: - Private helpers
 
     private func transition(to newState: DaemonState) {
+        if newState != state { startup = .unknown }
         state = newState
     }
 }

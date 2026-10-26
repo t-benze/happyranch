@@ -97,15 +97,21 @@ struct DiagnosticsView: View {
                         }
                     }
 
-                    GroupBox("Health Probe") {
+                    GroupBox("HTTP Liveness and Recovery (last observation)") {
                         if let success = bundle["last_health_probe_success"] as? Bool {
                             HStack {
                                 Text("Result:")
                                 Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
                                     .foregroundColor(success ? .green : .red)
-                                Text(success ? "Success" : "Failed")
+                                Text(success ? "HTTP reachable" : "HTTP unavailable")
                             }
                             .font(.caption)
+                        }
+                        if let recovery = bundle["startup_recovery_label"] as? String {
+                            infoRow("Recovery", recovery)
+                        }
+                        if let serving = bundle["startup_serving"] as? String {
+                            infoRow("Serving", serving)
                         }
                         if let latency = bundle["last_health_probe_latency_ms"] {
                             infoRow("Latency", "\(latency) ms")

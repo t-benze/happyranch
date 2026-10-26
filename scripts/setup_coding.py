@@ -1334,7 +1334,9 @@ class Coordinator:
             # custody. Even a known stdout must not cause raw stderr to leak.
             result['original_log'] = str(self.home / 'daemon.log')
             safe = stdout in (b'daemon stopped\n', b'not running\n', b'daemon not running\n', b'daemon force-killed\n')
-            safe = safe or re.fullmatch(rb'(daemon started|running) \(pid [1-9][0-9]*, port [1-9][0-9]*\)\n', stdout) is not None
+            from cli.client.startup import parse_launcher_output
+            text = stdout.decode('utf8', errors='replace')
+            safe = safe or any(parse_launcher_output(text, started=started) is not None for started in (True, False))
             if complete and safe:
                 result['stdout'] = stdout.decode('utf8')
         elif private and complete:
@@ -1528,6 +1530,7 @@ class Coordinator:
             health_body = health.json() if health.status_code == 200 else None
             if not isinstance(health_body, dict) or health_body.get('active_runtime') != str(self.runtime):
                 raise Hold('original serving runtime observation unavailable/mismatched')
+            self.require_recovery_ready(health_body)
             native = health_body.get('host_sessions')
             if not isinstance(native, dict) or not isinstance(native.get('backend'), dict):
                 raise Hold('native serving containers unavailable', category='serving_observation_unavailable')
@@ -2281,6 +2284,25 @@ class Coordinator:
         if self.started_processes(self.started['wrapper']['pid'], self.started['port']) != self.started:
             raise Hold('original started pair changed; original lifecycle owner must reconcile; no import/restart')
 
+    @staticmethod
+    def require_recovery_ready(body):
+        from cli.client.startup import startup_observation
+        observation = startup_observation(body)
+        if not observation.ready:
+            raise Hold(observation.description() + ' Original setup attempt remains held; no second start/import.',
+                       category='serving_observation_unavailable')
+
+    def current_recovery_ready(self):
+        from cli.client.client import OpcClient
+        with OpcClient.from_env() as client:
+            if hasattr(self, 'started') and client.base_url != f'http://127.0.0.1:{self.started["port"]}':
+                raise Hold('readiness port differs from authenticated original daemon; preserve attempt')
+            response = client.get('/api/v1/health')
+            body = response.json() if response.status_code == 200 else None
+            if not isinstance(body, dict) or body.get('active_runtime') != str(self.runtime):
+                raise Hold('current original serving runtime unavailable; preserve attempt, no automatic restart/import')
+            self.require_recovery_ready(body)
+
     def serving(self):
         """Use existing observations; missing compatibility coverage holds import."""
         from cli.client.client import OpcClient
@@ -2293,8 +2315,10 @@ class Coordinator:
             if hasattr(self, 'started') and client.base_url != f'http://127.0.0.1:{self.started["port"]}':
                 raise Hold('serving client port differs from authenticated daemon; import held')
             health = client.get('/api/v1/health')
-            if health.status_code != 200 or health.json().get('active_runtime') != str(self.runtime):
+            health_body = health.json() if health.status_code == 200 else None
+            if not isinstance(health_body, dict) or health_body.get('active_runtime') != str(self.runtime):
                 raise Hold('serving runtime does not match selected registry')
+            self.require_recovery_ready(health_body)
             for org in self.frozen['orgs']:
                 response = client.get(f'/api/v1/orgs/{quote(org["org"], safe="")}/audit', params={'action': 'memory_collection_seal', 'limit': 1})
                 if response.status_code != 200:
@@ -2352,6 +2376,7 @@ class Coordinator:
         from runtime.workflows.coding_release_import import ImportReceipt
         self.diagnostic.enter('import-original-readback')
         self.revalidate()
+        self.current_recovery_ready()
         show = [*self.cli, 'workflows', 'coding', 'release-import-show', '--org', self.args.org, '--json']
         code, out, err = self.command(show, accept=(0, 1), private=True)
         candidates = {self.import_file, self.home / f'coding-{self.args.org}-v1-import.json'}
@@ -2396,6 +2421,7 @@ class Coordinator:
         self.diagnostic.accepted('import-original-intent')
         self.diagnostic.enter('import-presend-revalidation')
         self.revalidate()
+        self.current_recovery_ready()
         if read_file(self.import_file, 1024) != raw:
             raise Hold('original import bytes changed before send; preserve original owner, no POST')
         # Exactly one invocation; every exception leaves original file/intent.
@@ -2442,10 +2468,11 @@ class Coordinator:
         self.start_floor = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf('SC_CLK_TCK'))
         self.diagnostic.enter('start-command')
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'start'], private=True, effect='start')
-        started = re.fullmatch(r'daemon started \(pid ([1-9][0-9]*), port ([1-9][0-9]*)\)\n', out)
+        from cli.client.startup import parse_launcher_output
+        started = parse_launcher_output(out, started=True)
         if started is None or err:
             raise Hold('original start returned an unexpected result; preserve original host owner, no automatic restart/import')
-        wrapper_pid, port = (int(x) for x in started.groups())
+        wrapper_pid, port, _start_observation = started
         self.diagnostic.enter('start-pair-observation')
         self.diagnostic.effect('start-pair', 'observation-attempted')
         self.started = self.started_processes(wrapper_pid, port)
@@ -2458,16 +2485,21 @@ class Coordinator:
         code, out, err = self.command([self.tools['bash']['path'], 'scripts/daemon.sh', 'status'], private=True)
         self.revalidate_start()
         pid = self.started['daemon']['pid']
-        if out != f'running (pid {pid}, port {port})\n' or err:
+        status = parse_launcher_output(out, started=False)
+        if status is None or status[:2] != (pid, port) or err:
             raise Hold('original new status mismatches actual daemon PID/port; import held')
         self.diagnostic.effect('start', 'accepted-original-pair-and-status-serving-pending')
         self.diagnostic.accepted('start-pair-status')
+        # Pair custody is recorded even when this startup observation is held.
+        # A fresh current observation below can see a genuine later ready state.
+        self.current_recovery_ready()
         self.serving()
         print('7. Checking original human release import')
         self.import_release()
         self.revalidate()
         self.require_backup()
         self.diagnostic.enter('settings-disabled-handoff')
+        self.current_recovery_ready()
         port = read_file(self.home / 'daemon.port', 64).decode().strip()
         print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding')
         print('Adopt current metadata; select repositories and sha1/sha256 formats; choose four distinct eligible org agents across teams and an eligible final manager. Leave Admission Disabled. Save and reopen; uncertain saves use Check original save.')
