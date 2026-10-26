@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import re
@@ -1489,17 +1490,33 @@ class Browser:
     def open_threads_context(self, port: int) -> None:
         self.thread_base = f"http://127.0.0.1:{port}"
         self.thread_events: list[dict] = []
+        self.thread_streams = set()
+        self.thread_requests = {}
+        self.thread_responses = {}
+        self.thread_originals = []
+        self.thread_document = None
+        self.thread_pending_documents = set()
         self.thread_context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        # F1: observe a genuinely returned context before any later acquisition.
+        def context_closed(_context):
+            self.thread_events.append(dict(event='context-close', at=time.monotonic()))
+        self.thread_context.on('close', context_closed)
         self.controller.remaining()
         self.thread_page = self.thread_context.new_page()
         self.controller.remaining()
         page = self.thread_page
         page.set_default_timeout(self.controller.remaining(10) * 1000)
-        requests = {}
-        self.thread_streams = set()
+        requests = self.thread_requests
         def request(req):
+            self.controller.browser_relay.inventory_fact(req.url)
             observed = dict(event='request', request_id=len(requests), url=req.url, method=req.method,
-                            resource_type=req.resource_type, navigation=req.is_navigation_request(), at=time.monotonic())
+                            resource_type=req.resource_type, navigation=req.is_navigation_request(),
+                            main_frame=req.frame == page.main_frame,
+                            unredirected=req.redirected_from is None and req.redirected_to is None, at=time.monotonic())
+            observed.update(document_request_id=self.thread_document if req.frame == page.main_frame and req.redirected_from is None and req.redirected_to is None else None,
+                            pending_documents=sorted(self.thread_pending_documents))
+            if req.is_navigation_request() and req.frame == page.main_frame:
+                self.thread_pending_documents.add(observed['request_id'])
             requests[req] = observed
             self.thread_events.append(observed)
             if req.url.startswith(self.thread_base + "/"):
@@ -1514,6 +1531,7 @@ class Browser:
                 self.thread_events.append(dict(event="origin-bypass", url=req.url, method=req.method,
                                                resource_type=req.resource_type, at=time.monotonic()))
         def failed(req):
+            self.controller.browser_relay.inventory_fact(req.url)
             observed = requests[req]
             self.thread_streams.discard(observed['request_id'])
             event = dict(event='request-failed', request_id=observed['request_id'], url=req.url,
@@ -1523,28 +1541,29 @@ class Browser:
                 self.controller.browser_relay.browser_terminal(event)
                 self.controller.browser_relay.browser_abort(dict(event, target=req.url[len(self.thread_base):]))
         def response(res):
+            self.controller.browser_relay.inventory_fact(res.url)
             if (res.headers.get('content-type') or '').split(';')[0] == 'text/event-stream':
                 observed = requests[res.request]
                 self.thread_streams.add(observed['request_id'])
                 self.thread_events.append(dict(event='stream-response', request_id=observed['request_id'],
                                                url=res.url, method=res.request.method, status=res.status,
                                                at=time.monotonic()))
-            if res.request.method == "POST" and res.url == self.thread_base + "/api/v1/orgs/alpha/threads":
-                record = dict(event="compose-response", url=res.url, status=res.status, at=time.monotonic())
+            required = self.controller.browser_relay.required_kind(
+                res.request.method, res.url[len(self.thread_base):] if res.url.startswith(self.thread_base + '/') else '',
+                res.request.method == 'POST')
+            if required is not None:
+                observed = requests[res.request]
+                response_id = len(self.thread_responses)
+                self.thread_responses[res] = dict(request_id=observed['request_id'], response_id=response_id)
+                record = dict(event='compose-response' if required == 'compose' else 'thread-response',
+                              url=res.url, method=res.request.method, status=res.status,
+                              request_id=observed['request_id'], response_id=response_id,
+                              browser_copy='UNAVAILABLE', body=None, sha256=None, bytes=None, at=time.monotonic())
                 self.thread_events.append(record)
-                self.controller.remaining()
-                raw = res.body()
-                self.controller.remaining()
-                record.update(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), body=res.json())
-            elif res.request.method == "GET" and re.fullmatch(re.escape(self.thread_base) + r"/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?", res.url.split("?")[0]):
-                record = dict(event="thread-response", url=res.url, method=res.request.method, status=res.status, at=time.monotonic())
-                self.thread_events.append(record)
-                self.controller.remaining()
-                record["body"] = res.json()
-                self.controller.remaining()
         page.on("request", request)
         page.on("requestfailed", failed)
         def finished(req):
+            self.controller.browser_relay.inventory_fact(req.url)
             observed = requests[req]
             self.thread_streams.discard(observed['request_id'])
             event = dict(event='request-finished', request_id=observed['request_id'],
@@ -1554,12 +1573,10 @@ class Browser:
                 self.controller.browser_relay.browser_terminal(event)
         page.on('requestfinished', finished)
         page.on("response", response)
-        def context_closed(_context):
-            self.thread_events.append(dict(event='context-close', at=time.monotonic()))
-        self.thread_context.on('close', context_closed)
         lineage = None
         def navigated(payload):
             nonlocal lineage
+            self.controller.browser_relay.inventory_fact('navigation')
             require(isinstance(payload, dict) and set(payload) <= {'url', 'name', 'newDocument', 'error'}
                     and isinstance(payload.get('url'), str) and 'error' not in payload, 'E05 pinned native navigation payload')
             new = 'newDocument' in payload
@@ -1573,12 +1590,17 @@ class Browser:
                         and native.url == payload['url'] and native.redirected_from is None and native.redirected_to is None,
                         'E05 original unredirected main-frame document')
                 lineage = issued[0]['request_id']
+                self.thread_document = lineage
+                self.thread_pending_documents.discard(lineage)
             require(lineage is not None, 'E05 navigation retains original document lineage')
             self.thread_events.append(dict(event='navigation', url=payload['url'], new_document=new,
                                            document_request_id=lineage, at=time.monotonic()))
         self.thread_navigation_listener = page.main_frame._impl_obj._channel, 'navigated', navigated
         self.thread_navigation_listener[0].on('navigated', navigated)
-        page.on("pageerror", lambda _error: self.thread_events.append(dict(event="pageerror", at=time.monotonic())))
+        def pageerror(_error):
+            self.controller.browser_relay.inventory_fact('pageerror')
+            self.thread_events.append(dict(event='pageerror', at=time.monotonic()))
+        page.on('pageerror', pageerror)
         page.goto(self.thread_base + "/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
         self.controller.remaining()
 
@@ -1636,7 +1658,7 @@ class Browser:
 
     def thread_snapshot(self, name: str) -> list[dict]:
         self.thread_events.append(dict(event="snapshot", name=name, at=time.monotonic()))
-        return list(self.thread_events)
+        return copy.deepcopy(self.thread_events)
 
     def thread_created(self, thread: str) -> dict:
         page = self.thread_page
@@ -1685,9 +1707,21 @@ class Browser:
         name = f"e05-{label}.png"
         page.screenshot(path=str(self.controller.root / "raw" / name), full_page=True, timeout=self.controller.remaining(10)*1000)
         self.controller.remaining()
-        result = dict(thread=thread, body=received.value.json(), text=main.inner_text(timeout=self.controller.remaining(10)*1000), screenshot=name,
+        # These exact Response objects supply native identity only. Their original
+        # server entities are separately attributed; no dependency body/json call.
+        detail_response, messages_response = received.value, messages.value
+        text = main.inner_text(timeout=self.controller.remaining(10)*1000)
+        original = self._thread_original(detail_response)
+        messages_original = self._thread_original(messages_response)
+        result = dict(thread=thread, body=None, original_body=original.get('body'),
+                      original_ref=original, messages_original_ref=messages_original,
+                      request_id=self.thread_responses[detail_response]['request_id'],
+                      response_id=self.thread_responses[detail_response]['response_id'],
+                      messages_request_id=self.thread_responses[messages_response]['request_id'],
+                      messages_response_id=self.thread_responses[messages_response]['response_id'],
+                      browser_copy='UNAVAILABLE', text=text, screenshot=name,
                       url=page.url, response_url=received.value.url, method=received.value.request.method,
-                      status=received.value.status, messages_body=messages.value.json(), messages_url=messages.value.url,
+                      status=received.value.status, messages_body=None, original_messages_body=messages_original.get('body'), messages_url=messages.value.url,
                       messages_status=messages.value.status, messages_method=messages.value.request.method,
                       rendered_messages=main.locator("article").evaluate_all("""articles => articles.map(article => ({
                         header: article.querySelector('header')?.innerText,
@@ -1697,6 +1731,23 @@ class Browser:
         self.controller.remaining()
         self.thread_events.append(dict(event="thread-view", **result))
         return result
+
+    def _thread_original(self, response) -> dict:
+        ids = self.thread_responses[response]
+        try:
+            original = self.controller.browser_relay.original_for(ids['request_id'])
+        except (ValueError, UnicodeError) as exc:
+            original = dict(origin='relay-original', request_id=ids['request_id'], relay_id=None,
+                            body=None, bytes=None, sha256=None, unavailable=(
+                                'invalid-utf8' if isinstance(exc,UnicodeError) else
+                                'invalid-json' if isinstance(exc,json.JSONDecodeError) else
+                                {'E05 original Request identity unavailable':'request-identity',
+                                 'E05 original complete-window/document join ambiguous':'window-or-document',
+                                 'E05 complete original JSON unavailable':'incomplete-original',
+                                 'E05 identity UTF8 JSON original required':'encoding-or-content-type',
+                                 'E05 parsed copy capacity refused':'capacity-refusal',
+                                 'E05 original public-field selection refused':'unsafe-publication'}.get(str(exc),'invalid-json')))
+        return dict(original, response_id=ids['response_id'])
 
     def close_threads_context(self) -> None:
         if hasattr(self, "thread_context"):
@@ -1798,13 +1849,12 @@ class Browser:
                     self.thread_events.append(dict(event='context-detach-error', error=type(exc).__name__, at=time.monotonic()))
                     if primary is None:
                         primary = exc
-                try:
-                    self.controller._atomic_json(self.controller.root / "raw/e05-browser-events.json", list(self.thread_events))
-                except Exception as exc:
-                    if primary is None:
-                        primary = exc
-                    else:
-                        self.thread_events.append(dict(event='context-export-error', error=type(exc).__name__, at=time.monotonic()))
+                # D2: final publication belongs to Controller's existing
+                # prepared-redaction exporter, never this unprepared close path.
+                if primary is None:
+                    for response in self.thread_responses:
+                        original = self._thread_original(response)
+                        self.thread_originals.append(original)
             if primary is not None:
                 raise primary
 

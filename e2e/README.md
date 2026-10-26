@@ -1,5 +1,180 @@
 # Daily product E2E health
 
+## Current bounded originals and E05/E07 outcomes — TASK13118 / ROOT13112
+
+Founder THR291seq495 and manager step3 acceptance select test-only BrowserRelay
+original capture plus safe continuation on the SAME runtime. Playwright/Chromium,
+the shared native bridge, product/auth/schema/permissions, dependencies and CI
+triggers are unchanged. The compound E07 pin is
+`af66320ba7059a27e9b7a8a990fe3f544f043dcb687a4ca015add45df1ceb70d`
+(SHA256 of the accepted TASK13113 design, controlling step2 disposition and case
+delta concatenated in that order). Original design pins/receipts remain historical.
+
+The sole existing worker captures the already executing response, its status and
+ordered parsed headers, or its first original error. It records complete, empty,
+bodyless, partial, error and pending separately; capture refusal is not an invented
+I/O error. One request remains one request. GET raw receives stay at most65536;
+the buffered reader explicitly uses8192. Selected compose reads at most remaining
+admitted capacity plus one detection byte before proof/hold. Required originals
+have1MiB entity,64KiB headers,8MiB aggregate,512 members and16384 fact refusal bounds.
+Forwarded ranges retain actual write/flush prefixes and digests. Neither a complete
+original nor a returned flush proves browser receipt, rendering or native closure.
+
+Every automatic/detail/messages/revisit response is inventoried. Native views
+retain exact Request/Response objects/IDs; original joins are recomputed over the
+complete causal window, with exact method/query/origin and issuing document.
+Ambiguous concurrent targets, pending document transitions, redirects, missing
+terminals, late members and inconsistent identities refuse; no latest-URL fallback,
+retry, replacement fetch or forced serialization is used. Held/released snapshots
+are deep immutable prefixes. F1 inventories precede context acquisition and its
+real close listener attaches immediately; D2 leaves publication with the existing
+prepared-redaction exporter. Notifier identity/latch and original owner cancellation
+rules remain. Safe exported copies explicitly distinguish unchanged/sanitized/
+unavailable UTF8. Sanitized copies cannot satisfy original byte equality.
+
+**Known open item:** independent browser body/hash/length/full JSON projection
+proof is UNAVAILABLE in this selected observation design. Healthy E05/full56
+remains an unmet strict specification. Relay/public/SQL/DOM values never fill a
+browser-input slot. All old compose/detail/messages/has_more/created_at/system
+payload/rendered-response obligations remain mandatory; the reader preserves the
+full original comparison for a genuine measured browser input. Other available
+original/native/DOM/public/durable assertions still run. Missing evidence stays
+UNKNOWN; actual failed assertions stay FAIL. E05 cannot report pass here.
+
+The complete E07 reader attributes recorded errors using the immutable original
+`e07-prefix.json`, the E05 catch's actual first-cause reference and ordinary/
+primary-object facts, matching final group/case exports, and ordered finite
+catch/cleanup/admission/group intervals. A `controller-action` label, producer
+group state or timestamp alone cannot qualify an earlier error. The producer
+also requires that original E05 catch before allocating P/W. Missing, foreign,
+conflicting or ambiguous attribution refuses; every original failure remains.
+
+Finalization records direct `Controller.close` attempts with their actual failure
+references, same-exception identity, main-thread/ordinary facts and intervals
+after complete E07. Only a failed `daemon-log-close` is independently unrelated:
+it owns the controller log descriptor, not E07 content or resource/export proof.
+Its nested bounded record and outer operation record must name the same original
+exception. Other final errors remain blocking without proved independence;
+browser/observer/resource/export errors never acquire this exclusion. Complete
+safe E07 bytes, all original source/ownership/closure checks and its scoped case
+join are still required. Health retains the entire recorded failure list and
+stays FAIL/nonzero even when E07 earns scoped acceptance. Missing or corrupted
+required exports cannot be supplied by an otherwise unrelated final failure.
+
+The existing aggregate controls exercise this shipping attribution predicate
+with healthy, earlier failed/unknown E05 and final-log inputs, plus source/ref/
+chronology/observer/resource/export counterexamples. This is serialized reader
+evidence only. Complete native E07 admission/content/finalization/export proof
+remains NOT RUN / PROOF NOT RUN; no complete healthy native receipt is fabricated.
+
+The E05 first exception is recorded before its own cleanup. A later E07 result or
+final cleanup/export error appends without replacing that original object/traceback
+or erasing separately complete safe scoped evidence. E07 admission is the entire
+positive state/action/owner/resource/source/boot/receipt/export/time conjunction,
+not a failure-class shortcut. Missing/partial/unclassified work, blocked I/O,
+poison/watchdog/interruption, expired E05 cleanup end, failed forwarding/redaction/
+export or less than a full remaining50s of ORIGINAL480 work REFUSES before P/W.
+There is no fresh runtime, boot, deadline renewal, fabricated53 outcomes or36 starts.
+
+| Genuine settled operation | Prefix starts / current host released | Global task/result prefix | Final starts / global tasks/results |
+| --- | --- | --- | --- |
+| E04 before E05 |29 /17 |20/29 |31 /22/30 |
+| C |32 /20 |20/29 |34 /22/30 |
+| N |33 /21 |20/29 |35 /22/30 |
+| D |36 /24 |21/30 |38 /23/31 |
+
+These are strict finite source-owned memberships and full content, not count-only
+admission. Each admitted E07 suffix is exactly TWO actual P/W starts, FOUR original
+commands and ONE real P result, with complete old rows/files/public state retained.
+Both actual boots/current index1, source/interpreter/root/D-L-P registry, ordered
+receipt tails, positively closed providers/children/private files and pinned
+containment groups remain mandatory. Healthy53/36/38/23/31/B24→26 stays the original
+strict specification. E04 independently owns its29-provider/seven-job prefix; E05
+owns its C/N/D operations; E07 owns its full raw content and exact suffix.
+
+Scenario, observations and result carry closed E05/E07 producer groups and actual
+admission/refusal. Aggregate readers execute separately; complete own content plus
+scoped original completion/source joins are required for scoped acceptance. Sparse
+manifest indices are already supported by the unchanged completed reader. The
+strict completed.join_results/full56 gate is unchanged. Health enumerates all56
+EACH3.12/3.14 and stays FAIL/nonzero for any failed/missing/refused required case,
+artifact/provenance/diagnostic/export/cleanup result. Missing unrelated E05 PNGs
+cannot suppress otherwise complete E07 inspection. No Boolean or marker earns PASS.
+
+The TASK13120 source correction reuses the complete body-independent native
+GET-owner/stop and selected C/N/D operation readers for E07 admission. Ten exact
+resources, two registrations, original generations, parser/read checkpoints,
+received/delivered/buffered counters, original command/instruction/argv/wire/source
+witnesses, derived child/private-file membership and the genuine D INTEGER
+result/lifecycle/public projections are required even when E05 lacks browser-copy
+input. No GET owner or empty resource list is optional. Producer admission checks
+the complete native Request census, required Responses and relay/document joins,
+including safety events, before P/W allocation.
+
+TASK13122 corrects three independent reader boundaries. Selected C/N/D command
+`python` is an absolute executable path, bound to `executable_manifest.python`;
+result `python` remains the independently measured3.12/3.14 minor label. Existing
+source/manifest/argv/callback/CLI-child joins and the actual cell version guard
+remain mandatory. Cleanup must complete within its unchanged original end and
+no later than admission; unused future allowance need not elapse. Original
+checkpoint/cleanup/admission chronology and full50s work reserve remain required.
+
+The native Request ledger now explicitly records main-frame and unredirected
+observations from the original Request object. Producer admission and the shared
+independent originals reader replay Requests and native main-frame commits in
+original order, validating pending snapshots and same-document lineage. A future
+or superseded document cannot own an earlier required Request; missing frame or
+redirect provenance refuses rather than inferring it. Compose and thread Responses
+both require their exact original Request <= Response <= successful terminal
+interval and ledger order. Full E05's navigation sequence/initialization/hold/race
+assertions remain separately mandatory. Existing full-window serialized controls
+include a prior real commit in their reader grammar, coherent negative inventories,
+future/superseded/nonGET/missing/mismatched/same-document/pending/frame/redirect
+counterexamples and both Response intervals. They establish reader sensitivity
+only; native producer/Chromium behavior is NOT RUN. Complete selected C/N/D and
+cleanup/admission fault proof remain PROOF NOT RUN without a genuine runnable
+prefix; empty pre-E05 controls do not cover those branches.
+
+A native read that returns a bounded prefix and then fails framing validation
+retains that prefix once and its first error/length/prefix digest. Native
+IncompleteRead.partial is used only when the read itself did not return. Such a
+digest describes retained incomplete bytes; it never seals, parses or forwards
+them as a valid response. Capture reserves member/forwarding/refusal metadata
+before retention. One constant-size sticky overflow makes membership incomplete;
+later traffic keeps its original local forwarding/closure owner without an
+uncharged per-request capture tail. Native inventory callbacks, snapshots and
+exports consume the same lifetime allowance. The closed capture inventory
+publishes retained_bytes/retained_facts, which the reader checks against the
+8MiB/16384 limits and the retained membership's minimum reservations. These are
+cooperative evidence bounds, not hard RSS or native execution certification.
+
+All five E05/three E07 variants and original first48 remain. Preserve480/240/720/
+60/120/900,31s cache, C16/28/36/42/50, full1s/BOTH50ms, all content/closure/liveness/
+GC assertions, TERM3.12/INT3.14, four archives and daily19UTC. Source Boundary Lint
+and Web Lint(Node24) remain the only required automated PR AND main checks.
+
+The existing accepted A01-A14/B01-B12 case record and controlling Q1 delta remain
+in the PR, including all four authoring answers and TASK13100 keeper ownership.
+Changed reader controls extend the existing `python -B e2e/aggregate.py --controls`
+boundary: complete original consistency, distinct partial/refused/sanitized states,
+forwarding, native identity ambiguity, mandatory browser-input rejection and actual
+sparse publisher/scoped joins. H real capture/forward/cancel/closure, R serialized
+counterexamples and P safe publication own distinct risks; R cannot prove H or P.
+No product-only seam/export/flag or new venue is introduced. The Q1 coherent relay
+self-comparison regression produced intended exit1; byte-exact restoration returned0.
+Reader controls are not native or Product PASS. Native H NOT RUN and unsupported
+proof PROOF NOT RUN; fit UNMEASURED and100MiB suffix UNPROVED. Integration INCLUDING
+actual CLI callback/lifespan/SessionTracker SKIPPED24342/211270-271; units RETIRED.
+
+Historical40240701225 remains FAIL BOTH/48metadata EACH/56UNKNOWN EACH/zeroaccepted
+PASS/HealthFAIL17; baseline artifacts/export/cleanup unaccepted and TERM/INT only
+diagnostic successes. Eight exact historical original joins remain UNAVAILABLE.
+All preparation/custody/cleanup/dashboard503/serving-source/protected12/repetition/
+abruptR/E04cap/persistentStop/Mac unknowns and limits remain. Manager owns independent
+review/QA, guarded merge/main lints, genuine main-only Product and full assessment;
+this source change does not close that operational objective.
+
+
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
 `bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564`).
@@ -1939,7 +2114,9 @@ restart coverage and eventual daily acceptance remain root-owned and unproven.
 
 Accepted TASK10763 design
 `5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7`
-adds C only after the fully evaluated and archived E05 end. Exactly three
+originally added C only after the fully evaluated and archived E05 end. The
+current bounded admission contract above also admits genuine safe failed-E05
+checkpoints; the healthy acceptance specification remains unchanged. Exactly three
 variants bring the authored total to56: `E07.cancel-cascade-browser`,
 `E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli`. These are source
 assertions, not observed behavior. R/full composition remains HELD; no crash,

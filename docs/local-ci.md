@@ -572,6 +572,39 @@ See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-cas
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
+### Current E05/E07 failure isolation (ROOT13112 / THR291seq495)
+
+The [current bounded originals/admission contract](../e2e/README.md#current-bounded-originals-and-e05e07-outcomes--task13118--root13112)
+supersedes only the old unconditional E05-success/cumulative-count coupling.
+Original53/36/38/23tasks31results and B24→26 are the healthy strict specification.
+Safe failed-E05 pre/C/N/D checkpoints retain real29/32/33/36 starts and17/20/21/24
+host releases, then exactly two P/W starts/four commands/one P result. No fake
+prefix, new boot or renewed end. Positive full state/action/owner/resource/source/
+boot/cgroup/export/time admission precedes allocation; any unknown, poison,
+interruption, expired original E05 cleanup end or insufficient full50s refuses.
+Independent E04/E05/E07 content and scoped completion/source joins execute
+separately, while unchanged completed.join_results/full56 and overall Health stay
+strict. A separately complete E07 result survives unrelated missing E05 PNGs or
+later export/cleanup failure; unavailable durable proof remains UNKNOWN.
+
+Known open item: measured independent E05 browser body/hash/length/full JSON and
+rendered-response projection remain UNAVAILABLE; healthy E05/full56 is unmet.
+Original relay entities, actual native responses/terminals, DOM and public/SQL
+facts have distinct meanings. Mandatory browser comparisons remain, never relay
+self-comparison. First E05 error is recorded before cleanup and remains the same
+original winner across E07 and final failure publication; the first-recorder and
+terminal-scope rules below are unchanged. Groups are evidence, not acceptance.
+
+Only the existing aggregate --controls reader boundary is worker-authorized here.
+Native H NOT RUN, unsupported proof PROOF NOT RUN; integration INCLUDING actual
+CLI callback/lifespan/SessionTracker SKIPPED24342/211270-271; units RETIRED. Actual
+control/restoration receipts belong to TASK13118. All56 EACH3.12/3.14,31s/cache,
+full1s/BOTH50ms/all content/closure/GC,480/240/720/60/120/900,TERM/INT/four archives
+and daily19UTC remain; PR AND main require Source Boundary Lint + Web Lint(Node24),
+static only. Normal hooks/nonforce/independent review/scoped QA and manager guarded
+merge/main lints/genuine main-only Product assessment remain separate gates.
+No worker launch/merge or source-only operational completion follows.
+
 ### E07 terminal scope and precedence (TASK12778 / ROOT12738)
 
 Manager step25 accepts exact TASK12776 design37103B/SHA256
