@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.daemon.org_state import OrgState
 
 import uvicorn
 
@@ -92,8 +93,8 @@ def discover_completed_workflow_handoffs_native(state: DaemonState, recovery: St
     """P3 completed-document coordinator, called once by the native boot owner.
 
     The caller owes P2 and original v2 generation publication first. This entry
-    owns only the workflows phase, never binds queues, releases readiness or
-    removes the old lifespan discovery obligation during serial integration.
+    owns only the workflows phase and never binds queues or releases readiness.
+    The original native lifecycle invokes it once after all org sweeps.
     """
     from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
     if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
@@ -135,8 +136,8 @@ def discover_completed_workflow_handoffs_native(state: DaemonState, recovery: St
 def bind_returned_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
     """Own P4 once: positively bind the real loop, then notify actual returns.
 
-    This is callable source for serial lifecycle integration, not a driver.
-    The old effectful attachment/lifespan callers remain deliberately intact.
+    The original lifecycle calls this entry once; dynamic attachment owns
+    its separate explicit return obligation after the same gate is ready.
     """
     from runtime.daemon.startup_recovery import StartupRecovery
     from runtime.workflows.recovery import rediscover_returned
@@ -204,8 +205,8 @@ def recover_producers_native_on_startup(state: DaemonState, recovery: StartupRec
 def redeliver_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
     """One callable P6 seam, after P4 actual-loop binding and P5 compatibility.
 
-    The later lifecycle caller retains ALL old entry obligations until it moves
-    them together. This entry neither binds references nor activates consumers.
+    The original lifecycle calls this entry once. It neither binds references
+    nor activates consumers, and ordinary post-ready producers stay separate.
     """
     from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
     from runtime.orchestrator.run_step import _maybe_resume_blocked_task, _StartupSweepOutcome
@@ -759,31 +760,111 @@ def _sweep_on_startup(
     return root_owner.outcome(recovered_tokens)
 
 
-def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
-    """THR-229 checkpoint C3d4b startup publication discovery (every root).
+def _publish_v2_generations_on_startup(org: OrgState, queue: TaskQueue) -> RecoveryOutcome:
+    """Consume actual publisher values; opaque transaction failures are unknown.
 
-    After the startup sweep and the real owner bindings, independently discover
-    and publish every pending v2 continuation generation for this org through
-    the EXISTING authenticated publisher (real claim -> raw tagged queue put ->
-    exact acknowledgement).  ``limit=None`` guarantees coverage for every
-    eligible root rather than the first 32 targets.
-
-    This admits and launches NOTHING: only the tagged generation claim at
-    dequeue can admit, and a same-boot unexpired lease is never stolen, so a
-    generation already published by the sweep's accepted-recovery path is not
-    duplicated.  Publishing is liveness bookkeeping; a failure to publish leaves
-    the durable pending pointer intact and is retried on the next startup.
+    The original publisher retains complete discovery/order, receipts and
+    per-target isolation. No additional query infers safety after a failure.
     """
-    orchestrator = getattr(org, "orchestrator", None)
-    if orchestrator is None or queue is None:
-        return
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    from runtime.models import (AuthorityPolicyV2PublicationTarget,
+        AuthorityPolicyV2PublicationClaimOutcome, AuthorityPolicyV2PublicationAckOutcome,
+        AuthorityPolicyV2PublicationFailureOutcome)
     from runtime.orchestrator.authority import publish_authority_policy_v2_notifications
+    held = False
+    first = None
+    observed = False
+
+    def observe(stage: str, value: object, cause: BaseException | None) -> None:
+        nonlocal held, first, observed
+        if stage == "discovery":
+            observed = True
+            positive = (cause is None and type(value) is list
+                        and all(type(item) is AuthorityPolicyV2PublicationTarget for item in value))
+        elif stage == "claim":
+            positive = type(value) is AuthorityPolicyV2PublicationClaimOutcome and (
+                value.status == "claimed" or (value.status == "publication_pending" and value.reason in
+                {"identity_mismatch", "evidence_drift", "owner_lost", "lease_live", "attempt_overflow", "not_publishable"}))
+            held |= positive and value.status == "publication_pending"
+        elif stage == "ack":
+            positive = type(value) is AuthorityPolicyV2PublicationAckOutcome and (
+                value.status in {"published", "publish_returned"} or (value.status == "ack_pending" and value.reason in
+                {"identity_mismatch", "evidence_drift", "stale_claim", "admission_evidence_missing"}))
+            held |= positive and value.status == "ack_pending"
+        elif stage == "failure":
+            # Only genuine successful audited queue-failure bookkeeping proves
+            # an attributable pending hold. Opaque rollback/COMMIT loss refuses.
+            positive = (type(value) is AuthorityPolicyV2PublicationFailureOutcome
+                        and value.status == "failure_recorded")
+            held |= positive
+        else:
+            positive = False
+        if not positive:
+            if first is None:
+                first = cause if cause is not None else RuntimeError("startup_v2_" + stage + "_outcome_unknown")
+            # Known target-local holds retain the original isolation. Unknown
+            # connection/rollback/COMMIT safety forbids further writer use.
+            raise first
+
+    if getattr(org, "orchestrator", None) is None or queue is None:
+        raise RuntimeError("startup_v2_owner_unavailable")
     try:
-        publish_authority_policy_v2_notifications(orchestrator, queue, limit=None)
-    except Exception:
-        logger.exception(
-            "startup v2 generation publication failed for org %s", org.slug,
-        )
+        receipts = publish_authority_policy_v2_notifications(org.orchestrator, queue,
+            limit=None, startup_observer=observe)
+    except BaseException as exc:
+        if first is not None and first is not exc:
+            first.add_note("v2 publication also raised: " + type(exc).__name__)
+            raise first from exc
+        raise
+    if first is not None:
+        raise first
+    if not observed or type(receipts) is not list:
+        raise RuntimeError("startup_v2_discovery_unobserved")
+    return RecoveryOutcome("local_hold" if held else "settled", "startup_v2_publication_observed")
+
+
+def recover_startup_native(recovery: StartupRecovery) -> RecoveryOutcome:
+    """ONE P2-P7 operation; no asyncio loop exists on this native thread."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    from runtime.orchestrator.run_step import _StartupSweepOutcome
+    state = recovery.state
+    held = False
+    with recovery.phase("sweep") as settle:
+        state._assert_attachments_unchanged(recovery._attachments)
+        for org in state.orgs.values():
+            recovery.require_native_owner()
+            state._assert_attachments_unchanged(recovery._attachments)
+            tokens = _sweep_on_startup(org.db, state.queue, org.slug, org.orchestrator)
+            if (not isinstance(tokens, _StartupSweepOutcome)
+                    or tokens.disposition not in ("settled", "local_hold")
+                    or tokens.first_cause is not None or tuple(tokens) != tokens.tokens
+                    or any(type(token) is not str or not token for token in tokens)
+                    or type(tokens.counters) is not dict
+                    or any(type(value) is not int or value < 0 for value in tokens.counters.values())
+                    or tokens.counters.get("tails_started") != tokens.counters.get("tails_settled")
+                    or tokens.counters.get("effects_started") != tokens.counters.get("effects_settled")
+                    or tokens.counters.get("human_started") != tokens.counters.get("human_done")
+                    or tokens.counters.get("negative") != 0):
+                raise RuntimeError("startup_sweep_outcome_unavailable")
+            org._startup_recovered_thread_tokens = tokens
+            held |= tokens.disposition == "local_hold"
+            recovery.require_native_owner()
+            state._assert_attachments_unchanged(recovery._attachments)
+            outcome = _publish_v2_generations_on_startup(org, state.queue)
+            if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+                raise RuntimeError("startup_v2_outcome_unavailable")
+            held |= outcome.disposition == "local_hold"
+        settle(RecoveryOutcome("local_hold" if held else "settled"))
+    # Each entry reserves/settles its OWN phase. Consume before the next call.
+    for operation in (discover_completed_workflow_handoffs_native,
+                      bind_returned_native_on_startup, compatibility_native_on_startup,
+                      redeliver_native_on_startup, recover_producers_native_on_startup):
+        recovery.require_native_owner()
+        outcome = operation(state, recovery)
+        if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+            raise RuntimeError("startup_phase_outcome_unavailable")
+        held |= outcome.disposition == "local_hold"
+    return RecoveryOutcome("local_hold" if held else "settled")
 
 
 def _build_state(settings: Settings) -> DaemonState:
@@ -837,19 +918,8 @@ def _build_state(settings: Settings) -> DaemonState:
                     team=team,
                     publisher="daemon-startup:selector-initialization",
                 )
-        recovered_tokens = _sweep_on_startup(
-            org.db, state.queue, org.slug, org.orchestrator,
-        )
-        # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
-        # org after the sweep (covers ordinary continuations with no recovery Q,
-        # a lost in-memory queue after a committed ``published``, an old-boot
-        # ``publishing`` lease and exact already-consumed receipts) and before
-        # the API/worker pool admits work.
-        _publish_v2_generations_on_startup(org, state.queue)
-        # GitHub #688 Slice B: startup reply-delivery recovery returns the
-        # queued/replacement tokens to re-enqueue once the event loop is live
-        # (the lifespan enqueues them before thread workers start).
-        org._startup_recovered_thread_tokens = recovered_tokens
+        # P0 ends here. The original ordered sweep/publication and tokens
+        # belong exclusively to the lifespan's retained native P2-P7 owner.
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.
@@ -1051,22 +1121,10 @@ class _DiagnosticServer(uvicorn.Server):
                 or self.lifespan.should_exit or self.config.app is not self._diagnostic_app):
             return
         self._diagnostic_signalled = True
-        try:
-            app = self._diagnostic_app
-            coordinator = app.state.daemon._cleanup_diagnostics
-            if coordinator is not None:
-                coordinator.signal_ready(app)
-        except Exception:
-            # Scheduling/logging/diagnostic results never gate successful serve.
-            pass
-        # Independent of B's signalling outcome. Only actual successful ASGI
-        # AND listener startup admits this dormant private service.
-        try:
-            service = self._diagnostic_app.state.daemon._thread_release_service
-            if service is not None:
-                service.signal_ready(self._diagnostic_app)
-        except Exception:
-            pass  # C stays unavailable, never substitutes readiness success
+        app = self._diagnostic_app
+        # Only this original adapter proves ASGI AND actual listener success.
+        # Service admission additionally waits for positive recovery readiness.
+        app.state.daemon._startup_recovery.signal_serving(app)
 
 
 def main(argv: list[str] | None = None) -> int:

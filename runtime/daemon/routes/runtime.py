@@ -21,6 +21,8 @@ class RuntimePath(BaseModel):
 
 def _assert_can_swap(state: DaemonState) -> None:
     """Preflight ALL old orgs without fencing or closing any of them."""
+    state._require_startup_ready()
+    state._assert_startup_idle()
     if state._runner_shutdown:
         raise HTTPException(status_code=409, detail={"code": "daemon_shutting_down"})
     state.team_move_service.assert_no_owner()
@@ -73,6 +75,10 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     # or active native runners (checked above).
     new_state.queue = state.queue
     new_state.orgs_lock = state.orgs_lock
+    # Replacement retains the ORIGINAL ready epoch. Bind every new OrgState
+    # before map publication; never recapture boot's original attachments.
+    for org in new_state.orgs.values():
+        state._attach_startup_owner(org)
     state.runtime = new_state.runtime
     state.orgs = new_state.orgs
     for org in state.orgs.values():
@@ -98,8 +104,11 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
 
 
 async def _drain_before_swap(daemon: DaemonState) -> tuple:
+    daemon._require_startup_ready()
     try:
         async with daemon.orgs_lock:
+            daemon._require_startup_ready()
+            daemon._assert_startup_idle()
             captured = daemon._capture_attachments()
             daemon._revoke_thread_releases()
         # C can be active at the initial capture. Join outside org/native locks,
@@ -133,7 +142,7 @@ async def get_runtime(request: Request) -> dict:
 
 @router.post("/runtime")
 async def register_runtime(body: RuntimePath, request: Request) -> dict:
-    from runtime.daemon.app import ensure_workers_started
+    from runtime.daemon.app import _wire_then_start_workers
 
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser()
@@ -147,13 +156,14 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
         runtime = RuntimeDir.init(path)
         diagnostics = reg.register(path)
         _swap(daemon, runtime, move_diagnostics=diagnostics)
-    ensure_workers_started(daemon)
+    import asyncio
+    _wire_then_start_workers(daemon, asyncio.get_running_loop())
     return {"runtime": str(path.resolve())}
 
 
 @router.post("/runtime/use")
 async def use_runtime(body: RuntimePath, request: Request) -> dict:
-    from runtime.daemon.app import ensure_workers_started
+    from runtime.daemon.app import _wire_then_start_workers
 
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser().resolve()
@@ -165,5 +175,6 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
         diagnostics = require_runtime_reader(runtime)
         diagnostics.update(reg.activate(path))
         _swap(daemon, runtime, move_diagnostics=diagnostics)
-    ensure_workers_started(daemon)
+    import asyncio
+    _wire_then_start_workers(daemon, asyncio.get_running_loop())
     return {"runtime": str(path)}

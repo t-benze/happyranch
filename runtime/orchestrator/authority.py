@@ -86,7 +86,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Callable
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -4694,6 +4694,7 @@ def run_authority_hook(
 
 def publish_authority_policy_v2_notifications(
     orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
+    startup_observer: Callable[[str, object, BaseException | None], None] | None = None,
 ) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
@@ -4722,10 +4723,17 @@ def publish_authority_policy_v2_notifications(
     """
     db = orch._db
     receipts: list[dict] = []
+    # Observe ORIGINAL producer values/exceptions without changing receipts,
+    # discovery order, transaction ownership or target-local isolation.
+    def observe(stage: str, value: object = None, cause: BaseException | None = None) -> None:
+        if startup_observer is not None:
+            startup_observer(stage, value, cause)
     try:
         targets = db.list_authority_policy_v2_publication_targets()
     except Exception as exc:  # discovery is read-only best effort
+        observe("discovery", cause=exc)
         return [{"status": "discovery_failed", "error": type(exc).__name__}]
+    observe("discovery", targets)
     if root_task_id is not None:
         # Common-entry single-target use: publication stays the SAME
         # authenticated claim -> raw put -> exact ack sequence; only the
@@ -4754,12 +4762,14 @@ def publish_authority_policy_v2_notifications(
                 result_id=target.result_id,
             )
         except Exception as exc:
+            observe("claim", cause=exc)
             receipts.append({
                 "status": "publication_claim_failed",
                 "reason": type(exc).__name__,
                 "notification_id": target.notification_id,
             })
             continue
+        observe("claim", claim)
         if claim.status != "claimed":
             receipts.append({
                 "status": claim.status,
@@ -4788,12 +4798,18 @@ def publish_authority_policy_v2_notifications(
                         publisher_boot_id=claim.publisher_boot_id,
                     )
                 )
-                reason = failure.reason
             except Exception as record_exc:
                 # A failure-bookkeeping write failure keeps the prior
                 # ``publishing`` lease safely reclaimable and must not abort
                 # the pass; the original queue error stays authoritative.
+                # Keep the original queue failure primary; record the actual
+                # secondary bookkeeping cause without replacing it.
+                exc.add_note("publication failure bookkeeping also failed: " + type(record_exc).__name__)
+                observe("failure", cause=exc)
                 reason = type(record_exc).__name__
+            else:
+                observe("failure", failure, exc)
+                reason = failure.reason
             receipts.append({
                 "status": "publish_failed",
                 "reason": reason,
@@ -4812,6 +4828,7 @@ def publish_authority_policy_v2_notifications(
                 publisher_boot_id=claim.publisher_boot_id,
             )
         except Exception as exc:
+            observe("ack", cause=exc)
             # The raw tagged put already happened; the retained claim/lease
             # stays recoverable and reclaimable, so a restart republishes and
             # the non-bypassable generation fence still admits only once.
@@ -4823,6 +4840,7 @@ def publish_authority_policy_v2_notifications(
                 "publication_attempt": claim.publication_attempt,
             })
             continue
+        observe("ack", ack)
         receipts.append({
             "status": ack.status,
             "reason": ack.reason,

@@ -261,21 +261,12 @@ class Orchestrator:
         and simply get the None-guarded skip path in ``_maybe_post_thread_followup``.
         """
         self.bind_thread_queue_references(thread_queue, main_loop)
-        coding = getattr(self, '_workflow_coding_dispatch', None)
-        if coding is not None:
-            # A terminal source is outside the ordinary nonterminal startup
-            # sweep. Reuse only its independently admitted postcommit return.
-            from runtime.workflows.recovery import rediscover_returned
-            try:
-                rediscover_returned(coding)
-            except (ValueError, TypeError, sqlite3.Error):
-                logger.exception('coding caller notification rediscovery unavailable')
 
     def bind_thread_queue_references(self, thread_queue, main_loop) -> None:
         """References only; native P4 separately owns returned discovery.
 
-        The public attachment wrapper still owes its existing recovery for
-        lifespan/dynamic callers until their atomic lifecycle migration.
+        Boot P4 and dynamic attachment callers explicitly own returned
+        notification; this public binder performs no recovery or I/O.
         """
         self._thread_queue = thread_queue
         self._main_loop = main_loop

@@ -89,6 +89,28 @@ class DaemonState:
         for org in self.orgs.values():
             self._attach_startup_owner(org)
 
+    def _require_startup_ready(self) -> None:
+        from runtime.daemon.startup_recovery import require_ready
+        require_ready(self)
+
+    def _notify_attached_returned(self, org: OrgState) -> None:
+        """Explicit original dynamic return obligation; no new boot sweep.
+
+        Preserve the original public binder's complete selection and scoped
+        error/local-hold policy, now at the actual attachment caller.
+        """
+        self._require_startup_ready()
+        if self.orgs.get(org.slug) is not org or org._startup_recovery is not self._startup_recovery:
+            raise RuntimeError("dynamic_startup_attachment_changed")
+        coding = getattr(org.orchestrator, "_workflow_coding_dispatch", None)
+        if coding is not None:
+            import sqlite3
+            from runtime.workflows.recovery import rediscover_returned
+            try:
+                rediscover_returned(coding)
+            except (ValueError, TypeError, sqlite3.Error):
+                logger.exception("coding caller notification rediscovery unavailable")
+
     def _attach_startup_owner(self, org) -> None:
         org._startup_recovery = self._startup_recovery
         org._startup_reads = self._startup_reads
@@ -352,7 +374,9 @@ class DaemonState:
         here so a freshly-added org is immediately runnable (the lifespan
         ``_attach_org_runtime_wiring`` only runs over orgs present at boot).
         """
+        self._require_startup_ready()
         async with self.orgs_lock:
+            self._require_startup_ready()
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
             if slug in self.orgs:
@@ -399,6 +423,9 @@ class DaemonState:
                 org.close()
                 raise
             try:
+                # Bind the existing boot gate/read domain BEFORE publication
+                # under profile leases; no partially runnable attachment.
+                self._attach_startup_owner(org)
                 org.orchestrator.attach_queue(self.queue)
                 org.orchestrator.attach_sessions(org.sessions)
                 org.orchestrator.attach_host_supervisor(self.host_supervisor)
@@ -436,14 +463,17 @@ class DaemonState:
                 loop = None
             if loop is not None:
                 org.orchestrator.attach_thread_queue(org.thread_queue, loop)
+                self._notify_attached_returned(org)
             return org
 
     def _assert_can_remove_org(self, slug: str) -> OrgState | None:
+        self._require_startup_ready()
         if self._runner_shutdown:
             raise _OrgBusyError("daemon_shutting_down")
         self.team_move_service.assert_no_owner(slug)
         current = self.orgs.get(slug)
         if current is not None:
+            self._assert_startup_idle(current)
             current._assert_runners_idle()
             if current.db._team_move_coordinator.store.read() is not None:
                 from runtime.infrastructure.team_move_store import TeamMoveError
@@ -454,7 +484,9 @@ class DaemonState:
         return current
 
     async def remove_org(self, slug: str) -> None:
+        self._require_startup_ready()
         async with self.orgs_lock:
+            self._require_startup_ready()
             # Local checks only: C may own the DB through a stalled COMMIT.
             # Reach finite revoke before any DB-backed task/move preflight.
             if self._runner_shutdown:
@@ -487,6 +519,8 @@ class DaemonState:
         self._stop_runner_admission()
         captured = self._capture_attachments()
         await self._drain_startup()
+        if self._startup_recovery is not None:
+            self._startup_recovery.assert_consumers_idle()
         self._assert_attachments_unchanged(captured)
         await self._drain_thread_releases()
         self._assert_attachments_unchanged(captured)

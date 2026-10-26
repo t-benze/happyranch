@@ -99,21 +99,30 @@ sources omitted from nonterminal scans, using complete readers and the native
 stored thread marker to avoid a second notification. A partial thread tail stays
 with its original owner. Coding leaves/carriers never enter legacy allocation.
 The existing root terminal-worktree tail remains separately attributable.
-The intermediate native startup seams are callable source, not installed lifecycle:
-`bind_returned_native_on_startup` owns actual-loop reference binding and native
-returned notification; `compatibility_native_on_startup` shares the original
-compatibility/observation bodies; `recover_producers_native_on_startup` shares the
-original stale dream/wake/schedule recovery after P6. Each owns its single phase
-on the same StartupRecovery epoch, before any consumer release. Binding retains
-actual Task completion separately from scheduling/wrapper status, and incomplete
-native ownership prevents DB close. Stop/failure retains the original cause and
-partial effects. Existing lifespan and dynamic attachment callers still use the
-old effectful public attachment wrapper; the pure reference helper is used by
-native P4 only. Root must migrate those callers/recovery fences atomically and
-must never invoke both paths in one startup. Existing naming warnings and isolated
-registry observations remain advisory, not proven repair or empty-census success.
-No driver, ready/consumer wiring or partial merge/activation follows these seams;
-behavior/performance/proof remain NOT RUN and under10s UNVERIFIED.
+The original startup lifecycle now owns one P2-P7 native operation. P0 validation
+remains pre-serving; lifespan binds the actual request loop and yields promptly.
+Each original org's settled sweep precedes its original v2 publication; actual
+producer outcomes distinguish local holds from unknown/failed transaction or
+COMMIT. P3 workflow discovery, P4 binding/returned notification, P5 compatibility,
+P6 blocked/move/Pause/tokens and P7 stale producers run once in that order. The
+original sweep result itself supplies P6 tokens, with no reconstructed history.
+The public thread binder performs only reference assignments. Boot P4 owns its
+notification phase; ready-only runtime wiring and state.add_org explicitly keep
+the original returned selection/error policy. New attachments inherit the same
+gate/read domain before publication. Add/remove/swap refuse recovering, failed
+or stopping epochs; they never rebind the original boot attachment tuple.
+All original suffix consumer bodies wait one activation latch, including every
+worker/scheduler/reaper and dashboard bootstrap. Handles are retained as they
+are prepared, so partial preparation cannot orphan earlier ones. Ready commit
+and latch release have no intervening await. Cold dashboard disk load runs on
+the existing owned native executor after activation; its actual Future is joined
+before resource close. Existing periodic warm/cancellation behavior is unchanged.
+Stop closes intake before awaits and joins actual recovery/tail/binding/read and
+partial consumer owners before host/DB close; exchange reaper is included.
+This remains incomplete source delivery: root owns full direct/HTTP/readiness/UI/
+launcher closure, correctness execution and independent final review/same-head
+QA/guarded merge. Behavior/resource/performance/proof NOT RUN; under10s UNVERIFIED;
+no partial merge, live activation or new correctness allocation follows.
 After return, ordinary callers own their later state and later allocations;
 original complete captures and stable ancestry identity remain validated, while
 all coding-owned current task rows still compare exactly. Returned graphs no
@@ -828,8 +837,10 @@ INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 The serving lifespan owns one dormant private cleanup-diagnostic coordinator.
-Only the real Uvicorn Server adapter signals it after successful ASGI/listener
-startup returns with started true and no requested exit. Early port/PID files,
+Only the real Uvicorn Server adapter supplies listener authority after successful
+ASGI/listener startup with started true and no requested exit. The same original
+recovery owner signals diagnostic intake once BOTH that observation and positive
+recovery readiness exist; either arrival order converges without a new timer. Early port/PID files,
 health probes, pre-yield scheduling, maintenance and ad hoc lifespans never start
 acquisition. Signalling schedules work only; diagnostics never gate readiness.
 Initial org count is checked before enumeration: empty/over-eight/missing context
@@ -881,7 +892,8 @@ integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIR
 C1a/C1b private thread-delivery release source (THR317 seq25/34, ROOT12084)
 has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
-ASGI/listener startup admits it; construction/readiness performs no operation or
+ASGI/listener startup AND positive recovery readiness admit it; either arrival
+order converges once. Construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
 transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither

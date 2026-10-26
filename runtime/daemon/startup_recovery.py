@@ -115,6 +115,11 @@ class StartupRecovery:
         self._created_ns = time.monotonic_ns()
         self._serving_ns: int | None = None
         self._sweep_owner: Any | None = None
+        self._coordinator: asyncio.Task | None = None
+        self._consumers: list[asyncio.Task] = []
+        self._preparation_complete = False
+        self._dashboard_loads: set[Future] = set()
+        self._services_signalled = False
         from runtime.daemon.startup_publication import StartupPublications
         self._publications = StartupPublications(self)
 
@@ -357,6 +362,94 @@ class StartupRecovery:
             if not self._serving:
                 self._serving_ns = time.monotonic_ns()
                 self._serving = True
+        self._signal_services()
+
+    def _signal_services(self) -> None:
+        # The original listener observation and recovery may arrive in either
+        # order. Their conjunction is consumed once, on the actual loop.
+        with self._lock:
+            if (self._services_signalled or not self._serving or self._status != "ready"
+                    or self._stop.is_set() or self._closed):
+                return
+            self._services_signalled = True
+        for service in (self.state._cleanup_diagnostics, self.state._thread_release_service):
+            if service is not None:
+                try:
+                    service.signal_ready(self.app)
+                except Exception:
+                    # These independent services retain their original isolation;
+                    # neither supplies the mandatory recovery outcome.
+                    try:
+                        _LOG.exception("startup listener service unavailable")
+                    except Exception:
+                        pass  # Optional diagnostic logging cannot change readiness.
+
+    def prepare_consumer(self, name: str, factory: Callable[[], Any]) -> asyncio.Task:
+        """Retain a dormant handle before any coroutine BODY/producer runs."""
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("startup_consumer_wrong_loop")
+        self.state._assert_attachments_unchanged(self._attachments)
+        with self._lock:
+            if (self._status != "recovering" or self._stop.is_set()
+                    or self._first_cause is not None or self._preparation_complete):
+                raise RuntimeError("startup_consumer_preparation_unavailable")
+        async def run() -> Any:
+            await self.wait_ready()
+            return await factory()
+        coroutine = run()
+        try:
+            task = self._loop.create_task(coroutine, name=name)
+        except BaseException:
+            coroutine.close()
+            raise
+        self._consumers.append(task)
+        return task
+
+    def prepared(self) -> None:
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("startup_preparation_wrong_loop")
+        self.state._assert_attachments_unchanged(self._attachments)
+        with self._lock:
+            if self._preparation_complete or any(task.done() for task in self._consumers):
+                raise RuntimeError("startup_consumer_preparation_incomplete")
+            self._preparation_complete = True
+
+    async def load_dashboard(self, manager: Any) -> Any:
+        """Only the existing cold disk read, on the original owned executor.
+
+        Periodic warm/persistence retains its existing owner and behavior. A
+        canceled disk-load waiter joins its actual Future before resources close.
+        """
+        self.require_ready()
+        with self._lock:
+            if self._stop.is_set() or self._closed or self._status != "ready":
+                raise RuntimeError("startup_dashboard_admission_closed")
+            native = self._executor.submit(manager.load_from_disk)
+            self._dashboard_loads.add(native)
+        wrapped = asyncio.wrap_future(native)
+        cancellation = None
+        try:
+            while True:
+                try:
+                    result = await asyncio.shield(wrapped)
+                    break
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                    if wrapped.done():
+                        result = wrapped.result()
+                        break
+            if cancellation is not None:
+                raise cancellation
+            self.require_ready()
+            return result
+        finally:
+            if native.done() and not native.cancelled():
+                with self._lock:
+                    self._dashboard_loads.discard(native)
+
+    def assert_consumers_idle(self) -> None:
+        if any(not task.done() for task in self._consumers):
+            raise RuntimeError("startup_consumer_join_incomplete")
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -367,6 +460,8 @@ class StartupRecovery:
                     "stopping": self._stop.is_set(), "phase": self._phase,
                     "error_code": self._error_code,
                     "ready_commits": self._ready_commits,
+                    "consumers_prepared": len(self._consumers),
+                    "preparation_complete": self._preparation_complete,
                     "publications": self._publications.snapshot(),
                     "reference_binding": {
                         "registered": binding is not None,
@@ -624,7 +719,8 @@ class StartupRecovery:
         with self._lock:
             if (self._native is None or not self._native.done() or self._native.cancelled()
                     or self._closed or self._stop.is_set() or self._first_cause is not None
-                    or self._status != "recovering" or self._latch is None):
+                    or self._status != "recovering" or self._latch is None
+                    or not self._preparation_complete or any(task.done() for task in self._consumers)):
                 raise RuntimeError("startup_activation_unavailable")
             outcome = self._native.result()
             if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
@@ -633,6 +729,7 @@ class StartupRecovery:
             self._phase = "ready"
             self._ready_commits += 1
             self._latch.set()
+        self._signal_services()
 
     async def wait_ready(self) -> None:
         if self._latch is None or asyncio.get_running_loop() is not self._loop:
@@ -653,10 +750,14 @@ class StartupRecovery:
         self._publications.assert_idle()
         self._assert_binding_idle()
         with self._lock:
+            if self._status == "recovering" and self._native is None and not self._stop.is_set():
+                raise RuntimeError("startup_not_yet_quiescent")
             if self._native is not None and not self._native.done():
                 raise RuntimeError("startup_native_still_owned")
             if self._sweep_owner is not None:
                 raise RuntimeError("startup_sweep_native_still_owned")
+            if any(not future.done() or future.cancelled() for future in self._dashboard_loads):
+                raise RuntimeError("startup_dashboard_native_still_owned")
 
     def retain_sweep(self, owner: Any) -> None:
         self.require_native_owner()
@@ -681,31 +782,47 @@ class StartupRecovery:
 
     async def close(self) -> None:
         self.stop()
+        cancellation = None
         if self._native is not None:
-            # Observe a failed operation as well; done is not a successful run.
             try:
                 await self.join()
-            except Exception:
-                # Observe a failed native operation without blocking the loop
-                # its retained binding Task still needs in order to finish.
-                pass
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+            except BaseException as exc:
+                self.fail("startup_native_failed", exc)
+        coordinator = self._coordinator
+        if coordinator is not None and coordinator is not asyncio.current_task():
+            while not coordinator.done():
+                try:
+                    await asyncio.shield(coordinator)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                except BaseException as exc:
+                    self.fail("startup_coordinator_failed", exc)
+            if not coordinator.cancelled():
+                coordinator.result()
         binding = self._binding
-        cancellation = None
-        if binding is not None and binding.task is not None and not binding.completion.done():
-            wrapped = asyncio.wrap_future(binding.completion)
+        with self._lock:
+            waits = list(self._dashboard_loads)
+        if binding is not None:
+            waits.append(binding.completion)
+        for native in waits:
+            wrapped = asyncio.wrap_future(native)
             while True:
                 try:
                     await asyncio.shield(wrapped)
                     break
                 except asyncio.CancelledError as exc:
-                    self.stop()
                     cancellation = cancellation or exc
+                    if wrapped.done():
+                        wrapped.result()
+                        break
         self.assert_native_idle()
-        if cancellation is not None:
-            raise cancellation
         self._executor.shutdown(wait=True, cancel_futures=False)
         with self._lock:
             self._closed = True
+        if cancellation is not None:
+            raise cancellation
 
 
 def require_ready(owner: Any) -> None:

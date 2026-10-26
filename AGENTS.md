@@ -1,5 +1,52 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+## Startup lifecycle source — ROOT13137 / THR308seq169/173/174/175
+
+P0 still validates imports, org/schema/cutover, Pause/move, roster/profile and
+original authority owner/selectors before serving. The actual app/state binds
+ONE StartupRecovery/StartupReads pair. Lifespan captures only the real request
+loop and dormant services, submits ONE original native operation, and yields.
+The existing identity-based pre-body middleware holds unsafe HTTP entries;
+original authentication and early reader budgets remain additional controls.
+
+On the same native thread, each original org's positively settled sweep/tails/
+human/bookkeeping/finally boundary precedes its original v2 publication. Actual
+publisher outcomes are consumed without a second census; authenticated target
+holds remain local, opaque transaction/COMMIT/discovery loss fails closed. P3
+workflow discovery, P4 real-loop reference binding and committed-return delivery,
+P5 compatibility, P6 blocked/move/Pause/tokens and P7 stale producers follow once
+in that order. Tokens retain their actual sweep outcome. No private loop or
+ordinary recovery wrapper runs alongside these phases.
+
+P8 retains each actual dormant consumer handle, then commits ready and releases
+ONE latch without an await. All original task/thread/dream/wake/schedule workers,
+schedulers, breaker, zombie/disk/exchange/direct-connect/workspace-cleanup and
+dashboard suffixes wait that latch before their bodies run. Dashboard cold disk
+load uses the existing owned native executor after activation and is positively
+joined. Historical periodic dashboard warm cancellation behavior is unchanged.
+The public thread binder is reference-only; ready-only runtime wiring and dynamic
+add explicitly retain the original returned notification and error/hold policy.
+New orgs inherit the same gate/read domain before map publication; add/remove/swap
+refuse during recovering/failed/stopping and never replace boot's captured tuple.
+
+Only the original matching Server's successful ASGI AND actual-listener signal
+can establish serving. Diagnostic/release intake additionally requires positive
+recovery readiness; either arrival order converges once. Stop revokes admission
+before the first await. Recovery/native tails/binding/publications/read owners
+join while the real loop can acknowledge work and before host/session/DB close;
+all partial consumer handles are retained and joined, including exchange reaper.
+Failed or uncertain cleanup prevents DB-close fallthrough; cancellation is not
+native quiescence. Primary causes and earlier durable effects remain attributable.
+
+This is incomplete SOURCE integration, not full API/direct/UI/readiness/launcher
+closure or behavioral acceptance. ROOT13137 retains those consumers, finite
+correctness execution, full independent final review, same-head scoped QA and
+normal guarded publication/merge/exact-main lints. No partial merge, activation,
+restart or new execution allocation. Behavior/resource/performance NOT RUN;
+PROOF NOT RUN; under10s UNVERIFIED; cumulative maker0/3 QA0/3 unchanged. Units
+RETIRED; integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342;
+Product E2E daily19UTC only.
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -1118,8 +1165,10 @@ INTEGER callbacks and authority-v2 are preserved. No new persisted field/journal
 backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 The serving lifespan owns one dormant private cleanup-diagnostic coordinator.
-Only the real Uvicorn Server adapter signals it after successful ASGI/listener
-startup returns with started true and no requested exit. Early port/PID files,
+Only the real Uvicorn Server adapter supplies listener authority after successful
+ASGI/listener startup with started true and no requested exit. The original
+recovery owner signals diagnostic intake once BOTH that observation and positive
+recovery readiness exist, in either arrival order without a new timer. Early port/PID files,
 health probes, pre-yield scheduling, maintenance and ad hoc lifespans never start
 acquisition. Signalling schedules work only; diagnostics never gate readiness.
 Initial org count is checked before enumeration: empty/over-eight/missing context
@@ -1171,7 +1220,8 @@ integration INCLUDING lifespan/SessionTracker/callback SKIPPED24342, units RETIR
 C1a/C1b private thread-delivery release source (THR317 seq25/34, ROOT12084)
 has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
-ASGI/listener startup admits it; construction/readiness performs no operation or
+ASGI/listener startup AND positive recovery readiness admit it; either arrival
+order converges once. Construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
 transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither

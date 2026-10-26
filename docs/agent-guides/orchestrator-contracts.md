@@ -4240,16 +4240,28 @@ partial SYSTEM marker is local_hold. Newly attempted unknown/failed notification
 is mandatory failure. Fixed binding/phase/publication counters describe actual
 observations, never behavioral verification.
 
-This intermediate source deliberately retains the old EFFECTFUL public
-`Orchestrator.attach_thread_queue` wrapper: it delegates the two assignments to
-the pure helper, then still performs its original returned rediscovery/logging.
-Both app lifespan and state.add_org callers retain that obligation. The final
-root migration must make the public binder reference-only, explicitly discharge
-dynamic attachment recovery/fences and move the lifecycle callers together.
-No lifecycle may run both the old wrapper recovery and native P4. This source
-slice installs no native driver, ready release or consumer migration; it does
-not satisfy the final public reference-only-binder contract or permit partial
-merge. Behavior/resource/performance NOT RUN; sensitivity PROOF NOT RUN.
+The original lifecycle now calls these native phases once, with P0 validation
+retained before serving. Lifespan attaches references/dormant services and yields
+after one native submission. Public `Orchestrator.attach_thread_queue` is now
+reference-only. Boot P4 owns returned recovery; dynamic state.add_org and ready-only
+runtime `_wire_then_start_workers` explicitly discharge the same original return
+selection and scoped logging/hold policy. New orgs receive the current gate/read
+bindings before becoming runnable. Add/remove/swap refuse before effects during
+recovery/failure/stop and never replace boot's captured original attachment tuple.
+P8 prepares every original normal consumer behind one unopened latch, records each
+actual handle immediately, and commits ready/releases without an await. All worker,
+scheduler, reaper, direct-connect/workspace-cleanup and dashboard bodies wait it.
+Dashboard cold disk load is off-loop on the existing owned executor after activation;
+its Future remains owned through actual completion. Existing periodic dashboard
+cancellation behavior is unchanged. Original actual-listener proof and positive
+recovery readiness jointly admit diagnostics/release, in either arrival order once.
+Shutdown closes intake synchronously, joins recovery/tails/binding/publications/read
+owners while the real loop can acknowledge them, then joins every partial consumer
+(including exchange reaper) before resource close. Unsafe/unsettled ownership blocks
+close; wrapper cancellation supplies no quiescence. Full direct/HTTP/UI/readiness/
+launcher closure, correctness execution and independent final-source review/same-head
+QA remain root-owned. This incomplete source slice permits no partial merge or live
+activation. Behavior/resource/performance NOT RUN; sensitivity PROOF NOT RUN.
 
 P5 `compatibility_native_on_startup(state, recovery)` owns `compatibility` once
 following returned completion, original true-loop binding and idle handoffs.
@@ -4277,8 +4289,9 @@ nonnegative counts or original schedule tuples. Each recovered schedule retains
 another census or a claim that preserved rows were repaired. Unknown returns or
 mandatory audit/cleanup errors fail before phase success. Legacy lifespan calls
 each shared family at its original interleaved worker-start position; native
-P7 starts no consumer, scheduler, job or session. Root still owes the atomic
-P0-P9 migration, all launch gates, lifecycle joins and independent acceptance.
+P7 starts no consumer, scheduler, job or session. The original lifecycle now
+connects P0-P9; root still owes complete launch/readiness/consumer auditing,
+correctness execution and independent final acceptance.
 
 The native P6 source entry is `redeliver_native_on_startup(state, recovery)`
 in daemon `__main__`, called ONCE on the SAME retained native operation after
@@ -4290,9 +4303,9 @@ validation/redelivery, Pause rediscovery, then original P2 recovered thread toke
 The completed-move query/schema validation is unchanged; absent profile ownership
 is unavailable rather than a successful skipped mandatory redelivery. P2 token
 publication requires the actual positively completed sweep result, not a guessed
-empty token list. No lifecycle caller or readiness/consumer activation is installed
-by this intermediate source slice; old lifespan and attachment obligations remain
-until the root migrates them together. P7, P8 and P9 remain separate later steps.
+empty token list. The original lifecycle calls this phase once before native P7,
+then prepares P8/P9 handles behind the same unopened latch. No old async discovery,
+effectful binder or second recovery wrapper runs alongside the native phases.
 
 Pause rediscovery shares `_discover_pause_roots` between its native entry and
 ordinary async wrapper: original page32/cursor, complete tree<=10000, coherent

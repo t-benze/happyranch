@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 if TYPE_CHECKING:
     from runtime.daemon.metrics import MetricsRegistry
     from runtime.daemon.org_state import OrgState
+    from runtime.daemon.startup_recovery import StartupRecovery
 
 logger = logging.getLogger("happyranch.daemon.queue")
 
@@ -300,11 +301,20 @@ class TaskQueue:
             item = await self._queue.get()
             await self._consume(dispatcher, item)
 
-    def start_workers(self, dispatcher: _Dispatcher, n: int = 6) -> None:
+    def start_workers(self, dispatcher: _Dispatcher, n: int = 6, *, recovery: StartupRecovery | None = None) -> None:
+        # Prepare every actual handle immediately; no dequeue before the ONE
+        # boot latch. Post-ready callers still cross the same direct gate.
+        from runtime.daemon.startup_recovery import require_ready
+        if recovery is None:
+            require_ready(dispatcher._state)
+        elif recovery.state is not dispatcher._state or recovery.state.queue is not self:
+            raise RuntimeError("startup_worker_owner_mismatch")
         for _ in range(n):
-            self._worker_tasks.append(
-                asyncio.create_task(self._worker_loop(dispatcher))
-            )
+            if recovery is None:
+                task = asyncio.create_task(self._worker_loop(dispatcher))
+            else:
+                task = recovery.prepare_consumer("task-worker", lambda: self._worker_loop(dispatcher))
+            self._worker_tasks.append(task)
 
     def is_running(self) -> bool:
         with self._admission_lock:
