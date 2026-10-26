@@ -1985,8 +1985,15 @@ shutdown. `output/` and durable scratch manifest/lock siblings stay excluded.
 Actual task AND structural root must each be completed/failed/cancelled/superseded.
 Recognized finished jobs completed/failed/rejected are skipped before owner-lineage
 lookup; active jobs still require valid lineage and retain their structural root.
-Unknown job status/active lineage retains. Recursive
-mtime+ctime age of at least one hour and no-follow/same-filesystem containment
+Unknown job status/active lineage retains.
+Under Founder THR307 seq194 item2, nested Git repositories and `.git` files/
+directories, Unix sockets and FIFOs inside admitted task scratch are disposable
+after both task and structural root end. Socket/FIFO handling uses no-follow
+stat/allocation and contained unlink with metadata-only O_PATH descriptors,
+never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
+Git metadata keep strict special-object checks; all ownership/jobs/age/link/
+mount gates and durable manifest/lock/output exclusions remain.
+Recursive mtime+ctime age of at least one hour and no-follow/same-filesystem containment
 apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
 branches/remotes; branches remain, ignored contents are disposable. Git removal

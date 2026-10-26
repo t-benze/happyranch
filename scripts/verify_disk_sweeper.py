@@ -18,13 +18,16 @@ import logging
 import os
 import shutil
 import signal
+import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -134,6 +137,51 @@ def case(number,purpose,fn):
         raise
 
 
+def disposable_contents(f, root, kind='all'):
+    """Real disposable entries; short fd path avoids AF_UNIX pathname limits."""
+    if kind in ('git_directory', 'all'):
+        repo = root / 'nested/repository'
+        repo.mkdir()
+        f.git(repo, 'init', '-q')
+        (repo / 'payload').write_text('nested repository content')
+    if kind in ('git_file', 'all'):
+        holder = root / 'nested/git-file'
+        holder.mkdir()
+        (holder / '.git').write_text('gitdir: /not-a-real-fixture-target\n')
+    if kind in ('socket', 'all'):
+        with fs.directory(root / 'nested', time.monotonic() + 5) as fd:
+            with socket.socket(socket.AF_UNIX) as endpoint:
+                endpoint.bind(f'/proc/self/fd/{fd}/socket')
+    if kind in ('fifo', 'all'):
+        os.mkfifo(root / 'nested/fifo')
+
+
+@contextmanager
+def no_endpoint_io():
+    """Fail before a blocking endpoint open; allow metadata-only O_PATH."""
+    attempts = []
+    def guarded(original, descriptor=False):
+        def call(path, *args, **kwargs):
+            if not isinstance(path, int):
+                try:
+                    observed = os.stat(path, dir_fd=kwargs.get('dir_fd'), follow_symlinks=False)
+                except (FileNotFoundError, NotADirectoryError):
+                    observed = None
+                if observed and (stat.S_ISSOCK(observed.st_mode) or stat.S_ISFIFO(observed.st_mode)):
+                    if not descriptor or not args[0] & os.O_PATH:
+                        attempts.append(os.fsdecode(path))
+                        raise AssertionError('endpoint I/O open')
+            return original(path, *args, **kwargs)
+        return call
+    with patch.object(os, 'open', guarded(os.open, True)), \
+            patch.object(builtins, 'open', guarded(builtins.open)), \
+            patch.object(io, 'open', guarded(io.open)):
+        try:
+            yield
+        finally:
+            assert attempts == [], attempts
+
+
 def c1():
     with fixture() as f:
         p=f.scratch('TASK-1')
@@ -145,25 +193,44 @@ def c1():
         external=f.scratch('TASK-2')
         os.link(out/'external-link',external/'link-to-output')
         before={x.name:x.read_bytes() for x in manifest.iterdir()}
-        tree=fs.snapshot(p,time.monotonic()+5)
-        expected=fs.allocated(tree,set())
-        r=f.sweep()
+        roots = [p]
+        for number, kind in enumerate(('git_directory', 'git_file', 'socket', 'fifo', 'all'), 3):
+            target = f.scratch(f'TASK-{number}')
+            disposable_contents(f, target, kind)
+            (target / 'outside').symlink_to(out / 'keep')
+            roots.append(target)
+        before={x.name:x.read_bytes() for x in manifest.iterdir()}
+        # Independent allocation oracle: actual lstat blocks once per inode,
+        # with all links internal in these successful candidates.
+        expected = {}
+        for target in roots:
+            inodes = {(s.st_dev, s.st_ino): s.st_blocks * 512
+                      for x in (target, *target.rglob('*')) for s in (x.lstat(),)}
+            expected[str(target)] = sum(inodes.values())
+        with no_endpoint_io(): r=f.sweep()
         retained(r,external,'unknown_external_hardlinks')
-        assert row(r,p)['allocated_bytes']==expected[0]
-        assert row(r,p)['removed_attributable_bytes']==expected[1]
+        assert all(row(r,target)['state']=='removed' for target in roots), [row(r,target) for target in roots]
+        for target in roots:
+            assert row(r,target)['state']=='removed',row(r,target)
+            assert row(r,target)['allocated_bytes']==expected[str(target)],row(r,target)
+            assert row(r,target)['removed_attributable_bytes']==expected[str(target)],row(r,target)
+            assert not target.exists(),target
         assert (out/'external-link').read_text()=='durable hardlink'
         assert row(r,p)['state']=='removed',r
         assert not p.exists()
         assert before=={x.name:x.read_bytes() for x in manifest.iterdir()}
         assert (out/'keep').read_text()=='durable'
-        assert r['phases']['scratch']['removed_attributable_bytes']==row(r,p)['removed_attributable_bytes']>0
-        return 'Exact root absent; manifest/lock/output unchanged; one inode-deduped attribution.'
+        assert r['phases']['scratch']['removed_attributable_bytes']==sum(expected.values())>0
+        assert r['physical_freed_bytes'] is None
+        return dict(disposable_kinds=['ordinary/internal hardlinks', 'git_directory', 'git_file', 'socket', 'fifo', 'all'], allocated_by_path=expected,
+                    preserved='manifest/lock/output/outside sentinel/external hardlink; metadata-only endpoints')
 
 
 def c2():
     with fixture() as f:
         f.task('TASK-1','in_progress')
         p=f.scratch('TASK-2',parent='TASK-1')
+        disposable_contents(f,p)
         rejected=[p]
         for n,state in enumerate(('superseded','escalated','unknown','pending'),3): rejected.append(f.scratch(f'TASK-{n}',state))
         rejected.append(f.scratch('TASK-7',parent='TASK-999'))
@@ -172,7 +239,13 @@ def c2():
         f.db.execute("UPDATE audit_log SET payload=? WHERE task_id='TASK-3'",(json.dumps({'workspace':'/conflicting'}),));f.db.commit()
         conflict=f.scratch('TASK-10');rejected.append(conflict)
         f.db.execute("UPDATE audit_log SET payload=? WHERE task_id='TASK-10'",(json.dumps({'workspace':'/conflicting'}),));f.db.commit()
-        r=f.sweep()
+        f.task('TASK-12')
+        active=f.scratch('TASK-11',status='in_progress',parent='TASK-12');rejected.append(active)
+        disposable_contents(f,active)
+        before=candidate_contents(p,active)
+        with no_endpoint_io(),refuse_mutations(): r=f.sweep()
+        retained(r,p,'task_or_root_not_terminal');retained(r,active,'task_or_root_not_terminal')
+        assert before==candidate_contents(p,active)
         assert 'conflicting_workspace' in row(r,conflict)['reason']
         assert all(row(r,p)['state']=='retained' and p.exists() for p in rejected),r
         assert not r['phases']['scratch']['removed_attributable_bytes']
@@ -270,33 +343,85 @@ def c7():
         repo,p=f.worktree('TASK-1');(p/'source').write_text('dirty')
         _,q=f.worktree('TASK-2');(q/'untracked').write_text('keep')
         _,z=f.worktree('TASK-3');(z/'ignored').mkdir();(z/'ignored/cache').write_text('disposable')
-        r=f.sweep();retained(r,p,'dirty');retained(r,q,'dirty')
+        special=[]
+        for number,kind in enumerate(('socket','fifo'),4):
+            _,target=f.worktree(f'TASK-{number}')
+            (target/'ignored/nested').mkdir(parents=True)
+            disposable_contents(f,target/'ignored',kind)
+            special.append(target)
+        before=candidate_contents(*special)
+        with no_endpoint_io(): r=f.sweep()
+        retained(r,p,'dirty');retained(r,q,'dirty')
+        for target in special: retained(r,target,'unknown_special_entry')
+        assert before==candidate_contents(*special)
         assert row(r,p)['dirty_paths'] and row(r,q)['dirty_paths']
         assert row(r,z)['state']=='removed',r
         assert 'task/TASK-3' in f.git(repo,'branch','--list')
-        return 'Dirty/nonignored untracked paths listed; ignored cache discarded with clean locally retained branch.'
+    metadata=[]
+    for kind in ('socket','fifo'):
+        with fixture() as f:
+            repo,target=f.worktree('TASK-1')
+            admin=repo/'.git/worktrees'/target.name
+            (admin/'nested').mkdir()
+            disposable_contents(f,admin,kind)
+            before=candidate_contents(target,admin)
+            with no_endpoint_io(),refuse_mutations(): r=f.sweep()
+            assert r['discovery']=='partial' and r['outcome']=='incomplete',r
+            assert any('unknown_special_entry' in s['reason'] for s in r['discovery_scopes']),r
+            assert not r['candidates'],r
+            assert before==candidate_contents(target,admin)
+            metadata.append(dict(kind=kind,whole_repository='retained without mutation'))
+    # Safe synthetic kernel metadata on owned regular fixtures: never mknod.
+    unknown=[]
+    for mode in (stat.S_IFCHR,stat.S_IFBLK,0):
+        with fixture() as f:
+            target=f.scratch('TASK-1');leaf=target/'nested/payload'
+            real=os.stat
+            def observed(path,*args,**kwargs):
+                value=real(path,*args,**kwargs)
+                if (value.st_dev,value.st_ino)==(leaf_identity.st_dev,leaf_identity.st_ino):
+                    fields={name:getattr(value,name) for name in dir(value) if name.startswith('st_')}
+                    fields['st_mode']=mode | 0o600
+                    return SimpleNamespace(**fields)
+                return value
+            leaf_identity=leaf.lstat()
+            with patch.object(os,'stat',observed),refuse_mutations(): r=f.sweep()
+            retained(r,target,'unknown_special_entry')
+            assert leaf.read_bytes()==b'payload'*2048
+            unknown.append(dict(synthetic_type=mode,retained=True))
+    return dict(worktree_ignored_endpoints='retained; regular ignored cache removed; dirty/untracked retained',strict_metadata=metadata,unknown_types=unknown)
 
 
 def c8():
     with fixture() as f:
-        p=f.scratch('TASK-1');(p/'nested').chmod(0o555)
+        p=f.scratch('TASK-1')
+        disposable_contents(f,p)
+        sentinel=f.base/'outside-sentinel';sentinel.write_text('outside');sentinel.chmod(0o400)
+        (p/'outside').symlink_to(sentinel)
+        (p/'nested').chmod(0o555)
         repo,q=f.worktree('TASK-2')
         def signature():
             return {str(x.relative_to(f.base)):(x.lstat().st_mode,x.read_bytes() if x.is_file() else None) for x in f.base.rglob('*') if x.name!='happyranch.db'}
         before=signature();registered=f.git(repo,'worktree','list','--porcelain')
+        refs=f.git(repo,'show-ref')
         calls=[];realgit=ds.git
         def trace(*a):calls.append(a[2:]);return realgit(*a)
-        with patch.object(ds,'git',trace),patch.object(os,'fchmod',side_effect=AssertionError('dry chmod')),patch.object(os,'unlink',side_effect=AssertionError('dry unlink')),patch.object(os,'rmdir',side_effect=AssertionError('dry rmdir')):
+        with no_endpoint_io(),patch.object(ds,'git',trace),patch.object(os,'fchmod',side_effect=AssertionError('dry chmod')),patch.object(os,'unlink',side_effect=AssertionError('dry unlink')),patch.object(os,'rmdir',side_effect=AssertionError('dry rmdir')):
             r=f.sweep('dry_run')
         assert all(c['state']=='eligible' for c in r['candidates']),r
         assert before==signature() and registered==f.git(repo,'worktree','list','--porcelain')
+        assert refs==f.git(repo,'show-ref')
         assert not any('remove' in c or 'prune' in c for c in calls)
+        controls=f.workspace/'.happyranch/task-scratch-manifests'
+        before_cli=candidate_contents(p,q,sentinel,controls,repo/'.git')
         # Public manual CLI uses real worker, actual current clock, JSON plus
         # one permitted audit row; it never activates on-mode deletion.
         result=subprocess.run([sys.executable,'-m','runtime.daemon.disk_sweeper','--dry-run','--runtime-root',str(f.base/'runtime')],env={**os.environ,'HAPPYRANCH_DAEMON_HOME':str(f.base/'daemon')},capture_output=True,text=True,timeout=8)
         assert result.returncode==0,result.stderr
         assert f.db.execute("SELECT COUNT(*) FROM audit_log WHERE action='disk_sweep_summary'").fetchone()[0]==1
         assert p.exists() and q.exists() and registered==f.git(repo,'worktree','list','--porcelain')
+        assert before_cli==candidate_contents(p,q,sentinel,controls,repo/'.git')
+        assert refs==f.git(repo,'show-ref')
         return 'Function dry-run tree bytes/modes and Git registrations unchanged; invocation trace has no mutation. Public manual CLI real worker exit0, one audit summary and JSON; candidate roots remain.'
 
 
@@ -699,6 +824,16 @@ def c15():
 
 def c16():
     """Real inaccessible/broken Git and workspace scopes; aliases stay literal."""
+    observed={}
+    with fixture() as f:
+        target=f.scratch('TASK-1')
+        outside=f.base/'outside';outside.mkdir();(outside/'keep').write_text('durable')
+        shutil.rmtree(target);target.symlink_to(outside,target_is_directory=True)
+        before=candidate_contents(outside)
+        with refuse_mutations(): r=f.sweep()
+        retained(r,target,'Not a directory')
+        assert before==candidate_contents(outside)
+        observed['scratch_root_alias']='literal root refused; outside target unchanged'
     with fixture() as f:
         p=f.scratch('TASK-1')
         repo,q=f.worktree('TASK-2','z-project')
@@ -730,7 +865,7 @@ def c16():
         assert str(broken) in calls,calls
         assert not {str(v) for v in (alias,unreadable,git_alias,owner_alias)} & set(calls),calls
         assert all(c['path']!=str(p) for c in r['candidates']),r
-        observed=dict(known=1,unknown_scopes=scopes,alias_git_calls=0)
+        observed.update(known=1,unknown_scopes=scopes,alias_git_calls=0)
     with fixture() as f:
         repo,q=f.worktree('TASK-1')
         external=f.base/'external';(external/'task-tmp/TASK-999').mkdir(parents=True)
