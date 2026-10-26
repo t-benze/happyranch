@@ -6,7 +6,7 @@ import json
 import asyncio
 import threading
 import uuid
-from collections.abc import Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -100,6 +100,20 @@ class WorkflowDraftDispatcher:
                 raise
 
     def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+        """Ordinary entry retains the activation owner's complete validation."""
+        return self._intent_with_activation_closure(conn, task_id, self.org.workflow_activations._closure)
+
+    def _intent_from_validated_schema(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+        """Recovery-only composition after its complete same-snapshot read."""
+        if not conn.in_transaction:
+            raise DraftOwnershipError("workflow_activation_storage_corrupt")
+        return self._intent_with_activation_closure(
+            conn, task_id, self.org.workflow_activations._closure_from_validated_schema)
+
+    def _intent_with_activation_closure(self, conn: sqlite3.Connection, task_id: str,
+                                      closure: Callable[..., dict]) -> dict[str, Any]:
+        # These two private entries select actual owner methods, never a
+        # caller-supplied inventory or a Boolean claiming schema validation.
         rows = conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (task_id,)).fetchall()
         if len(rows) != 1:
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
@@ -111,7 +125,7 @@ class WorkflowDraftDispatcher:
                 raise DraftOwnershipError('workflow_document_revision_storage_corrupt')
             validate_revision_record(conn, dict(row), expected_org_slug=self.org.slug)
         else:
-            self.org.workflow_activations._closure(conn, intent["activation_id"], actor=intent["admission_principal"])
+            closure(conn, intent["activation_id"], actor=intent["admission_principal"])
         if conn.execute("SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchone():
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         return intent

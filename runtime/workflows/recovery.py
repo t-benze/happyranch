@@ -7,6 +7,7 @@ from typing import Literal, Any
 
 from runtime.infrastructure.workflow_schema import _read_workflow_schema, _schema_snapshot
 from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, _read_coding_data
+from runtime.workflows.coding_authority_history import _Budget
 
 
 @dataclass(frozen=True)
@@ -16,18 +17,24 @@ class WorkflowTaskOwnership:
     state: str | None = None
 
 
-def classify_task(db: Any, task_id: str, *, org_slug: str | None, budget=None) -> WorkflowTaskOwnership:
+def classify_task(db: Any, task_id: str, *, org_slug: str | None,
+                  budget: _Budget | None = None) -> WorkflowTaskOwnership:
     """The persisted bridge is the discriminator; task names/types grant nothing.
 
     Direct/generic Database construction is still workflow-free. Missing,
     malformed or dual workflow closure remains owned and cannot fall through.
     This reader changes no task, event, claim, schema or legacy audit row.
+    One original allowance spans this snapshot; document semantics compose
+    immediately after complete validation without starting another history read.
     """
     db._lock.acquire(blocking=True)
     try:
         conn = db._conn
         with _schema_snapshot(conn):
             try:
+                if budget is not None and type(budget) is not _Budget:
+                    raise ValueError('workflow_coding_data_invalid_budget')
+                budget = _Budget() if budget is None else budget
                 # Complete setup/import/mapping originals validate before legacy recovery.
                 # Native coding decisions/authority may be orphaned, with no old
                 # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
@@ -91,7 +98,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None, budget=None) -
                     dispatcher = getattr(db, "_workflow_drafts", None)
                     if dispatcher is None or dispatcher.org.slug != org_slug:
                         return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-                    dispatcher._intent(conn, task_id)
+                    dispatcher._intent_from_validated_schema(conn, task_id)
                     return WorkflowTaskOwnership("draft", intent["id"], intent["state"])
                 if bridges:
                     bridge = bridges[0]
