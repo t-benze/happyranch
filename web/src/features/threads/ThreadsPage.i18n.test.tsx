@@ -21,7 +21,7 @@ import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
-import { startupHealth, stubReadyHealth } from '@/test/startup';
+import { seedReadyHealth, startupHealth, stubReadyHealth } from '@/test/startup';
 import { makeQueryClient } from '@/design-system/providers/AppProvider';
 import { HEALTH_QUERY_KEY } from '@/lib/startup';
 import { translate } from '@/lib/i18n';
@@ -124,6 +124,7 @@ function stubBase() {
   stubReadyHealth();
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () => HttpResponse.json({ identities: [] })),
     http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -164,13 +165,15 @@ function stubDetail(
 }
 
 function mount(route: string, locale: 'en' | 'zh-CN') {
+  const client = makeQueryClient();
+  seedReadyHealth(client);
   return renderWithProviders(
     <>
       <AppRoutes />
       <LocaleTestSwitch to="zh-CN" />
       <LocaleTestSwitch to="en" />
     </>,
-    { route, i18n: { adapter: savedLocaleAdapter(locale) } },
+    { route, queryClient: client, i18n: { adapter: savedLocaleAdapter(locale) } },
   );
 }
 
@@ -453,7 +456,7 @@ describe('ThreadsPage composer across a locale switch', () => {
       const chip = screen.getByText('held.txt');
       for (const state of ['recovering', 'recovery_failed'] as const) {
         await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth(state)); });
-        expect(screen.getByText(translate(locale, state === 'recovering' ? 'startup.banner.recovering' : 'startup.banner.failed'))).toBeInTheDocument();
+        await screen.findByText(translate(locale, state === 'recovering' ? 'startup.banner.recovering' : 'startup.banner.failed'));
         expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeDisabled();
         expect(input).toHaveValue('Retain this exact draft');
         expect(input).toHaveFocus();
@@ -463,7 +466,7 @@ describe('ThreadsPage composer across a locale switch', () => {
         expect(uploads).toBe(0);
       }
       await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth()); });
-      expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeEnabled();
+      await waitFor(() => expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeEnabled());
       expect(input).toHaveValue('Retain this exact draft');
       expect(input).toHaveFocus();
       expect([input.selectionStart, input.selectionEnd]).toEqual([2, 9]);

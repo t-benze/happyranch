@@ -170,7 +170,7 @@ describe('AddOrgDialog', () => {
         <LocaleTestSwitch to="zh-CN" />
         <LocaleTestSwitch to="en" />
       </>,
-      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+      { route: '/', queryClient: readyClient(), i18n: { adapter: savedLocaleAdapter('en') } },
     );
 
     const input = screen.getByLabelText('Slug');
@@ -226,7 +226,7 @@ describe('AddOrgDialog', () => {
         <AddOrgDialog open onOpenChange={() => undefined} />
         <LocaleTestSwitch to="zh-CN" />
       </>,
-      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+      { route: '/', queryClient: readyClient(), i18n: { adapter: savedLocaleAdapter('en') } },
     );
     fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'my-org' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -244,7 +244,7 @@ describe('AddOrgDialog', () => {
         <AddOrgDialog open onOpenChange={() => undefined} />
         <LocaleTestSwitch to="zh-CN" />
       </>,
-      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+      { route: '/', queryClient: readyClient(), i18n: { adapter: savedLocaleAdapter('en') } },
     );
     fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'raw-slug' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));

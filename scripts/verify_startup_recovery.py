@@ -237,6 +237,17 @@ def seed(checks):
                 from uuid import uuid4
                 db.bind_authority_policy_v2_process_boot_id(str(uuid4()))
                 seed_counter(db)
+                # Match a cold startup connection, rather than retaining the
+                # schema constructor's TEMP schema. Its presence deliberately
+                # disables sharing in the production reader's bookend check.
+                db.close()
+                db = Database(org_root / "happyranch.db")
+                checks.details["C12_connection"] = {
+                    "databases": [tuple(row) for row in db._conn.execute("PRAGMA database_list")],
+                    "in_transaction": db._conn.in_transaction,
+                    "isolation_level": db._conn.isolation_level,
+                    "autocommit": db._conn.autocommit,
+                }
                 counters(checks, db)
             if checks.args.case != "C12":
                 db.insert_thread(ThreadRecord(id="THR-001", subject="Owned recovery transcript"))
@@ -323,6 +334,7 @@ async def serving(checks, runtime):
                 return await self.app(scope, receive, send)
             row = {"method": scope["method"], "raw_path": scope["raw_path"].decode("ascii"),
                    "path": scope["path"], "query": scope["query_string"].decode("ascii"),
+                   "case": dict(scope["headers"]).get(b"x-startup-case", b"").decode("ascii"),
                    "receive_calls": 0}
             wire.append(row)
             if len(wire) > 1024:
@@ -399,21 +411,32 @@ async def serving(checks, runtime):
                 checks.require("C03_direct_gate_refuses", False)
             if checks.args.http_inventory:
                 entries = json.loads(checks.args.http_inventory.read_text())["entries"]
-                for entry in entries:
-                    if not entry["early"].startswith("held:"):
-                        checks.missing(entry["id"], "full original-auth/content oracle not selected by this probe")
-                        continue
+                async def observe_held(entry):
                     # Real loopback request with a bounded body. This observes
                     # status/code only; the separate prebody oracle is not
                     # inferred from it and remains explicit below.
                     response = await client.request(entry["method"], request_path(entry["path"]),
-                                                    content=b"{}", headers={"Content-Type": "application/json"})
+                                                    content=b"{}", headers={"Content-Type": "application/json",
+                                                                             "X-Startup-Case": entry["id"]})
                     checks.require(entry["id"] + "_held_status", response.status_code, 503)
                     checks.require(entry["id"] + "_held_code",
                                    response.json().get("detail", {}).get("code"), "daemon_recovering")
-                    checks.require(entry["id"] + "_prebody_receive_zero", wire[-1]["receive_calls"], 0)
+                    matching = [row for row in wire if row["case"] == entry["id"]]
+                    checks.require(entry["id"] + "_one_observed_request", len(matching), 1)
+                    if len(matching) == 1:
+                        checks.require(entry["id"] + "_prebody_receive_zero", matching[0]["receive_calls"], 0)
                     checks.missing(entry["id"] + "_ready_outcome",
                                    "held refusal does not establish original post-ready handler")
+                held_entries = []
+                for entry in entries:
+                    if entry["early"].startswith("held:"):
+                        held_entries.append(entry)
+                    else:
+                        checks.missing(entry["id"], "full original-auth/content oracle not selected by this probe")
+                # Eight is the ORIGINAL concurrent-request ceiling. Serial
+                # batches avoid extending or replenishing the native hold.
+                for offset in range(0, len(held_entries), 8):
+                    await asyncio.gather(*(observe_held(entry) for entry in held_entries[offset:offset + 8]))
             checks.require("C02_held_all_original_rows_unchanged", database_observation(runtime), before)
             checks.details["wire"] = wire
             release.set()

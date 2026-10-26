@@ -7,7 +7,7 @@
  * `LocaleTestSwitch` controls — never a public selector.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 
 import { AppRoutes } from '@/routes';
@@ -130,12 +130,12 @@ describe('startup banner locale and held route', () => {
       fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
       expect(screen.getByText(translate('zh-CN', 'startup.banner.recovering'))).toBeInTheDocument();
       await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth('recovery_failed')); });
-      expect(screen.getByText(translate('zh-CN', 'startup.banner.failed'))).toBeInTheDocument();
+      await screen.findByText(translate('zh-CN', 'startup.banner.failed'));
       expect(screen.getByText('daemon_recovery_failed')).toBeInTheDocument();
       await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth('stopped')); });
-      expect(screen.getByText(translate('zh-CN', 'startup.banner.stopping'))).toBeInTheDocument();
+      await screen.findByText(translate('zh-CN', 'startup.banner.stopping'));
       await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth()); });
-      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
       expect(requests).toEqual([]);
     } finally {
       server.events.removeListener('request:start', record);

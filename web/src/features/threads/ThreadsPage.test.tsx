@@ -9,7 +9,7 @@ import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import { stubReadyHealth } from '@/test/startup';
+import { seedReadyHealth, stubReadyHealth } from '@/test/startup';
 
 const SLUG = 'alpha';
 
@@ -55,6 +55,7 @@ function mountAt(route: string) {
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: 'beta', root: '/y' }] }),
     ),
+    http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ identities: [] })),
     http.get('/api/v1/orgs/:slug/agents', () =>
       HttpResponse.json({ agents: [] }),
     ),
@@ -64,7 +65,9 @@ function mountAt(route: string) {
       org_age_days: 0, server_now: '2026-10-07T00:00:00Z', generated_at: null,
     })),
   );
-  return renderWithProviders(<AppRoutes />, { route });
+  const client = makeQueryClient();
+  seedReadyHealth(client);
+  return renderWithProviders(<AppRoutes />, { route, queryClient: client });
 }
 
 function mountRouteHistory(route: string) {
@@ -72,6 +75,7 @@ function mountRouteHistory(route: string) {
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: 'beta', root: '/y' }] }),
     ),
+    http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ identities: [] })),
     http.get('/api/v1/orgs/:slug/agents', () =>
       HttpResponse.json({ agents: [] }),
     ),
@@ -84,6 +88,7 @@ function mountRouteHistory(route: string) {
     }
   };
   const client = makeQueryClient();
+  seedReadyHealth(client);
   const router = createMemoryRouter(
     [{ path: '*', element: <AppProvider client={client}><I18nTestBoundary><AppRoutes /></I18nTestBoundary></AppProvider> }],
     { initialEntries: [route] },
