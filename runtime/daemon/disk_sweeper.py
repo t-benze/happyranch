@@ -368,7 +368,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
         validate_task_scratch_manifest(read_json(manifest, deadline), expected_task_id=task_id, expected_root=path)
     else:
         git_identity = _worktree_gate(candidate, deadline)
-    tree = snapshot(path, deadline)
+    tree = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     import stat
     links = Counter(identity(s) for s in tree.values())
     if any(not stat.S_ISDIR(s.st_mode) and s.st_nlink > links[identity(s)] for s in tree.values()):
@@ -385,13 +385,11 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
             age_stat = previous
         if max(age_stat.st_mtime, age_stat.st_ctime) > cutoff:
             raise Retain('changed_within_hour')
-    if candidate['phase'] == 'scratch' and any(Path(p).name == '.git' for p in tree):
-        raise Retain('unknown_repository_in_scratch')
     # Re-read durable state after slow filesystem/Git observations.
     evidence.ownership(path, workspace, task_id)
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
         raise Retain('git_identity_changed_during_admission')
-    latest = snapshot(path, deadline)
+    latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
     if {k: signature(v) for k, v in latest.items()} != {k: signature(v) for k, v in tree.items()}:
         raise Retain('tree_changed_during_admission')
     check(deadline)
@@ -605,7 +603,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
                     mutation_started = True
-                    mutate(Path(candidate['path']), fresh, deadline, remove=True)
+                    mutate(Path(candidate['path']), fresh, deadline, remove=True, scratch=True)
                 else:
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
                     # Last local metadata check after fresh tree comparisons;

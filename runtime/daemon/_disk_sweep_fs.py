@@ -79,12 +79,14 @@ def mounts(deadline: float) -> set[str]:
     return result
 
 
-def snapshot(path: Path, deadline: float) -> dict[str, os.stat_result]:
+def snapshot(path: Path, deadline: float, *, scratch: bool = False) -> dict[str, os.stat_result]:
     """Complete no-follow tree stat, including root; ctime AND mtime age.
 
     ctime detects recent writes/chmods even when mtime was backdated; atime is
     deliberately excluded because this observation itself may update atime.
-    Any unreadable descendant or special object refuses the whole candidate.
+    Unreadable descendants and special objects refuse the whole candidate.
+    Only task scratch admits sockets/FIFOs as metadata-only disposable entries;
+    Git metadata and worktree callers retain the strict default.
     """
     mountpoints = mounts(deadline)
     result = {}
@@ -112,7 +114,8 @@ def snapshot(path: Path, deadline: float) -> dict[str, os.stat_result]:
                         walk(child, rel)
                     finally:
                         os.close(child)
-                elif stat.S_ISREG(s.st_mode) or stat.S_ISLNK(s.st_mode):
+                elif (stat.S_ISREG(s.st_mode) or stat.S_ISLNK(s.st_mode)
+                      or scratch and (stat.S_ISSOCK(s.st_mode) or stat.S_ISFIFO(s.st_mode))):
                     result[rel] = s
                 else:
                     raise Retain('unknown_special_entry')
@@ -136,12 +139,14 @@ def allocated(tree: dict[str, os.stat_result], seen: set[tuple]) -> tuple[int, i
     return total, exclusive
 
 
-def mutate(path: Path, tree: dict, deadline: float, *, remove: bool) -> dict:
+def mutate(path: Path, tree: dict, deadline: float, *, remove: bool, scratch: bool = False) -> dict:
     """One admitted operation: contained permission repair and optional removal.
 
     The caller refreshes ALL common gates immediately before entry. Each
     syscall rechecks the recorded inode and device. No external-link chmod,
     recursion into links, generic rm or unbounded chmod subprocess is used.
+    The scratch-only socket/FIFO policy matches snapshot; O_PATH descriptors
+    observe inodes only, with no endpoint/content I/O or permission repair.
     """
     repairs = {}
     own_inode_updates = {}
@@ -160,6 +165,10 @@ def mutate(path: Path, tree: dict, deadline: float, *, remove: bool) -> dict:
                 raise Retain('tree_changed_before_mutation')
             if str(path / relative) in mountpoints or current.st_dev != original.st_dev:
                 raise Retain('filesystem_boundary')
+            if not (stat.S_ISDIR(current.st_mode) or stat.S_ISREG(current.st_mode)
+                    or stat.S_ISLNK(current.st_mode)
+                    or scratch and (stat.S_ISSOCK(current.st_mode) or stat.S_ISFIFO(current.st_mode))):
+                raise Retain('unknown_special_entry')
             if stat.S_ISDIR(current.st_mode):
                 fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
                 try:
