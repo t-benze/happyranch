@@ -61,6 +61,22 @@ existing independent content/source/completion readers accept them. Global FAIL,
 strict completed.join_results/full56, false cleanup/export and first-cause/error
 history remain controlling.
 
+The current B09-B12/A02 correction supersedes older blanket variants={} and
+all-or-nothing collection/export descriptions below only at these bounded
+failure-preservation seams. Historical receipts and narrower controls keep their
+original attribution. `failure_result_controls` additionally uses unchanged real
+Controller.prepare_redaction/_atomic_text/_atomic_json/stage_small_evidence and
+the shipping collect_evidence/publish_evidence/failure_receipt/publish_failure
+operations on literal disposable files. The escaped quote+LF negative asserts
+unredacted source bytes before collection, then unsafe member/output/pending
+absence, exact safe siblings and decoded-safe committed FAIL. The separate
+literal positive and public-v1/unsafe-newer case preserve prior commits. Ordinary
+file/replace failures exercise sibling continuation and actual commit accounting.
+These component controls do not establish native main ordering, signal races,
+cleanup/ownership, independent browser evidence or full-reader acceptance.
+Unsupported OS/interleaving proofs remain NOT RUN/PROOF NOT RUN. All original
+full-content/source/completed/browser predicates and strict Health remain.
+
 The eight historical Request/document/relay/Response joins still lack exact
 issuing observations. Callback timestamps and earlier same-URL records do not
 supply that identity. BrokenPipe/physically zero owners do not establish the
@@ -600,18 +616,43 @@ exceed60s; timeout fails honestly and retains observed ownership, without a
 claim of absence. If cleanup fails, export may read partial diagnostics but
 performs no more teardown or actions.
 
-The first nonempty readable daemon token remains the redaction context through
-partial data removal; later collection cannot erase it or replace sanitized
-staging with raw text. If no trustworthy context was captured (missing, empty
-or unreadable token), raw diagnostics and the detailed receipt are withheld.
-Known-safe staging is retained where available; bounded incomplete metadata
-has variants={} and reports FAIL, even when owned-root cleanup succeeds. This
-failure path does not establish complete evidence or runtime sanitation safety.
+Detailed collection requires the literal owned root/identity, the complete
+original nonempty redaction context containing its daemon token, and the same
+original phase end. A later actual context read must equal the retained context;
+partial, changed or unsafe context never replaces it. Without a safe projection,
+the bounded FAIL has variants={} and no invented groups. A fully detached earlier
+safe scenario survives later refusal; it remains an unvalidated producer claim.
+
+Collection stays scenario-first: its single bounded read, UTF8 byte guard,
+decode and full projection precede the existing raw enumeration. Ordinary
+scenario absence/open/read/Unicode/capacity/decode/projection refusal reserves
+its original first error/traceback/category/diagnostic claim before independent
+raw acquisition. Ordinary member failure preserves safe siblings and earlier
+staging. Enumeration failure ends that enumeration without retry. Timeout and
+interruption precede OSError; UnicodeError precedes ValueError. Unsafe root,
+context or destination, sanitation failure, expired allowance and unexpected
+BaseException latch a fatal detailed-I/O stop: no further detailed acquisition,
+drain or export recollection. Existing independently guarded teardown order
+remains. A category alone grants no continuation, and slow errors cannot renew
+the original allowance. These are cooperative checks, without hard OS-I/O/RSS
+bounds.
+
+At the existing returned .txt/.json/.jsonl buffer, any U+005C (backslash)
+withholds the WHOLE candidate before sanitation, encoding or staging. This
+conservatively refuses benign escapes/backslash paths too. Under intact
+eligibility it is the fixed ordinary REDACT/VALUE refusal. Literal admitted text
+still traverses the original full-context redactor and must contain neither a
+backslash nor a nonempty original secret afterward; sanitation exceptions or
+failed postconditions are fatal. No alternate decoding/parser or arbitrary
+encoding/image-sanitation guarantee is added. PNG custody is unchanged. A
+refused newer candidate never reaches output/pending bytes or replaces an older
+safe commit. Old staged presence never clears sticky incompleteness or supplies
+new full-content equality. Required missing/stale content stays FAIL/UNKNOWN.
 
 Export has its own end `min(export entry + 120, original start + 900)`.
-It writes a metadata-only FAIL first, then sanitized detailed artifacts and
+It attempts a closed FAIL first, then sanitized detailed artifacts and
 the final receipt, keeping the last second of that same allowance for a bounded
-failure receipt. Each metadata-only receipt copies timing with cleanup.ok=false
+failure receipt. Each closed failure receipt copies timing with cleanup.ok=false
 alongside its false cleanup flag; it cannot certify incomplete detail as cleanup
 acceptance. This copy does not rewrite an actually complete in-memory cleanup
 outcome. Serialization, sanitation, required-detail checks and the pending-file
@@ -625,9 +666,19 @@ an actually published initial FAIL when replacement does not commit; failed
 initial persistence is never claimed as a remote receipt. The existing bounded
 FAIL fallback restores the alarm and checks the original export end before
 replacement; success does not depend on that write. Export failure is sticky.
-Recollection is read-only, never teardown, and cannot erase prior
-staging/closure/cleanup failure. Incomplete detail still publishes variants={},
-with both cleanup flags false, even if safe partial members were written.
+The two original staged-publication passes surround the original conditional
+read-only recollection. Ordinary collection/export failure is deferred so newly
+admitted safe bytes retain their second-pass opportunity; fatal loss stops the
+drain. No publication handler acquires a source. Unchanged committed bytes are
+skipped; a failed member is never retried by the second pass. Same-directory
+sanitized pending bytes precede eligibility checking and replacement, preserving
+a prior committed member on precommit failure. Pending bytes earn no credit.
+An ordinary initial FAIL write refusal also leaves independent safe members
+eligible. Only actual replacement establishes result persistence; if neither
+FAIL attempt commits, the result is unavailable. Recollection cannot erase prior
+staging/closure/cleanup failure. Incomplete FAIL uses only detached safe scenario
+fields (or variants={} before any safe projection), with both cleanup flags
+false, even if safe partial members were written.
 Known serialization, missing-data or precommit expiry failures cannot admit PASS.
 No fresh120s is granted after900. Fractional `setitimer` alarms enforce positive
 remainders without integer truncation. Timing receipts retain original ends,
@@ -640,6 +691,25 @@ by a crash; there is no postcommit rollback, hard OS-I/O timing, fsync or crash
 durability guarantee. Hosted upload shares the remaining outer900s/15-minute job
 envelope; a terminal launcher commit does not establish upload or actual product
 acceptance.
+
+The one optional collection fd2 opportunity preserves the prefix
+`HRD1:C:<CLEANUP|EXPORT>:<WINDOW>:<F|U>` and appends exactly
+`:D1:<OP>:<REASON>:<CHARS>:<UTF8_BYTES>\n`, within512 bytes. OP is ROOT,
+TOKEN_READ, TOKEN_EMPTY, CONTEXT_PRESENT, CONTEXT_READ, CONTEXT_DECODE,
+CONTEXT_VALIDATE, SCENARIO_PRESENT, SCENARIO_OPEN, SCENARIO_READ, SCENARIO_UTF8,
+SCENARIO_CAPACITY, SCENARIO_DECODE, SCENARIO_PROJECT, RAW_ENUM, TEXT_READ,
+REDACT, TEXT_UTF8, IMAGE_READ, REQUIRED or UNKNOWN. Scenario open/UTF8/capacity
+retain WINDOW=SCENARIO_READ; project uses SCENARIO_MERGE; TEXT_UTF8 uses REDACT.
+REASON is IO, UNICODE, VALUE, CAPACITY, DECODE, MISSING, UNSAFE, DEADLINE,
+INTERRUPTION, OTHER or UNKNOWN. Counts are U until the respective single bounded
+scenario read/encoding returns, then canonical nonnegative decimals (characters
+<=8388609, UTF8 bytes<=33554436). They describe only the RETURNED SLICE, never
+complete-file size or raw-member lengths. The real first claim freezes facts;
+an earlier completed-ledger failure stays UNKNOWN rather than adopting later
+scenario facts. Claim and output are charged before optional write eligibility;
+failed/short/unavailable output has no retry. No text/path/URL/exception/secret
+excerpt or new resource enters the suffix. Old lines without D1 keep their old
+broad meaning; absent diagnostics supply no acceptance or historical inference.
 
 The optional `result.json.failure_categories` is a closed primitive-only channel,
 independent of raw detail sanitation. It is omitted without an admitted lowercase
@@ -1034,7 +1104,8 @@ only through its immediate reviewed caller. The saved walk is at most32 TB
 nodes; missing/unrecognized leaf/caller or overflow yields UN without guessing
 an ancestor. No frame/text/locals/path/context/error/clock/token is exported.
 Same-source `_diagnostic_packet` refuses old21-byte HRD1:S packets; retained
-old logs keep their original meaning. HRD1:C collection markers are unchanged.
+old logs keep their original meaning. HRD1:C retains its original prefix; the
+current optional D1 suffix is defined above.
 
 BB=01..1F labels effective-minimum ties among actual present G=01,C=02,L=04,
 O=08,I=10 owners. Absent fallback attributes own no tie; only original inactive
@@ -1089,7 +1160,8 @@ Each complete eligible observation consumes ONE <=512B fixed-ASCII unbuffered
 `os.write(2,line)` opportunity to unchanged inherited launcher fd2. Existing
 regular cancellation launcher.log and blocking native pipe are permitted.
 Controller lines use `HRD1:controller:` plus the exact packet; collection lines
-are `HRD1:C:CLEANUP:LL:K\n` or `HRD1:C:EXPORT:LL:K\n`, K=F/U. LL is ROOT,
+historically are `HRD1:C:CLEANUP:LL:K\n` or `HRD1:C:EXPORT:LL:K\n`, K=F/U;
+new collection lines append the bounded D1 suffix defined above. LL is ROOT,
 TOKEN_READ,TOKEN_EMPTY,CONTEXT_PRESENT,CONTEXT_READ,CONTEXT_DECODE,
 CONTEXT_VALIDATE,SCENARIO_PRESENT,SCENARIO_READ,SCENARIO_DECODE,SCENARIO_MERGE,
 RAW_ENUM,TEXT_READ,REDACT,IMAGE_READ,REQUIRED,UNKNOWN. Labels describe completed

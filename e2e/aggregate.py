@@ -100,7 +100,7 @@ def controls() -> dict:
 
 
 def failure_result_controls() -> dict:
-    """Real detached projection only; native cleanup/export failure NOT RUN."""
+    """Projection and real disposable-file shipping seams; native behavior NOT RUN."""
     secret = 'PRIVATE_SENTINEL"\n'
     original = dict(variants={'E05.compose-race':dict(status='FAIL',error=secret)},
         scenario_phases=[], e07=None,
@@ -157,6 +157,306 @@ def failure_result_controls() -> dict:
     # native final failure actually reached failure_receipt or was published.
     assert safe == expected
     results['B09-B12-redaction-refused'] = 'projection refuses; previous detached bytes unchanged'
+    # Real writer -> literal files -> shipping collection/publication -> FAIL.
+    # These incomplete synthetic claims are never native/browser receipts.
+    import tempfile
+    import time
+    import shutil
+    from typing import Iterator
+    from contextlib import contextmanager
+    from controller import Controller
+    from run import (collect_evidence, publish_evidence, failure_receipt, publish_failure,
+                     _collection_line, _ordinary_evidence_error, _failure_error)
+
+    @contextmanager
+    def fixture() -> Iterator[tuple]:
+        with tempfile.TemporaryDirectory(prefix="e2e-failure-result-") as temporary:
+            base = Path(temporary)
+            root, output = base / "source", base / "output"
+            root.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+            for name in ("raw", "coord", "daemon"):
+                (root / name).mkdir(mode=0o700)
+            token = 'SYNTHETIC_TOKEN'
+            context = [token, secret]
+            (root / 'daemon/daemon.token').write_text(token)
+            (root / 'coord/redaction-context.json').write_text(json.dumps(context))
+            controller = Controller.__new__(Controller)
+            controller.root, controller.token, controller.secrets = root, token, {secret}
+            controller.threads_active = False
+            controller.prepare_redaction()  # Never manually assert readiness.
+            controller.results = {'E05.compose-race':dict(status='FAIL',error=secret)}
+            controller.phases, controller.failures = [], copy.deepcopy(expected['failures'])
+            controller.groups = copy.deepcopy(expected['groups'])
+            controller.e07_admission = copy.deepcopy(expected['e07_admission'])
+            controller.finalization = copy.deepcopy(expected['finalization'])
+            controller.browser, controller.primary_error = None, None
+            controller.stage_small_evidence()
+            assert (root / 'scenario.json').is_file(), 'real stage_small_evidence did not write scenario'
+            controller._atomic_text(root / 'raw/failure.txt', 'safe before ' + secret + ' after\n')
+            controller._atomic_json(root / 'raw/safe.json', {'sample':'public'})
+            info, output_info = root.stat(), output.stat()
+            state = dict(token='',context=[],safe_scenario=dict(variants={}),fatal=False)
+            staged, published, failed_members, failures, export_errors = {}, {}, set(), [], []
+            row = dict(source_sha='1'*40,python='3.14',cleanup=dict(ok=True),
+                       signals=[],phases=[],timing=dict(cleanup=dict(ok=True)))
+            end = time.monotonic() + 30
+
+            def check() -> None:
+                if time.monotonic() >= end:
+                    raise TimeoutError('control original allowance exhausted')
+
+            def failed(error: BaseException | None, *, category: str, annotation: tuple) -> None:
+                failures.append((error, error.__traceback__ if error else None, category, state['window'], annotation))
+
+            def acquire() -> tuple:
+                return collect_evidence(root,(info.st_dev,info.st_ino),row,'baseline',staged,state,check,failed)
+
+            def drain() -> None:
+                publish_evidence(output,(output_info.st_dev,output_info.st_ino),staged,published,failed_members,
+                                 state,check,export_errors.append)
+
+            def commit() -> dict:
+                value = failure_receipt(row,state['safe_scenario'],{},None,None,'baseline',time.monotonic())
+                publish_failure(output,(output_info.st_dev,output_info.st_ino),value,check)
+                return json.loads((output / 'result.json').read_text())
+
+            yield (controller,root,output,state,staged,published,failed_members,failures,export_errors,
+                   row,check,acquire,drain,commit)
+
+    for case in ('R1a','R1b-missing','R1b-decode','R1c-txt','R1c-jsonl','R1c-malformed'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
+            # Independent literal oracle precedes the claimed collector seam.
+            assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+            if case == 'R1b-missing':
+                (root / 'scenario.json').unlink()
+            elif case == 'R1b-decode':
+                (root / 'scenario.json').write_text('{')
+            if case.startswith('R1c'):
+                name = 'unsupported.jsonl' if case == 'R1c-jsonl' else 'unsupported.txt'
+                writer._atomic_text(root / 'raw' / name, '{\\' if case == 'R1c-malformed' else 'public\\path\n')
+            complete, error = acquire()
+            drain()
+            value = commit()
+            assert not (output / 'observations.json').exists(), 'escaped raw observations unexpectedly published'
+            assert not errors and 'observations.json' not in staged
+            assert not (output / 'observations.json.tmp').exists()
+            assert (output / 'failure.txt').is_file(), 'ordinary refusal suppressed safe raw sibling'
+            assert not complete and not state['fatal'] and error is not None
+            assert (output / 'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            assert (output / 'safe.json').read_bytes() == b'{\n  "sample": "public"\n}'
+            assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False and value['timing']['cleanup']['ok'] is False
+            if case.startswith('R1b'):
+                assert value['variants'] == {} and 'groups' not in value
+                first = failures[0]
+                assert first[3] == ('SCENARIO_PRESENT' if case.endswith('missing') else 'SCENARIO_DECODE')
+                assert (first[0] is None if case.endswith('missing') else isinstance(first[0],json.JSONDecodeError))
+                assert first[1] is None if first[0] is None else first[1] is not None
+            else:
+                assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
+                for key in ('groups','e07_admission','failures','finalization','scenario_phases'):
+                    assert value[key] == expected[key]
+                assert failures[0][3] == 'REDACT'
+                assert failures[0][4][:2] == ('REDACT','VALUE')
+            if case.startswith('R1c'):
+                assert name not in staged and not (output/name).exists()
+            assert 'PRIVATE_SENTINEL' not in (output / 'result.json').read_text()
+            assert _collection_line('cleanup',failures[0][3],'F' if failures[0][0] else 'U',failures[0][4]).startswith(b'HRD1:C:CLEANUP:')
+            results['B09-B12-'+case] = 'literal source proven; unsafe raw withheld; safe siblings and actual FAIL committed'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        writer._atomic_json(root / 'raw/observations.json', {'sample':'public-v1'})
+        acquire(); drain(); commit()
+        earlier = (output / 'result.json').read_bytes()
+        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        snapshot = copy.deepcopy(state['safe_scenario'])
+        writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
+        assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+        (root / 'scenario.json').write_text('{')
+        writer._atomic_text(root / 'raw/new.txt','new safe sibling\n')
+        complete, error = acquire()  # Only the second original opportunity.
+        drain()
+        assert not complete and error is not None and state['safe_scenario'] == snapshot
+        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert not (output / 'observations.json.tmp').exists()
+        assert (output / 'new.txt').read_bytes() == b'new safe sibling\n'
+        # Genuine later serialization refusal leaves the initial actual result.
+        try:
+            publish_failure(output,(output.stat().st_dev,output.stat().st_ino),dict(bad=object()),check)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError('unserializable later result accepted')
+        assert (output / 'result.json').read_bytes() == earlier
+        results['B09-B12-R1d'] = 'old commit/snapshot exact; new safe sibling drained after later refusal; earlier FAIL exact'
+
+    # Complete-safe presence positive and empty-required negatives are distinct
+    # from the escaped source. None supplies native/content acceptance.
+    for empty in (None, 'observations.json', 'lifecycle.png'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            for name in BASELINE_ARTIFACTS:
+                if name.endswith('.png'):
+                    (root/'raw'/name).write_bytes(b'unchanged synthetic image bytes')
+                elif name.endswith('.jsonl'):
+                    writer._atomic_text(root/'raw'/name,'{}\n')
+                elif name.endswith('.json'):
+                    writer._atomic_json(root/'raw'/name,{'sample':'public'})
+                else:
+                    writer._atomic_text(root/'raw'/name,'safe log\n')
+            if empty is not None:
+                (root/'raw'/empty).write_bytes(b'')
+            complete, error = acquire(); drain(); value = commit()
+            assert complete is (empty is None) and error is None and not errors
+            assert failures == [] if empty is None else failures[0][3] == 'REQUIRED'
+            assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
+            if empty != 'observations.json':
+                assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public"\n}'
+            assert value['status'] == 'FAIL'
+            results['B09-B11-complete-safe-file' if empty is None else 'B09-B11-empty-required-'+empty] = 'actual safe presence/required emptiness and decoded FAIL publication; no native acceptance'
+
+    for case in ('valid-empty','zero-byte','absent','open-directory','invalid-utf8','missing-variants','non-object',
+                 'nonfinite','key-collision','deep','exact-cap','over-cap','multibyte-cap','long-prefix','raw-directory'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root / 'scenario.json'
+            if case == 'valid-empty': path.write_text('{"variants":{}}')
+            elif case == 'zero-byte': path.write_bytes(b'')
+            elif case == 'absent': path.unlink()
+            elif case == 'open-directory': path.unlink(); path.mkdir()
+            elif case == 'invalid-utf8': path.write_bytes(b'\xff')
+            elif case == 'missing-variants': path.write_text('{}')
+            elif case == 'non-object': path.write_text('[]')
+            elif case == 'nonfinite': path.write_text('{"variants":{},"failures":[NaN]}')
+            elif case == 'key-collision': path.write_text('{"variants":{},"groups":{"SYNTHETIC_TOKEN":1,"[REDACTED]":2}}')
+            elif case == 'deep': path.write_text('{"variants":{},"groups":' + '['*65 + 'null' + ']'*65 + '}')
+            elif case == 'exact-cap': path.write_text('{"variants":{}}' + ' '*(8388608-15))
+            elif case == 'over-cap': path.write_text('x'*8388609)
+            elif case == 'multibyte-cap': path.write_text('é'*4194305)
+            elif case == 'long-prefix': path.write_text('x'*8388619)
+            elif case == 'raw-directory': (root/'raw/broken.txt').mkdir()
+            (root/'raw/empty.txt').write_bytes(b'')
+            complete, error = acquire(); drain(); value = commit()
+            assert not complete and not state['fatal'] and not errors
+            assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            assert (output/'empty.txt').read_bytes() == b''
+            assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False
+            first = failures[0]
+            if case in ('valid-empty','exact-cap','raw-directory'):
+                assert value['variants'] == ({} if case != 'raw-directory' else {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}})
+                assert first[3] == ('TEXT_READ' if case == 'raw-directory' else 'REQUIRED')
+            elif case in ('over-cap','multibyte-cap','long-prefix'):
+                assert first[4][:2] == ('SCENARIO_CAPACITY','CAPACITY')
+                assert first[4][2:] == ((4194305,8388610) if case == 'multibyte-cap' else (8388609,8388609))
+            elif case in ('open-directory','invalid-utf8'):
+                assert first[4] == (('SCENARIO_OPEN','IO','U','U') if case == 'open-directory' else ('SCENARIO_READ','UNICODE','U','U'))
+            assert first[0] is error[0] if error is not None else first[0] is None
+            results['B09-B12-file-'+case] = 'real ordinary refusal/presence with independent sibling output and sticky FAIL'
+
+    for case in ('missing-token','empty-token','token-directory','missing-context','context-directory','malformed-context','not-list','incomplete-context',
+                 'changed-context','root-drift','marker-overlap','deadline','interruption'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            if case == 'missing-token': (root/'daemon/daemon.token').unlink()
+            elif case == 'empty-token': (root/'daemon/daemon.token').write_text('')
+            elif case == 'token-directory': (root/'daemon/daemon.token').unlink(); (root/'daemon/daemon.token').mkdir()
+            elif case == 'missing-context': (root/'coord/redaction-context.json').unlink()
+            elif case == 'context-directory': (root/'coord/redaction-context.json').unlink(); (root/'coord/redaction-context.json').mkdir()
+            elif case == 'malformed-context': (root/'coord/redaction-context.json').write_text('{')
+            elif case == 'not-list': (root/'coord/redaction-context.json').write_text('{}')
+            elif case == 'incomplete-context': (root/'coord/redaction-context.json').write_text('["wrong"]')
+            elif case == 'changed-context':
+                acquire()  # Retain the actual first complete context, not invented readiness.
+                (root/'coord/redaction-context.json').write_text('["SYNTHETIC_TOKEN","changed"]')
+            elif case == 'root-drift':
+                root.rename(root.with_name('original'))
+                shutil.copytree(root.with_name('original'),root)  # Valid context; only identity differs.
+            elif case == 'marker-overlap':
+                (root/'coord/redaction-context.json').write_text('["SYNTHETIC_TOKEN","REDACTED"]')
+                writer._atomic_text(root/'raw/safe.json','REDACTED')
+            try:
+                if case in ('deadline','interruption'):
+                    def stopped() -> None:
+                        raise TimeoutError('original allowance') if case == 'deadline' else InterruptedError('original interruption')
+                    collect_evidence(root,(root.stat().st_dev,root.stat().st_ino),row,'baseline',staged,state,stopped,
+                                     lambda error,**kw: failures.append((error,error.__traceback__,kw['category'],state['window'],kw['annotation'])))
+                else:
+                    acquire()
+            except BaseException as exc:
+                assert state['fatal'] and failures
+                if case == 'root-drift':
+                    assert str(exc) == 'owned evidence root identity changed'
+                assert _failure_error(exc) == ('timeout' if case == 'deadline' else 'interruption') if case in ('deadline','interruption') else True
+            else:
+                raise AssertionError('unsafe detailed collection admitted: '+case)
+            before = dict(staged)
+            try: drain()
+            except ValueError: pass
+            else: raise AssertionError('fatal state drained')
+            assert staged == before and not list(output.iterdir())
+            results['B10-B12-fatal-'+case] = 'actual safety/check stop; detailed publisher refused'
+
+    # Ordinary replace errors and actual result writes, without permission/fault knobs.
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        staged.update({'blocked.txt':b'safe blocked\n','sibling.txt':b'safe sibling\n'})
+        (output/'blocked.txt').mkdir()
+        drain()
+        assert len(errors) == 1 and failed_members == {'blocked.txt'}
+        assert (output/'sibling.txt').read_bytes() == b'safe sibling\n'
+        drain()
+        assert len(errors) == 1, 'second pass retried failed output member'
+        assert (output/'blocked.txt.tmp').read_bytes() == b'safe blocked\n'
+        results['B10-B11-output-member'] = 'ordinary replace refusal; safe sibling committed; failed member not retried'
+
+    for case in ('initial-failed-final-committed','both-results-unavailable'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            (output/'result.json').mkdir()
+            try: commit()
+            except IsADirectoryError: pass
+            else: raise AssertionError('initial result falsely committed')
+            staged['safe.txt'] = b'independent safe bytes\n'
+            drain()
+            assert (output/'safe.txt').read_bytes() == b'independent safe bytes\n'
+            if case == 'initial-failed-final-committed':
+                (output/'result.json').rmdir()
+                assert commit()['status'] == 'FAIL'
+            else:
+                try: commit()
+                except IsADirectoryError: pass
+                else: raise AssertionError('unavailable result falsely committed')
+                assert not (output/'result.json').is_file()
+            results['B10-B11-'+case] = 'only actual result replacement counts; independent raw bytes committed'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        writer._atomic_json(root/'raw/observations.json', {'sample':'public-v1'})
+        acquire(); drain()
+        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        writer._atomic_json(root/'raw/observations.json', {'sample':'public-v2'})
+        acquire()  # Original second acquisition, no extra source.
+        (output/'observations.json.tmp').mkdir()
+        drain()
+        assert len(errors) == 1 and 'observations.json' in failed_members
+        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert published['observations.json'] == b'{\n  "sample": "public-v1"\n}'
+        results['B10-B11-prior-member-precommit'] = 'actual pending-open refusal preserves old commit without a retry'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain()
+        old = (output/'safe.json').read_bytes()
+        output.rename(output.with_name('original-output'))
+        output.symlink_to(output.with_name('original-output'), target_is_directory=True)
+        staged['new.txt'] = b'never publish after destination drift'
+        try: drain()
+        except ValueError: pass
+        else: raise AssertionError('unsafe destination admitted')
+        assert state['fatal'] and not (output/'new.txt').exists()
+        assert (output/'safe.json').read_bytes() == old
+        results['B10-B12-fatal-destination'] = 'literal destination alias refused; old safe output unchanged'
+
+    for error in (TimeoutError(),InterruptedError(),KeyboardInterrupt(),SystemExit(),GeneratorExit(),MemoryError(),RecursionError()):
+        assert not _ordinary_evidence_error(error)
+    assert _ordinary_evidence_error(UnicodeError()) and _failure_error(UnicodeError()) == 'unicode'
+    assert _collection_line('cleanup','UNKNOWN','F',('UNKNOWN','UNKNOWN','U','U')) == b'HRD1:C:CLEANUP:UNKNOWN:F:D1:UNKNOWN:UNKNOWN:U:U\n'
+    assert _collection_line('cleanup','SCENARIO_READ','F',('SCENARIO_CAPACITY','CAPACITY',8388609,33554436)) == b'HRD1:C:CLEANUP:SCENARIO_READ:F:D1:SCENARIO_CAPACITY:CAPACITY:8388609:33554436\n'
+    results['B10-B12-diagnostic-grammar'] = 'closed literal D1 and subclass precedence; native one-shot fd2 delivery NOT RUN'
     return results
 
 

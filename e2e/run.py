@@ -552,6 +552,308 @@ def scenario_fields(result: dict, sanitize: Callable[[str], str]) -> dict:
     return detached
 
 
+def redact(text: str, token: str, context: list[str]) -> str:
+    """Use only the complete original literal redaction context."""
+    if not token or not context or token not in context:
+        raise ValueError("redaction context unavailable")
+    for secret in [token, *context]:
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def _ordinary_evidence_error(error: BaseException) -> bool:
+    # Subclasses precede OSError/ValueError. Safety-state failures never call
+    # this predicate: a category alone cannot authorize continuation.
+    if isinstance(error, (TimeoutError, InterruptedError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+        return False
+    return isinstance(error, (UnicodeError, OSError, ValueError))
+
+
+def _collection_annotation(state: dict, reason: str) -> tuple:
+    return state.get("operation", "UNKNOWN"), reason, state.get("chars", "U"), state.get("utf8_bytes", "U")
+
+
+def _collection_line(phase: str, window: str, kind: str, annotation: tuple) -> bytes | None:
+    windows = ("ROOT", "TOKEN_READ", "TOKEN_EMPTY", "CONTEXT_PRESENT", "CONTEXT_READ", "CONTEXT_DECODE",
+               "CONTEXT_VALIDATE", "SCENARIO_PRESENT", "SCENARIO_READ", "SCENARIO_DECODE", "SCENARIO_MERGE",
+               "RAW_ENUM", "TEXT_READ", "REDACT", "IMAGE_READ", "REQUIRED", "UNKNOWN")
+    operations = (set(windows) - {"SCENARIO_MERGE"}) | {"SCENARIO_OPEN", "SCENARIO_UTF8", "SCENARIO_CAPACITY", "SCENARIO_PROJECT", "TEXT_UTF8"}
+    reasons = {"IO", "UNICODE", "VALUE", "CAPACITY", "DECODE", "MISSING", "UNSAFE", "DEADLINE", "INTERRUPTION", "OTHER", "UNKNOWN"}
+    operation, reason, chars, size = annotation
+    if (phase not in ("cleanup", "export") or window not in windows or kind not in ("F", "U")
+            or operation not in operations or reason not in reasons
+            or any(value != "U" and (type(value) is not int or not 0 <= value <= cap)
+                   for value, cap in ((chars, 8388609), (size, 33554436)))):
+        return None
+    return f"HRD1:C:{phase.upper()}:{window}:{kind}:D1:{operation}:{reason}:{chars}:{size}\n".encode("ascii")
+
+
+def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: dict, exercise: str,
+                     staged: dict[str, bytes], state: dict, check: Callable[[], None],
+                     failed: Callable[..., None]) -> tuple[bool, tuple | None]:
+    """Scenario first, then the SAME raw enumeration after ordinary refusal.
+
+    State retains only complete original context/snapshots and a fatal latch.
+    Failed operations reserve their real cause before diagnostics/continuation.
+    """
+    first_error = None
+    incomplete = False
+    state.update(operation="ROOT", window="ROOT", chars="U", utf8_bytes="U")
+
+    def refuse(error: BaseException | None, *, reason: str | None = None) -> None:
+        nonlocal first_error, incomplete
+        incomplete = True
+        if error is not None and first_error is None:
+            first_error = (error, error.__traceback__)
+        category = _failure_error(error) if error is not None else "other"
+        if reason is None:
+            reason = {"timeout": "DEADLINE", "interruption": "INTERRUPTION", "unicode": "UNICODE",
+                      "io": "IO", "value": "VALUE"}.get(category, "OTHER")
+        failed(error, category=category, annotation=_collection_annotation(state, reason))
+
+    def mark(operation: str) -> None:
+        state["operation"] = operation
+        state["window"] = {"SCENARIO_OPEN": "SCENARIO_READ", "SCENARIO_UTF8": "SCENARIO_READ",
+                           "SCENARIO_CAPACITY": "SCENARIO_READ", "SCENARIO_PROJECT": "SCENARIO_MERGE",
+                           "TEXT_UTF8": "REDACT"}.get(operation, operation)
+
+    try:
+        if state.get("fatal"):
+            raise ValueError("detailed evidence stopped")
+        check()
+        if root is None or root_identity is None:
+            raise ValueError("owned evidence root unavailable")
+        with _failure_directories(root, check, coord=False) as (directory, verify):
+            if tuple(root_identity) != (os.fstat(directory).st_dev, os.fstat(directory).st_ino):
+                raise ValueError("owned evidence root identity changed")
+
+            def eligible() -> None:
+                try:
+                    check()
+                    verify()
+                    if state.get("fatal"):
+                        raise ValueError("detailed evidence stopped")
+                    check()
+                except BaseException:
+                    state["fatal"] = True
+                    raise
+
+            def step(operation: str, action: Callable[[], Any]) -> Any:
+                mark(operation)
+                eligible()
+                value = action()
+                eligible()
+                return value
+
+            # Partial/moved context can never replace the original trusted list.
+            candidate_token = state.get("token", "")
+            if not candidate_token:
+                candidate_token = step("TOKEN_READ", lambda: (root / "daemon/daemon.token").read_text().strip())
+            mark("TOKEN_EMPTY")
+            if not candidate_token:
+                raise ValueError("redaction token unavailable")
+            context_path = root / "coord/redaction-context.json"
+            if not step("CONTEXT_PRESENT", context_path.exists):
+                raise ValueError("retained redaction context unavailable")
+            context_text = step("CONTEXT_READ", context_path.read_text)
+            context = step("CONTEXT_DECODE", lambda: json.loads(context_text))
+            mark("CONTEXT_VALIDATE")
+            if (type(context) is not list or not context or any(type(s) is not str or not s for s in context)
+                    or candidate_token not in context or state.get("context") and context != state["context"]):
+                raise ValueError("invalid or changed retained redaction context")
+            eligible()
+            state.update(token=candidate_token, context=context)
+
+            def sanitize(text: str) -> str:
+                try:
+                    return redact(text, state["token"], state["context"])
+                except BaseException:
+                    state["fatal"] = True
+                    raise
+
+            scenario_present = False
+            try:
+                scenario_path = root / "scenario.json"
+                scenario_present = step("SCENARIO_PRESENT", scenario_path.exists)
+                if not scenario_present:
+                    refuse(None, reason="MISSING")
+                else:
+                    scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open(encoding="utf8"))
+                    with scenario_file:
+                        # Facts are set only when each original operation returns.
+                        mark("SCENARIO_READ")
+                        eligible()
+                        scenario_text = scenario_file.read(8 * 1024 * 1024 + 1)
+                        state["chars"] = len(scenario_text)
+                        eligible()
+                    mark("SCENARIO_UTF8")
+                    eligible()
+                    encoded = scenario_text.encode("utf8")
+                    state["utf8_bytes"] = len(encoded)
+                    eligible()
+                    mark("SCENARIO_CAPACITY")
+                    if len(encoded) > 8 * 1024 * 1024:
+                        raise ValueError("scenario input capacity refused")
+                    result = step("SCENARIO_DECODE", lambda: json.loads(scenario_text))
+                    detached = step("SCENARIO_PROJECT", lambda: scenario_fields(result, sanitize))
+                    state["safe_scenario"] = detached  # Complete assignment only.
+                    receipt.update(detached)
+            except BaseException as exc:
+                fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
+                if fatal:
+                    state["fatal"] = True
+                reason = ("CAPACITY" if state["operation"] == "SCENARIO_CAPACITY" and type(exc) is ValueError
+                          else "DECODE" if state["operation"] == "SCENARIO_DECODE" and isinstance(exc, json.JSONDecodeError)
+                          else None)
+                refuse(exc, reason=reason)
+                if fatal:
+                    raise
+            eligible()  # Slow ordinary errors cannot borrow another allowance.
+            paths = iter(step("RAW_ENUM", lambda: (root / "raw").glob("*")))
+            while True:
+                try:
+                    path = step("RAW_ENUM", lambda: next(paths))
+                except StopIteration:
+                    break
+                except BaseException as exc:
+                    fatal = not _ordinary_evidence_error(exc)
+                    if fatal:
+                        state["fatal"] = True
+                    refuse(exc)
+                    if fatal:
+                        raise
+                    eligible()
+                    break  # No re-enumeration after unavailable membership.
+                try:
+                    if path.suffix in {".txt", ".json", ".jsonl"}:
+                        text = step("TEXT_READ", lambda: path.read_text(errors="replace"))
+                        mark("REDACT")
+                        eligible()
+                        if "\\" in text:
+                            raise ValueError("raw text representation withheld")
+                        safe = sanitize(text)
+                        if "\\" in safe or any(secret in safe for secret in state["context"]):
+                            state["fatal"] = True
+                            raise ValueError("unsafe raw sanitation")
+                        eligible()
+                        content = step("TEXT_UTF8", lambda: safe.encode("utf8"))
+                        staged[path.name] = content
+                    elif path.suffix == ".png":
+                        staged[path.name] = step("IMAGE_READ", path.read_bytes)
+                except BaseException as exc:
+                    fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
+                    if fatal:
+                        state["fatal"] = True
+                    refuse(exc, reason="UNSAFE" if state.get("fatal") and _ordinary_evidence_error(exc) else None)
+                    if fatal:
+                        raise
+                eligible()
+            mark("REQUIRED")
+            eligible()
+            required = (BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]]
+                        if exercise == "baseline" else ["observations.json"])
+            if not scenario_present or any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required):
+                refuse(None, reason="MISSING")
+            eligible()
+            if not incomplete:
+                mark("UNKNOWN")
+            return not incomplete, first_error
+    except BaseException as exc:
+        state["fatal"] = True
+        # Preserve an earlier actual exception; do not manufacture a replacement
+        # first claim when an optional diagnostic/eligibility check also failed.
+        if first_error is None or first_error[0] is not exc:
+            refuse(exc, reason="UNSAFE" if _ordinary_evidence_error(exc) else None)
+        raise
+
+
+def _publication_destination(output: Path, output_identity: tuple, name: str,
+                             check: Callable[[], None]) -> None:
+    with _failure_directories(output, check, coord=False, owned=False) as (directory, verify):
+        verify()
+        info = os.fstat(directory)
+        if (info.st_dev, info.st_ino) != output_identity or Path(name).name != name:
+            raise ValueError("evidence destination changed")
+        for leaf in (name, "result.tmp" if name == "result.json" else name + ".tmp"):
+            check()
+            try:
+                info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_nlink > 1 and stat.S_ISREG(info.st_mode):
+                raise ValueError("unsafe evidence destination")
+        verify()
+        check()
+
+
+def publish_evidence(output: Path, output_identity: tuple, staged: dict[str, bytes], published: dict[str, bytes],
+                     failed_members: set[str], state: dict, check: Callable[[], None],
+                     failed: Callable[[BaseException], None]) -> None:
+    """Drain safe bytes only; failed members have no second-pass retry."""
+    if state.get("fatal"):
+        raise ValueError("detailed evidence stopped")
+    for name, content in staged.items():
+        if name in failed_members or published.get(name) == content:
+            continue
+        try:
+            # Safety failures are fatal, independently of their exception class.
+            try:
+                check()
+                _publication_destination(output, output_identity, name, check)
+            except BaseException:
+                state["fatal"] = True
+                raise
+            temporary = output / (name + ".tmp")
+            with temporary.open("xb") as stream:
+                stream.write(content)
+            check()
+            try:
+                _publication_destination(output, output_identity, name, check)
+            except BaseException:
+                state["fatal"] = True
+                raise
+            temporary.replace(output / name)
+            published[name] = content  # Actual replace, before any later check.
+            check()
+        except BaseException as exc:
+            failed_members.add(name)
+            if not _ordinary_evidence_error(exc):
+                state["fatal"] = True
+            failed(exc)
+            if state.get("fatal"):
+                raise
+            check()
+
+
+def publish_failure(output: Path, output_identity: tuple, row: dict, check: Callable[[], None]) -> None:
+    """The original nonfinal FAIL opportunity; no postcommit success inference."""
+    _publication_destination(output, output_identity, "result.json", check)
+    temporary = output / "result.tmp"
+    temporary.write_text(json.dumps(row, indent=2))
+    _publication_destination(output, output_identity, "result.json", check)
+    temporary.replace(output / "result.json")
+
+
+def failure_receipt(receipt: dict, safe_scenario: dict, categories: dict, completed_exported: dict | None,
+                    ownership_evidence: dict | None, exercise: str, started: float) -> dict:
+    """Only fully detached decoded-safe claims accompany closed FAIL metadata."""
+    closure = receipt["cleanup"]
+    safe_cleanup = {key: closure[key] for key in
+                    ("identities", "groups", "ports_absent", "data_absent", "sockets_absent", "watcher_stopped")
+                    if key in closure}
+    safe_cleanup.update(ok=False, observed_units=closure.get("observed_units", sorted(closure.get("units", {}))),
+                        observed_groups=closure.get("observed_groups", sorted(closure.get("groups", {}))))
+    binding = {key: receipt[key] for key in ADMISSION_FIELDS + ("interpreter", "node") if key in receipt}
+    safe_timing = dict(receipt["timing"], cleanup=dict(receipt["timing"]["cleanup"], ok=False))
+    return dict(binding, **categories, schema=1, status="FAIL", source_sha=receipt["source_sha"],
+                python=receipt["python"], exercise=exercise, skipped=0,
+                **safe_scenario, signals=receipt["signals"], phases=receipt["phases"],
+                cleanup=safe_cleanup, timing=safe_timing,
+                failure_phase=receipt.get("failure_phase", "export"), failure="incomplete detailed evidence",
+                completed_cases=completed_exported, total_seconds=time.monotonic() - started,
+                **({"ownership_evidence": ownership_evidence} if ownership_evidence is not None else {}))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", required=True, help="absolute supported interpreter")
@@ -561,6 +863,8 @@ def main() -> int:
     source = Path(__file__).resolve().parents[1]
     output = args.artifacts.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    output_info = output.stat()
+    output_identity = (output_info.st_dev, output_info.st_ino)
     started = float(os.environ.get("E2E_STARTED_MONOTONIC", time.monotonic()))
     receipt = dict(schema=1, status="ENVIRONMENT_FAILURE", cleanup={"ok": False}, skipped=0,
                    variants={}, phases=[], source_sha=None, python=None,
@@ -884,87 +1188,14 @@ def main() -> int:
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
         staged: dict[str, bytes] = {}
-        token = ""
-        redaction_context: list[str] = []
-        collection_window = "UNKNOWN"
+        collection_state = dict(token="", context=[], safe_scenario=dict(variants={}), fatal=False,
+                                operation="UNKNOWN", window="UNKNOWN", chars="U", utf8_bytes="U")
         collection_diagnostic: dict[str, tuple] = {}
-        safe_scenario: dict = dict(variants={})
+        published_members: dict[str, bytes] = {}
+        failed_members: set[str] = set()
 
-        def redact(text: str) -> str:
-            if not token:
-                raise ValueError("redaction context unavailable")
-            for secret in [token, *redaction_context]:
-                text = text.replace(secret, "[REDACTED]")
-            return text
-
-        def collect_evidence() -> str | None:
-            nonlocal token, redaction_context, collection_window, safe_scenario
-            collection_window = "ROOT"
-            if not root or not root.exists():
-                return "other"
-            # Capture once: partial removal must never erase trusted context.
-            if not token:
-                collection_window = "TOKEN_READ"
-                try:
-                    token = (root / "daemon" / "daemon.token").read_text().strip()
-                except TimeoutError:
-                    raise  # Reserve expiry is not an ordinary token-read failure.
-                except (OSError, UnicodeError):
-                    return "value"
-            if not token:
-                collection_window = "TOKEN_EMPTY"
-                return "value"  # No raw text/receipt is safe without established context.
-            context_path = root / "coord/redaction-context.json"
-            collection_window = "CONTEXT_PRESENT"
-            if not context_path.exists():
-                raise ValueError("retained redaction context unavailable")
-            collection_window = "CONTEXT_READ"
-            context_text = context_path.read_text()
-            collection_window = "CONTEXT_DECODE"
-            context = json.loads(context_text)
-            collection_window = "CONTEXT_VALIDATE"
-            if not isinstance(context, list) or not context or not all(isinstance(s, str) and s for s in context) or token not in context:
-                raise ValueError("invalid retained redaction context")
-            redaction_context = context
-            collection_window = "SCENARIO_PRESENT"
-            if (root / "scenario.json").exists():
-                collection_window = "SCENARIO_READ"
-                with (root / "scenario.json").open(encoding='utf8') as scenario_file:
-                    scenario_text = scenario_file.read(8 * 1024 * 1024 + 1)
-                if len(scenario_text.encode('utf8')) > 8 * 1024 * 1024:
-                    raise ValueError('scenario input capacity refused')
-                collection_window = "SCENARIO_DECODE"
-                result = json.loads(scenario_text)
-                collection_window = "SCENARIO_MERGE"
-                # Retain this safe detached state BEFORE later raw-file reads,
-                # required-artifact checks or cleanup/export can fail. Never
-                # serialize the unredacted receipt as a rescue path.
-                safe_scenario = scenario_fields(result, redact)
-                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization") if k in result})
-            collection_window = "RAW_ENUM"
-            paths = iter((root / "raw").glob("*"))
-            while True:
-                collection_window = "RAW_ENUM"
-                try:
-                    path = next(paths)
-                except StopIteration:
-                    break
-                if path.suffix in {".txt", ".json", ".jsonl"}:
-                    collection_window = "TEXT_READ"
-                    text = path.read_text(errors="replace")
-                    collection_window = "REDACT"
-                    staged[path.name] = redact(text).encode()
-                elif path.suffix == ".png":
-                    collection_window = "IMAGE_READ"
-                    staged[path.name] = path.read_bytes()
-            # Completion accounting does not relax or replace any reader oracle.
-            collection_window = "REQUIRED"
-            required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]] if args.exercise == "baseline" else ["observations.json"]
-            if (not (root / "scenario.json").exists()
-                    or any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required)):
-                return "other"
-            collection_window = "UNKNOWN"  # Success is not a failed operation window.
-            return None
+        def sanitize_evidence(text: str) -> str:
+            return redact(text, collection_state["token"], collection_state["context"])
 
         def reserve(name: str, cap: float, outer: float) -> dict:
             entered = time.monotonic()
@@ -983,7 +1214,8 @@ def main() -> int:
             if time.monotonic() >= cleanup["deadline"]:
                 raise TimeoutError("cleanup deadline exhausted")
 
-        def incomplete(name: str, error: BaseException | None = None, *, category: str = "other") -> tuple | None:
+        def incomplete(name: str, error: BaseException | None = None, *, category: str = "other",
+                       annotation: tuple = ("UNKNOWN", "UNKNOWN", "U", "U")) -> tuple | None:
             nonlocal staging_incomplete, closure_incomplete, cleanup_incomplete
             if error is not None and receipt["timing"]["phase"] == "cleanup":
                 cleanup_failure.setdefault("first", (error, error.__traceback__))
@@ -997,7 +1229,7 @@ def main() -> int:
             # Sticky reservation above is FIRST. An interrupted/unreached claim
             # cannot be filled by recollection: staging_incomplete already owns it.
             if first_collection:
-                claim = (receipt["timing"]["phase"], collection_window, "F" if error is not None else "U", object())
+                claim = (receipt["timing"]["phase"], collection_state["window"], "F" if error is not None else "U", object(), annotation)
                 if collection_diagnostic.setdefault("claim", claim) is claim:
                     return claim
             return None
@@ -1006,35 +1238,29 @@ def main() -> int:
             if claim is None or collection_diagnostic.get("claim") is not claim or "output" in collection_diagnostic:
                 return
             collection_diagnostic["output"] = claim  # Charge before eligibility/write.
-            phase, window, kind, _ = claim
-            windows = ("ROOT", "TOKEN_READ", "TOKEN_EMPTY", "CONTEXT_PRESENT", "CONTEXT_READ", "CONTEXT_DECODE",
-                       "CONTEXT_VALIDATE", "SCENARIO_PRESENT", "SCENARIO_READ", "SCENARIO_DECODE", "SCENARIO_MERGE",
-                       "RAW_ENUM", "TEXT_READ", "REDACT", "IMAGE_READ", "REQUIRED", "UNKNOWN")
-            if phase not in ("cleanup", "export") or window not in windows or kind not in ("F", "U"):
+            phase, window, kind, _, annotation = claim
+            line = _collection_line(phase, window, kind, annotation)
+            if line is None:
                 return
             end = receipt["timing"][phase]["deadline"] - (1 if phase == "export" else 0)
             if time.monotonic() >= end:
                 return
-            line = ("HRD1:C:" + phase.upper() + ":" + window + ":" + kind + "\n").encode("ascii")
             _diagnostic_write(line, end)
+
+        def collection_failed(error: BaseException | None, *, category: str, annotation: tuple) -> None:
+            if error is not None and receipt["timing"]["phase"] == "export":
+                export_failure.setdefault("first", (error, error.__traceback__))
+            claim = incomplete("collection", error, category=category, annotation=annotation)
+            observe_collection(claim)
 
         def stage_evidence(check: Callable[[], None]) -> None:
             nonlocal detail_complete
-            check()
-            try:
-                missing = collect_evidence()
-            except BaseException as exc:
-                if receipt["timing"]["phase"] == "export":
-                    export_failure.setdefault("first", (exc, exc.__traceback__))
-                claim = incomplete("collection", exc)
-                observe_collection(claim)  # Outside the collector's catch scope.
-                raise
-            else:
-                if missing is not None:
-                    claim = incomplete("collection", category=missing)
-                    observe_collection(claim)
-                else:
-                    detail_complete = True
+            complete, error = collect_evidence(root, root_identity, receipt, args.exercise,
+                                               staged, collection_state, check, collection_failed)
+            if complete:
+                detail_complete = True
+            if error is not None:
+                raise error[0].with_traceback(error[1])
             check()
 
         try:
@@ -1525,12 +1751,14 @@ def main() -> int:
             nonlocal final_result_committed
             temporary = output / "result.tmp"
             destination = output / "result.json"
-            temporary.write_text(json.dumps(row, indent=2))
             if not final:
-                if time.monotonic() >= export["deadline"]:
-                    raise TimeoutError("export deadline exhausted")
-                temporary.replace(destination)
+                def failure_time() -> None:
+                    if time.monotonic() >= export["deadline"]:
+                        raise TimeoutError("export deadline exhausted")
+                publish_failure(output, output_identity, row, failure_time)
                 return
+            _publication_destination(output, output_identity, "result.json", export_time)
+            temporary.write_text(json.dumps(row, indent=2))
             # Finish all fallible preparation before the final admission check.
             # Retire SIGALRM process-wide, including any queued alarm. A thread
             # mask alone cannot cover an alarm delivered to a surviving watcher.
@@ -1543,26 +1771,9 @@ def main() -> int:
             # No postcommit deadline check: an admitted OS call can overrun or
             # a crash can interrupt it. This is not hard timing/crash durability.
 
-        def failure_receipt() -> dict:
-            # Only independently sanitized retained scenario state may accompany
-            # failure metadata. PASS entries remain original unvalidated claims.
-            closure = receipt["cleanup"]
-            safe_cleanup = {key: closure[key] for key in
-                            ("identities", "groups", "ports_absent", "data_absent", "sockets_absent", "watcher_stopped")
-                            if key in closure}
-            safe_cleanup.update(ok=False, observed_units=closure.get("observed_units", sorted(closure.get("units", {}))),
-                                observed_groups=closure.get("observed_groups", sorted(closure.get("groups", {}))))
-            binding = {key: receipt[key] for key in ADMISSION_FIELDS + ("interpreter", "node") if key in receipt}
-            safe_timing = dict(receipt["timing"], cleanup=dict(receipt["timing"]["cleanup"], ok=False))
-            return dict(binding, **failure_categories(), schema=1, status="FAIL", source_sha=receipt["source_sha"],
-                        python=receipt["python"], exercise=args.exercise, skipped=0,
-                        **safe_scenario, signals=receipt["signals"], phases=receipt["phases"],
-                        cleanup=safe_cleanup, timing=safe_timing,
-                        failure_phase=receipt.get("failure_phase", "export"),
-                        failure="incomplete detailed evidence",
-                        completed_cases=completed_exported,
-                        total_seconds=time.monotonic() - started,
-                        **({"ownership_evidence": ownership_evidence} if ownership_evidence is not None else {}))
+        def failure_row() -> dict:
+            return failure_receipt(receipt, collection_state["safe_scenario"], failure_categories(),
+                                   completed_exported, ownership_evidence, args.exercise, started)
 
         initial_fail_published = False
 
@@ -1570,43 +1781,67 @@ def main() -> int:
             if time.monotonic() >= export["deadline"] - 1:
                 raise TimeoutError("export deadline exhausted")
 
+        def export_failed(exc: BaseException) -> None:
+            nonlocal export_incomplete
+            export_failure.setdefault("first", (exc, exc.__traceback__))
+            export_incomplete = True
+            latch_launcher("export", exc)
+
+        def ordinary_export(action: Callable[[], None]) -> None:
+            try:
+                action()
+            except BaseException as exc:
+                export_failed(exc)
+                if collection_state["fatal"] or not _ordinary_evidence_error(exc):
+                    collection_state["fatal"] = True
+                    raise
+                export_time()
+
         try:
             arm_deadline(export["deadline"])
             if retained_completed is not None:
-                # Publish validated references before any result can name them.
-                # This channel contains no early raw bodies or secret strings.
-                for name, data in completed_staged.items():
+                # Independent closed references precede any result naming them.
+                def export_completed() -> None:
+                    nonlocal completed_exported
+                    for name, data in completed_staged.items():
+                        export_time()
+                        completed.publish(output, name, data)
                     export_time()
-                    completed.publish(output, name, data)
-                export_time()
-                copied, _ = completed.read_bundle(output, receipt)
-                if copied != retained_completed:
-                    raise ValueError("completed export identity moved")
-                completed_exported = copied
-            publish(failure_receipt())
-            initial_fail_published = True
-            # Keep the final second of this SAME allowance for a failure receipt.
-            arm_deadline(export["deadline"] - 1)
-            if root and root.exists():
-                # Preserve safe partial staging even if recollection fails.
-                for name, content in staged.items():
-                    export_time()
-                    (output / name).write_bytes(content)
-                    export_time()
-                try:
-                    stage_evidence(export_time)  # Read-only diagnostics; never teardown.
-                except BaseException as exc:
-                    export_failure.setdefault("first", (exc, exc.__traceback__))
-                    latch_launcher("export", exc)
+                    copied, _ = completed.read_bundle(output, receipt)
+                    if copied != retained_completed:
+                        raise ValueError("completed export identity moved")
+                    completed_exported = copied
+                ordinary_export(export_completed)
+            try:
+                publish(failure_row())
+                initial_fail_published = True  # Only actual replacement counts.
+            except BaseException as exc:
+                export_failed(exc)
+                if not _ordinary_evidence_error(exc):
+                    collection_state["fatal"] = True
                     raise
+                # Validate destination independently; unsafe state is fatal.
+                try:
+                    _publication_destination(output, output_identity, "result.json", export_time)
+                except BaseException:
+                    collection_state["fatal"] = True
+                    raise
+            arm_deadline(export["deadline"] - 1)
+            publish_evidence(output, output_identity, staged, published_members, failed_members,
+                             collection_state, export_time, export_failed)
+            if not collection_state["fatal"] and root and root.exists():
+                ordinary_export(lambda: stage_evidence(export_time))
+            # The second ORIGINAL pass also drains newly safe bytes after an
+            # ordinary recollection refusal. It never retries failed members.
+            publish_evidence(output, output_identity, staged, published_members, failed_members,
+                             collection_state, export_time, export_failed)
             export_time()
-            for name, content in staged.items():
-                export_time()
-                (output / name).write_bytes(content)
-                export_time()
+            if export_failure:
+                error, tb = export_failure["first"]
+                raise error.with_traceback(tb)
             if not detail_complete or staging_incomplete:
                 raise ValueError("incomplete detailed evidence")
-            if not token:
+            if not collection_state["token"]:
                 raise ValueError("redaction context unavailable")
             if receipt["status"] == "PASS" and args.exercise == "baseline":
                 required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]]
@@ -1631,7 +1866,7 @@ def main() -> int:
             receipt.update(failure_categories())
             receipt["completed_cases"] = completed_exported
             export_time()
-            detailed = json.loads(redact(json.dumps(receipt)))
+            detailed = json.loads(sanitize_evidence(json.dumps(receipt)))
             detailed["completed_cases"] = completed_exported
             if ownership_evidence is not None:
                 detailed["ownership_evidence"] = ownership_evidence
@@ -1650,7 +1885,7 @@ def main() -> int:
                 try:
                     signal.signal(signal.SIGALRM, interrupted)
                     arm_deadline(export["deadline"])
-                    publish(failure_receipt())
+                    publish(failure_row())
                 except BaseException:
                     # A successful initial FAIL remains if replacement never commits.
                     # False means persistence was unavailable, never a claimed receipt.
