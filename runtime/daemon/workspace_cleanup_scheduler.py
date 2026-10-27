@@ -1324,7 +1324,7 @@ async def _trigger_cleanup_owned(org, *, agent, enqueue, now_utc, validate):
                     validate()
                     org.db.insert_task(TaskRecord(
                         id=task_id, brief=brief, team=team, assigned_agent=agent,
-                    ))
+                    ), validate_admission=validate)
             except StartupUnavailable:
                 raise
             except Exception as primary:

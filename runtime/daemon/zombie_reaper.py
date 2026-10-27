@@ -442,6 +442,23 @@ async def zombie_reaper_loop(
                 root_transitions = _RootWorktreeTransitions()
                 child_worktrees = []
                 root_tail_failed = False
+                primary = None
+                primary_traceback = None
+                secondary_errors = []
+                delivery = {"teardown_incomplete": False}
+                from runtime.daemon.startup_recovery import _await_startup_owned
+
+                def retain_failure(exc):
+                    nonlocal primary, primary_traceback, root_tail_failed
+                    root_tail_failed = True
+                    if primary is None:
+                        primary, primary_traceback = exc, exc.__traceback__
+                    elif (exc is not primary and len(secondary_errors) < 8
+                          and not any(exc is item for item in secondary_errors)):
+                        secondary_errors.append(exc)
+                        primary.add_note("zombie cleanup also failed: " + repr(exc)[:512])
+                    state._startup_recovery._retain_secondary(exc)
+
                 try:
                     with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
                         _sweep_org_zombies(
@@ -450,19 +467,30 @@ async def zombie_reaper_loop(
                             orchestrator=org.orchestrator, queue=state.queue,
                             deferred_child_worktrees=child_worktrees,
                         )
-                    for task in child_worktrees:
-                        await _await_terminal_task_worktree(org.orchestrator, task.id)
-                except BaseException:
-                    root_tail_failed = True
-                    raise
+                except BaseException as exc:
+                    retain_failure(exc)
                 finally:
-                    if root_transitions:
+                    # These are the original committed children captured by
+                    # the sweep, including a failed parent-publication tail.
+                    # Join each once outside capture/DB locks; one ended error
+                    # or cancellation cannot discard the remaining obligations.
+                    for task in child_worktrees:
+                        worker = asyncio.create_task(
+                            _await_terminal_task_worktree(org.orchestrator, task.id))
                         try:
-                            await _await_root_worktree_batch(org.orchestrator, root_transitions,
-                                teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
-                        except BaseException:
-                            root_tail_failed = True
-                            raise
+                            await _await_startup_owned(worker, retain_failure)
+                        except BaseException as exc:
+                            retain_failure(exc)
+                    if root_transitions:
+                        worker = asyncio.create_task(_await_root_worktree_batch(
+                            org.orchestrator, root_transitions,
+                            teardown_incomplete=root_tail_failed or delivery['teardown_incomplete']))
+                        try:
+                            await _await_startup_owned(worker, retain_failure)
+                        except BaseException as exc:
+                            retain_failure(exc)
+                if primary is not None:
+                    raise primary.with_traceback(primary_traceback)
                 validate_state()
                 validate_org()
             except StartupUnavailable as exc:

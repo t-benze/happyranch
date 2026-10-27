@@ -16,6 +16,7 @@ daemon-owned periodic projection sweep. It is never invoked by receipt-only
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,6 +67,37 @@ def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: 
     return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
 
 
+def _selected_validation(store, profiles):
+    """Capture one authentic production attachment, or the standalone default."""
+    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
+    owner = getattr(store, "_projection_startup_owner", None)
+    refs = getattr(store, "_projection_startup_refs", None)
+    profile_owner = getattr(profiles, "_projection_startup_owner", None)
+    if owner is None and refs is None and profile_owner is None:
+        return lambda: None, None
+    if (owner is None or not isinstance(refs, tuple) or len(refs) != 4
+            or refs[0] is not owner or refs[1] is None or refs[2] is not store
+            or refs[3] is not profiles or profiles is None or profile_owner is not owner
+            or getattr(owner, "_startup_recovery", None) is not refs[1]
+            or getattr(owner, "direct_connect_authority_store", None) is not store
+            or getattr(owner, "profile_coordinator", None) is not profiles):
+        raise StartupUnavailable("startup_projection_attachment_changed")
+    gate = refs[1]
+    validate_state = maintenance_admission_validation(owner)
+
+    def validate():
+        validate_state()
+        if (getattr(store, "_projection_startup_owner", None) is not owner
+                or getattr(store, "_projection_startup_refs", None) is not refs
+                or owner._startup_recovery is not gate
+                or owner.direct_connect_authority_store is not store
+                or owner.profile_coordinator is not profiles
+                or getattr(profiles, "_projection_startup_owner", None) is not owner):
+            raise StartupUnavailable("startup_projection_attachment_changed")
+    validate()
+    return validate, owner
+
+
 def project(
     store: DirectConnectAuthorityStore,
     operation_id: str,
@@ -75,25 +107,55 @@ def project(
     validate_admission=None,
 ) -> ProjectionOutcome:
     """Serialize same-process owners while durable planned rows stay retryable."""
-    validate = validate_admission or (lambda: None)
+    selected, owner = _selected_validation(store, profile_coordinator)
+
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+        # A supplied callback cannot replace or revoke the bound selection.
+        selected()
+
     validate()
+    original = Future() if owner is not None else None
+    if original is not None:
+        original.set_running_or_notify_cancel()
+        with owner._maintenance_workers_lock:
+            owner._maintenance_workers.add(original)
     claim = (id(store), operation_id)
-    with _ACTIVE_PROJECTIONS_LOCK:
-        validate()
-        if claim in _ACTIVE_PROJECTIONS:
-            return _await_concurrent_outcome(store, operation_id)
-        _ACTIVE_PROJECTIONS.add(claim)
+    claimed = False
     try:
-        return _project_once(
-            store,
-            operation_id,
-            now=now,
-            profile_coordinator=profile_coordinator,
-            validate_admission=validate_admission,
-        )
-    finally:
         with _ACTIVE_PROJECTIONS_LOCK:
-            _ACTIVE_PROJECTIONS.discard(claim)
+            validate()
+            claimed = claim not in _ACTIVE_PROJECTIONS
+            if claimed:
+                _ACTIVE_PROJECTIONS.add(claim)
+        if claimed:
+            outcome = _project_once(
+                store,
+                operation_id,
+                now=now,
+                profile_coordinator=profile_coordinator,
+                validate_admission=(validate if owner is not None or validate_admission is not None else None),
+            )
+        else:
+            outcome = _await_concurrent_outcome(store, operation_id)
+            validate()
+        if original is not None:
+            original.set_result(outcome)
+        return outcome
+    except BaseException as exc:
+        if original is not None:
+            # Preserve the actual failure and Process custody, even if the
+            # request wrapper is cancelled or the post-submit handoff fails.
+            original.set_exception(exc)
+        raise
+    finally:
+        if claimed:
+            with _ACTIVE_PROJECTIONS_LOCK:
+                _ACTIVE_PROJECTIONS.discard(claim)
+        if original is not None:
+            owner._retire_maintenance_worker(original)
 
 
 def _project_once(
@@ -159,7 +221,25 @@ def _project_once(
     validate()
     with store._lock:
         validate()
-        planned = existing is not None or store.plan_projection(operation_id, now=now)
+        if existing is None and validate_admission is not None:
+            # The original plan method still owns its INSERT and COMMIT. Take
+            # its SQLite writer admission first so closure during that wait is
+            # observed before the fresh plan, rather than after commitment.
+            began = not store._conn.in_transaction
+            try:
+                if began:
+                    store._conn.execute("BEGIN IMMEDIATE")
+                validate()
+                planned = store.plan_projection(operation_id, now=now)
+            except BaseException as exc:
+                if began:
+                    try:
+                        store._conn.rollback()
+                    except BaseException as secondary:
+                        exc.add_note("projection plan rollback also failed: " + repr(secondary)[:512])
+                raise
+        else:
+            planned = existing is not None or store.plan_projection(operation_id, now=now)
     if not planned:
         # Another caller won the plan race between our read of `existing`
         # and now. Terminalize from its durable result when possible. A

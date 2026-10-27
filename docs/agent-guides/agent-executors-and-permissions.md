@@ -1410,11 +1410,19 @@ marker/report/writer/process scope without rollback or a successful-sweep claim.
 Owned worker termination/reap/report and native writer retirement remain owed.
 
 Workspace cleanup renews admission inside its original native reservation,
-report audit and awaited task-ID writer. Original executor workers remain joined
-through cancellation under the org runner barrier. Postcommit refusal identifies
+report audit and awaited task-ID writer. Its original insert_task receives the
+SAME validator, renewing after BEGIN IMMEDIATE before INSERT; listener closure
+during the wait cannot allocate a replacement task. Original executor workers
+remain joined through cancellation under the org runner barrier. Postcommit refusal identifies
 the original pending task, without replacement allocation or schedule reset.
-Projection carries a selected callback through the original sweep, plan, probe,
-profile claim and profile-store writer; standalone defaults remain available.
+The actual bound project entry captures the store/state/gate/profile selection,
+composes any supplied callback and renews through plan-BEGIN, probe, profile claim
+and profile-store waits. Missing/replaced/malformed production attachment refuses;
+only positively unbound standalone stores retain the default. Master-bearer commit
+runs blocking work off the request loop under the retained maintenance barrier.
+Original StartupUnavailable escapes unchanged. The actual synchronous completion
+retains marked native failure and SAME Process even after request cancellation;
+unknown cleanup blocks daemon/runtime/DB destruction.
 Refusal before admission is unavailable, not a failed projection. Already admitted
 profile compensation/retirement remains owed. Actual submitted maintenance workers
 remain retained through cancellation at daemon/org close and runtime-swap barriers;

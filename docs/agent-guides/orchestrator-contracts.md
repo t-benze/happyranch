@@ -4493,7 +4493,9 @@ unavailable, without synthetic source failure, successful move deferral or no-op
 
 Direct create_task captures one ordinary selection before agent loading/ID
 observation and renews it inside the original move/DB task writer after BEGIN,
-before insertion. An observed next ID is not a committed task. Selected native
+before insertion. Workspace cleanup passes that SAME captured validator into
+its original insert_task, renewing after BEGIN before INSERT as well.
+An observed next ID is not a committed task. Selected native
 writers (including coding settings and direct-connect profile operations) renew
 their captured validator after BEGIN and after successful COMMIT before live
 registry publication/body entry. Postcommit refusal settles only that exact
@@ -4532,6 +4534,14 @@ Selected conformance timeout/deadline, bounded-read and arbitrary-error exits ma
 one original cleanup attempt. Failed poll/wait/reap retains the original failure
 and traceback, bounded real cleanup secondary, SAME Process and
 maintenance_native_unsettled through projection/sweep to the maintenance barrier.
+The bound project entry captures its actual store/state/gate/profile selection,
+composes any supplied callback and renews after DB/plan-BEGIN/probe/profile waits.
+Missing, malformed or replaced production attachment refuses; only positively
+unbound standalone stores retain the default. The master-bearer commit offloads
+blocking work under the same retained maintenance owner, and preserves the
+original StartupUnavailable response. The actual synchronous projection completion
+and marked failure/Process remain owned independently of request cancellation;
+unknown native cleanup blocks daemon/runtime/DB destruction.
 Inner timeout cleanup is not repeated by an outer handler. Only positive native
 settlement permits ordinary validation failure isolation; no field/wrapper return
 or a different child proves reap.
@@ -4586,7 +4596,12 @@ failed/cancelled reap retains maintenance_native_unsettled plus real secondary
 errors and cannot publish reaped/report success or retire native ownership.
 Projection propagates that same marked uncertainty through operation isolation to
 the original maintenance Future/barrier and stops the loop; ordinary errors remain
-isolated. Job successful Process custody spans registration validation, scratch,
+isolated.
+The zombie owner joins every original captured committed child's cleanup on
+success or exceptional unwind, including failed v2/legacy parent publication.
+An ended child error/cancellation does not skip later children or the root batch;
+first cause/traceback and bounded real secondaries survive, with truthful root
+teardown-incomplete and no terminal replay or rescan. Job successful Process custody spans registration validation, scratch,
 accounting, input and partial pump setup, with identity-safe joined process/output
 cleanup on every exception. Unknown cleanup preserves DB-close barriers and cannot
 be classified as execution failure or safe pre-launch deferral. No new behavioral/

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -79,42 +81,48 @@ class DaemonState:
     _startup_reads: StartupReads | None = field(init=False, default=None, repr=False)
     _startup_observation: BootObservation | None = field(init=False, default=None, repr=False)
 
-    _maintenance_workers: set[asyncio.Future] = field(init=False, default_factory=set, repr=False)
+    _maintenance_workers: set[asyncio.Future | Future] = field(init=False, default_factory=set, repr=False)
+    _maintenance_workers_lock: threading.RLock = field(init=False, default_factory=threading.RLock, repr=False)
 
-    async def _await_maintenance_worker(self, worker):
-        """Keep an original submitted maintenance worker visible through cancellation."""
-        from runtime.daemon.startup_recovery import _await_startup_owned
-        self._maintenance_workers.add(worker)
-        try:
-            return await _await_startup_owned(worker, self._startup_recovery._retain_secondary)
-        finally:
+    def _retire_maintenance_worker(self, worker) -> None:
+        # A marked original failure retains its actual Process and blocks
+        # destruction even after its Python wrapper has ended.
+        with self._maintenance_workers_lock:
             if worker.done() and not worker.cancelled():
                 failure = worker.exception()
                 if failure is None or not getattr(failure, "maintenance_native_unsettled", False):
                     self._maintenance_workers.discard(worker)
+
+    async def _await_maintenance_worker(self, worker):
+        """Keep an original submitted maintenance worker visible through cancellation."""
+        from runtime.daemon.startup_recovery import _await_startup_owned
+        with self._maintenance_workers_lock:
+            self._maintenance_workers.add(worker)
+        try:
+            return await _await_startup_owned(worker, self._startup_recovery._retain_secondary)
+        finally:
+            self._retire_maintenance_worker(worker)
 
     async def _drain_maintenance_workers(self) -> None:
         """Join original operations with the loop/DB alive, after producers stop."""
         from runtime.daemon.startup_recovery import _await_startup_owned
         primary = None
         traceback = None
-        for worker in tuple(self._maintenance_workers):
+        with self._maintenance_workers_lock:
+            workers = tuple(self._maintenance_workers)
+        for worker in workers:
             try:
                 if worker is asyncio.current_task():
                     raise _OrgBusyError("maintenance_self_join_refused")
-                await _await_startup_owned(worker, self._startup_recovery._retain_secondary)
+                completion = asyncio.wrap_future(worker) if isinstance(worker, Future) else worker
+                await _await_startup_owned(completion, self._startup_recovery._retain_secondary)
             except BaseException as exc:
                 if primary is None:
                     primary, traceback = exc, exc.__traceback__
                 else:
                     self._startup_recovery._retain_secondary(exc)
             finally:
-                # Ended failures can be idle; cancelled wrappers and native
-                # termination uncertainty never supply original completion.
-                if worker.done() and not worker.cancelled():
-                    failure = worker.exception()
-                    if failure is None or not getattr(failure, "maintenance_native_unsettled", False):
-                        self._maintenance_workers.discard(worker)
+                self._retire_maintenance_worker(worker)
         if primary is not None:
             raise primary.with_traceback(traceback)
 
@@ -214,8 +222,9 @@ class DaemonState:
             raise primary.with_traceback(traceback)
 
     def _assert_startup_idle(self, org=None) -> None:
-        if self._maintenance_workers:
-            raise _OrgBusyError("maintenance_native_in_flight")
+        with self._maintenance_workers_lock:
+            if self._maintenance_workers:
+                raise _OrgBusyError("maintenance_native_in_flight")
         if self._startup_recovery is not None:
             self._startup_recovery.assert_native_idle()
         if self._startup_reads is not None:
@@ -283,6 +292,7 @@ class DaemonState:
         state = cls(runtime=None, settings=settings)
         state.metrics_store = MetricsStore(None)  # in-memory for idle state
         state.direct_connect_authority_store = DirectConnectAuthorityStore(None)
+        state.direct_connect_authority_store._projection_startup_owner = state
         return state
 
     def __post_init__(self) -> None:
@@ -308,6 +318,10 @@ class DaemonState:
                 self.runtime.root / "direct_connect_authority.db",
                 runtime_root=self.runtime.root,
             )
+        if self.direct_connect_authority_store is not None:
+            # Production ownership precedes boot reference binding. Missing
+            # later attachment must never select the standalone default.
+            self.direct_connect_authority_store._projection_startup_owner = self
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None, observation: BootObservation | None = None) -> "DaemonState":

@@ -26,28 +26,21 @@ def bind_startup_references(state):
     store = state.direct_connect_authority_store
     if store is None:
         return
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    owner = getattr(store, "_projection_startup_owner", None)
     previous = getattr(store, "_projection_startup_refs", None)
-    if previous is not None and (previous[0] is not state or previous[1] is not state._startup_recovery):
-        from runtime.daemon.startup_recovery import StartupUnavailable
+    if (owner is not None and owner is not state) or (previous is not None and (
+            not isinstance(previous, tuple) or len(previous) != 4
+            or previous[0] is not state or previous[1] is not state._startup_recovery)):
         raise StartupUnavailable("startup_projection_attachment_changed")
+    profiles = state.profile_coordinator
+    profile_owner = getattr(profiles, "_projection_startup_owner", None)
+    if profile_owner is not None and profile_owner is not state:
+        raise StartupUnavailable("startup_projection_attachment_changed")
+    if profiles is not None:
+        profiles._projection_startup_owner = state
+    store._projection_startup_owner = state
     store._projection_startup_refs = (state, state._startup_recovery, store, state.profile_coordinator)
-
-
-def _selected_validation(store, profiles):
-    refs = getattr(store, "_projection_startup_refs", None)
-    if refs is None:
-        return lambda: None  # Explicit standalone store retains its contract.
-    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
-    state, gate, original, selected_profiles = refs
-    validate_state = maintenance_admission_validation(state)
-    def validate():
-        validate_state()
-        if (store._projection_startup_refs is not refs or state._startup_recovery is not gate
-                or original is not store or state.direct_connect_authority_store is not store
-                or profiles is not selected_profiles or state.profile_coordinator is not profiles):
-            raise StartupUnavailable("startup_projection_attachment_changed")
-    validate()
-    return validate
 
 
 def _sweep_once(
@@ -56,14 +49,14 @@ def _sweep_once(
     *, validate_admission=None,
 ) -> None:
     """Project only the latest accepted candidate per parent lifecycle."""
-    selected = _selected_validation(store, profile_coordinator)
+    selected, owner = direct_connect_projection._selected_validation(store, profile_coordinator)
     def validate():
         selected()
         if validate_admission is not None:
             validate_admission()
     validate()
     selected_kwargs = ({"validate_admission": validate}
-        if validate_admission is not None or getattr(store, "_projection_startup_refs", None) is not None else {})
+        if validate_admission is not None or owner is not None else {})
     pending = store.list_latest_operations_pending_projection()
     validate()
     for operation_id in pending:
