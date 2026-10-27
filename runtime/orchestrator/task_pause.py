@@ -586,7 +586,9 @@ class TaskInvocation:
                     entry["context"].pop("execution_unknown", None)
                     entry["context"].pop("producer_settled", None)
                 proof = dict(origin_session_id=result.session_id, provider_session_id=result.agent_session_id,
-                             duration_seconds=result.duration_seconds, recovery_session_id=self.orch._build_session_id(),
+                             # Inert proof identity belongs to the already-returned
+                             # execution's owed handoff, not fresh admission.
+                             duration_seconds=result.duration_seconds, recovery_session_id=f"sess-{uuid.uuid4().hex}",
                              deadline_at=None)
                 entry["context"]["recovery_return"] = proof
             self.orch._team_moves.recovery_uncommitted(self, proof["recovery_session_id"], unknown_owner)
@@ -640,6 +642,44 @@ class TaskInvocation:
             result.error = f"completion recovery launch failed: {exc}"
             return self.admitted, result, None
 
+    def _host_recovery_refusal(self, error: BaseException) -> bool:
+        """Observe the original host's positively settled, unclaimed attempt.
+
+        Context observations use only the existing leaf locks; no host work.
+        The whole held-return predicate remains independently required later.
+        """
+        held = self._held_recovery
+        evidence = None if held is None else held.get("host_attempt")
+        if evidence is None or evidence.get("error") is not error:
+            return False
+        host, request, lease, ctx = (evidence[k] for k in ("host", "request", "lease", "ctx"))
+        reservation = evidence["reservation"]
+        pending = evidence.get("pending")
+        from runtime.platform.session_backend import PendingHandle
+        return (evidence["invocation"] is self and held is evidence["held"]
+            and host is held["host"] is self.orch._host_supervisor
+            and host._backend is evidence["backend"] and host._admission is evidence["admission"]
+            and lease._controller is evidence["admission"] and lease.ctx is ctx
+            and lease._released and evidence.get("lease_retired") is lease
+            and evidence["terminal_hook"] is not None
+            and evidence.get("terminal_settled") is evidence["terminal_hook"]
+            and request.move_reservation is reservation is self.move_reservation is held["reservation"]
+            and evidence["binding"] == (self.identity, self.task.id, self.agent,
+                                         self.session_id, self.refusal_attempt_id)
+            and evidence["attempt"] == request.retry_attempt
+            and (request.org, request.logical_id, request.agent_id, request.invocation_kind)
+                == (self.store.org_slug, self.task.id, self.agent, "task")
+            and ctx._move_identity == (request.org, request.agent_id, request.logical_id)
+            and ctx.terminal_reason() is None and ctx.running() is None
+            and ctx.cleanup_error() is None and ctx.receipt() is None
+            and not getattr(ctx, "_task_pause_launch_committed", False)
+            and not self.admitted and not self.attempt_committed and not self.unsettled
+            and not self.launch_observed and self.recovery_deadline is None
+            and reservation.owner_live and not reservation.possible_launch and not reservation.cleanup_failed
+            and not getattr(error, "__notes__", ())
+            and (not evidence["prepare_entered"] and pending is None
+                 or isinstance(pending, PendingHandle) and evidence.get("abandoned") is pending))
+
     def _held_recovery_refusal(self, error: BaseException | None) -> bool:
         """Authenticate the SAME unclaimed return at each original unwind seam.
 
@@ -650,6 +690,10 @@ class TaskInvocation:
         if held is None or error is None or held.get("error") is not error or getattr(error, "__notes__", ()):
             return False
         try:
+            # A granted attempt needs the original host's positive
+            # terminal/abandon/lease completion in addition to journal proof.
+            if held.get("host_attempt") is not None and not self._host_recovery_refusal(error):
+                return False
             from runtime.orchestrator.launch_refusals import _current
             with self.store.db._lock:
                 reservation = self.move_reservation

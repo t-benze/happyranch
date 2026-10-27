@@ -3506,6 +3506,19 @@ Task Pause is a separate root control with generation-checked, idempotent toggle
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
 
+The first successful-return handoff generates its inert sess-UUID proof identity
+inside the original owed writer, even if fresh admission has closed; it allocates
+no session or claim. Registration, preparation and provider launch stay gated.
+After a host FIFO grant, only the SAME task/attempt/request/reservation/host/context
+can carry an observed preclaim refusal through actual terminal-hook completion
+and positive lease retirement. If preparation returned a handle, its actual
+successful abandonment is additionally required. No-handle refusal alone is not
+cleanup failure. Both outer tails and the final writer independently renew all
+current-owner/callback/claim/native-return and positive whole-cleanup checks.
+Failed or uncertain abandonment, terminal work, release or COMMIT, a terminal
+winner, possible launch, changed ownership and existing unknown remain sticky;
+the original error/traceback and bounded actual secondary causes are retained.
+
 ## Functional naming UI and API contract
 
 The existing org surface has an independent human-founder name editor. Active

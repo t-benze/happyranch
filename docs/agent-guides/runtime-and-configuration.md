@@ -3766,6 +3766,18 @@ StartupUnavailable from the original TaskInvocation recovery launch propagates
 unchanged, preserving the successful original return, committed recovery proof,
 SIDs and current owner instead of durably failing held recovery. Original native,
 terminal, tracker and release settlement remains independently owed.
+The first successful-return handoff generates its inert sess-UUID proof identity
+inside the original owed writer, even if fresh admission has closed; it allocates
+no session or claim. Registration, preparation and provider launch stay gated.
+After a host FIFO grant, only the SAME task/attempt/request/reservation/host/context
+can carry an observed preclaim refusal through actual terminal-hook completion
+and positive lease retirement. If preparation returned a handle, its actual
+successful abandonment is additionally required. No-handle refusal alone is not
+cleanup failure. Both outer tails and the final writer independently renew all
+current-owner/callback/claim/native-return and positive whole-cleanup checks.
+Failed or uncertain abandonment, terminal work, release or COMMIT, a terminal
+winner, possible launch, changed ownership and existing unknown remain sticky;
+the original error/traceback and bounded actual secondary causes are retained.
 Both original run-step unwind layers distinguish that refusal from cleanup
 failure only after rechecking the same invocation/attempt, committed journal
 proof, current task/callback and claim exclusions, original native return (or
