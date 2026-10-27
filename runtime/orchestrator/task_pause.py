@@ -547,6 +547,7 @@ class TaskInvocation:
         This records no result/consumption and spends no recovery opportunity.
         Only the original server-observed return reaches this producer.
         """
+        from runtime.daemon.startup_recovery import StartupUnavailable
         from runtime.orchestrator.team_move import DeferredTeamMove
         if not (self.admitted and self.owner == "recovery"):
             self._begin_launch_attempt()
@@ -606,7 +607,7 @@ class TaskInvocation:
                 resume_session_id=proof["provider_session_id"], origin_runtime_session_id=proof["origin_session_id"],
                 timeout_seconds_override=120, recovery=True)
             return self.admitted, recovery_result, recovery_report
-        except (DeferredRootPause, DeferredTeamMove, PauseControlError):
+        except (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError):
             raise
         except Exception as exc:
             result.success = False

@@ -369,6 +369,10 @@ root/move/DB/terminal waits. A fresh completion-recovery session retains that
 selection; its purpose grants no bypass. Committed preparation refusal retains
 the original no-launch settlement and uncertainty. Default non-admission Pause
 writers, already-landed callback consumers and owed release remain ungated.
+TaskInvocation.recover_return propagates StartupUnavailable from the original
+recovery launch unchanged. It preserves the successful original return and
+committed recovery proof/SIDs/current owner instead of durably failing held
+recovery; original terminal/native/tracker/release settlement remains owed.
 The reference-only P4 binder validates all seven captured identities and the
 three producer attachments, preserving its actual Task/coroutine/phase/loop
 owner and ready-only dynamic attachment. Genuine P2/P3/P6 document owners retain
@@ -380,6 +384,10 @@ and document tuples. Request-created coding settings retain their own operation,
 org/DB/state/epoch/loop references. Ordinary starts, queue preparation, selected
 reads, settings/import/mapping writers, advancement and notifications renew
 startup admission through original awaited and authority/Pause/registry owners.
+Coding settings classifies a validation rejection as native no-effect only after
+original rollback and lease release complete: the same validation exception,
+no active transaction and no exception notes are required. Preserved cleanup
+secondaries retain uncertainty and their primary; cleanup remains ungated.
 Shared complete schema/source-readiness helpers remain available to P0.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery

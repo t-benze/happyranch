@@ -6,6 +6,12 @@
 > Current source: `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`,
 > `runtime/infrastructure/database.py`, and `docs/agent-guides/orchestrator-contracts.md`.
 
+The amended TaskInvocation recovery-return path propagates StartupUnavailable
+unchanged from its original recovery launch. It does not mutate the successful
+original return or durably fail held recovery; committed recovery proof/SIDs and
+current ownership remain. Original native/terminal/tracker/release settlement is
+independently owed. Genuine execution errors retain their existing failure path.
+
 THR-247 grants one and only one recovery opportunity after a clean Codex
 provider exit omits the exact authenticated callback. Its durable claim starts
 the shared 120-second budget across claim, admission, preparation, launch,

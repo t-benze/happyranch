@@ -2068,8 +2068,13 @@ config:coding/founder at the same time, upserts the pointer, independently
 validates complete new state and rechecks authority before COMMIT. There is no
 await, filesystem/network work or self-committing helper in this transaction.
 Reservation and authority lease evidence have separate durable boundaries.
-Validation-only rollback preserves their native no-effect classification;
-unknown COMMIT/rollback/settlement remains uncertain. Post-COMMIT release failure
+Validation-only rejection preserves native no-effect classification only after
+the original rollback AND lease release complete: the same validation exception,
+no active transaction and no exception notes are required. Selected cleanup
+failures preserve the primary with secondary notes and retain native uncertainty;
+exception identity or transaction state alone cannot establish clean settlement.
+Owed cleanup remains independent of fresh admission. Unknown COMMIT/rollback/
+lease release/settlement remains uncertain. Post-COMMIT release failure
 never becomes an ordinary unsaved rejection or an automatic retry.
 
 The publication audit closes original command bytes/digest/key, org/principal,

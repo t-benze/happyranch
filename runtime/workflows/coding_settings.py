@@ -231,10 +231,11 @@ class CodingSettingsStore:
                                     validation_error = exc
                                     raise
                         except BaseException as exc:
-                            # Exact exception survival through both rollback and
-                            # lease release proves this validation-only rejection.
-                            # Commit/rollback/lease failures retain unknown state.
-                            if exc is validation_error and not self.db._conn.in_transaction:
+                            # Original rollback and lease release must both finish.
+                            # Selected cleanup preserves the primary with notes on
+                            # failure; identity/transaction state alone is not proof.
+                            if (exc is validation_error and not self.db._conn.in_transaction
+                                    and not getattr(exc, '__notes__', None)):
                                 writer.no_effect_error = exc
                             else:
                                 writer.uncertain = True

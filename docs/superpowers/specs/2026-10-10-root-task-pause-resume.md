@@ -71,6 +71,12 @@ restart; rollback before commitment leaves it unclaimed, while committed
 no-launch/crash cases remain spent under existing settlement rules. Authentic late callbacks use existing INTEGER result consumers even while held, with no new provider launch;
 consumed results are never replayed to create a continuation.
 
+StartupUnavailable from the original TaskInvocation recovery launch propagates
+unchanged before generic execution-failure conversion. The successful original
+return, committed recovery proof/SIDs and current owner remain; held recovery
+is not durably failed. Original terminal/native/tracker/release settlement stays
+owed independently of fresh admission and no earlier snapshot is restored.
+
 A host lease, tracker registration, callback, task status or persisted PID is
 not running/quiescence proof. Real launch observation creates a drain blocker;
 actual compatible containment terminal/cleanup receipt can discharge only

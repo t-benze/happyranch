@@ -862,6 +862,10 @@ and document tuples. Request-created coding settings retain their own operation,
 org/DB/state/epoch/loop references. Ordinary starts, queue preparation, selected
 reads, settings/import/mapping writers, advancement and notifications renew
 startup admission through original awaited and authority/Pause/registry owners.
+Coding settings classifies validation rejection as native no-effect only after
+original rollback and lease release complete: the same validation exception,
+no active transaction and no exception notes are required. Preserved cleanup
+secondaries retain native uncertainty and their primary; cleanup stays ungated.
 Shared complete schema/source-readiness helpers remain available to P0.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery
@@ -3704,6 +3708,11 @@ from publishing S2 source.
 The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+StartupUnavailable from the original TaskInvocation recovery launch propagates
+unchanged, preserving the successful original return, committed recovery proof,
+SIDs and current owner instead of durably failing held recovery. Original native,
+terminal, tracker and release settlement remains independently owed.
 
 
 ## THR299 compatible reconciliation installation
