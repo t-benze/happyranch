@@ -25,19 +25,69 @@ class HumanPublication:
     audit_rows: tuple[dict, dict]
 
 
-def _audit_rows(conn, budget, *, where, args=()):
-    for row in _bounded_rows(conn, 'audit_log', AUDIT_COLUMNS,
-            tuple((kind,) for kind in AUDIT_TYPES), budget,
-            where=where, args=args, maximum=1024):
-        values = budget.row(row, AUDIT_TYPES, counted=True, charged=True)
-        _check(type(values[0]) is int and values[0] > 0)
-        yield dict(zip(AUDIT_COLUMNS, values, strict=True))
+def _coding_config_candidate(task_id, raw):
+    """Top-level coding section/scope, including duplicate and truncated members.
+
+    Other sections may legitimately contain arbitrary nested section values.
+    This lexer only selects; the original closed publication reader validates.
+    """
+    if task_id == 'config:coding':
+        return True
+    if not isinstance(raw, (str, bytes)):
+        return False
+    from runtime.infrastructure.workflow_coding_schema import _metadata_string
+    text = raw.decode(json.detect_encoding(raw), errors='replace') if isinstance(raw, bytes) else raw
+    index, depth = 0, 0
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            key, index, complete = _metadata_string(text, index, None)
+            if depth != 1 or not complete or key != 'section':
+                continue
+            following = index
+            while following < len(text) and text[following] in ' \t\r\n':
+                following += 1
+            if following == len(text) or text[following] != ':':
+                continue
+            following += 1
+            while following < len(text) and text[following] in ' \t\r\n':
+                following += 1
+            if following < len(text) and text[following] == '"':
+                value, index, complete = _metadata_string(text, following, None)
+                if value == 'coding' or (not complete and 'coding'.startswith(value)):
+                    return True
+            continue
+        if char in '{[':
+            depth += 1
+        elif char in '}]':
+            depth -= 1
+        index += 1
+    return False
+
+
+def _audit_rows(conn, budget, *, where, args=(), configs=False):
+    if configs:
+        candidates = (rowid for rowid, task_id, raw in conn.execute(
+            'SELECT rowid,task_id,payload FROM audit_log WHERE ' + where, args)
+            if _coding_config_candidate(task_id, raw))
+        selections = (('rowid=?', (rowid,)) for rowid in candidates)
+    else:
+        selections = ((where, args),)
+    count = 0
+    for selected, parameters in selections:
+        for row in _bounded_rows(conn, 'audit_log', AUDIT_COLUMNS,
+                tuple((kind,) for kind in AUDIT_TYPES), budget,
+                where=selected, args=parameters, maximum=1024 - count):
+            count += 1
+            values = budget.row(row, AUDIT_TYPES, counted=True, charged=True)
+            _check(type(values[0]) is int and values[0] > 0)
+            yield dict(zip(AUDIT_COLUMNS, values, strict=True))
 
 
 def publications(conn, org, budget) -> dict[str, HumanPublication]:
     """Scan both audit families independently, including orphans and bad owners."""
     configs = {}
-    for row in _audit_rows(conn, budget, where="action='org_config_write'"):
+    for row in _audit_rows(conn, budget, where="action='org_config_write'", configs=True):
         budget.step()
         from runtime.workflows.coding_saved_records import _pairs, _constant
         value = account(json.loads(row['payload'], object_pairs_hook=_pairs,
