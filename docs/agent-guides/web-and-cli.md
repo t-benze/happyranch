@@ -3410,7 +3410,13 @@ V2 on these same boundaries is restricted to THR291 / ordinary TASK13286 and
 FAILED13112→existing13203, with historical FAILED13217 as current_descendant_id.
 Use lexical `--version 2` for preflight, integer2 in the unchanged command body,
 thread THR-291, successor TASK-13203, descendant TASK-13217 and operator TASK-13286,
-on predecessor TASK-13112. The current operator needs a genuinely fresh ordinary
+on predecessor TASK-13112. Founder537 separates actual original invocation triggers
+495/505/511/519 from Founder approvals495/510/518/525; the body/version/key and
+public envelopes do not change. Closed saved v2 dispatches add founder_approval
+and full-row system digests, with approval518/525 origin references. All loaded
+producer/receipt/retry readers and rollback code must support that corrected shape;
+literal v1 bytes remain unchanged. See the orchestrator contract for exact pins.
+The current operator needs a genuinely fresh ordinary
 SAME13286 SID/no selected-SID result and live unblocked/unheld ownership; terminal
 13286 refuses. Preserve13203→13217;13286 is not an ancestry edge or old QA retry
 parent. A separately human-approved application and compatible loaded code are

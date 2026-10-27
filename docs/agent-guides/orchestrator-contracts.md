@@ -4759,11 +4759,27 @@ supersession and requires no outgoing13217 edge;13286 is independent, not its
 successor. Neither terminal historical parent can spawn, and13286 still has no
 verified ancestry to QA13184. This receipt does not authorize its old QA retry.
 
-The four original root trigger/dispatch/audit pins are13112:495/496/412325,
-13203:510/511/417037,13217:518/519/417747,13286:525/526/422353 in THR291.
-Each service invocation must join uniquely to its actual original task/manager,
-Founder message, system dispatch and audit. Original brief digests and immutable
-invocation/trigger/dispatch references are frozen. The original old-edge audit
+The four original reply invocations bind actual triggers separately from Founder
+approvals (root: invocation / trigger speaker+kind / approval / dispatch / audit):
+13112:16506/495 founder,message/495/496/412325;
+13203:16595/505 engineering_manager,message/510/511/417037;
+13217:16608/511 engineering_manager,system/518/519/417747;
+13286:16657/519 engineering_manager,system/525/526/422353, all in THR291.
+Each invocation joins uniquely to its immutable ID/thread/agent/task/purpose.
+Original message bodies are pinned by SHA256; system triggers authenticate the
+actual earlier task-dispatched payload, not a generic manager-message exemption.
+Closed system payloads include the original brief preview; trigger ≤ approval <
+dispatch ordering and actual audit timing are required. Each v2 dispatch binding
+adds exactly `founder_approval:{seq,row_digest}` distinct from `triggering_seq`
+and `trigger_message_digest`. Its system dispatch digest covers the full original
+message row, matching the later invocation's trigger digest where shared.
+Original brief digests and invocation/trigger/approval/dispatch references freeze
+in every saved copy. Origin source_approval/recovery_trigger copy approvals518/525,
+not triggers511/519. Pure inventory validates all reference types/signed64/hash
+syntax and these correspondences before relevance; selected history additionally
+reconstructs the complete bindings from original SQL rows. Founder537 authorizes
+this source correction, never a replacement original operator anchor.
+The original old-edge audit
 417748 remains authenticated by its escalation producer. No caller-supplied
 ancestry/closure or missing-invocation shortcut exists. No historical process,
 preparation, job or outer-settlement closure is required or certified.
@@ -4828,6 +4844,13 @@ prints committed:null/readback_required:true, preserves the exact file/key and
 requires SAME-key historical GET. A missing receipt while a request is in flight
 is not permission to resend. Old version1 canonical bytes and historical meanings
 remain unchanged; generic coherent_read_view and final retry/spawn fences remain.
+The corrected closed v2 requires this compatible producer and every saved/retry
+reader even though the command/version/key and database schema do not change.
+The earlier conflated trigger/approval shape cannot represent these four original
+invocations and is not adopted or rewritten as valid history. Any actual retained
+incompatible valid receipt requires explicit conflict resolution before loading;
+never edit history. Rollback after corrected v2 persistence requires compatible
+readers; a v1-only or earlier conflated-v2 reader is unsafe.
 
 This is SOURCE only under ROOT13286 and accepted design13292/QA13299. Live POST,
 installation/restart and any desired old QA retry need separate human action.

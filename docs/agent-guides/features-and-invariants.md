@@ -3329,8 +3329,13 @@ and TASK10565's naming acceptance.
 
 Closed version2 additionally records ONLY FAILED13112→existing13203 under
 Founder THR291seq518/525, preserving13203→13217 and FAILED13217/no successor.
-The independent ordinary operator13286 is bound to Founder525/dispatch526, never
-an ancestry edge; its genuine fresh SAME-task SID/no selected-SID result and
+The independent ordinary operator13286 is bound to invocation16657/actual trigger519
+(engineering_manager system)/separate Founder525/dispatch526, never an ancestry
+edge. Founder537 corrects all four invocation/approval distinctions; closed v2
+founder_approval copies, full-row system digests and origin518/525 references
+close before relevance, then selected readers authenticate original SQL rows.
+Literal v1 bytes stay unchanged; loading/rollback requires corrected compatible
+producer and all receipt/retry readers, without history rewrites. Its genuine fresh SAME-task SID/no selected-SID result and
 live unblocked/unheld ownership are mandatory. Terminal13286 refuses; arbitrary
 future operators are forbidden. All four root gates, original service provenance,
 full frozen observations and writer-time digest revalidation precede one audit.

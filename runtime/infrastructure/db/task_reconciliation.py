@@ -37,8 +37,24 @@ V2_SCOPE = MappingProxyType({
 })
 V2_ROOT_SEQS = MappingProxyType({"TASK-13112": 496, "TASK-13203": 511,
                                 "TASK-13217": 519, "TASK-13286": 526})
+# Separate Founder approval sequence and original dispatch audit ID.
 V2_DISPATCH_PINS = MappingProxyType({"TASK-13112": (495, 412325), "TASK-13203": (510, 417037),
                                     "TASK-13217": (518, 417747), "TASK-13286": (525, 422353)})
+# Invocation triggers precede separate approvals; only 13112 shares a message.
+V2_INVOCATION_PINS = MappingProxyType({
+    "TASK-13112": (16506, 495, "founder", "message"),
+    "TASK-13203": (16595, 505, "engineering_manager", "message"),
+    "TASK-13217": (16608, 511, "engineering_manager", "system"),
+    "TASK-13286": (16657, 519, "engineering_manager", "system"),
+})
+# Original message bodies from authenticated THR291 evidence, not caller claims.
+V2_MESSAGE_BODY_DIGESTS = MappingProxyType({
+    495: "4fd2959042512af5d6816062dde4bbffea627ce9ea299bc6375b4322642443b2",
+    505: "557ed58380c05f43e6228e019c0e7bd44071074701834e7e4c9a425a05fceac5",
+    510: "1e880925c740ead8131dd4ecaf44609190a31b4858fd9ba7e3c9854c6be60c1a",
+    518: "193c4baba932482cf6cc60d2351a33178952d44d12f3296eb4fadd9d2b91488e",
+    525: "9b4da219818c9fc4ce24add99958675baa7fff3ec543c0923c65fed12e3fbd84",
+})
 
 
 def selected_scope(version: int) -> Mapping[str, str]:
@@ -369,12 +385,32 @@ class TaskReconciliation:
         require(trigger is not None and self.conn.execute("SELECT 1 FROM threads WHERE id=?", (thread,)).fetchone() is not None,
                 "invocation_binding")
         if self.version == 2:
-            triggering_seq, _ = V2_DISPATCH_PINS[root["id"]]
-            require(type(inv["id"]) is int and inv["id"] > 0
+            invocation_id, triggering_seq, speaker, kind = V2_INVOCATION_PINS[root["id"]]
+            approval_seq, _ = V2_DISPATCH_PINS[root["id"]]
+            require(type(inv["id"]) is int and inv["id"] == invocation_id
                     and type(inv["triggering_seq"]) is int and inv["triggering_seq"] == triggering_seq
+                    and inv["purpose"] == "reply" and inv["dispatched_task_id"] == root["id"]
                     and trigger["thread_id"] == thread and trigger["seq"] == triggering_seq
-                    and trigger["kind"] == "message" and trigger["speaker"] == "founder", "invocation_binding")
+                    and trigger["kind"] == kind and trigger["speaker"] == speaker, "invocation_binding")
             aware_timestamp(trigger["created_at"])
+            if kind == "message":
+                require(type(trigger["body_markdown"]) is str and trigger["system_payload_json"] is None
+                        and text_digest(trigger["body_markdown"]) == V2_MESSAGE_BODY_DIGESTS[triggering_seq],
+                        "invocation_binding")
+            else:
+                trigger_root = "TASK-13203" if triggering_seq == 511 else "TASK-13217"
+                self.dispatch_message_v2(dict(trigger), self.task(trigger_root))
+            approval = self.conn.execute("SELECT * FROM thread_messages WHERE thread_id=? AND seq=?",
+                                         (thread, approval_seq)).fetchone()
+            require(approval is not None and approval["thread_id"] == thread and approval["seq"] == approval_seq
+                    and approval["kind"] == "message" and approval["speaker"] == "founder"
+                    and type(approval["body_markdown"]) is str and approval["system_payload_json"] is None
+                    and text_digest(approval["body_markdown"]) == V2_MESSAGE_BODY_DIGESTS[approval_seq],
+                    "invocation_binding")
+            aware_timestamp(approval["created_at"])
+            require(triggering_seq <= approval_seq < self.root_seqs[root["id"]]
+                    and datetime.fromisoformat(trigger["created_at"]) <= datetime.fromisoformat(approval["created_at"]),
+                    "invocation_binding")
         expected = {"task_id": root["id"], "dispatcher": self.scope["manager"],
                     "target_agent": self.scope["manager"], "team": self.scope["team"]}
         audits = []
@@ -386,8 +422,12 @@ class TaskReconciliation:
                 if self.version == 2:
                     require(type(row["id"]) is int and row["id"] == V2_DISPATCH_PINS[root["id"]][1]
                             and type(row["payload"]) is str, "invocation_binding")
+                    require(payload == expected, "invocation_binding")
                     aware_timestamp(row["timestamp"])
+                    dispatch_timestamp = row["timestamp"]
                 audits.append({"id": row["id"], "row_digest": digest(row)})
+        if self.version == 2:
+            require(len(audits) == 1, "invocation_binding")
         messages = []
         for row in self.rows("SELECT * FROM thread_messages WHERE thread_id=? AND kind='system' ORDER BY seq", (thread,)):
             if row["system_payload_json"] is None:
@@ -396,7 +436,11 @@ class TaskReconciliation:
             if payload.get("task_id") == root["id"] and payload.get("kind_tag") == "task_dispatched":
                 require(row["speaker"] == self.scope["manager"] and row["seq"] > inv["triggering_seq"]
                         and all(payload.get(k) == v for k, v in expected.items()), "invocation_binding")
-                messages.append({"seq": row["seq"], "row_digest": digest({k: row[k] for k in
+                if self.version == 2:
+                    self.dispatch_message_v2(row, root)
+                    require(datetime.fromisoformat(approval["created_at"]) < datetime.fromisoformat(row["created_at"])
+                            <= datetime.fromisoformat(dispatch_timestamp), "invocation_binding")
+                messages.append({"seq": row["seq"], "row_digest": digest(row if self.version == 2 else {k: row[k] for k in
                                  ("thread_id", "seq", "speaker", "kind", "system_payload_json")})})
         require(len(audits) == len(messages) == 1 and messages[0]["seq"] == self.root_seqs[root["id"]], "invocation_binding")
         result = {"root_id": root["id"], "thread_id": thread, "invocation_id": inv["id"],
@@ -407,7 +451,21 @@ class TaskReconciliation:
         if self.version == 2:
             require(type(root["brief"]) is str, "invocation_binding")
             result["original_brief_sha256"] = text_digest(root["brief"])
+            result["founder_approval"] = {"seq": approval_seq, "row_digest": digest(dict(approval))}
         return result
+
+    def dispatch_message_v2(self, row: dict, root: dict) -> None:
+        """Authenticate the literal original system producer, including triggers."""
+        require(row["thread_id"] == self.scope["lineage_thread"]
+                and row["seq"] == self.root_seqs[root["id"]]
+                and row["speaker"] == self.scope["manager"] and row["kind"] == "system"
+                and row["body_markdown"] is None and type(row["system_payload_json"]) is str
+                and type(root["brief"]) is str, "invocation_binding")
+        payload = strict_json(row["system_payload_json"])
+        require(payload == {"kind_tag": "task_dispatched", "task_id": root["id"],
+                "dispatcher": self.scope["manager"], "target_agent": self.scope["manager"],
+                "team": self.scope["team"], "brief_preview": root["brief"][:160]}, "invocation_binding")
+        aware_timestamp(row["created_at"])
 
     @staticmethod
     def inventory_shape(payload: dict) -> None:
@@ -445,12 +503,14 @@ class TaskReconciliation:
 
         def dispatch_shape(record: dict) -> None:
             keys(record, "root_id thread_id invocation_id invocation_digest triggering_seq trigger_message_digest dispatch_audits dispatch_messages" +
-                 (" original_brief_sha256" if version == 2 else ""))
+                 (" original_brief_sha256 founder_approval" if version == 2 else ""))
             strings(record, "root_id thread_id")
             positive_integer(record["invocation_id"])
             positive_integer(record["triggering_seq"])
             sha256(record, "invocation_digest trigger_message_digest" +
                    (" original_brief_sha256" if version == 2 else ""))
+            if version == 2:
+                reference(record["founder_approval"], "seq")
             for name, number in (("dispatch_audits", "id"), ("dispatch_messages", "seq")):
                 require(type(record[name]) is list and len(record[name]) == 1)
                 reference(record[name][0], number)
@@ -605,11 +665,24 @@ class TaskReconciliation:
                     and dispatch["dispatch_messages"][0]["seq"] == root_seqs[root_id]
                     and dispatch["triggering_seq"] < dispatch["dispatch_messages"][0]["seq"])
             if version == 2:
-                require(dispatch["triggering_seq"] == V2_DISPATCH_PINS[root_id][0]
-                        and dispatch["dispatch_audits"][0]["id"] == V2_DISPATCH_PINS[root_id][1])
+                invocation_id, trigger_seq, _, _ = V2_INVOCATION_PINS[root_id]
+                approval_seq, audit_id = V2_DISPATCH_PINS[root_id]
+                require(dispatch["invocation_id"] == invocation_id and dispatch["triggering_seq"] == trigger_seq
+                        and dispatch["founder_approval"]["seq"] == approval_seq
+                        and trigger_seq <= approval_seq < root_seqs[root_id]
+                        and dispatch["dispatch_audits"][0]["id"] == audit_id)
+                if trigger_seq == approval_seq:
+                    require(dispatch["trigger_message_digest"] == dispatch["founder_approval"]["row_digest"])
+                require(dispatch["invocation_digest"] == digest({"id": invocation_id,
+                        "thread_id": scope["lineage_thread"], "agent_name": scope["manager"],
+                        "dispatched_task_id": root_id, "triggering_seq": trigger_seq, "purpose": "reply"}))
         require(len({d["invocation_id"] for d in dispatches}) == len(dispatches)
                 and len({d["dispatch_audits"][0]["id"] for d in dispatches}) == len(dispatches))
         by_root = {d["root_id"]: d for d in dispatches}
+        if version == 2:
+            for root_id, trigger_root in (("TASK-13217", "TASK-13203"), ("TASK-13286", "TASK-13217")):
+                require(by_root[root_id]["trigger_message_digest"] ==
+                        by_root[trigger_root]["dispatch_messages"][0]["row_digest"])
         origin = snapshot["origin"]
         require(origin["thread_id"] == scope["owner_origin"]
                 and canonical(origin["owner_dispatch"]) == canonical(by_root[scope["owner"]]))
@@ -617,8 +690,7 @@ class TaskReconciliation:
             require(origin["composed_by"] == scope["manager"] and origin["composed_from_task_id"] == scope["current"])
         else:
             for name, root_id in (("source_approval", scope["current"]), ("recovery_trigger", scope["owner"])):
-                require(origin[name] == {"seq": by_root[root_id]["triggering_seq"],
-                                         "row_digest": by_root[root_id]["trigger_message_digest"]})
+                require(origin[name] == by_root[root_id]["founder_approval"])
 
         edges = snapshot["edge_bindings"]
         require(edges == sorted(edges, key=lambda e: (e["producer"], e["predecessor_id"], e["successor_id"], e["records"][0]["id"])))
@@ -902,18 +974,13 @@ class TaskReconciliation:
         return snapshot
 
     def origin_v2(self, dispatches: list[dict]) -> dict:
-        references = []
-        for seq in (518, 525):
-            row = self.conn.execute("SELECT * FROM thread_messages WHERE thread_id=? AND seq=?",
-                                    (self.scope["lineage_thread"], seq)).fetchone()
-            require(row is not None, "invocation_binding")
-            require(row["kind"] == "message" and row["speaker"] == "founder"
-                    and type(row["seq"]) is int and row["seq"] == seq, "invocation_binding")
-            aware_timestamp(row["created_at"])
-            references.append({"seq": seq, "row_digest": digest(dict(row))})
+        by_root = {dispatch["root_id"]: dispatch for dispatch in dispatches}
+        # Each dispatch authenticates its own separate Founder approval against
+        # SQL originals; inventory closes these copies before pair selection.
         return {"thread_id": self.scope["lineage_thread"],
-                "owner_dispatch": next(d for d in dispatches if d["root_id"] == self.scope["owner"]),
-                "source_approval": references[0], "recovery_trigger": references[1]}
+                "owner_dispatch": by_root[self.scope["owner"]],
+                "source_approval": by_root[self.scope["current"]]["founder_approval"],
+                "recovery_trigger": by_root[self.scope["owner"]]["founder_approval"]}
 
     def local_agents(self, parent_id: str) -> list[dict]:
         return [{"target_agent": agent,
