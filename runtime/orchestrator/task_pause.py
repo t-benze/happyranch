@@ -154,6 +154,7 @@ class TaskInvocation:
     _repository_effect_intervals: list = field(default_factory=list, repr=False)
     _repository_retained_effects: list = field(default_factory=list, repr=False)
     _repository_worker_active: bool = False
+    _startup_validation: Callable[[], None] | None = field(default=None, repr=False)
 
     def repository_preparation_binding(self):
         from runtime.orchestrator.workspace_adapters import _repo_owner_binding
@@ -191,7 +192,25 @@ class TaskInvocation:
     def store(self) -> TaskPauseStore:
         return self.orch._db._task_pause_store
 
+    def _fresh_validation(self, additional: Callable[[], None] | None = None) -> Callable[[], None] | None:
+        """Keep one ordinary/v2/recovery selection across the original fresh seams."""
+        if self.owner not in {"ordinary", "v2", "recovery"}:
+            return additional
+        if self._startup_validation is None:
+            from runtime.daemon.startup_recovery import ordinary_admission_validation
+            self._startup_validation = ordinary_admission_validation(self.orch)
+        selected = self._startup_validation
+
+        def validate() -> None:
+            selected()
+            if additional is not None:
+                additional()
+
+        validate()
+        return validate
+
     def prepare(self, *, validate_admission: Callable[[], None] | None = None) -> None:
+        validate_admission = self._fresh_validation(validate_admission)
         if self.owner == "coding":
             from runtime.daemon.startup_recovery import coding_admission_validation
             coding_validate = coding_admission_validation(self.orch._workflow_coding_dispatch)
@@ -246,12 +265,12 @@ class TaskInvocation:
                     if self.store is not store or self.orch._team_moves is not move:
                         if self.move_reservation is not None:
                             self.move_reservation.failed_cleanup()
-                        raise RuntimeError("document_preparation_settlement_owner_changed")
+                        raise RuntimeError("task_preparation_settlement_owner_changed")
                     release_live(self)
                 except BaseException as secondary:
                     if self.move_reservation is not None:
                         self.move_reservation.failed_cleanup()
-                    primary.add_note(f"document preparation settlement also failed: {secondary!r}")
+                    primary.add_note(f"task preparation settlement also failed: {secondary!r}")
             raise
 
     def _entry(self, row: dict) -> dict:
@@ -424,6 +443,7 @@ class TaskInvocation:
                 if previous_validation is not None:
                     previous_validation()
 
+        validate_admission = self._fresh_validation(validate_admission)
         sessions = self.orch._sessions
         lease = sessions.binding_lease(self.task.id, self.agent) if sessions else nullcontext()
         won = False
@@ -846,9 +866,17 @@ def deferred_invocation(orch: Any, task: TaskRecord, metadata: dict | None = Non
 
 def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
     """Revalidate under the native writer; the caller already owns attribution."""
-    store = invocation.store
+    store, move = invocation.store, invocation.orch._team_moves
+    validate = None if invocation.consumer_only else invocation._fresh_validation()
+    committed = False
+
+    def record_commit():
+        nonlocal committed
+        committed = True
+
     try:
-        with store.writer(invocation.task.id, admission=True) as (_, row):
+        with store.writer(invocation.task.id, admission=True, validate_admission=validate,
+                          committed=record_commit) as (_, row):
             task = store.db.get_task(invocation.task.id)
             if task is None:
                 raise DeferredRootPause("deferred owner disappeared")
@@ -860,15 +888,29 @@ def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
             entry = invocation._entry(row)
             entry["phase"] = "result_processing" if current.consumer_only else "prepared"
             store.save_journal_uncommitted(row)
-    except BaseException:
+        with store.db._lock:
+            if validate is not None:
+                validate()
+            invocation.deferred_adoption_pending = False
+            store._live[invocation.identity] = invocation
+    except BaseException as primary:
+        if committed:
+            try:
+                if invocation.store is not store or invocation.orch._team_moves is not move:
+                    if invocation.move_reservation is not None:
+                        invocation.move_reservation.failed_cleanup()
+                    raise RuntimeError("task_adoption_settlement_owner_changed")
+                release_live(invocation)
+            except BaseException as secondary:
+                if invocation.move_reservation is not None:
+                    invocation.move_reservation.failed_cleanup()
+                primary.add_note(f"task adoption settlement also failed: {secondary!r}")
+            raise
         # Reservation alone has no effects. A rolled-back adoption must not
         # leave a pristine local owner_live latch blocking its next delivery;
         # release_task retains every possible-launch/failed-cleanup blocker.
         invocation.orch._team_moves.release_task(invocation)
         raise
-    with store.db._lock:
-        invocation.deferred_adoption_pending = False
-        store._live[invocation.identity] = invocation
 
 
 @contextmanager

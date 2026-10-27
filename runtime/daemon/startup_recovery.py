@@ -1238,6 +1238,35 @@ def ordinary_admission_validation(owner: Any) -> Callable[[], None]:
     return validate
 
 
+def maintenance_service_validation(state: Any) -> Callable[[], None]:
+    """Retain the original service epoch, independently of each runtime tick."""
+    state._require_startup_ready()
+    gate, queue = state._startup_recovery, state.queue
+    epoch, loop = gate.epoch, gate._loop
+
+    def validate() -> None:
+        if (state._startup_recovery is not gate or state.queue is not queue
+                or gate.epoch != epoch or gate._loop is not loop):
+            raise StartupUnavailable("startup_attachment_changed")
+        state._require_startup_ready()
+
+    return validate
+
+
+def maintenance_runtime_replaced(state: Any, runtime: Any, validate_service: Callable[[], None],
+                                 error: StartupUnavailable) -> bool:
+    """Only a settled selected-attachment refusal ends a tick rather than its service.
+
+    Call AFTER the original worker/cleanup joins. Stop, failed epochs, queue
+    replacement and uncertain native tails never authorize another operation.
+    """
+    validate_service()
+    return (state.runtime is not runtime
+            and error.code in {"startup_attachment_changed", "startup_projection_attachment_changed",
+                               "startup_document_attachment_changed"}
+            and not getattr(error, "maintenance_native_unsettled", False))
+
+
 def maintenance_admission_validation(state: Any) -> Callable[[], None]:
     """The actual daemon scheduler owner; no standalone scheduler bypass."""
     state._require_startup_ready()

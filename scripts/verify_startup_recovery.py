@@ -209,8 +209,8 @@ def counters(checks, db):
 def seed(checks):
     # Literal fit is recorded BEFORE the first product constructor. Runtime
     # producers must remain inside it; a refusal is not replaced with raw SQL.
-    fit = {"orgs": 1 if checks.args.case == "C12" else 2, "roots": 1,
-           "tasks": 1, "results": 1, "v2_history_and_controls": 11,
+    fit = {"orgs": 1 if checks.args.case == "C12" else 2, "roots": 1 if checks.args.case == "C12" else 10,
+           "tasks": 1 if checks.args.case == "C12" else 10, "results": 1, "v2_history_and_controls": 11,
            "workflow_causal_rows": 0, "threads": 0 if checks.args.case == "C12" else 2,
            "messages": 0 if checks.args.case == "C12" else 2, "tokens": 0, "jobs": 0,
            "provider_children": 0, "listeners": 0 if checks.args.case == "C12" else 1,
@@ -310,6 +310,292 @@ def database_observation(runtime):
     return result
 
 
+class MaintenanceWaits:
+    """Test-side scheduling barriers around the ORIGINAL service sleep calls."""
+    names = ("direct_connect_projection_sweep_loop", "zombie_reaper_loop",
+             "workspace_cleanup_scheduler_loop", "disk_sweeper_loop")
+
+    def __init__(self):
+        self.original_sleep = asyncio.sleep
+        self.permits = {name: asyncio.Queue() for name in self.names}
+        self.entries = dict.fromkeys(self.names, 0)
+
+    async def sleep(self, delay, result=None):
+        task = asyncio.current_task()
+        name = None if task is None else task.get_name()
+        if name not in self.permits:
+            return await self.original_sleep(delay, result)
+        self.entries[name] += 1
+        await self.permits[name].get()
+        return result
+
+    async def parked(self, minimum):
+        deadline = time.monotonic() + 3
+        while any(self.entries[name] < minimum[name] for name in self.names):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("original maintenance consumers did not reach their sleep barriers")
+            await self.original_sleep(.01)
+
+    async def tick(self):
+        expected = {name: count + 1 for name, count in self.entries.items()}
+        for permit in self.permits.values():
+            permit.put_nowait(None)
+        await self.parked(expected)
+
+
+async def maintenance_switch_cases(checks, state, client, waits):
+    """C09/C13: real four consumers, supported switch, joined stale native work."""
+    from runtime.runtime import daemon_home, RuntimeDir
+    from runtime.models import TaskStatus
+    await waits.parked(dict.fromkeys(waits.names, 1))
+    selected = {task.get_name(): task for task in state._startup_recovery._consumers
+                if task.get_name() in waits.names}
+    checks.require("C13_four_original_consumers", len(selected), 4)
+    # End only this disposable counter task via its original native task writer;
+    # its genuine callback/history is retained. No real task is touched.
+    from datetime import datetime, timezone
+    state.orgs["fixture-a"].db.update_task("TASK-001", status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(timezone.utc).isoformat())
+    # The actual disk scheduler can observe a due tick, but may never delete.
+    # These are isolated fixture control files, created before scheduled use.
+    data = daemon_home() / "disk-sweep"
+    data.mkdir(exist_ok=True)
+    (data / "stop.json").write_text('{"stop":true}')
+    epoch, runtime = state._startup_recovery.epoch, state.runtime
+    response = await client.post("/api/v1/runtime/use", json={"path": str(runtime.root)})
+    checks.require("C13_supported_runtime_switch", response.status_code, 200)
+    if response.status_code != 200:
+        raise AssertionError("supported switch refused; no fake attachment fallback")
+    checks.require("C13_runtime_replaced_same_epoch", state.runtime is not runtime
+                   and state._startup_recovery.epoch == epoch)
+    await waits.tick()
+    checks.require("C13_same_four_services_after_switch", all(not task.done() for task in selected.values()))
+    marker = data / "last-scheduled.json"
+    marker_bytes = marker.read_bytes()
+    date = json.loads(marker_bytes)["scheduled_date"]
+    summary = data / f"{date}.json"
+    summary_bytes = summary.read_bytes()
+    report = json.loads(summary_bytes)
+    checks.require("C13_actual_due_tick_suspended", report["outcome"], "suspended")
+    checks.require("C13_no_disk_worker_PID", report.get("worker_pid"), None)
+    await waits.tick()
+    checks.require("C13_same_night_marker_not_reset", marker.read_text(), marker_bytes.decode())
+    checks.require("C13_same_night_no_second_summary", summary.read_text(), summary_bytes.decode())
+
+    # Block AFTER the real pending-operation read in the original projection
+    # worker. The original _sweep_once still performs all policy/effect checks.
+    store = state.direct_connect_authority_store
+    original = store.list_latest_operations_pending_projection
+    entered, release = threading.Event(), threading.Event()
+    def held_read():
+        pending = original()
+        entered.set()
+        if not release.wait(2):
+            raise TimeoutError("selected projection native wait exceeded2s")
+        return pending
+    before = database_observation(state.runtime)
+    old_runtime = state.runtime
+    store.list_latest_operations_pending_projection = held_read
+    try:
+        waits.permits["direct_connect_projection_sweep_loop"].put_nowait(None)
+        if not await asyncio.to_thread(entered.wait, 2):
+            raise AssertionError("original projection producer not entered")
+        checks.require("C09_projection_native_owner_retained", bool(state._maintenance_workers))
+        # Test-side attachment invalidation while selected work is waiting;
+        # ordinary supported switching itself refuses an active native owner.
+        state.runtime = RuntimeDir.load(old_runtime.root)
+        release.set()
+        target = dict(waits.entries)
+        target["direct_connect_projection_sweep_loop"] += 1
+        await waits.parked(target)
+        checks.require("C09_old_projection_joined", not state._maintenance_workers)
+        checks.require("C09_old_projection_no_org_effect", database_observation(state.runtime), before)
+        checks.require("C09_projection_service_survives_selected_refusal",
+                       not selected["direct_connect_projection_sweep_loop"].done())
+    finally:
+        release.set()
+        store.list_latest_operations_pending_projection = original
+        # Restore only the fixture's attachment perturbation; no gate reset.
+        state.runtime = old_runtime
+    await waits.tick()
+    checks.require("C13_new_runtime_projection_still_available",
+                   all(not task.done() for task in selected.values()))
+    checks.require("C13_no_duplicate_consumers", [id(task) for task in selected.values()],
+                   [id(task) for task in state._startup_recovery._consumers if task.get_name() in waits.names])
+    # Error/stop are deliberately not repaired as a runtime rebind.
+    checks.details["maintenance_original_handles"] = {name: id(task) for name, task in selected.items()}
+
+
+def invocation_observation(org, task_id):
+    """Independent SQL/native owners; no expected policy is reimplemented."""
+    db, store = org.db, org.db._task_pause_store
+    with db._lock:
+        row = db._conn.execute("SELECT * FROM task_pause_controls WHERE root_task_id=?", (task_id,)).fetchone()
+        return {"task": org.db.get_task(task_id).model_dump(mode="json"),
+                "journal": None if row is None else tuple(row),
+                "reservations": sorted(org.orchestrator._team_moves._reservations),
+                "live": sorted(store._live)}
+
+
+async def task_invocation_wait_cases(checks, state):
+    """C03/C08/C09: original TaskInvocation writers under original native locks."""
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.task_pause import TaskInvocation, release_live
+    from runtime.infrastructure.task_pause_controls import TaskPauseStore
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    from types import SimpleNamespace
+    import inspect
+    org = state.orgs["fixture-b"]
+    store, orch = org.db._task_pause_store, org.orchestrator
+    # Literal fit BEFORE these additional canonical task producers: one ready
+    # preparation, registry and seven wait cases <=9 tasks/Pause rows,
+    # zero callbacks/v2 generations/provider children/jobs; cumulative tasks<=10.
+    checks.details["C03_fit_before_task_producers"] = {"new_tasks": 9, "pause_rows": 9,
+        "max_simultaneous_reservations": 1, "new_v2_rows": 0, "providers": 0}
+    def create(number):
+        task = TaskRecord(id=f"TASK-{100 + number}", status=TaskStatus.PENDING,
+            assigned_agent="case_worker", brief="Owned fresh-writer lock observation")
+        org.db.insert_task(task)
+        return TaskInvocation(orch, task, "case_worker", orch._build_session_id())
+    ready = create(0)
+    ready.prepare()
+    observed = invocation_observation(org, ready.task.id)
+    checks.require("C03_ready_actual_prepare_journal_and_reservation",
+        observed["journal"] is not None and ready.identity in observed["live"]
+        and ready.identity in observed["reservations"])
+    release_live(ready)
+    checks.require("C03_ready_no_launch_settles", ready.identity not in store._live
+                   and ready.identity not in orch._team_moves._reservations)
+
+    # Post-COMMIT registry acquisition is a separate original wait. Hold the
+    # worker at that exact line, then the original DB mutex, without wrapping
+    # prepare or substituting its journal/reservation effects.
+    registry = create(8)
+    entered, release = threading.Event(), threading.Event()
+    lines, first_line = inspect.getsourcelines(TaskInvocation.prepare)
+    registry_line = next(first_line + offset for offset, line in enumerate(lines)
+                         if "with self.store.db._lock:" in line)
+    def registry_worker():
+        previous = sys.gettrace()
+        if previous is not None:
+            raise RuntimeError("existing registry observer cannot be replaced")
+        def trace(frame, event, _arg):
+            if (frame.f_code is TaskInvocation.prepare.__code__ and event == "line"
+                    and frame.f_lineno == registry_line):
+                entered.set()
+                if not release.wait(2):
+                    raise TimeoutError("original registry wait exceeded2s")
+            return trace
+        sys.settrace(trace)
+        try:
+            registry.prepare()
+        except StartupUnavailable as exc:
+            return exc.code
+        finally:
+            sys.settrace(previous)
+        return "unexpected_acceptance"
+    before_task = org.db.get_task(registry.task.id).model_dump(mode="json")
+    handle = asyncio.create_task(asyncio.to_thread(registry_worker))
+    original_refs = org._startup_admission_refs
+    try:
+        if not await asyncio.to_thread(entered.wait, 2):
+            raise AssertionError("original postcommit registry acquisition not reached")
+        with org.db._lock:
+            row = org.db._conn.execute("SELECT admission_journal_json FROM task_pause_controls "
+                "WHERE root_task_id=?", (registry.task.id,)).fetchone()
+            checks.require("C09_registry_actual_preparation_committed",
+                row is not None and json.loads(row[0])["entries"][0]["id"] == registry.identity
+                and registry.identity in orch._team_moves._reservations
+                and registry.identity not in store._live)
+            org._startup_admission_refs = tuple(list(original_refs))
+            release.set()
+        checks.require("C09_registry_postcommit_refusal", await asyncio.shield(handle),
+                       "startup_attachment_changed")
+        observed = invocation_observation(org, registry.task.id)
+        checks.require("C09_registry_no_launch_task_unchanged", observed["task"], before_task)
+        checks.require("C09_registry_owed_no_launch_settlement",
+            registry.identity not in observed["reservations"] and registry.identity not in observed["live"])
+        with org.db._lock:
+            row = org.db._conn.execute("SELECT admission_journal_json FROM task_pause_controls "
+                "WHERE root_task_id=?", (registry.task.id,)).fetchone()
+            checks.require("C09_registry_original_journal_settled", json.loads(row[0])["entries"], [])
+    finally:
+        release.set()
+        await asyncio.shield(handle)
+        org._startup_admission_refs = original_refs
+
+    cases = (("prepare", "db", False), ("prepare", "root", False),
+             ("prepare", "move", False), ("commit", "root", False),
+             ("commit", "move", False), ("commit", "terminal", False),
+             ("prepare", "root", True))
+    for number, (stage, lock_name, stop) in enumerate(cases, 1):
+        invocation = create(number)
+        if stage == "commit":
+            invocation.prepare()
+        before = invocation_observation(org, invocation.task.id)
+        original_refs = org._startup_admission_refs
+        ctx = SimpleNamespace(_lock=threading.Lock(), _terminal_reason=None)
+        lock = {"db": org.db._lock, "root": store.gate(invocation.task.id),
+                "move": orch._team_moves.gate, "terminal": ctx._lock}[lock_name]
+        entered = threading.Event()
+        # Trace the actual original acquisition line, after every earlier
+        # validator. Merely entering writer() cannot prove a later wait seam.
+        body = TaskPauseStore.writer.__wrapped__
+        lines, first_line = inspect.getsourcelines(body)
+        selected_line = {"db": "with self.db._lock:",
+            "root": "ownership.enter_context(self.gate(root_id))",
+            "move": "ownership.enter_context(move.gate",
+            "terminal": "with commit_guard"}[lock_name]
+        wait_line = next(first_line + offset for offset, line in enumerate(lines) if selected_line in line)
+        code = body.__code__
+        def worker():
+            previous = sys.gettrace()
+            if previous is not None:
+                raise RuntimeError("existing worker observer cannot be replaced")
+            def trace(frame, event, _arg):
+                if frame.f_code is code and event == "line" and frame.f_lineno == wait_line:
+                    entered.set()
+                return trace
+            sys.settrace(trace)
+            try:
+                if stage == "prepare":
+                    invocation.prepare()
+                else:
+                    invocation._commit_local(ctx)
+            except StartupUnavailable as exc:
+                return exc.code
+            finally:
+                sys.settrace(previous)
+            return "unexpected_acceptance"
+        lock.acquire()
+        handle = asyncio.create_task(asyncio.to_thread(worker))
+        try:
+            if not await asyncio.to_thread(entered.wait, 2):
+                raise AssertionError("original invocation writer was not reached")
+            checks.require(f"C03_{stage}_{lock_name}_actually_waiting", not handle.done())
+            if stop:
+                state._startup_recovery.stop()
+            else:
+                org._startup_admission_refs = tuple(list(original_refs))
+        finally:
+            lock.release()
+        try:
+            code_result = await asyncio.wait_for(asyncio.shield(handle), 3)
+            prefix = f"C08_{stage}_{lock_name}" if stop else f"C09_{stage}_{lock_name}"
+            checks.require(prefix + "_selected_refusal", code_result,
+                           "daemon_recovery_failed" if stop else "startup_attachment_changed")
+            checks.require(prefix + "_before_effect_rows_and_owners",
+                           invocation_observation(org, invocation.task.id), before)
+        finally:
+            # Join actual worker before restoring fixture attachments/settling.
+            if not handle.done():
+                await asyncio.shield(handle)
+            org._startup_admission_refs = original_refs
+            if stage == "commit":
+                release_live(invocation)  # owed original no-launch cleanup after stop
+    checks.missing("C03_v2_causal_positive", "canonical generation/claim matrix stays root-owned; no fabricated v2 input")
+
+
 async def serving(checks, runtime):
     import httpx
     import uvicorn
@@ -368,6 +654,8 @@ async def serving(checks, runtime):
     port = sock.getsockname()[1]
     server = daemon._DiagnosticServer(uvicorn.Config(app, host="127.0.0.1", port=port,
         log_level="warning", timeout_graceful_shutdown=15), app)
+    maintenance_waits = MaintenanceWaits()
+    asyncio.sleep = maintenance_waits.sleep
     handle = asyncio.create_task(server.serve(sockets=[sock]))
     checks.details["listener"] = {"host": "127.0.0.1", "port": port}
     checks.details["request_loop_thread"] = threading.get_ident()
@@ -459,7 +747,8 @@ async def serving(checks, runtime):
             checks.require("C01_post_ready_transcript", response.status_code == 200 and MESSAGE in response.text)
             checks.details["completed_startup"] = state._startup_recovery.snapshot()
             checks.require("C10_owned_reader_admissions_retired", state._startup_reads.snapshot()["active"], 0)
-            state._startup_recovery.stop()
+            await maintenance_switch_cases(checks, state, client, maintenance_waits)
+            await task_invocation_wait_cases(checks, state)
             response = await client.get("/api/v1/health/ready")
             checks.require("C08_stop_closes_ready", response.status_code, 503)
     finally:
@@ -470,6 +759,7 @@ async def serving(checks, runtime):
             checks.require("C08_original_lifespan_positive_close", state._shutdown_complete)
         finally:
             daemon._sweep_on_startup = original
+            asyncio.sleep = maintenance_waits.original_sleep
             sock.close()
         if wait_error:
             raise AssertionError(wait_error[0])

@@ -407,18 +407,24 @@ async def zombie_reaper_loop(
     metrics recording. Registered in runtime/daemon/app.py _lifespan alongside
     the existing scheduler tasks.
     """
-    from runtime.daemon.startup_recovery import maintenance_admission_validation, ordinary_admission_validation, StartupUnavailable
-    validate_state = maintenance_admission_validation(state)
+    from runtime.daemon.startup_recovery import (
+        maintenance_admission_validation, maintenance_service_validation, maintenance_runtime_replaced,
+        ordinary_admission_validation, StartupUnavailable,
+    )
+    validate_service = maintenance_service_validation(state)
     boot_time = _time.monotonic()
     warm_up_seconds = HEARTBEAT_INTERVAL_SECONDS  # 30s post-boot grace
 
     while True:
-        validate_state()
+        validate_service()
+        runtime = state.runtime
+        validate_state = maintenance_admission_validation(state)
         t0 = _time.monotonic()
         now = datetime.now(timezone.utc)
         uptime = t0 - boot_time
 
         for org in list(state.orgs.values()):
+            root_tail_failed = False
             try:
                 validate_state()
                 validate_org = ordinary_admission_validation(org)
@@ -451,10 +457,19 @@ async def zombie_reaper_loop(
                     raise
                 finally:
                     if root_transitions:
-                        await _await_root_worktree_batch(org.orchestrator, root_transitions,
-                            teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
-            except StartupUnavailable:
-                raise
+                        try:
+                            await _await_root_worktree_batch(org.orchestrator, root_transitions,
+                                teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
+                        except BaseException:
+                            root_tail_failed = True
+                            raise
+                validate_state()
+                validate_org()
+            except StartupUnavailable as exc:
+                if root_tail_failed or not maintenance_runtime_replaced(state, runtime, validate_service, exc):
+                    raise
+                logger.warning("zombie reaper selected runtime retired: %s", exc)
+                break
             except Exception:
                 logger.exception(
                     "zombie reaper sweep failed for org %s", org.slug,
@@ -465,4 +480,4 @@ async def zombie_reaper_loop(
             "zombie_reaper", interval_seconds, duration,
         )
         await asyncio.sleep(interval_seconds)
-        validate_state()
+        validate_service()

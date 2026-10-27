@@ -1651,7 +1651,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
-    orch._require_startup_ready()
+    from runtime.daemon.startup_recovery import ordinary_admission_validation
+    validate = ordinary_admission_validation(orch)
     from runtime.orchestrator.task_pause import (
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
     )
@@ -1681,11 +1682,12 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     invocation = TaskInvocation(orch, task, task.assigned_agent or _default_agent_for_root(orch, task),
         orch._build_session_id(),
         owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
-        metadata=metadata or {})
+        metadata=metadata or {}, _startup_validation=validate)
     try:
         deferred = deferred_invocation(orch, task, metadata, adopt=False)
         if deferred is not None:
             invocation = deferred
+            invocation._startup_validation = validate
             adopt_deferred_invocation(invocation)
         else:
             if not eligible(orch, task):

@@ -965,9 +965,10 @@ def _scheduled_admission(deadline: float) -> dict:
         return dict(admission, error=f'{type(exc).__name__}: {exc}')
 
 
-async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
+async def _run_scheduled_worker(state, summary: Path, date: str, *, validate_admission=None) -> dict:
     from runtime.daemon.startup_recovery import maintenance_admission_validation
-    validate = maintenance_admission_validation(state)
+    validate = validate_admission or maintenance_admission_validation(state)
+    validate()
     task = asyncio.current_task()
     registered = task not in state._maintenance_workers
     state._maintenance_workers.add(task)
@@ -1085,15 +1086,20 @@ def next_night(now: datetime) -> datetime:
 
 async def disk_sweeper_loop(state) -> None:
     from runtime.runtime import daemon_home
-    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
-    validate = maintenance_admission_validation(state)
+    from runtime.daemon.startup_recovery import (
+        maintenance_admission_validation, maintenance_service_validation, maintenance_runtime_replaced,
+        StartupUnavailable,
+    )
+    validate_service = maintenance_service_validation(state)
     async def native_call(function, *args):
         return await state._await_maintenance_worker(asyncio.create_task(asyncio.to_thread(function, *args)))
     while True:
-        validate()
+        validate_service()
         due = next_night(datetime.now().astimezone())
         await asyncio.sleep(max(0, due.timestamp() - time.time()))
-        validate()
+        validate_service()
+        runtime = state.runtime
+        validate = maintenance_admission_validation(state)
         if state.runtime is None:
             continue
         data = daemon_home() / 'disk-sweep'
@@ -1138,7 +1144,7 @@ async def disk_sweeper_loop(state) -> None:
                 raise
             cancelled = None
             try:
-                report = await _run_scheduled_worker(state, summary, date)
+                report = await _run_scheduled_worker(state, summary, date, validate_admission=validate)
             except asyncio.CancelledError as exc:
                 report = getattr(exc, 'disk_sweep_report', None)
                 if report is None:
@@ -1161,7 +1167,12 @@ async def disk_sweeper_loop(state) -> None:
             if marker_committed:
                 exc.add_note(f"Original disk date marker {marker} committed for {date}; no same-night retry.")
             native_unsettled = getattr(exc, "maintenance_native_unsettled", False)
-            if isinstance(exc, (asyncio.CancelledError, StartupUnavailable)):
+            if isinstance(exc, StartupUnavailable):
+                if not maintenance_runtime_replaced(state, runtime, validate_service, exc):
+                    raise
+                LOG.warning("Disk selected runtime retired; no same-night retry: %s", exc)
+                continue
+            if isinstance(exc, asyncio.CancelledError):
                 raise
             if not isinstance(exc, Exception):
                 raise

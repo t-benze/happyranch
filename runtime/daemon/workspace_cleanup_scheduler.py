@@ -1493,8 +1493,11 @@ async def workspace_cleanup_scheduler_loop(
     loop-tick metrics. Registered in ``runtime/daemon/app.py`` _lifespan;
     cancelled in its finally block.
     """
-    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
-    validate = maintenance_admission_validation(state)
+    from runtime.daemon.startup_recovery import (
+        maintenance_admission_validation, maintenance_service_validation, maintenance_runtime_replaced,
+        StartupUnavailable,
+    )
+    validate_service = maintenance_service_validation(state)
     boot_time = time.monotonic()
     # The very first post-warmup scan is an explicit current-window catch-up
     # (``first_scan=True``) rather than a guessed elapsed cursor; it evaluates
@@ -1506,23 +1509,30 @@ async def workspace_cleanup_scheduler_loop(
         t0 = time.monotonic()
         now_utc = datetime.now(timezone.utc)
         uptime = t0 - boot_time
-        validate()
+        validate_service()
+        runtime = state.runtime
+        validate = maintenance_admission_validation(state)
         if uptime >= warm_up_seconds:
             for org in list(state.orgs.values()):
                 try:
+                    validate()
                     await _tick_org(
                         org, state, now_utc,
                         previous_scan_utc=previous_scan_utc,
                         first_scan=first_scan,
                     )
-                except StartupUnavailable:
-                    raise
+                    validate()
+                except StartupUnavailable as exc:
+                    if not maintenance_runtime_replaced(state, runtime, validate_service, exc):
+                        raise
+                    logger.warning("workspace cleanup selected runtime retired: %s", exc)
+                    break
                 except Exception:
                     logger.exception(
                         "workspace cleanup scheduling skipped for org %s",
                         org.slug,
                     )
-            validate()
+            validate_service()
             previous_scan_utc = now_utc
             first_scan = False
         duration = time.monotonic() - t0
@@ -1530,4 +1540,4 @@ async def workspace_cleanup_scheduler_loop(
             "workspace_cleanup_scheduler", interval_seconds, duration,
         )
         await asyncio.sleep(interval_seconds)
-        validate()
+        validate_service()

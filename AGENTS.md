@@ -252,9 +252,14 @@ that validation after original root/move/DB/terminal ownership; postcommit regis
 admission checks precede insertion. A closed gate cannot strand an owed original
 no-launch settlement: the committed preparation keeps its journal/SID/reservation
 until native settlement succeeds, and failed settlement retains uncertainty and
-the primary error. Unselected default authority/Pause callers and owed release remain
-ungated. The reference-only P4 binder validates all seven captured identities and
-the three producer attachments, preserving its actual Task/coroutine/phase/loop
+the primary error. Ordinary/v2 TaskInvocation preparation, fresh deferred adoption,
+registry publication and launch commit retain one original selection through the same
+root/move/DB/terminal waits. A fresh completion-recovery session retains that
+selection; its purpose grants no bypass. Committed preparation refusal retains
+the original no-launch settlement and uncertainty. Default non-admission Pause
+writers, already-landed callback consumers and owed release remain ungated.
+The reference-only P4 binder validates all seven captured identities and the
+three producer attachments, preserving its actual Task/coroutine/phase/loop
 owner and ready-only dynamic attachment. Genuine P2/P3/P6 document owners retain
 their existing complete validation; no caller flag grants recovery authority.
 
@@ -315,6 +320,12 @@ profile compensation/retirement remains owed. Actual submitted maintenance worke
 remain retained through cancellation at daemon/org close and runtime-swap barriers;
 wrapper cancellation is not native completion. Swap retains the original ready
 epoch and binds its new selected profile reference after the existing idle checks.
+The four maintenance services retain their original state/gate/queue/epoch/loop;
+each tick selects current runtime/org/authority references. Selected old work
+still refuses after waits. Only a settled runtime replacement ends that tick
+without terminating the service; stop, failed epochs and unsettled native tails
+propagate. Warmup/cursors and disk date reservations remain intact, with no
+same-night retry. The disk marker and nested worker share one selection.
 All new startup checks are reference/phase renewals, not new discovery scans;
 synchronous checks cannot provide atomic exclusion across arbitrary OS I/O.
 

@@ -89,27 +89,37 @@ async def direct_connect_projection_sweep_loop(
     state: DaemonState, *, interval_seconds: int = 3,
 ) -> None:
     """Periodically project direct-connect receipts on the daemon's authority store."""
-    from runtime.daemon.startup_recovery import maintenance_admission_validation, StartupUnavailable
-    validate_state = maintenance_admission_validation(state)
+    from runtime.daemon.startup_recovery import (
+        maintenance_admission_validation, maintenance_service_validation,
+        maintenance_runtime_replaced, StartupUnavailable,
+    )
+    validate_service = maintenance_service_validation(state)
     while True:
-        validate_state()
+        validate_service()
         t0 = time.monotonic()
+        runtime = state.runtime
+        validate_state = maintenance_admission_validation(state)
         store, profiles = state.direct_connect_authority_store, state.profile_coordinator
         def validate():
             validate_state()
             if state.direct_connect_authority_store is not store or state.profile_coordinator is not profiles:
                 raise StartupUnavailable("startup_projection_attachment_changed")
-        if store is None:
-            logger.error("direct-connect projection sweep skipped: authority store unavailable")
-        else:
-            validate()
-            worker = asyncio.create_task(asyncio.to_thread(
-                _sweep_once, store, profiles, validate_admission=validate))
-            await state._await_maintenance_worker(worker)
-            validate()
+        try:
+            if store is None:
+                logger.error("direct-connect projection sweep skipped: authority store unavailable")
+            else:
+                validate()
+                worker = asyncio.create_task(asyncio.to_thread(
+                    _sweep_once, store, profiles, validate_admission=validate))
+                await state._await_maintenance_worker(worker)
+                validate()
+        except StartupUnavailable as exc:
+            if not maintenance_runtime_replaced(state, runtime, validate_service, exc):
+                raise
+            logger.warning("direct-connect projection selected runtime retired: %s", exc)
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "direct_connect_projection_sweep", interval_seconds, duration,
         )
         await asyncio.sleep(interval_seconds)
-        validate_state()
+        validate_service()
