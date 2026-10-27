@@ -172,7 +172,7 @@ FAILURE_ASSERTIONS = {
             "callback_restored", "authority_normal_none", "sweep_native_chain", "no_ready_consumers",
             "no_provider", "listener", "health", "ready", "health_wire", "health_identity", "ready_wire", "ready_identity"),
     "C08": ("recovery_close", "reader_retirement", "reader_executor", "database_order",
-            "server_socket", "observers_restored", "first_cause_retained"),
+            "server_socket", "observers_restored", "first_cause_retained", "durable_preserved"),
     "C13": ("same_store_before_reopen", "distinct_owners", "fresh_p0_records", "fresh_ready"),
 }
 
@@ -2659,6 +2659,8 @@ async def failed_prefix(checks, runtime, token):
     handle = None
     primary, close_error = None, None
     first = None
+    durable_before_stop = None
+    restoration_error = None
     try:
         observer.install(discover)
         handle = asyncio.create_task(server.serve(sockets=[sock]))
@@ -2784,6 +2786,7 @@ async def failed_prefix(checks, runtime, token):
                     and fixture_effects(runtime, state, checks.args.root) == before)
         checks.require("C05_failed_no_provider", observer.totals["native"], 0)
         checks.require("C05_failed_no_ready_consumers", task_queue_observation(state), queues_before)
+        durable_before_stop = database_observation(runtime)
     except BaseException as exc:
         primary = exc
     finally:
@@ -2796,14 +2799,22 @@ async def failed_prefix(checks, runtime, token):
         except BaseException as exc:
             close_error = exc
         finally:
-            sock.close()
-            restored = observer.restore()
+            restored = False
+            try:
+                sock.close()
+            except BaseException as exc:
+                close_error = close_error or exc
+            try:
+                restored = observer.restore()
+            except BaseException as exc:
+                restoration_error = exc
             checks.details["failed_original_events"] = observer.events
             checks.details["failed_denials"] = observer.denials
             checks.details["failed_wire"] = wire
             checks.details["failed_errors"] = {
                 "primary": None if primary is None else type(primary).__name__,
                 "shutdown": None if close_error is None else type(close_error).__name__,
+                "observer_restoration": None if restoration_error is None else type(restoration_error).__name__,
                 "authorizer_restoration": [type(exc).__name__ for exc in observer.restoration_errors]}
         checks.require("C08_failed_observers_restored", restored and observer.restored and not observer.restoration_errors)
         checks.require("C08_failed_first_cause_retained", first is not None and recovery._first_cause is first)
@@ -2842,15 +2853,24 @@ async def failed_prefix(checks, runtime, token):
         if primary is not None:
             if close_error is not None:
                 primary.add_note("Original failed epoch shutdown also failed: " + type(close_error).__name__)
+            if restoration_error is not None:
+                primary.add_note("Original failed epoch observer restoration also failed: " + type(restoration_error).__name__)
             raise primary.with_traceback(primary.__traceback__)
         if close_error is not None:
+            if restoration_error is not None:
+                close_error.add_note("Observer restoration also failed: " + type(restoration_error).__name__)
             raise close_error.with_traceback(close_error.__traceback__)
+        if restoration_error is not None:
+            raise restoration_error.with_traceback(restoration_error.__traceback__)
+    durable = database_observation(runtime)
+    checks.require("C08_failed_durable_preserved", durable_before_stop is not None and durable == durable_before_stop
+        and immutable_records(runtime) == immutable and store_paths(runtime) == paths)
     # Failed assertions preserve their original receipts and prohibit reopen.
     if any(row["status"] == "FAIL" for row in checks.rows if "_failed_" in row["assertion"]):
         raise RuntimeError("failed epoch ownership/oracle incomplete; SAME-store reopen refused")
     return {"recovery": recovery, "reads": reads, "native": recovery._native, "orgs": orgs,
             "connections": connections, "paths": paths, "immutable": immutable,
-            "durable": database_observation(runtime)}
+            "durable": durable}
 
 
 async def serving(checks, runtime):
