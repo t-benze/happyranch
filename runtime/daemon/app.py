@@ -465,40 +465,96 @@ async def _coordinate_startup(state: DaemonState, recovery: StartupRecovery) -> 
             recovery.fail("startup_failure_observation_failed", secondary)
 
 
-async def _shutdown_lifespan(state: DaemonState) -> None:
+async def _shutdown_lifespan(
+    state: DaemonState, *, revocation_error: BaseException | None,
+    first_error: list[BaseException],
+) -> None:
     import asyncio
     import logging
     recovery = state._startup_recovery
-    # Actual native recovery, tails, binding, queue acknowledgements and reads
-    # finish while the REAL request loop and host/DB resources still exist.
-    await state._drain_startup()
-    await state._drain_thread_releases()
-    await state.team_move_service.close()
-    if state.host_supervisor is not None:
-        state.host_supervisor.shutdown()
-    for org in state.orgs.values():
-        org.dashboard_projection.cancel_scheduler()
-    handles = set(recovery._consumers)
-    for org in state.orgs.values():
-        handles.update(org._runner_tasks)
-    for task in handles:
-        task.cancel()
-    # Every prepared handle (including exchange/disk and partial preparation)
-    # is retained even when a later creation fails.
-    outcomes = await asyncio.gather(*handles, return_exceptions=True)
-    for outcome in outcomes:
-        if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
-            logging.getLogger(__name__).error("Startup consumer ended with error: %r", outcome)
-    for org in state.orgs.values():
-        await org.dashboard_projection.reap_scheduler()
-    recovery.assert_consumers_idle()
-    recovery.assert_native_idle()
-    await state.queue.stop()
-    state.queue.assert_native_idle()
-    from runtime.daemon.jobs_runner import terminate_all_inflight
-    await terminate_all_inflight(grace_seconds=5)
-    await state._drain_cleanup_diagnostics()
-    await state.close_all()
+    primary = revocation_error
+    traceback = None if primary is None else primary.__traceback__
+
+    def remember(code: str, exc: BaseException) -> None:
+        nonlocal primary, traceback
+        if primary is None:
+            primary, traceback = exc, exc.__traceback__
+        if not first_error:
+            first_error.append(exc)  # SAME Task's first error, visible before later drains.
+        recovery.fail(code, exc)
+
+    async def drain(operation, code: str) -> bool:
+        try:
+            await operation
+            return True
+        except BaseException as exc:
+            remember(code, exc)
+            return False
+
+    # Known-ended exceptional outcomes cannot abandon independent owed drains.
+    # These run while the REAL loop, host and DB resources still exist.
+    await drain(state._drain_startup(), "startup_drain_incomplete")
+    releases_closed = await drain(state._drain_thread_releases(), "startup_release_drain_incomplete")
+    moves_closed = await drain(state.team_move_service.close(), "startup_move_drain_incomplete")
+    prerequisites = revocation_error is None and releases_closed and moves_closed
+    try:
+        state._assert_startup_idle()
+        if not recovery._closed:
+            raise RuntimeError("startup_executor_close_incomplete")
+    except BaseException as exc:
+        prerequisites = False
+        remember("startup_shutdown_owner_unsettled", exc)
+    if prerequisites and state.host_supervisor is not None:
+        try:
+            state.host_supervisor.shutdown()
+        except BaseException as exc:
+            prerequisites = False
+            remember("startup_host_shutdown_incomplete", exc)
+    if prerequisites:
+        for org in state.orgs.values():
+            try:
+                org.dashboard_projection.cancel_scheduler()
+            except BaseException as exc:
+                remember("startup_dashboard_cancel_incomplete", exc)
+        handles = set(recovery._consumers)
+        for org in state.orgs.values():
+            handles.update(org._runner_tasks)
+        for task in handles:
+            task.cancel()
+        # Every partial/dormant handle is retained and positively joined.
+        outcomes = await asyncio.gather(*handles, return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                remember("startup_consumer_failed", outcome)
+                try:
+                    logging.getLogger(__name__).error("Startup consumer ended with error: %r", outcome)
+                except BaseException as exc:
+                    remember("startup_consumer_observation_failed", exc)
+        for org in state.orgs.values():
+            reaped = await drain(org.dashboard_projection.reap_scheduler(), "startup_dashboard_reap_incomplete")
+            prerequisites = prerequisites and reaped
+        try:
+            recovery.assert_consumers_idle()
+            recovery.assert_native_idle()
+        except BaseException as exc:
+            prerequisites = False
+            remember("startup_consumer_join_incomplete", exc)
+        queue_closed = await drain(state.queue.stop(), "startup_queue_drain_incomplete")
+        try:
+            state.queue.assert_native_idle()
+        except BaseException as exc:
+            queue_closed = False
+            remember("startup_queue_owner_unsettled", exc)
+        from runtime.daemon.jobs_runner import terminate_all_inflight
+        jobs_closed = await drain(terminate_all_inflight(grace_seconds=5), "startup_jobs_drain_incomplete")
+        prerequisites = prerequisites and queue_closed and jobs_closed
+    diagnostics_closed = await drain(state._drain_cleanup_diagnostics(), "startup_diagnostics_drain_incomplete")
+    if prerequisites and diagnostics_closed:
+        # close_all renews actual attachment, service, consumer, queue, reader,
+        # diagnostic and org/runner fences. No ended error bypasses those checks.
+        await drain(state.close_all(), "startup_database_close_incomplete")
+    if primary is not None:
+        raise primary.with_traceback(traceback)
 
 
 @asynccontextmanager
@@ -536,16 +592,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise
     finally:
         # Synchronous closure before FIRST await, also on partial startup.
-        try:
-            state._stop_runner_admission()
-            state._revoke_cleanup_diagnostics()
-        except BaseException as secondary:
-            recovery.fail("startup_revoke_incomplete", secondary)
-            if primary is not None:
-                primary.add_note("startup revoke also failed: " + type(secondary).__name__)
-                raise primary from secondary
-            raise
-        coroutine = _shutdown_lifespan(state)
+        # A failed revoke remains a destructive-closure barrier; independent
+        # retained startup/read/service drains are still owed.
+        revocation_error = None
+        for revoke in (state._stop_runner_admission, state._revoke_cleanup_diagnostics):
+            try:
+                revoke()
+            except BaseException as secondary:
+                recovery.fail("startup_revoke_incomplete", secondary)
+                if revocation_error is None:
+                    revocation_error = secondary
+                if primary is not None:
+                    primary.add_note("startup revoke also failed: " + type(secondary).__name__)
+        # One bounded first-error slot shared only by this actual shutdown Task
+        # and its waiter; an earlier failure can be retained before Task exit.
+        shutdown_error = [] if revocation_error is None else [revocation_error]
+        coroutine = _shutdown_lifespan(state, revocation_error=revocation_error,
+                                      first_error=shutdown_error)
         try:
             shutdown = asyncio.create_task(coroutine, name="startup-shutdown")
         except BaseException as secondary:
@@ -554,24 +617,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             if primary is not None:
                 raise primary from secondary
             raise
-        cancellation = None
+        from runtime.daemon.startup_recovery import _await_startup_owned
+
+        def cancelled(cause: BaseException) -> BaseException:
+            earlier = primary if primary is not None else (shutdown_error[0] if shutdown_error else cause)
+            recovery.fail("startup_shutdown_cancelled" if isinstance(earlier, asyncio.CancelledError)
+                          else "startup_shutdown_incomplete", earlier)
+            return earlier
+
         try:
-            while True:
-                try:
-                    await asyncio.shield(shutdown)
-                    break
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                    if shutdown.done():
-                        shutdown.result()
-                        break
+            await _await_startup_owned(shutdown,
+                lambda exc: recovery.fail("startup_shutdown_incomplete", exc), on_cancel=cancelled)
         except BaseException as secondary:
             if primary is None:
                 raise
             recovery.fail("startup_shutdown_incomplete", secondary)
-            primary.add_note("startup shutdown also failed: " + type(secondary).__name__)
-        if cancellation is not None and primary is None:
-            raise cancellation
+            if secondary is not primary:
+                primary.add_note("startup shutdown also failed: " + type(secondary).__name__)
 
 
 async def metrics_timing_middleware(request: Request, call_next):

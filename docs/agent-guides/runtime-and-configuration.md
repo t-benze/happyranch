@@ -291,7 +291,37 @@ executors before org/DB/socket close. Every Event releases in finally before
 shutdown waits; unknown close/restoration/retirement refuses another epoch.
 S covers read-wrapper cancellation and live recovery stop; it does not cover
 recovery-coordinator cancellation. StartupRecovery.join cancellation/exception
-precedence remains a ROOT-owned production risk outside this source unit.
+precedence and exceptional-close behavior remain ROOT-owned behavioral gaps.
+
+The bounded TASK13339 production correction preserves first observed/retained
+cause order at original native join, post-ready dashboard disk-load, close-owned
+waits and the lifespan shutdown waiter. Every cancellation still consumes the
+SAME original Future/Task, including repeated cancellations and done/error races;
+original exception objects/tracebacks and bounded secondary errors survive.
+Join records cancellation before stop-induced errors; an earlier native cause
+stays primary. Dashboard waiter cancellation changes no recovery admission policy.
+Close consumes an actually exceptional coordinator or disk/binding outcome and
+continues other independent waits; the ordinary caught startup failure is not
+an exceptional coordinator Task. Positive native/sweep/publication/binding idle
+proof precedes executor shutdown. State then attempts the independent read drain
+even if recovery close reports an error. Lifespan attempts independent service
+and diagnostic drains, preserves its earlier primary and prevents logging errors
+from replacing it. Only positive startup/read/service/revocation/host prerequisites
+permit dependent consumer/queue/job closure; close_all renews original attachment,
+runner and diagnostic barriers before DB close. Unknown ownership, failed cleanup
+or an unclosed executor retains the barrier and cannot set positive bookkeeping.
+All corrected behavior NOT RUN / PROOF NOT RUN; no new case, epoch or invocation
+was allocated, and S's healthy reader cancellation is no coordinator proof.
+
+T's post-consumption oracle independently SELECTs the immutable task_results
+row using the exact INTEGER accepted_result_id in its actual consumed ledger.
+It compares the complete row (including immutable stored bytes) to the original
+seed and separately matches task, agent, recovery-session/result fingerprint,
+current owner, callback_consumed, single result and committed job/audit prefix.
+The original accepted-only seed helper is unchanged. No latest-row fallback,
+callback replay, new row or epoch is added. C05_T_canonical_selected is strengthened;
+C05_T_committed_prefix retains its assertions with the corrected result input.
+Both are NOT RUN; sensitivity PROOF NOT RUN under the unchanged allocation.
 
 The current selected preconstructor ledger is **124/128 history,241/245 logical
 INSERT identities and30 cumulative leases** (111/115 audits plus13 authority/

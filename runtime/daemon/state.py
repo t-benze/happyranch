@@ -163,13 +163,30 @@ class DaemonState:
     async def _drain_startup(self, org=None) -> None:
         # Recovery may require request-loop queue acknowledgements to end. Join
         # outside org/DB/publisher locks, before the first connection can close.
-        if self._startup_recovery is not None:
-            if org is None:
-                await self._startup_recovery.close()
+        primary = None
+        traceback = None
+        try:
+            if self._startup_recovery is not None:
+                if org is None:
+                    await self._startup_recovery.close()
+                else:
+                    self._startup_recovery.assert_native_idle()
+        except BaseException as exc:
+            primary, traceback = exc, exc.__traceback__
+        try:
+            # Independent read ownership remains owed after an ended recovery
+            # error, and while unresolved recovery keeps its own closure fence.
+            if self._startup_reads is not None:
+                await self._startup_reads.drain(org)
+        except BaseException as exc:
+            if self._startup_recovery is not None:
+                self._startup_recovery.fail("startup_read_drain_incomplete", exc)
+            if primary is None:
+                primary, traceback = exc, exc.__traceback__
             else:
-                self._startup_recovery.assert_native_idle()
-        if self._startup_reads is not None:
-            await self._startup_reads.drain(org)
+                primary.add_note("startup read drain also failed: " + type(exc).__name__)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
 
     def _assert_startup_idle(self, org=None) -> None:
         if self._maintenance_workers:

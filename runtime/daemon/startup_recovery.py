@@ -84,6 +84,53 @@ class _ReferenceBinding:
     jobs_bound: bool = False
 
 
+async def _await_startup_owned(
+    owned: asyncio.Future, retain: Callable[[BaseException], None], *,
+    on_cancel: Callable[[BaseException], BaseException] | None = None,
+) -> Any:
+    """Consume one original startup completion, retaining observed error order.
+
+    Shielding keeps its ownership alive. Neither waiter cancellation nor an
+    exceptional result proves that any separate native/retirement barrier ended.
+    """
+    primary: BaseException | None = None
+    traceback = None
+    while True:
+        try:
+            await asyncio.shield(owned)
+            break
+        except asyncio.CancelledError as exc:
+            if primary is None:
+                # A done/error race can expose an already-ended operation before
+                # this waiter observes cancellation. Consume that outcome first.
+                earlier = None if not owned.done() or owned.cancelled() else owned.exception()
+                primary = earlier if earlier is not None else exc
+                traceback = primary.__traceback__
+                if on_cancel is not None and not owned.cancelled():
+                    try:
+                        primary = on_cancel(primary)
+                        traceback = primary.__traceback__
+                    except BaseException as secondary:
+                        retain(secondary)
+            retain(exc)
+            if owned.done():
+                break
+        except BaseException as exc:
+            if primary is None:
+                primary, traceback = exc, exc.__traceback__
+            retain(exc)
+            break
+    try:
+        result = owned.result()
+    except BaseException as exc:
+        if primary is None:
+            primary, traceback = exc, exc.__traceback__
+        retain(exc)
+    if primary is not None:
+        raise primary.with_traceback(traceback)
+    return result
+
+
 class StartupRecovery:
     """One retained native operation and one request-loop activation latch.
 
@@ -454,20 +501,15 @@ class StartupRecovery:
                 raise RuntimeError("startup_dashboard_admission_closed")
             native = self._executor.submit(manager.load_from_disk)
             self._dashboard_loads.add(native)
-        wrapped = asyncio.wrap_future(native)
-        cancellation = None
+        def cancelled(exc: BaseException) -> BaseException:
+            # This ready-only disk read has no recovery-stop policy. Observe an
+            # already-ended native failure, including wrap_future callback lag.
+            earlier = None if not native.done() or native.cancelled() else native.exception()
+            return earlier if earlier is not None else exc
+
         try:
-            while True:
-                try:
-                    result = await asyncio.shield(wrapped)
-                    break
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                    if wrapped.done():
-                        result = wrapped.result()
-                        break
-            if cancellation is not None:
-                raise cancellation
+            result = await _await_startup_owned(asyncio.wrap_future(native),
+                                               self._retain_secondary, on_cancel=cancelled)
             self.require_ready()
             return result
         finally:
@@ -703,6 +745,16 @@ class StartupRecovery:
         return RecoveryOutcome("settled", "startup_workflow_task_inserted" if inserted
                                else "startup_workflow_task_already_pending")
 
+    def _retain_secondary(self, cause: BaseException) -> None:
+        """Bounded local evidence without changing a dashboard waiter's policy."""
+        with self._lock:
+            if cause is self._first_cause or any(cause is item for item in self._secondary):
+                return
+            if len(self._secondary) < 8:
+                self._secondary.append(cause)
+            else:
+                self._secondary_overflow += 1
+
     def fail(self, code: str, cause: BaseException) -> None:
         first = False
         with self._lock:
@@ -711,7 +763,7 @@ class StartupRecovery:
                 self._error_code = code
                 self._failed_ns = observation_time_ns()
                 first = True
-            elif cause is not self._first_cause:
+            elif cause is not self._first_cause and not any(cause is item for item in self._secondary):
                 if len(self._secondary) < 8:
                     self._secondary.append(cause)
                 else:
@@ -827,23 +879,21 @@ class StartupRecovery:
             native = self._native
         if native is None:
             raise RuntimeError("startup_not_submitted")
-        wrapped = asyncio.wrap_future(native)
-        cancellation: asyncio.CancelledError | None = None
-        while True:
+        def cancelled(exc: BaseException) -> BaseException:
+            # Retain cancellation BEFORE stop can induce a later native error.
+            # A cause already retained by the original worker keeps precedence.
+            self.fail("startup_waiter_cancelled" if isinstance(exc, asyncio.CancelledError)
+                      else "startup_native_failed", exc)
+            with self._lock:
+                primary = self._first_cause
             try:
-                outcome = await asyncio.shield(wrapped)
-                break
-            except asyncio.CancelledError as exc:
-                # Cancellation does not cancel the concurrent Future.
                 self.stop()
-                cancellation = cancellation or exc
-                if wrapped.done():
-                    # A genuinely cancelled native Future is not settlement.
-                    outcome = wrapped.result()
-                    break
-        if cancellation is not None:
-            raise cancellation
-        return outcome
+            except BaseException as secondary:
+                self._retain_secondary(secondary)
+            return primary if primary is not None else exc
+
+        return await _await_startup_owned(asyncio.wrap_future(native),
+                                          self._retain_secondary, on_cancel=cancelled)
 
     def activate(self) -> None:
         """One non-await commit on the true loop, after dormant handles exist."""
@@ -895,7 +945,8 @@ class StartupRecovery:
         with self._lock:
             if self._status == "recovering" and self._native is None and not self._stop.is_set():
                 raise RuntimeError("startup_not_yet_quiescent")
-            if self._native is not None and not self._native.done():
+            if (self._native_thread is not None or (self._native is not None
+                    and (not self._native.done() or self._native.cancelled()))):
                 raise RuntimeError("startup_native_still_owned")
             if self._sweep_owner is not None:
                 raise RuntimeError("startup_sweep_native_still_owned")
@@ -924,51 +975,72 @@ class StartupRecovery:
             self._sweep_owner = None
 
     async def close(self) -> None:
-        self.stop()
-        cancellation = None
+        primary: BaseException | None = None
+        traceback = None
+
+        def remember(code: str, exc: BaseException) -> None:
+            nonlocal primary, traceback
+            if primary is None:
+                primary, traceback = exc, exc.__traceback__
+            self.fail(code, exc)
+
+        def cancelled(cause: BaseException) -> BaseException:
+            remember("startup_close_cancelled" if isinstance(cause, asyncio.CancelledError)
+                     else "startup_close_owned_failed", cause)
+            return primary if primary is not None else cause
+
+        stopped = True
+        try:
+            self.stop()  # Synchronous fence before the first await.
+        except BaseException as exc:
+            stopped = False
+            remember("startup_stop_incomplete", exc)
+        if self._closed:
+            if primary is not None:
+                raise primary.with_traceback(traceback)
+            return
         if self._native is not None:
             try:
                 await self.join()
             except asyncio.CancelledError as exc:
-                cancellation = exc
+                remember("startup_close_cancelled", exc)
             except BaseException as exc:
+                # Ordinary startup failure is already retained by the worker
+                # and caught coordinator. It does not imply exceptional Task exit.
                 self.fail("startup_native_failed", exc)
         coordinator = self._coordinator
         if coordinator is not None and coordinator is not asyncio.current_task():
-            while not coordinator.done():
-                try:
-                    await asyncio.shield(coordinator)
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                except BaseException as exc:
-                    self.fail("startup_coordinator_failed", exc)
-            if not coordinator.cancelled():
-                coordinator.result()
+            try:
+                await _await_startup_owned(coordinator, self._retain_secondary, on_cancel=cancelled)
+            except BaseException as exc:
+                remember("startup_coordinator_failed", exc)
         binding = self._binding
         with self._lock:
             waits = list(self._dashboard_loads)
         if binding is not None:
             waits.append(binding.completion)
         for native in waits:
-            wrapped = asyncio.wrap_future(native)
-            while True:
-                try:
-                    await asyncio.shield(wrapped)
-                    break
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                    if wrapped.done():
-                        wrapped.result()
-                        break
-        self.assert_native_idle()
-        self._executor.shutdown(wait=True, cancel_futures=False)
-        with self._lock:
-            self._closed = True
-            if self._closed_ns is None:
-                self._closed_ns = observation_time_ns()
-        self._emit_observation("closed")
-        if cancellation is not None:
-            raise cancellation
+            try:
+                await _await_startup_owned(asyncio.wrap_future(native), self._retain_secondary,
+                                           on_cancel=cancelled)
+            except BaseException as exc:
+                remember("startup_close_owned_failed", exc)
+        try:
+            # Positive independent barriers, never Future.done alone. Any
+            # uncertain sweep/publication/binding still forbids executor close.
+            if not stopped:
+                raise RuntimeError("startup_stop_incomplete")
+            self.assert_native_idle()
+            self._executor.shutdown(wait=True, cancel_futures=False)
+            with self._lock:
+                self._closed = True
+                if self._closed_ns is None:
+                    self._closed_ns = observation_time_ns()
+            self._emit_observation("closed")
+        except BaseException as exc:
+            remember("startup_close_incomplete", exc)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
 
 
 def require_ready(owner: Any) -> None:

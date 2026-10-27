@@ -3114,15 +3114,26 @@ def selected_outcomes(checks, observer, gate):
     elif group == "T":
         db = observer.state.orgs["fixture-b"].db
         seed = checks.details["T_seed"]
-        task, result = db.get_task("TASK-091"), db.get_accepted_task_completion_recovery_result(task_id="TASK-091", agent="case_manager")
+        task = db.get_task("TASK-091")
         recovery = dict(db._conn.execute("SELECT * FROM task_completion_recoveries WHERE task_id=?", ("TASK-091",)).fetchone())
+        # Consumption deliberately removes the accepted-only admission view.
+        # Read exactly the immutable INTEGER selected by the consumed ledger;
+        # no latest-row fallback, replay, or additional durable fixture effects.
+        accepted_id = recovery["accepted_result_id"]
+        result = (db._conn.execute("SELECT * FROM task_results WHERE id=?", (accepted_id,)).fetchone()
+                  if type(accepted_id) is int else None)
         job = dict(db._conn.execute("SELECT * FROM jobs WHERE id=?", ("JOB-001",)).fetchone())
         selected = [sweep for sweep in sweeps if sweep.orch is observer.state.orgs["fixture-b"].orchestrator]
         sweep = selected[0] if len(selected) == 1 else None
         cause = observer.errors[0] if len(observer.errors) == 1 else None
         tails = [row for row in observer.tail_handles if row[0] is sweep]
         checks.require("C05_T_canonical_selected", type(seed["result"]["id"]) is int
-            and result is not None and dict(result) == seed["result"] and len(db.get_task_results("TASK-091")) == 1
+            and type(accepted_id) is int and result is not None and dict(result) == seed["result"]
+            and result["id"] == accepted_id == seed["result"]["id"]
+            and result["task_id"] == recovery["task_id"] == seed["task"] == task.id
+            and result["agent"] == recovery["agent"] == seed["agent"] == task.assigned_agent
+            and result["session_id"] == recovery["recovery_session_id"] == task.current_session_id == seed["session"]
+            and len(db.get_task_results("TASK-091")) == 1
             and recovery["accepted_result_id"] == seed["result"]["id"] and recovery["state"] == "callback_consumed"
             and recovery["accepted_result_session_id"] == recovery["recovery_session_id"] == seed["session"]
             and bool(observer.classifications) and set(observer.classifications) == {"legacy"}

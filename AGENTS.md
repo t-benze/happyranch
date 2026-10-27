@@ -109,6 +109,20 @@ all partial consumer handles are retained and joined, including exchange reaper.
 Failed or uncertain cleanup prevents DB-close fallthrough; cancellation is not
 native quiescence. Primary causes and earlier durable effects remain attributable.
 
+Original startup join, dashboard disk-load, close and lifespan waiters consume
+that SAME owned completion after cancellation, including repeated cancellation
+and done/error races. An already observed/retained failure keeps precedence;
+otherwise the first cancellation stays primary with its original traceback and
+later genuine errors remain bounded secondary evidence. Join records its first
+cancellation before stop-induced failures; dashboard waiter cancellation adds no
+recovery-stop policy. Exceptional but positively ended waits do not abandon the
+remaining independent recovery/executor/read/service drains. Unresolved native,
+sweep, publication, reader, service, host, consumer, queue/job or diagnostic
+ownership still blocks dependent destruction and DB close. Executor-closed and
+shutdown-complete bookkeeping require the actual original closure barriers.
+These corrections are source only, NOT RUN / PROOF NOT RUN; the existing S case
+does not supply coordinator-cancellation or exceptional-close behavioral credit.
+
 Ordinary task source admission now checks the same original daemon epoch at
 queue enqueue/reservation/raw dequeue, direct worker submission/dispatcher/task
 entry, task/session allocation, workspace/scratch preparation and provider entry.
