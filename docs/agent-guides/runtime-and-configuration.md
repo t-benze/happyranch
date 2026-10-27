@@ -2842,6 +2842,14 @@ The additional closed v2 THR291 producer has no startup installation or schema
 effect either. ROOT13286 source approval518/recovery525 does not grant deployment,
 restart or live application. Compatible loaded producer AND receipt/retry readers
 must be independently identified before a separate human application decision.
+Founder537 corrects original invocation triggers495/505/511/519 separately from
+Founder approvals495/510/518/525. Closed v2 saved bindings add founder_approval;
+system dispatch digests cover full original rows and origin references copy
+approvals518/525. Load the corrected producer and ALL receipt/retry readers;
+earlier conflated-v2 readers are incompatible even with unchanged schema/key.
+Literal v1 remains unchanged. Do not rewrite/adopt old incompatible bytes;
+actual valid conflicting history must return to Engineering before loading.
+Rollback after corrected-v2 persistence requires these compatible readers.
 Only genuinely fresh ordinary SAME13286 SID/no selected-SID result with live,
 unblocked/unheld ownership can operate; ended/spent SIDs and terminal13286 refuse.
 The existing escalation/continue prerequisite applies while13286 is nonterminal;

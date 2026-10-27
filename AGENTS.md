@@ -1927,8 +1927,13 @@ owned by SAME TASK10725 before naming use.
 **THR291 closed continuation source (v2; Founder seq518/525, ROOT13286).**
 The same receipt boundary additionally permits ONLY FAILED13112→existing13203,
 retaining authenticated13203→13217 and FAILED13217 with no successor.
-TASK13286 is the independent ordinary source operator, bound to Founder525 /
-dispatch526, never another ancestry edge. Current executable engineering_manager
+TASK13286 is the independent ordinary source operator, bound to invocation16657 /
+trigger519 (engineering_manager system) / separate Founder525 / dispatch526,
+never another ancestry edge. Founder537's provenance correction authenticates
+all four original triggers separately from approvals; closed v2 dispatch bindings
+add founder_approval references in every saved copy, with full-row system digests
+and origin approval518/525 correspondence. See the linked contract for exact pins.
+Current executable engineering_manager
 in happyranch/engineering, a genuinely fresh ordinary SAME13286 SID/no selected-SID
 result, unblocked/uncancelled live ownership and all four unheld root gates are
 required. Terminal13286 refuses; arbitrary replacement operators are forbidden.
@@ -1938,8 +1943,10 @@ only one current audit. Historical readback survives owner end; uncertainty keep
 the exact body/key with committed:null/readback_required:true and no auto-resend.
 No UNKNOWN custody, old failure, result, child or final-spawn fence is cleared.
 Source delivery grants no live POST, deployment/restart or old QA13184 retry.
-Separate human application requires compatible loaded code and the existing
-escalation/continue prerequisite while13286 is nonterminal. See the linked closed
+Separate human application requires corrected compatible loaded producer AND
+all receipt/retry readers; rollback must retain corrected-v2 and literal-v1
+support, without rewriting old bytes. The existing escalation/continue prerequisite
+applies while13286 is nonterminal. See the linked closed
 contract for exact pins and limits; unavailable positive/dependent proof is
 NOT RUN/PROOF NOT RUN, integration SKIPPED24342/211270–271, units RETIRED.
 
