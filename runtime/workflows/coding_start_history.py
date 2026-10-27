@@ -93,8 +93,12 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
     optional = _coding_document_exclusions(conn)
     storage = QueuedStorage()
     # Native callbacks can exist before allocation. Authenticate each full row,
-    # without consuming a claim or treating a command as permission.
-    for row in rows(conn, 'task_results', budget, where='decision_json IS NOT NULL'):
+    # without consuming a claim or treating a command as permission. Only rows
+    # literally naming workflow_start are candidates: ordinary manager history
+    # would exhaust the allowance. An escaped spelling missed here is still
+    # decoded and refused by the central reserved-action discriminator.
+    for row in rows(conn, 'task_results', budget,
+                    where="decision_json IS NOT NULL AND instr(decision_json, 'workflow_start') > 0"):
         raw = row['decision_json']
         if raw is None:
             continue
