@@ -152,7 +152,17 @@ does not supply coordinator-cancellation or exceptional-close behavioral credit.
 
 The breaker scheduler registers each original runnable-token, delivery-read and
 probe-mint offload under the org native-user barrier BEFORE submission; cancellation
-joins that same native completion. Mint renews the captured validator after the
+joins that same original wrapper without treating it as native completion. A
+submit/thread-start error can follow enqueue without returning a native Future;
+that exact error/traceback stays primary and returns without waiting for a possibly
+absent worker. Only actual original validation/callable completion plus successful
+handoff and once-only retirement on the original loop releases the SAME owner.
+Missing worker/loop acknowledgement or failed handoff/retirement retains unknown
+custody and fences remove/swap/global stop/direct DB close. Wrapper cancellation
+supplies no native no-run proof. Fixed actual native/wrapper/handoff/retirement/
+coroutine-close error slots remain attached to the first error, including late
+native failure and repeated cancellation; bounded notes cannot evict them. Native
+workers never mutate the org registry. Mint renews the captured validator after the
 synchronized DB lock and BEGIN wait, before effects and COMMIT. Offline callers
 retain the optional-validator default. Shared thread/dream/wake/schedule workers
 retain their original service epoch and skip a saved org only after the original

@@ -871,7 +871,17 @@ cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
 unavailable, without synthetic source failure, successful move deferral or no-op.
 Scheduled enqueue failures report the genuine committed pending/firing source.
 The thread breaker owns all three original offloads under the selected org's
-native-user close barrier before submission and joins through cancellation. Probe
+native-user close barrier before submission and joins its original wrapper through
+cancellation. Exceptional wrapper completion after possible enqueue is not native
+completion: preserve the exact first error/traceback and return promptly without
+waiting for a possibly absent worker. The actual original callable records its
+completion and hands retirement to the original loop; only successful handoff and
+once-only loop retirement release that SAME owner. Missing worker/acknowledgement,
+closed-loop handoff or retirement failure keeps custody unknown and remove/swap/
+global stop/direct DB close fenced. Wrapper cancellation is not affirmative native
+no-run evidence. Fixed actual native/wrapper/handoff/retirement/coroutine-close error
+slots on the first error preserve late outcomes despite bounded diagnostic notes
+and repeated cancellation. Org registry mutation remains loop-only. Probe
 mint renews the same captured validator after its DB lock and BEGIN admission wait,
 before probe/token/lease writes and COMMIT; ordinary offline default is preserved.
 The four shared thread/dream/wake/schedule workers retain one service epoch. A
