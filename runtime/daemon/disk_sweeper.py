@@ -320,6 +320,16 @@ class Evidence:
 
 
 
+def _retain_linked_descendants(path: Path, rows: dict[str, dict], deadline: float) -> None:
+    """A complete reciprocal census protects every different linked descendant."""
+    for registered in rows:
+        check(deadline)
+        descendant = Path(registered)
+        if descendant != path and path in descendant.parents:
+            raise Retain(f'linked_descendant:{descendant}')
+    check(deadline)
+
+
 def _worktree_gate(candidate: dict, deadline: float) -> tuple:
     path = Path(candidate["path"])
     task_id = path.name
@@ -330,7 +340,9 @@ def _worktree_gate(candidate: dict, deadline: float) -> tuple:
         raise Retain('unknown_worktree_owner')
     repo = Path(candidate['repo'])
     metadata = {}
-    row = registrations(repo, deadline, metadata=metadata).get(str(path))
+    rows = registrations(repo, deadline, metadata=metadata)
+    _retain_linked_descendants(path, rows, deadline)
+    row = rows.get(str(path))
     if row is None or 'locked' in row or 'prunable' in row:
         raise Retain('git_unregistered_locked_or_prunable')
     branch = row.get('branch')
@@ -608,7 +620,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
                     # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
-                    registrations(repo, deadline)
+                    _retain_linked_descendants(path, registrations(repo, deadline), deadline)
                     mutation_started = True
                     try:
                         git(repo, deadline, 'worktree', 'remove', str(path))
@@ -619,10 +631,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
                         retry_tree = admit(candidate, evidence, deadline, now=now)
-                        registrations(repo, deadline)
+                        _retain_linked_descendants(path, registrations(repo, deadline), deadline)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         admit(candidate, evidence, deadline, now=now, repairs=repairs)
-                        registrations(repo, deadline)
+                        _retain_linked_descendants(path, registrations(repo, deadline), deadline)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     if str(path) in registrations(repo, deadline):

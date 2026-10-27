@@ -218,13 +218,24 @@ exact common-dir and toplevel, clean porcelain status including every nonignored
 empty `git rev-list -n1 HEAD --not --branches --remotes`. These Git facts are
 re-read after slow common inspections. Dirty paths are reported. Unique detached
 commits remain. Local branches/remotes preserve committed work without GitHub
-publication; Git-ignored contents inside an admitted tree are disposable.
+publication. Any different linked registration strictly beneath a candidate
+retains that containing worktree, including ignored paths, detached HEADs and
+nonmatching task-root names. Every row in the successfully returned complete
+reciprocal census is consumed with the existing deadline; discovery's selected
+task-root subset is insufficient. Literal path components define ancestry, self
+is excluded and siblings such as TASK-1/TASK-10 do not contain one another.
+Other Git-ignored contents inside an admitted tree are disposable.
 “Re-creatable” refers to committed contents only.
 
 Use `git worktree remove` without `--force`; keep branches. After ordinary failure
 there is at most one contained permission repair and retry, each with full fresh
 eligibility. Registration and containment identities are refreshed immediately
 before removal, repair, retry and prune, including after the first Git failure.
+The descendant guard consumes each existing final complete-census result before
+first remove (before mutation starts), contained repair and single retry, even
+when a complete admission just succeeded. There is no alias resolution or new
+deletion authority. Valid descendants retain the candidate; an incomplete census
+still refuses the entire repository.
 A metadata transition marks the repository scope unknown with null total counts,
 retains its remaining worktrees and prohibits prune; earlier partial effects and
 verified completed removals retain their actual accounting. This Git version
@@ -326,6 +337,29 @@ locked and metadata-enumeration-deadline controls complete the focused cases:
 
 ```bash
 TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 15 16 17 18 19 20 21 22
+```
+
+TASK-13300 extends c19/c21 for the accepted registered-descendant contract:
+C1/C5 use a real same-primary detached `outer/.claude/worktrees/TASK-1-baseline`,
+distinct retained base/outer HEADs, fixture-primary `.git/info/exclude` prepared
+before snapshots, and otherwise ordinary clean/old/eligible gates. C1 retains
+both trees and all metadata with zero remove/repair/prune; C5 uses mutation
+sentinels and real dry-run JSON/audit projection. C2 removes eligible TASK-1 with
+positive allocation attribution while locked sibling TASK-10 and refs survive.
+C3 introduces real registrations at exactly five boundaries: initial-to-final
+admission, final admission-to-pre-remove census, failed remove-to-retry admission,
+retry admission-to-pre-repair census, repaired admission-to-pre-retry census.
+Expected remove/repair attempts are respectively 0/0, 0/0, 1/0, 1/0, 1/1 with
+no retry; b/d/e reach the last census rather than an unrelated age/dirty veto.
+Actual earlier failures/owned mode changes remain partial/unknown, never removed
+attribution. C4 moves the C1 nested path without updating its backlink: repository
+unknown/null counts, no unsafe Git consumption, independent safe progress, then
+exact fixture move restoration and bytes/types/modes/backlinks/HEAD/full refs/
+porcelain comparison. ctime restoration is not claimed. Shared ignores, original
+keepers and the runner/selector remain unchanged. Scoped execution is:
+
+```bash
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 19 21
 ```
 
 All disposable mutation roots must be inside that actual child's task-tmp.
