@@ -18,7 +18,9 @@ import os
 from pathlib import Path
 import re
 import resource
+import runpy
 import shlex
+import signal
 import shutil
 import socket
 import sqlite3
@@ -153,6 +155,17 @@ READER_ASSERTIONS = {
 }
 
 
+# C14 remains incomplete: these finite consumers do not cover start/setup/Mac/browser.
+CONSUMER_ASSERTIONS = (
+    "listener_identity", "no_reader_or_provider_overlap", "fresh_health", "fresh_ready",
+    "status_process", "status_exit", "status_output", "status_parser", "status_wire",
+    "web_process", "web_exit", "web_output", "web_wire",
+    "fixture-a_process", "fixture-a_exit", "fixture-a_transcript", "fixture-a_wire",
+    "fixture-b_process", "fixture-b_exit", "fixture-b_transcript", "fixture-b_wire",
+    "setup_original_admission", "rows_files_owners_unchanged", "discovery_unchanged",
+)
+
+
 class Checks:
     def __init__(self, args):
         self.args = args
@@ -172,6 +185,10 @@ class Checks:
             "C12_history_fetch_count_matches_sql", "C12_fetch_is_not_cache_hit"),
             "canonical history and independent ORIGINAL-entry/SQL observers")
         if args.case == "all":
+            for phase in ("recovering", "ready"):
+                self.expect("C14_" + phase + "_read_consumers", "C14", phase,
+                    tuple("C14_" + phase + "_" + name for name in CONSUMER_ASSERTIONS),
+                    "original status/web/two-org JSON CLI/static setup admission; zero new rows; start/full setup/Mac NOT RUN")
             for case, assertions in READER_ASSERTIONS.items():
                 self.expect(case + "_selected_reader_lifecycle", case, "recovering", assertions,
                             "original mounted pool, canonical two transcripts, real native Futures/SQL/close/retirement; zero new rows")
@@ -2054,6 +2071,225 @@ async def task_invocation_wait_cases(checks, state):
     checks.missing("C03_v2_causal_positive", "canonical generation/claim matrix stays root-owned; no fabricated v2 input")
 
 
+def prepare_consumers(checks: Checks) -> dict:
+    """Finite original inputs/imports, prepared before the one native hold."""
+    from scripts._coding_setup_preflight import Hold
+    from cli.client.startup import parse_launcher_output
+    # main normally imports this SAME original exception after human preflight.
+    # Fresh test-side namespace supplies only that import, never main/Coordinator
+    # construction, a replacement predicate or any setup command/effect.
+    setup = runpy.run_path(str(SOURCE / "scripts/setup_coding.py"),
+                          run_name="startup_consumer_setup", init_globals={"Hold": Hold})
+    env = dict(os.environ)
+    env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(SOURCE),
+               UV_PYTHON=sys.executable, UV_PROJECT_ENVIRONMENT=sys.prefix,
+               UV_NO_SYNC="1", UV_OFFLINE="1", NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        env.pop(key, None)
+    bash, uv, curl = (shutil.which(name, path=env.get("PATH")) for name in ("bash", "uv", "curl"))
+    if not all((bash, uv, curl)):
+        raise ValueError("original status prerequisites unavailable; no wrapper/fallback")
+    commands = {"status": [bash, str(SOURCE / "scripts/daemon.sh"), "status"],
+                "web": [sys.executable, "-m", "cli.main", "web", "--no-open"],
+                **{slug: [sys.executable, "-m", "cli.main", "threads", "show", "--org", slug,
+                          "THR-001", "--json"] for slug in ("fixture-a", "fixture-b")}}
+    checks.details["consumer_inputs"] = {
+        "commands": commands, "cwd": str(SOURCE), "python": sys.executable,
+        "uv": uv, "curl": curl, "environment": {k: env[k] for k in (
+            "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "HAPPYRANCH_DAEMON_HOME",
+            "HAPPYRANCH_RUNTIME_ROOT", "HAPPYRANCH_PROJECT_ROOT", "PYTHONPATH", "UV_PYTHON",
+            "UV_PROJECT_ENVIRONMENT", "UV_NO_SYNC", "UV_OFFLINE", "PYTHONDONTWRITEBYTECODE")},
+        "setup": "original run_path definitions + original Hold import from main; no main/constructor/preflight",
+        "setup_sha256": hashlib.sha256((SOURCE / "scripts/setup_coding.py").read_bytes()).hexdigest(),
+        "cli_sha256": hashlib.sha256((SOURCE / "cli/main.py").read_bytes()).hexdigest(),
+        "status_sha256": hashlib.sha256((SOURCE / "scripts/daemon.sh").read_bytes()).hexdigest()}
+    return {"commands": commands, "env": env, "setup": setup["Coordinator"].require_recovery_ready,
+            "Hold": Hold, "parser": parse_launcher_output, "receipts": []}
+
+
+async def consumer_cases(checks: Checks, runtime: Any, state: Any, server: Any, sock: Any,
+                         client: Any, wire: list, inputs: dict, observation: EntryObservation, phase: str) -> None:
+    """Only the four selected read commands, serialized on the original listener."""
+    prefix = "C14_" + phase + "_"
+    previous_totals = observation.totals
+    observation.totals = dict.fromkeys(previous_totals, 0)
+    observation.start()
+    try:
+        pid, address = os.getpid(), sock.getsockname()
+        os.kill(pid, 0)
+        checks.require(prefix + "listener_identity", server.started and not server.should_exit
+            and address == ("127.0.0.1", int(client.base_url.port))
+            and any(s.fileno() == sock.fileno() and s.getsockname() == address
+                    for listener in server.servers for s in listener.sockets)
+            and state._startup_recovery.snapshot()["serving"] is True)
+        checks.require(prefix + "no_reader_or_provider_overlap", state._startup_reads.snapshot()["active"] == 0
+            and all(not org._native_task_users for org in state.orgs.values()))
+        before = fixture_effects(runtime, state, checks.args.root)
+
+        def discovery() -> dict:
+            # Covers actual isolated consumer homes/caches and discovery files too;
+            # existing fixture_effects owns SQL/workspace/job/temp/native observations.
+            files, size = {}, 0
+            deadline = min(checks.started + 600, time.monotonic() + 2)
+            for name in ("home", "config", "cache", "daemon"):
+                for path in sorted((checks.args.root / name).rglob("*")):
+                    if len(files) >= 4096 or time.monotonic() >= deadline:
+                        raise ValueError("consumer discovery observation budget")
+                    if path.is_symlink():
+                        raise ValueError("aliased synthetic consumer metadata")
+                    if path.is_file():
+                        with path.open("rb") as stream:
+                            raw = stream.read(4 * 1024 * 1024 - size + 1)
+                        size += len(raw)
+                        if size > 4 * 1024 * 1024:
+                            raise ValueError("consumer discovery byte budget")
+                        files[str(path)] = hashlib.sha256(raw).hexdigest()
+                    elif path.is_dir():
+                        files[str(path)] = "directory"
+                    else:
+                        raise ValueError("special synthetic consumer metadata")
+            return files
+
+        discovery_before = discovery()
+        for name, command in inputs["commands"].items():
+            # TWO status + SIX CLI across both phases; no retry or alternate argv.
+            if any(r["name"] == name and r["phase"] == phase for r in inputs["receipts"]):
+                raise ValueError("consumer command already attempted")
+            remaining = 600 - (time.monotonic() - checks.started)
+            if phase == "recovering":
+                remaining = min(remaining, 10 - (time.monotonic() - checks.details["hold_started_monotonic"]))
+            if remaining <= 0:
+                raise TimeoutError("original consumer window exhausted before spawn")
+            row = {"name": name, "phase": phase, "argv": command, "cwd": str(SOURCE),
+                   "started_monotonic": time.monotonic(), "pid": None, "reaped": False,
+                   "stdout": "", "stderr": "", "exit": None, "failure": None}
+            inputs["receipts"].append(row)
+            checks.details["consumer_commands"] = inputs["receipts"]
+            start_wire = len(wire)
+            process, pumps = None, []
+            spawn = asyncio.create_task(asyncio.create_subprocess_exec(*command, cwd=SOURCE,
+                env=inputs["env"], stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, start_new_session=True))
+
+            async def capture(stream: Any, key: str) -> None:
+                raw = bytearray()
+                while chunk := await stream.read(4096):
+                    raw.extend(chunk)
+                    row[key] = bytes(raw[:16384]).decode("utf-8", errors="replace")
+                    if len(raw) > 16384:
+                        raise ValueError("consumer " + key + " cap")
+
+            try:
+                async with asyncio.timeout(min(2, remaining)):
+                    process = await asyncio.shield(spawn)
+                    row["pid"] = process.pid
+                    row["pgid"] = os.getpgid(process.pid)
+                    os.kill(process.pid, 0)  # real owned start identity, never a fixture PID
+                    pumps = [asyncio.create_task(capture(process.stdout, "stdout")),
+                             asyncio.create_task(capture(process.stderr, "stderr"))]
+                    await asyncio.gather(process.wait(), *pumps)
+                    row["exit"], row["reaped"] = process.returncode, True
+            except BaseException as exc:
+                row["failure"] = type(exc).__name__
+                # Keep the SAME spawn owner through cancellation; never lose a late
+                # process handle. Terminate its actual session/group, drain/reap.
+                try:
+                    process = process or await asyncio.shield(spawn)
+                    row["pid"] = process.pid
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    for pump in pumps:
+                        if not pump.done():
+                            pump.cancel()
+                    await asyncio.gather(*pumps, return_exceptions=True)
+                    async def discard(stream: Any) -> None:
+                        while await stream.read(4096):
+                            pass
+                    await asyncio.wait_for(asyncio.gather(process.wait(), discard(process.stdout),
+                                                          discard(process.stderr)), 2)
+                    row["exit"], row["reaped"] = process.returncode, True
+                except BaseException as cleanup:
+                    row["cleanup_failure"] = type(cleanup).__name__
+                    raise
+                raise
+            finally:
+                row["ended_monotonic"] = time.monotonic()
+                row["wall_seconds"] = row["ended_monotonic"] - row["started_monotonic"]
+                row["wire"] = wire[start_wire:]
+                row["end_identity"] = {"pid": None if process is None else process.pid,
+                                       "returncode": None if process is None else process.returncode}
+                checks.require(prefix + name + "_process", row["reaped"] and row["failure"] is None
+                    and row.get("pgid") == row["pid"] and row["wall_seconds"] <= 2)
+            checks.require(prefix + name + "_exit", (row["exit"], row["stderr"]), (0, ""))
+            requests = row["wire"]
+            expected_paths = (["/api/v1/health"] if name in ("status", "web") else
+                              ["/api/v1/orgs", f"/api/v1/orgs/{name}/threads/THR-001"])
+            endpoints = {"/api/v1/health": "runtime.daemon.routes.health.health",
+                         "/api/v1/orgs": "runtime.daemon.routes.orgs.list_orgs",
+                         f"/api/v1/orgs/{name}/threads/THR-001": "runtime.daemon.routes.threads.get_thread_endpoint"}
+            checks.require(prefix + name + "_wire", [r["path"] for r in requests] == expected_paths
+                and all(r["method"] == "GET" and not r["query"] and r.get("asgi_status") == 200
+                        and r.get("dispatched", {}).get("endpoint") == endpoints[r["path"]]
+                        and r.get("original_handler_entries", {}).get(endpoints[r["path"]], 0) > 0
+                        and not r["native_entries"]
+                        and not r["preparation_entries"] and (name == "status" or
+                        (r["fixture_authenticated"] and r["surface"] == "cli")) for r in requests))
+            if name == "status":
+                expected = f"running (pid {pid}, port {address[1]})\nstartup serving=yes recovery={phase} launches={'admitted' if phase == 'ready' else 'held'}\n"
+                checks.require(prefix + "status_output", row["stdout"], expected)
+                parsed = inputs["parser"](row["stdout"], started=False)
+                checks.require(prefix + "status_parser", parsed is not None and parsed[:2] == (pid, address[1])
+                    and parsed[2].serving == "yes" and parsed[2].recovery == phase
+                    and parsed[2].ready is (phase == "ready"))
+                row["exit_semantics"] = "process liveness only; readiness requires original parsed observation"
+            elif name == "web":
+                description = ("Serving; recovery ready. New work remains subject to normal admission controls."
+                    if phase == "ready" else "Recovering; threads can be read, new work is held. Observe status; do not start another daemon.")
+                url = f"http://127.0.0.1:{address[1]}/"
+                checks.require(prefix + "web_output", row["stdout"].splitlines(), [description,
+                    "happyranch web → " + url,
+                    f"remote access: ssh -L {address[1]}:127.0.0.1:{address[1]} {socket.gethostname()}",
+                    "               then open " + url + " locally"])
+            else:
+                content = response_json(row["stdout"])
+                checks.require(prefix + name + "_transcript", content_contract("H156", {
+                    "headers": {"content-type": "application/json"}, "body": row["stdout"]}, runtime, "", phase)
+                    and content.get("thread_id") == "THR-001"
+                    and content.get("messages", [{}])[0].get("body_markdown") == MESSAGE)
+        health = await client.get("/api/v1/health")
+        ready = await client.get("/api/v1/health/ready")
+        if len(health.content) > 16384 or len(ready.content) > 16384:
+            raise ValueError("original consumer health body cap")
+        body, ready_body = health.json(), ready.json()
+        startup = body.get("startup", {})
+        checks.require(prefix + "fresh_health", health.status_code == 200 and body.get("status") == "ok"
+            and body.get("active_runtime") == str(runtime.root) and startup.get("state") == phase
+            and startup.get("serving") is True and startup.get("recovery_ready") is (phase == "ready")
+            and startup.get("stopping") is False and startup.get("ready_commits") == (1 if phase == "ready" else 0))
+        checks.require(prefix + "fresh_ready", ready.status_code == (200 if phase == "ready" else 503)
+            and all(ready_body.get("startup", {}).get(k) == startup.get(k)
+                    for k in ("state", "serving", "recovery_ready", "stopping", "ready_commits")))
+        # Feed original fresh listener bytes to the original static admission only.
+        try:
+            result = inputs["setup"](body)
+        except inputs["Hold"] as exc:
+            result = {"category": exc.category, "message": str(exc)}
+        checks.details.setdefault("consumer_setup", {})[phase] = {
+            "function": "scripts.setup_coding.Coordinator.require_recovery_ready",
+            "health_body": body, "ready_status": ready.status_code, "result": result}
+        checks.require(prefix + "setup_original_admission", result is None if phase == "ready" else
+            isinstance(result, dict) and result["category"] == "serving_observation_unavailable"
+            and "no second start/import" in result["message"] and "do not start another daemon" in result["message"])
+        checks.require(prefix + "rows_files_owners_unchanged", fixture_effects(runtime, state, checks.args.root), before)
+        checks.require(prefix + "discovery_unchanged", discovery(), discovery_before)
+    finally:
+        checks.details.setdefault("consumer_original_entry_counts", {})[phase] = dict(observation.totals)
+        observation.close()
+        observation.totals = previous_totals
+
+
 async def serving(checks, runtime):
     import httpx
     import uvicorn
@@ -2061,6 +2297,7 @@ async def serving(checks, runtime):
     from runtime.daemon import __main__ as daemon, runtimes, paths
     from runtime.daemon.app import create_app
     from runtime.daemon.startup_recovery import StartupUnavailable
+    consumers = prepare_consumers(checks)
     runtimes.register(runtime.root)
     token = paths.ensure_token()
     prepare_task_executable(checks)
@@ -2094,6 +2331,8 @@ async def serving(checks, runtime):
                    "case": dict(scope["headers"]).get(b"x-startup-case", b"").decode("ascii"),
                    "receive_calls": 0, "parser_entries": 0, "spool_entries": 0,
                    "native_entries": 0, "preparation_entries": 0, "asgi_body_bytes": 0,
+                   "fixture_authenticated": dict(scope["headers"]).get(b"authorization") == ("Bearer " + token).encode(),
+                   "surface": dict(scope["headers"]).get(b"x-happyranch-surface", b"").decode("ascii"),
                    "router_candidates": []}
             for route in app.routes:
                 match, _ = route.matches(scope)
@@ -2170,6 +2409,7 @@ async def serving(checks, runtime):
     handle = asyncio.create_task(server.serve(sockets=[sock]))
     checks.details["listener"] = {"host": "127.0.0.1", "port": port}
     checks.details["request_loop_thread"] = threading.get_ident()
+    discovery_originals = {}
     try:
         deadline = time.monotonic() + 8
         while not (server.started and entered.is_set()):
@@ -2179,10 +2419,31 @@ async def serving(checks, runtime):
             if time.monotonic() >= deadline:
                 raise TimeoutError("listener/hold not observed")
             await asyncio.sleep(.01)
+        # Test-side discovery points ONLY to the actual already-serving owner.
+        # Never call daemon main or publish a wrapper/start/epoch/authority fact.
+        if not (server.started and state._startup_recovery.snapshot()["serving"]
+                and sock.getsockname() == ("127.0.0.1", port)
+                and any(s.fileno() == sock.fileno() and s.getsockname() == sock.getsockname()
+                        for listener in server.servers for s in listener.sockets)):
+            raise AssertionError("original listener identity unavailable for discovery")
+        os.kill(os.getpid(), 0)
+        if paths.daemon_home() != checks.args.root / "daemon":
+            raise ValueError("consumer metadata escaped original isolated home")
+        for path, value in ((paths.pid_file(), os.getpid()), (paths.port_file(), port)):
+            if path.is_symlink() or path.exists():
+                raise ValueError("unexpected original fixture discovery metadata; preserve")
+            discovery_originals[path] = str(value).encode()
+            with path.open("xb") as stream:
+                stream.write(discovery_originals[path])
+        checks.details["consumer_discovery_provenance"] = {
+            "pid": os.getpid(), "port": port, "socket_fd": sock.fileno(),
+            "home": str(paths.daemon_home()), "published_after_actual_serving": True,
+            "source": "original _DiagnosticServer/listener + os.getpid, not production start/wrapper"}
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
                 headers={"Authorization": "Bearer " + token}, timeout=2, follow_redirects=False) as client:
             await held_task_cases(checks, runtime, state, task_entries)
             task_entries.close()
+            await consumer_cases(checks, runtime, state, server, sock, client, wire, consumers, observation, "recovering")
             before = fixture_effects(runtime, state, checks.args.root)
             observation.start()
             await early_cases(checks, runtime, port, token, wire, "recovering")
@@ -2291,6 +2552,7 @@ async def serving(checks, runtime):
             checks.require("C10_owned_reader_admissions_retired", state._startup_reads.snapshot()["active"], 0)
             # All ready HTTP controls precede maintenance switch/stop invalidation.
             await maintenance_waits.parked(dict.fromkeys(maintenance_waits.names, 1))
+            await consumer_cases(checks, runtime, state, server, sock, client, wire, consumers, observation, "ready")
             before_ready = fixture_effects(runtime, state, checks.args.root)
             observation.totals = dict.fromkeys(observation.totals, 0)
             observation.start()
@@ -2322,6 +2584,14 @@ async def serving(checks, runtime):
             daemon._sweep_on_startup = original
             asyncio.sleep = maintenance_waits.original_sleep
             sock.close()
+        # Restore only our exact synthetic discovery files after positive owner
+        # retirement; unknown cleanup or changed bytes retain their evidence.
+        if not state._shutdown_complete or any(not r["reaped"] for r in consumers["receipts"]):
+            raise RuntimeError("consumer/listener owners unretired; discovery retained")
+        for path, raw in discovery_originals.items():
+            if path.is_symlink() or path.read_bytes() != raw:
+                raise RuntimeError("synthetic discovery changed; preserve original")
+            path.unlink()
         if wait_error:
             raise AssertionError(wait_error[0])
 

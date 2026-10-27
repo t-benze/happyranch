@@ -164,6 +164,38 @@ QA0/3 unused and not released); historical JOB5572 failures and narrow C12
 proof are not replaced. Future allocating cases require their own real
 canonical producer ledger before implementation/execution;78 grants no new run.
 
+The existing C14 source subset adds exactly TWO original `scripts/daemon.sh
+status` commands and SIX current-interpreter `python -m cli.main` commands:
+`web --no-open`, and `threads show --org fixture-a THR-001 --json` plus fixture-b,
+once each while recovering and after the original ready commit. Commands run
+serially, outside reader saturation and controlled provider lifetimes. Test-side
+`daemon.pid`/`daemon.port` identify only the real already-serving driver PID and
+retained loopback socket in its existing isolated daemon home; they do not
+supply a wrapper, start signal, epoch or listener authority. Actual status
+stdout goes through the original finite parser. Exit0 proves liveness only;
+exact held/admitted recovery lines, Web disposition/loopback URL, full selected
+two-org transcripts, original authenticated org/detail requests, health request
+counts and unchanged SQL/files/native owners have separate named assertions.
+
+Before the single hold, the unchanged setup module is prepared in a fresh
+namespace with the SAME original Hold import normally supplied by its main.
+Only `Coordinator.require_recovery_ready` consumes fresh bounded original
+listener health in each phase: recovering must raise its original categorized
+Hold/no-second-start/import guidance, ready must return normally, agreeing with
+actual readiness503/200. No main, constructor, human preflight, command runner,
+backup, setup/import or restart executes. Subprocess receipts retain original
+owned PID/group, argv/cwd/isolated environment, bounded stdout/stderr/exit,
+wall<=2s and positive reap; timeout/cancellation retains failure and original
+owned termination/reap. Discovery restoration follows positive owner retirement.
+All commands share the unchanged600s/512MiB, ONE hold<=10s and concurrency8,
+with zero new fixture DB rows. Original selected74/78 history,167/171 logical,
+512 cumulative and every other cap remain; this subset supplies no whole-matrix
+fit. New behavior NOT RUN / PROOF NOT RUN, maker3/3 exhausted and QA0/3 unused,
+not released. Source scheduling is not measured fit. Production launch/full
+setup/native Mac/genuine failed epoch/browser and remaining C14 stay NOT RUN.
+Historical JOB5572 failures/10s expiry, partial TASK13277, narrow two-assertion
+C12 proof and whole-feature/under10s UNVERIFIED dispositions remain unchanged.
+
 ## Actual-owner startup observations — ROOT13137
 
 Normal boot retains its original P0 prerequisites and P2–P9 order. The earliest
