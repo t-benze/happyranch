@@ -52,6 +52,8 @@ export const realIdentitiesApi: IdentitiesApi = {
       mutationFn: async ({ slug }: { slug: string }) => {
         assertStartupAdmitted(qc);
         await qc.cancelQueries({ queryKey: identityKey(slug), exact: true }, { revert: false });
+        // THR-308: startup may have become held during the await; recheck the same client before the request.
+        assertStartupAdmitted(qc);
         const observation = qc.getQueryState(identityKey(slug))?.dataUpdateCount;
         const fresh = await identities.listIdentities(slug);
         const cached = qc.getQueryData<IdentityList>(identityKey(slug));
@@ -71,6 +73,7 @@ export const realIdentitiesApi: IdentitiesApi = {
       mutationFn: async ({ slug, kind, canonicalId, body }: Parameters<ReturnType<IdentitiesApi['useRenameIdentity']>['mutateAsync']>[0]) => {
         assertStartupAdmitted(qc);
         await qc.cancelQueries({ queryKey: identityKey(slug), exact: true }, { revert: false });
+        assertStartupAdmitted(qc);
         const result = kind === 'founder'
           ? await identities.renameFounder(slug, body)
           : await identities.renameAgent(slug, canonicalId, body);

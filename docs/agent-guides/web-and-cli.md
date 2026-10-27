@@ -77,7 +77,11 @@ Web consumer (TASK13273 source). `AppShell` is the sole poller of the shared
 and provider guards read it without polling. `web/src/lib/startup.ts` admits
 only a fresh successful observation with state=ready, recovery_ready, serving
 and not stopping; checking, request error, malformed/missing startup, unknown,
-stopped/stopping, recovery_failed and a >90s-old observation are held. A
+stopped/stopping, recovery_failed and a >90s-old observation are held. One
+expiry owner per QueryClient (shared by every `useStartupStatus` subscriber,
+never a second poller or cache write) arms one timer at the current ready
+observation's 90s deadline, so mounted routes, SSE and the banner turn held on
+expiry even while the next poll is pending or paused. A
 translated banner explains recovering ("threads can be read; new work is
 paused") or failed (stable error_code for engineering_manager); unknown/stopping
 never read as recovered. Threads routes stay mounted; every other org route and
@@ -90,8 +94,12 @@ Thread/identity/org mutations reject with StartupHeldError before network (pin
 before its optimistic write); pages also recheck before every effect and after
 each await. Controls, Enter-to-send and N/I/A/F shortcuts are inert while held;
 textarea drafts, attachment selections, focus/selection and selected org/thread
-remain mounted. Startup 503s (`daemon_*`, `startup_*`) map to "not accepted"
-copy and only invalidate `['health']`; nothing is queued, retried or replayed,
+remain mounted. Startup 503s map to "not accepted" copy and only invalidate
+`['health']` through one shared classifier (`classifyStartupRefusal`): the finite
+family is daemon_recovering/daemon_recovery_failed/daemon_stopped plus every
+`startup_*` code (gate, attachment/document/coding/jobs owner changes;
+`startup_reader_*` uses the reader copy). Other 503/`daemon_*`, 401 and network
+errors are not startup refusals. Nothing is queued, retried or replayed,
 and 401 bootstrap handling is unchanged. While held, persisted queued/working
 responder rows are labelled recorded history (no typing bubble, timer or abort)
 and attachment downloads are inert. Prototype sandbox reports a fixed ready

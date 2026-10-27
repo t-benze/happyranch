@@ -9,7 +9,7 @@
 import type { MessageKey, MessageParams } from '@/lib/i18n';
 import { ApiError } from '@/lib/api/client';
 import { MAX_THREAD_ATTACHMENTS } from './threadAttachments';
-import { StartupHeldError } from './startup';
+import { classifyStartupRefusal, type StartupRefusal } from './startup';
 
 /** Daemon error-code → human-friendly message for thread operations. */
 export const THREAD_ERROR_STRINGS: Record<string, string> = {
@@ -84,22 +84,20 @@ export interface ThreadErrorView {
 
 export type ThreadTranslator = (key: MessageKey, params?: MessageParams) => string;
 
+const STARTUP_REFUSAL_KEYS: Record<StartupRefusal, MessageKey> = {
+  held: 'startup.error.held',
+  failed: 'startup.error.failed',
+  unavailable: 'startup.error.unavailable',
+  reader: 'startup.error.reader',
+};
+
 /**
  * THR-308: catalog key for a startup refusal (client hold or daemon 503), or
  * null. Such a request was NOT accepted; nothing is queued or retried.
  */
 export function startupRefusalKey(err: unknown): MessageKey | null {
-  if (err instanceof StartupHeldError) {
-    return err.phase === 'recovering' ? 'startup.error.held'
-      : err.phase === 'failed' ? 'startup.error.failed' : 'startup.error.unavailable';
-  }
-  if (err instanceof ApiError && err.status === 503 && err.code) {
-    if (err.code === 'daemon_recovering') return 'startup.error.held';
-    if (err.code === 'daemon_recovery_failed') return 'startup.error.failed';
-    if (err.code === 'daemon_stopped' || err.code === 'startup_gate_unbound') return 'startup.error.unavailable';
-    if (err.code.startsWith('startup_reader_')) return 'startup.error.reader';
-  }
-  return null;
+  const refusal = classifyStartupRefusal(err);
+  return refusal ? STARTUP_REFUSAL_KEYS[refusal] : null;
 }
 
 /**

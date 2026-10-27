@@ -1,12 +1,17 @@
 /** Naming v1 scenarios 2/3/4/5/8/10, shipping pages with MSW HTTP fixtures.
  * Mock-based UI evidence, never daemon/DB E2E proof; execution receipts live in the maker handoff. */
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { transferableAbortController } from 'node:util';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
+import { realIdentitiesApi } from '@/design-system/providers/_real-identities';
+import { HEALTH_QUERY_KEY, STARTUP_MAX_AGE_MS, StartupHeldError } from '@/lib/startup';
+import { startupHealth } from '@/test/startup';
 import { I18nProvider } from '@/hooks/i18n';
 import { LocaleTestSwitch, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
@@ -678,5 +683,102 @@ describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, 
     fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
     await accountRow('Boss');
     expect(screen.queryByLabelText('Account: BetaBoss, Founder')).not.toBeInTheDocument();
+  });
+});
+
+describe('THR-308 identity operations recheck startup after the cancellation await', () => {
+  type Operation = 'readback' | 'founder' | 'agent';
+  const RENAME = { addressable_name: 'renamed', expected_name_revision: 1 };
+  const receipt = (kind: 'founder' | 'agent', id: string): IdentityView => ({
+    canonical_id: id, kind, lifecycle: kind === 'founder' ? 'founder' : 'active', addressable_name: 'renamed',
+    name_revision: 2, canonical_definition_revision: null, naming_status: 'ready',
+  });
+  const EXPECTED: Record<Operation, string> = {
+    readback: 'GET /api/v1/orgs/alpha/identities',
+    founder: 'PUT /api/v1/orgs/alpha/founder/addressable-name',
+    agent: 'PUT /api/v1/orgs/alpha/agents/agent_a/addressable-name',
+  };
+
+  function harness() {
+    sessionStorage.setItem('happyranch.token', 'mock-token');
+    const client = makeQueryClient();
+    client.setQueryData(HEALTH_QUERY_KEY, startupHealth());
+    const seen: string[] = [];
+    const bodies: unknown[] = [];
+    server.use(
+      http.get('/api/v1/orgs/alpha/identities', () => HttpResponse.json({ identities: [] })),
+      http.put('/api/v1/orgs/alpha/founder/addressable-name', async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json(receipt('founder', 'founder'));
+      }),
+      http.put('/api/v1/orgs/alpha/agents/agent_a/addressable-name', async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json(receipt('agent', 'agent_a'));
+      }),
+    );
+    const record = ({ request }: { request: Request }) => {
+      const path = new URL(request.url).pathname;
+      if (path.includes('/identities') || path.endsWith('/addressable-name')) seen.push(`${request.method} ${path}`);
+    };
+    server.events.on('request:start', record);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // Test-side deferral of the real cancellation await on the SAME client.
+    const cancel = vi.spyOn(client, 'cancelQueries').mockImplementation(async () => { await gate; });
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const hooks = renderHook(() => ({
+      read: realIdentitiesApi.useReadIdentities(),
+      rename: realIdentitiesApi.useRenameIdentity(),
+    }), { wrapper });
+    const invoke = (operation: Operation): Promise<unknown> => operation === 'readback'
+      ? hooks.result.current.read.mutateAsync({ slug: 'alpha' })
+      : hooks.result.current.rename.mutateAsync({
+        slug: 'alpha', kind: operation, canonicalId: operation === 'founder' ? 'founder' : 'agent_a', body: RENAME,
+      });
+    const dispose = () => {
+      server.events.removeListener('request:start', record);
+      cancel.mockRestore();
+      hooks.unmount();
+      client.clear();
+    };
+    return { client, seen, bodies, cancel, release, invoke, dispose };
+  }
+
+  test.each(
+    (['readback', 'founder', 'agent'] as const).flatMap((operation) =>
+      (['recovering', 'failed', 'expired'] as const).map((change) => [operation, change] as const)),
+  )('%s is refused with zero identity requests when startup becomes %s during the await', async (operation, change) => {
+    const h = harness();
+    try {
+      const pending = h.invoke(operation);
+      await waitFor(() => expect(h.cancel).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        if (change === 'expired') {
+          h.client.setQueryData(HEALTH_QUERY_KEY, startupHealth(), { updatedAt: Date.now() - STARTUP_MAX_AGE_MS - 1 });
+        } else {
+          h.client.setQueryData(HEALTH_QUERY_KEY, startupHealth(change === 'recovering' ? 'recovering' : 'recovery_failed'));
+        }
+      });
+      h.release();
+      await expect(pending).rejects.toBeInstanceOf(StartupHeldError);
+      expect(h.seen).toEqual([]);
+      expect(h.bodies).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  test.each(['readback', 'founder', 'agent'] as const)('ready control: %s issues its one original request after the await', async (operation) => {
+    const h = harness();
+    try {
+      const pending = h.invoke(operation);
+      await waitFor(() => expect(h.cancel).toHaveBeenCalledTimes(1));
+      h.release();
+      await expect(pending).resolves.toBeTruthy();
+      expect(h.seen).toEqual([EXPECTED[operation]]);
+      expect(h.bodies).toEqual(operation === 'readback' ? [] : [RENAME]);
+    } finally {
+      h.dispose();
+    }
   });
 });

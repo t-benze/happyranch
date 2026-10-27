@@ -111,11 +111,35 @@ export function assertStartupAdmitted(qc: QueryClient): void {
   if (!view.admitted) throw new StartupHeldError(view.phase);
 }
 
-const STARTUP_CODES = new Set(['daemon_recovering', 'daemon_recovery_failed', 'daemon_stopped', 'startup_gate_unbound']);
+/**
+ * How a refused operation relates to startup: `held` (recovering), `failed`,
+ * `unavailable` (not ready for another startup reason) or `reader` (a bounded
+ * held thread read could not be served). Null means not a startup refusal.
+ */
+export type StartupRefusal = 'held' | 'failed' | 'unavailable' | 'reader';
+
+/**
+ * The single classification owner for startup refusals: a client hold, or a
+ * daemon 503 whose stable code is in the finite startup family —
+ * `daemon_recovering`, `daemon_recovery_failed`, `daemon_stopped`, or any
+ * `startup_*` code (gate/attachment/owner/publication refusals raised by
+ * `StartupUnavailable`, and `startup_reader_*` from the held-read reader).
+ * Other 503s, other `daemon_*` codes, 401 and network errors are not.
+ */
+export function classifyStartupRefusal(error: unknown): StartupRefusal | null {
+  if (error instanceof StartupHeldError) {
+    return error.phase === 'recovering' ? 'held' : error.phase === 'failed' ? 'failed' : 'unavailable';
+  }
+  if (!(error instanceof ApiError) || error.status !== 503 || !error.code || !STABLE_CODE.test(error.code)) return null;
+  const code = error.code;
+  if (code === 'daemon_recovering') return 'held';
+  if (code === 'daemon_recovery_failed') return 'failed';
+  if (code.startsWith('startup_reader_')) return 'reader';
+  if (code === 'daemon_stopped' || code.startsWith('startup_')) return 'unavailable';
+  return null;
+}
 
 /** True for an actionable startup refusal: the request was NOT accepted. */
 export function isStartupUnavailableError(error: unknown): boolean {
-  if (error instanceof StartupHeldError) return true;
-  return error instanceof ApiError && error.status === 503 && !!error.code
-    && (STARTUP_CODES.has(error.code) || error.code.startsWith('startup_reader_'));
+  return classifyStartupRefusal(error) !== null;
 }
