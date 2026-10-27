@@ -382,6 +382,17 @@ after the whole outer cleanup batch positively settles. Claimed/possible launch,
 changed ownership, existing uncertainty or any real cleanup failure remains
 sticky and suppresses the whole batch; no exception class or purpose grants
 admission. The primary exception/traceback and secondary cleanup evidence remain.
+Genuine deferred discovery carries its authenticated original entry through the
+actual adoption COMMIT to prepared. Repeated clean preclaim refusals retain that
+SAME proof, SIDs, attempt and reservation only after current owner/INTEGER callback/
+claim checks, positive preparation closure and whole outer cleanup; prepared or
+memory-only discovery alone proves nothing. Postcommit admission refusal owes the
+same tail; unknown COMMIT/rollback/registry/cleanup retains uncertainty. Real v2
+publication keeps G plus publication_attempt in transport, authenticating the exact
+closed journal owner projection and current settled notification attempt without
+adding a journal key or discarding foreign metadata. Ordinary redelivery retains
+its existing owner projection. No claim/deadline, winner or separate original
+unknown is reset, and no source inspection supplies behavioral acceptance.
 The reference-only P4 binder validates all seven captured identities and the
 three producer attachments, preserving its actual Task/coroutine/phase/loop
 owner and ready-only dynamic attachment. Genuine P2/P3/P6 document owners retain

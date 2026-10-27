@@ -156,6 +156,7 @@ class TaskInvocation:
     _repository_worker_active: bool = False
     _startup_validation: Callable[[], None] | None = field(default=None, repr=False)
     _held_recovery: dict | None = field(default=None, repr=False)
+    _deferred_recovery_adoption: dict | None = field(default=None, repr=False)
 
     def repository_preparation_binding(self):
         from runtime.orchestrator.workspace_adapters import _repo_owner_binding
@@ -550,7 +551,7 @@ class TaskInvocation:
         """
         from runtime.daemon.startup_recovery import StartupUnavailable
         from runtime.orchestrator.team_move import DeferredTeamMove
-        if not (self.admitted and self.owner == "recovery"):
+        if not (self.admitted and self.owner == "recovery") and self._deferred_recovery_adoption is None:
             self._begin_launch_attempt()
         with self.store.writer(self.task.id, admission=True) as (_, row):
             entry = self._entry(row)
@@ -566,8 +567,9 @@ class TaskInvocation:
                 (original_reservation.owner_id, original_reservation.session_id,
                  original_reservation.possible_launch, original_reservation.quiescent,
                  original_reservation.cleanup_failed))
-            deferred_return = (deepcopy(entry) if self.owner == "recovery"
-                               and entry["phase"] == "recovery_deferred" else None)
+            # Discovery and the actual adoption COMMIT, not a prepared phase,
+            # authenticate an original return on repeated held redelivery.
+            deferred_return = self._deferred_recovery_adoption
             if proof is None:
                 if (self.unsettled or entry["phase"] == "unknown" or entry["context"].get("execution_unknown")
                         or (self.move_reservation is not None and self.move_reservation.cleanup_failed)):
@@ -601,7 +603,8 @@ class TaskInvocation:
             entry=deepcopy(entry), result=result,
             returned=(result.success, result.session_id, result.agent_session_id, result.duration_seconds),
             terminal=original_terminal, original_launch=original_launch, deferred=deferred_return,
-            intervals=[(i, dict(i)) for i in self._repository_effect_intervals],
+            intervals=([(i, dict(i)) for i in self._repository_effect_intervals]
+                       if deferred_return is None else deferred_return["intervals"]),
             original_unknown=None if unknown_owner is None else (deepcopy(original), original_reservation))
         held_recovery = self._held_recovery
         self.task, self.owner, self.session_id = current, "recovery", proof["recovery_session_id"]
@@ -681,8 +684,9 @@ class TaskInvocation:
                 result, proof = held["result"], entry["context"]["recovery_return"]
                 if (held["returned"] != (True, proof["origin_session_id"], proof["provider_session_id"],
                                         proof["duration_seconds"])
-                        or held["returned"] != (result.success, result.session_id, result.agent_session_id,
-                                               result.duration_seconds)):
+                        or result is not None and held["returned"] != (
+                            result.success, result.session_id, result.agent_session_id, result.duration_seconds)
+                        or result is None and held["deferred"] is None):
                     return False
                 original_unknown = held["original_unknown"]
                 if original_unknown is not None:
@@ -694,10 +698,18 @@ class TaskInvocation:
                         and prior.session_id == original["session_id"]
                         and original in row["journal"]["entries"])
                 if held["deferred"] is not None:
-                    # Existing native deferred discovery/adoption authenticated
-                    # this durable SAME proof before redelivery. Require its
-                    # complete entry unchanged, alongside all current fences.
-                    return held["deferred"] == held["entry"]
+                    adoption = held["deferred"]
+                    # Require SAME authenticated discovery and positive original
+                    # COMMIT, including its reservation and attempt. Neither
+                    # prepared nor a memory-only discovery certifies adoption.
+                    return (adoption is self._deferred_recovery_adoption
+                        and adoption["invocation"] is self and adoption["store"] is self.store
+                        and adoption["move"] is held["move"] and adoption["sessions"] is held["sessions"]
+                        and adoption["host"] is held["host"] and adoption["reservation"] is reservation
+                        and adoption["attempt"] == self.refusal_attempt_id
+                        and adoption["metadata"] == self.metadata
+                        and adoption["entry"] == self.deferred_entry == held["entry"]
+                        and adoption.get("committed_entry") == {**adoption["entry"], "phase": "prepared"})
                 terminal = held["terminal"]
                 receipt = None if terminal is None else terminal["receipt"]
                 return (held["original_launch"] == (self.identity, proof["origin_session_id"], True, True, False)
@@ -714,8 +726,23 @@ class TaskInvocation:
             error.add_note(f"Held recovery authentication failed: {type(secondary).__name__}")
             return False
 
+    def _retain_deferred_recovery_refusal(self, error: BaseException) -> None:
+        """Carry a real post-COMMIT adoption refusal to the original outer tail."""
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        adoption = self._deferred_recovery_adoption
+        if not isinstance(error, StartupUnavailable) or adoption is None or "committed_entry" not in adoption:
+            return
+        proof = adoption["entry"]["context"]["recovery_return"]
+        self._held_recovery = dict(store=adoption["store"], move=adoption["move"],
+            sessions=adoption["sessions"], host=adoption["host"], reservation=adoption["reservation"],
+            attempt=adoption["attempt"], entry=deepcopy(adoption["entry"]), result=None,
+            returned=(True, proof["origin_session_id"], proof["provider_session_id"], proof["duration_seconds"]),
+            terminal=None, original_launch=None, deferred=adoption, intervals=adoption["intervals"],
+            original_unknown=None, error=error)
+
     def _begin_launch_attempt(self) -> None:
         self._held_recovery = None
+        self._deferred_recovery_adoption = None
         # A returned producer's positive PID belongs to its previous attempt.
         # Reset only local refusal attribution before fallible preparation;
         # durable launch/unknown evidence and live-attempt protection survive.
@@ -933,7 +960,14 @@ def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict
         if fingerprint(task) != f or (not consumer_only and not _unclaimed_recovery_current(store, entry)):
             raise DeferredRootPause("recovery continuation changed")
         original, admitted = task, False
-    metadata = dict(entry["owner_identity"])
+    if entry["owner"] == "recovery":
+        from runtime.orchestrator.launch_refusals import _recovery_owner_metadata_current
+        delivery = dict(entry["owner_identity"]) if metadata is None else metadata
+        if not _recovery_owner_metadata_current(store, entry, delivery):
+            raise DeferredRootPause("recovery delivery owner changed")
+        metadata = dict(delivery)
+    else:
+        metadata = dict(entry["owner_identity"])
     invocation = TaskInvocation(orch, original, entry["agent"], entry["session_id"],
                                 owner=entry["owner"], metadata=metadata, identity=entry["id"], admitted=admitted)
     invocation.deferred_recovery = entry["phase"] == "recovery_deferred"
@@ -941,6 +975,11 @@ def _deferred_invocation_uncommitted(orch: Any, task: TaskRecord, metadata: dict
     invocation.consumer_session_id = consumer_sid
     invocation.deferred_adoption_pending = True
     invocation.deferred_entry = deepcopy(entry)
+    if invocation.deferred_recovery and not consumer_only:
+        invocation._deferred_recovery_adoption = dict(invocation=invocation, store=store,
+            move=orch._team_moves, sessions=orch._sessions, host=orch._host_supervisor,
+            entry=deepcopy(entry), metadata=deepcopy(metadata), attempt=invocation.refusal_attempt_id,
+            intervals=[(i, dict(i)) for i in invocation._repository_effect_intervals])
     return invocation
 
 
@@ -975,6 +1014,13 @@ def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
     def record_commit():
         nonlocal committed
         committed = True
+        adoption = invocation._deferred_recovery_adoption
+        if adoption is not None and not invocation.consumer_only:
+            adoption["committed_entry"] = deepcopy(entry)
+            adoption["reservation"] = invocation.move_reservation
+            # The durable adoption has completed; registry admission remains
+            # separately owed and cannot pretend discovery is still pending.
+            invocation.deferred_adoption_pending = False
 
     try:
         with store.writer(invocation.task.id, admission=True, validate_admission=validate,
@@ -1002,11 +1048,42 @@ def adopt_deferred_invocation(invocation: TaskInvocation) -> None:
                     if invocation.move_reservation is not None:
                         invocation.move_reservation.failed_cleanup()
                     raise RuntimeError("task_adoption_settlement_owner_changed")
-                release_live(invocation)
+                invocation._retain_deferred_recovery_refusal(primary)
+                release_live(invocation, failed=(invocation._deferred_recovery_adoption is not None
+                    and not invocation._held_recovery_refusal(primary)))
             except BaseException as secondary:
                 if invocation.move_reservation is not None:
                     invocation.move_reservation.failed_cleanup()
                 primary.add_note(f"task adoption settlement also failed: {secondary!r}")
+            raise
+        if invocation._deferred_recovery_adoption is not None and invocation.move_reservation is not None:
+            # A missing commit callback alone does not prove rollback. Observe
+            # the SAME original journal after the writer has relinquished it;
+            # uncertain COMMIT/rollback retains the exact reservation and tail.
+            rolled_back = False
+            try:
+                with store.db._lock:
+                    row = store.row_uncommitted(store.root_uncommitted(invocation.task.id)["id"])
+                    rolled_back = (not store.db._conn.in_transaction and not getattr(primary, "__notes__", ())
+                        and invocation._entry(row) == invocation.deferred_entry)
+            except BaseException as secondary:
+                primary.add_note(f"task adoption rollback observation also failed: {secondary!r}")
+            if not rolled_back:
+                invocation.move_reservation.failed_cleanup()
+                try:
+                    release_live(invocation, failed=True)
+                except BaseException as secondary:
+                    primary.add_note(f"task adoption uncertain settlement also failed: {secondary!r}")
+                raise
+            try:
+                move.release_task(invocation)
+            except BaseException as secondary:
+                invocation.move_reservation.failed_cleanup()
+                primary.add_note(f"task adoption reservation release also failed: {secondary!r}")
+                try:
+                    release_live(invocation, failed=True)
+                except BaseException as settlement:
+                    primary.add_note(f"task adoption uncertain settlement also failed: {settlement!r}")
             raise
         # Reservation alone has no effects. A rolled-back adoption must not
         # leave a pristine local owner_live latch blocking its next delivery;
