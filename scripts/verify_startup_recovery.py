@@ -492,6 +492,15 @@ def fixture_accounting(case):
         for producer in producers[1:]:
             for table, count in producer["tables"].items():
                 tables[table] = tables.get(table, 0) + producer["multiplicity"] * count
+    else:
+        # C12 constructs one complete-I database too; include its canonical
+        # initialization rows without touching the independent counter body.
+        initialized = {"workflow_adapter_versions": 1, "workflow_cutover_state": 1,
+                       "workflow_cutover_events": 1, "workflow_draft_adapter_versions": 1,
+                       "workflow_submission_schema_versions": 1, "remote_runner_schema_migrations": 2}
+        tables.update(initialized)
+        producers.append({"owner": "C12 Database/initialize_complete_org_schema(I)",
+                          "multiplicity": 1, "tables": initialized})
     # Conditional maximum: TWO original terminal root reconciliation pairs.
     # Native bounded preservation can return without admission/start/finish;
     # never rely on deleting or omitting those retained tails for a fit.
@@ -523,9 +532,9 @@ def fixture_accounting(case):
             "created_rows_upper": upper, "selected_path_rows": tables,
             "history_controls_lower": history(tables), "dimensions": dimensions, "limits": limits,
             "native_launches_total": 0 if case == "C12" else 3,
-            "native_scheduling": "one original worker; ready_task_cases awaits original native retirement before adding one worker and dedup task; <=2 live, no total-launch cap",
+            "native_scheduling": "none selected" if case == "C12" else "one original worker; ready_task_cases awaits original native retirement before adding one worker and dedup task; <=2 live, no total-launch cap",
             "mutable_updates": "Pause journal prepare/commit/retry(empty)/started/result_processing/close and move reservations do not insert history rows; no Pause control() call or move operation; no repository-preparation stream for repos={}",
-            "zero_producers": "no memory bodies/impressions, attachments, model spend (three forensic NULL-usage rows still created), jobs, thread invocation, workflow instance, candidate/pin/evaluation/continuation, new v2 generation or host SQL receipt; HostSessionStore.publish is in memory",
+            "zero_producers": "no memory bodies/impressions, attachments, model spend (native output still creates the separately counted forensic usage rows), jobs, thread invocation, workflow instance, candidate/pin/evaluation/continuation, new v2 generation or host SQL receipt; HostSessionStore.publish is in memory",
             "runtime_limits": "byte/wall/hold/HTTP/child limits require actual observation; no source timing/resource PASS"}
 
 
