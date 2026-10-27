@@ -54,10 +54,18 @@ markers or retirement remain incomplete. The state-only `C03_direct_gate_refuses
 still covers only the state guard. Proposed held probes retain genuine P2 pending
 tuples in both orgs under the same original sweep/mutex hold, compare queue counts,
 metadata, reservations, tracker/host ownership and independent SQL/files, and
-record exact original refusal frames. Deep entries without an authentic prepared
-invocation or granted host context remain explicitly missing. D089 has no
-production caller; current bound tasks use `_set_active_locked` and recovery uses
-`publish_recovery_session`. Neither supplies credit for D088/D089.
+record exact original refusal frames. Deep held D011-D014/D086/D087 require original prepared TaskInvocation/native
+SID, scratch/launch inputs or granted host lease/context. In this original held
+epoch `prepare` checks ordinary admission first, so it cannot create that owner.
+The accepted matrix's existing lower-boundary limitation applies: each exact
+ID/phase is SOURCE ONLY / NOT RUN with caller and prerequisite in the ledger;
+all obligations remain mandatory and incomplete. This is a venue limitation,
+not an external permission blocker or a request for a bypass/second hold.
+D088 `set_active` belongs to the no-TaskInvocation fallback, which installed
+move-aware tasks cannot select authentically; D089 `register_recovery_session`
+has no production caller. Both phases remain SOURCE ONLY / NOT RUN. Actual
+`_set_active_locked` (bound `_publish_binding`) and `publish_recovery_session`
+(recovery commit) are inventoried separately with no D088/D089 credit.
 
 The proposed ready chain uses the isolated existing binary registry and original
 queue/dispatcher/invocation/host/tracker with `scripts/startup_task_child.py` as a
@@ -65,17 +73,60 @@ real harmless child. It writes its own PID marker and submits only its own
 prompt-bound callback to the original fixture service; host handles/receipts and
 positive outer retirement come from production. Eight pending-key contenders,
 non-deduplicating enqueue/put and per-entry effect observations precede the existing
-maintenance-switch/stop keepers. This source is INCOMPLETE and NOT RUN. Cumulative
-task/root arithmetic is thirteen tasks/twelve roots (including nine writer cases),
-three native children and at most two simultaneous children. The cumulative
-canonical bootstrap/session/callback/outer audit-history expansion has not been
-reconciled against the original64-history/512-causal caps. Therefore `--case all`
-currently records that missing fit and returns incomplete2 BEFORE product
-constructors; it does not skip a failed assertion or report a pass. Resolving that
-source prerequisite and authentic missing deep/tracker selections remains required
-before this bounded stage is complete. No fit/sizing execution, cap increase,
-historical failure reset or new maker process is authorized. The C12 counter
-function, its independent observer and assertions remain byte-identical.
+maintenance-switch/stop keepers. All behavior remains NOT RUN.
+
+TASK13284's source accounting completes the bounded accounting correction while
+retaining a concrete resource refusal. Thirteen tasks/twelve roots fit64/16.
+Three total launches fit the TWO SIMULTANEOUS cap: one original worker drains
+both initial tasks, and ready_task_cases awaits native retirement before adding
+one worker and the single dedup task. Each native session still requires its own
+positive callback/PID/host/outer retirement and <=15s lifetime observation.
+The same copied synthetic config selects15s before canonical org-settings seed:
+the tracked300s override otherwise wins over global Settings(15). No production
+config or helper/callback protocol changes.
+
+The original64 history/control denominator includes ALL `audit_log` rows plus
+`authority_policy_v2*`, `authority_policy_active_selector` and
+`authority_policy_active_selector_history`. Literal source accounting finds
+**at least66 rows:13 authority/selector +53 audit**, exceeding64 by **at least2**:
+
+- seed_counter:10 authority/selector +1 admitted-stage audit;
+- fixture-b initializer:3 authority/selector rows;
+- initial org settings:2 orgs *5 `upsert_org_setting` config audits =10;
+- original _build_state:2 orgs *3 native-writer intervals *2 active/settled audits =12;
+- supported runtime/use reopen:2 orgs *2 intervals *2 audits =8;
+- three native tails:3 *5 session-start/native-start/scratch/session-end/completion audits =15;
+- two EMPTY-selector manager tails:2 *2 legacy binding/step audits =4;
+- genuine worker delegated verdict:1 audit;
+- completed original suspended disk tick:2 org summary audits.
+
+At most two original root-reconciliation start/finish pairs raise the selected
+successful plan's upper bound to70 (excess6); bounded preservation can omit a
+pair, so those four rows are excluded from the lower bound. The inert admitted `done` v2
+attempt takes D2-B' on startup and is not charged invented refusal/generation
+rows. Nine writer cases create nine task IDs and at most nine Pause controls;
+three native root controls give a conservative12-control upper bound. Journal
+prepare/commit/started/result/close and move reservations update existing rows or
+process ownership. Three real callbacks create three INTEGER results in addition
+to C12's one; Claude's nonempty output also creates three forensic NULL-usage rows.
+Empty repositories create no repository-preparation streams; empty retries add
+no process; the host receipt publisher is in memory. Complete-I marker/cutover,
+authority publication journals/pointers, cumulative released leases, naming,
+settings, remote markers and transcripts are separately charged in the source
+plan under the512 canonical causal ceiling. That larger ceiling cannot absorb
+any64-history excess, and surviving seed rows are labelled snapshots only.
+
+Before product constructors the driver checks independent dimensions against
+unchanged caps and records the producer/table/multiplicity and minimum excess.
+The current all-case therefore returns clean-incomplete2 (FAIL1 still wins for
+any actual failure); it cannot run Web or construct a fixture by omission or by
+moving audits to another denominator. No writer, case, failure or allocation is
+removed/reset. A changed fixture plan requires root disposition within the
+existing contract. Source accounting is not runtime/resource or timing PASS;
+byte/wall/hold/request/process limits still need actual observation. Maker3/3
+remains exhausted, QA0/3 separate unused; new behavior NOT RUN/PROOF NOT RUN.
+The C12 counter function, independent observer and both proof assertions remain
+byte-identical. Whole feature incomplete; under10s UNVERIFIED.
 
 ## Actual-owner startup observations — ROOT13137
 

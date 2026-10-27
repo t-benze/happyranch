@@ -76,6 +76,27 @@ TASK_PHASE_ASSERTIONS = {
     "recovering": ("original_entry", "startup_refusal", "queue_unchanged", "effects_unchanged"),
     "ready": ("original_entry", "owned_effect", "native_marker", "positive_retirement"),
 }
+# Accepted matrix lower-boundary limitation; these are obligations, not waivers.
+TASK_SOURCE_LIMITATIONS = {
+    "D011": {"caller": "run_step._run_step_body -> Orchestrator._run_agent",
+             "prerequisite": "original prepared TaskInvocation/current native SID"},
+    "D012": {"caller": "Orchestrator._run_agent -> _run_agent_impl",
+             "prerequisite": "same prepared invocation, task/agent/SID and original workspace"},
+    "D013": {"caller": "Orchestrator._run_agent_impl -> _launch_agent_with_scratch",
+             "prerequisite": "original prepared invocation and owned scratch/launch inputs"},
+    "D014": {"caller": "Orchestrator._launch_agent_with_scratch -> _run_agent_launch_contained",
+             "prerequisite": "same prepared invocation and original contained launch inputs"},
+    "D086": {"caller": "Orchestrator._run_agent_launch_contained -> HostSessionSupervisor.run",
+             "prerequisite": "authentic task invocation and original AdmissionRequest/cancellation owner"},
+    "D087": {"caller": "HostSessionSupervisor.run -> _execute_attempt",
+             "prerequisite": "original granted admission lease and host execution context"},
+    "D088": {"caller": "Orchestrator._run_agent_impl no-TaskInvocation fallback -> SessionTracker.set_active",
+             "prerequisite": "authentic no-TaskInvocation launch selection; installed move-aware task path refuses it"},
+    "D089": {"caller": "SessionTracker.register_recovery_session has no production caller",
+             "prerequisite": "authentic original bound recovery selection through THIS helper"},
+}
+
+
 # Independent mandatory selections, never inferred from collected PASS rows.
 REMAINING = {
     "C01": "populated workflow/returned graph and real browser transcript/lock reuse",
@@ -177,6 +198,24 @@ class Checks:
                     self.expect(name + "_" + phase, "C03", phase, assertions,
                         "each original entry needs its OWN valid selection/effects; a general gate or final marker cannot supply it")
                     self.obligations[name + "_" + phase]["original_owner"] = ":".join(TASK_DIRECT[name])
+                    if name in TASK_SOURCE_LIMITATIONS:
+                        limitation = TASK_SOURCE_LIMITATIONS[name]
+                        if phase == "recovering" or name in ("D088", "D089"):
+                            reason = ("SOURCE ONLY / NOT RUN: held original epoch cannot issue a fresh "
+                                "prepared invocation/native lease because TaskInvocation.prepare checks ordinary admission first"
+                                if phase == "recovering" and name not in ("D088", "D089") else
+                                "SOURCE ONLY / NOT RUN: " + limitation["prerequisite"])
+                            self.obligations[name + "_" + phase].update(
+                                actual_caller=limitation["caller"], source_disposition=reason,
+                                missing_prerequisite=limitation["prerequisite"],
+                                limitation="accepted matrix lower-boundary venue limit; obligation remains mandatory")
+            self.details["task_uncredited_dependencies"] = [
+                {"symbol": "SessionTracker._set_active_locked",
+                 "caller": "Orchestrator._run_agent_impl._publish_binding under original binding lease",
+                 "credit": "NONE for D088/D089; distinct actual bound-launch dependency"},
+                {"symbol": "SessionTracker.publish_recovery_session",
+                 "caller": "TaskInvocation._commit_local recovery publication",
+                 "credit": "NONE for D088/D089; distinct actual recovery dependency"}]
             self.expect("C04_task_pending_dedup", "C04", "ready", (
                 "C04_task_eight_contenders_one_winner", "C04_task_original_pending_metadata",
                 "C04_task_enqueue_put_nowait_not_deduplicated", "C04_task_one_launch_for_pending_owner"),
@@ -374,45 +413,166 @@ def counters(checks, db):
                    observations["history_entries"] - observations["sql_fetches"])
 
 
+def fixture_accounting(case):
+    """Cumulative canonical INSERT plan, not measured rows or resource PASS.
+
+    The 64 denominator deliberately retains ALL audit_log rows, including
+    config/native-writer/outer audits; the 512 causal allowance cannot absorb
+    its excess. Mutable journals/selectors are identities, not new rows on
+    every UPDATE. Publication leases are counted even after their DELETE.
+    """
+    # Original seed_counter writers: release, activation, initial+active
+    # selector history, current selector, three control audits, binding,
+    # attempt, and its admission audit. Original C12 observer stays untouched.
+    tables = {"authority_policy_v2_releases": 1,
+              "authority_policy_v2_activations": 1,
+              "authority_policy_active_selector": 1,
+              "authority_policy_active_selector_history": 2,
+              "authority_policy_v2_control_audit": 3,
+              "authority_policy_v2_session_bindings": 1,
+              "authority_policy_v2_attempts": 1, "audit_log": 1,
+              "tasks": 1, "task_results": 1}
+    producers = [{"owner": "seed_counter -> Database canonical v2 writers",
+                  "multiplicity": 1, "tables": dict(tables)}]
+    if case == "all":
+        # These are the CURRENT selected success paths, with mandatory native
+        # and outer tails. No survivor-only count, history reuse or quota reset.
+        producers += [
+            {"owner": "DaemonState.from_runtime -> ensure_authority_selector (fixture-b only)",
+             "multiplicity": 1, "tables": {"authority_policy_active_selector": 1,
+                "authority_policy_active_selector_history": 1, "authority_policy_v2_control_audit": 1}},
+            {"owner": "OrgState.load -> seed_org_settings_from_config -> upsert_org_setting",
+             "multiplicity": 2, "tables": {"org_settings": 5, "audit_log": 5}},
+            # NativeWriterStore.save_uncommitted appends BOTH active/settled
+            # even when the selected authority writer is an unchanged read.
+            # First load: identity_names_load + from_runtime selector +
+            # _build_state selector, in EACH org. Runtime/use: identity+selector
+            # in EACH org again. Existing sentinels prevent config reseeding.
+            {"owner": "_build_state: 2 orgs * 3 native_writer intervals * active/settled",
+             "multiplicity": 6, "tables": {"audit_log": 2}},
+            {"owner": "runtime/use -> from_runtime: 2 orgs * 2 native_writer intervals * active/settled",
+             "multiplicity": 4, "tables": {"audit_log": 2}},
+            {"owner": "seed TASK-090 + ready_task_cases.create_task + nine TaskInvocation cases",
+             "multiplicity": 1, "tables": {"tasks": 12}},
+            # Each original callback owns its genuine INTEGER task_results row.
+            # All three: session_start, record_started, scratch teardown,
+            # session_end, _log_step_result completion_report = FIVE audits.
+            {"owner": "THREE original native chains -> callback/result + five session/native/tail audits",
+             "multiplicity": 3, "tables": {"task_results": 1, "audit_log": 5, "session_token_usage": 1}},
+            # fixture-b's authenticated EMPTY selector resolves snapshot=None:
+            # ONE legacy_static audit, not a v2 binding/attempt or selector audit.
+            {"owner": "TWO fixture-b managers -> legacy_static binding + orchestration_step",
+             "multiplicity": 2, "tables": {"audit_log": 2}},
+            {"owner": "C13 completed suspended disk tick -> one original summary per org",
+             "multiplicity": 2, "tables": {"audit_log": 1}},
+            {"owner": "fixture-a worker -> _log_verdict_if_delegated",
+             "multiplicity": 1, "tables": {"audit_log": 1}},
+            # At most three native root controls plus nine writer roots.
+            # Only five of those nine prepare successfully in the unchanged
+            # success path; keep all nine in the conservative identity bound.
+            {"owner": "TaskPauseStore.ensure_uncommitted (3 native roots + 9 writer roots)",
+             "multiplicity": 1, "tables": {"task_pause_controls": 12}},
+            {"owner": "two canonical transcript producers", "multiplicity": 2,
+             "tables": {"threads": 1, "thread_messages": 1}},
+            {"owner": "initialize_complete_org_schema(I) / _install_foundation", "multiplicity": 2,
+             "tables": {"workflow_adapter_versions": 1, "workflow_cutover_state": 1,
+                "workflow_cutover_events": 1, "workflow_draft_adapter_versions": 1,
+                "workflow_submission_schema_versions": 1}},
+            {"owner": "initial authority publications + fixture-b selector publication", "multiplicity": 1,
+             "tables": {"workflow_authority_pointers": 2, "workflow_publication_journals": 3}},
+            # Six publication leases + four empty dependency synchronization
+            # leases across original load/reload. Released rows still count.
+            {"owner": "authority publication / ProfileCoordinator empty dependency synchronization",
+             "multiplicity": 1, "tables": {"workflow_publication_leases": 10}},
+            {"owner": "refresh_names install (founder + three tracked agents)", "multiplicity": 2,
+             "tables": {"identity_name_schema": 1, "identity_name_owners": 4, "identity_name_claims": 4}},
+            {"owner": "Database native remote-schema markers", "multiplicity": 2,
+             "tables": {"remote_runner_schema_migrations": 2}},
+        ]
+        for producer in producers[1:]:
+            for table, count in producer["tables"].items():
+                tables[table] = tables.get(table, 0) + producer["multiplicity"] * count
+    # Conditional maximum: TWO original terminal root reconciliation pairs.
+    # Native bounded preservation can return without admission/start/finish;
+    # never rely on deleting or omitting those retained tails for a fit.
+    # Inert admitted done residue is not v2 refusal: authority's D2-B' branch
+    # appends ZERO on both startup/reload; no candidate/generation is created.
+    upper = dict(tables)
+    if case == "all":
+        upper["audit_log"] += 4
+        producers.append({"owner": "two _root_worktree_batch admissions -> original start/finish",
+                          "multiplicity": 2, "tables": {"audit_log": 2}, "conditional": True})
+    history = lambda rows: sum(count for table, count in rows.items() if history_table(table))
+    limits = {"orgs": 2, "roots": 16, "tasks": 64, "history_controls": 64,
+              "causal_rows": 512, "threads": 8, "messages": 64, "tokens": 16,
+              "jobs": 8, "simultaneous_harmless_children": 2, "browser_contexts": 1,
+              "listeners": 2, "concurrent_requests": 8, "fixture_bytes": 512 * 1024 * 1024,
+              "wall_seconds": 600, "hold_seconds": 10, "http_seconds": 2, "child_seconds": 15}
+    dimensions = {"orgs": 1 if case == "C12" else 2, "roots": 1 if case == "C12" else 12,
+                  "tasks": upper["tasks"], "history_controls": history(upper),
+                  # Count ALL planned canonical rows conservatively here too,
+                  # including controls and retired leases, without moving them
+                  # out of the independent history/control denominator.
+                  "causal_rows": sum(upper.values()), "threads": upper.get("threads", 0),
+                  "messages": upper.get("thread_messages", 0),
+                  "tokens": upper.get("thread_invocations", 0) + upper.get("session_token_usage", 0), "jobs": 0,
+                  "simultaneous_harmless_children": 0 if case == "C12" else 2,
+                  "browser_contexts": 0, "listeners": 0 if case == "C12" else 1,
+                  "concurrent_requests": 0 if case == "C12" else 8}
+    return {"kind": "SOURCE_ONLY_NOT_RUN", "producers": producers,
+            "created_rows_upper": upper, "selected_path_rows": tables,
+            "history_controls_lower": history(tables), "dimensions": dimensions, "limits": limits,
+            "native_launches_total": 0 if case == "C12" else 3,
+            "native_scheduling": "one original worker; ready_task_cases awaits original native retirement before adding one worker and dedup task; <=2 live, no total-launch cap",
+            "mutable_updates": "Pause journal prepare/commit/retry(empty)/started/result_processing/close and move reservations do not insert history rows; no Pause control() call or move operation; no repository-preparation stream for repos={}",
+            "zero_producers": "no memory bodies/impressions, attachments, model spend (three forensic NULL-usage rows still created), jobs, thread invocation, workflow instance, candidate/pin/evaluation/continuation, new v2 generation or host SQL receipt; HostSessionStore.publish is in memory",
+            "runtime_limits": "byte/wall/hold/HTTP/child limits require actual observation; no source timing/resource PASS"}
+
+
+def history_table(table):
+    # Preserve the old denominator, correcting ONLY its two misspelled names.
+    return table.startswith("authority_policy_v2") or table in (
+        "authority_policy_active_selector_history", "authority_policy_active_selector", "audit_log")
+
+
 def seed(checks):
-    # Literal fit is recorded BEFORE the first product constructor. Runtime
-    # producers must remain inside it; a refusal is not replaced with raw SQL.
-    fit = {"orgs": 1 if checks.args.case == "C12" else 2, "roots": 1 if checks.args.case == "C12" else 12,
-           "tasks": 1 if checks.args.case == "C12" else 13, "results": 1 if checks.args.case == "C12" else 4,
-           "v2_history_and_controls": 11,
-           "workflow_causal_rows": 0, "threads": 0 if checks.args.case == "C12" else 2,
-           "messages": 0 if checks.args.case == "C12" else 2, "tokens": 0, "jobs": 0,
-           "provider_children": 0 if checks.args.case == "C12" else 3,
-           "simultaneous_harmless_children": 0 if checks.args.case == "C12" else 2,
-           "listeners": 0 if checks.args.case == "C12" else 1,
-           "browser_contexts": 0}
-    if checks.args.case == "all":
-        fit["cumulative_task_arithmetic"] = "1 counter root + 9 existing writer roots + 1 native child + 1 native root + 1 ready dedup root = 13 tasks / 12 roots"
-        fit["native_children"] = "3 total; original worker + one direct start_workers positive; <=2 simultaneous, each original session timeout<=15s"
-        # The nine writer cases create Pause journals/reservations, not v2
-        # generations. Count their IDs even though release later retires them.
-        fit["pause_control_roots"] = 12
-        fit["additional_v2_generations"] = 0
-        fit["causal_rows_cap"] = 512
-        fit["history_controls_cap"] = 64
-        fit["audit_fit"] = "UNRESOLVED: canonical bootstrap/session/callback/outer writers add audit history; no constructor authorized until its cumulative source count is reconciled"
+    fit = fixture_accounting(checks.args.case)
     checks.details["fixture_fit_before_constructors"] = fit
+    excess = {name: {"upper": count, "cap": fit["limits"][name],
+                     "excess": count - fit["limits"][name]}
+              for name, count in fit["dimensions"].items() if count > fit["limits"][name]}
+    fit["excess"] = excess
     checks.save()
-    if checks.args.case == "all":
-        # Do not turn task-count arithmetic into an invented history fit.
-        # Source inspection still owes the exact cumulative canonical audit
-        # expansion of bootstrap + THREE native task/callback/outer tails.
-        # This source-stage limitation is deliberately before ANY constructor.
-        checks.missing("C03_canonical_history_fit", "reconcile cumulative canonical bootstrap/session/callback/outer audit writers against original64 cap before constructors; task/root fit alone is insufficient")
+    if excess:
+        # Independent pre-constructor admission, not an unconditional all-case
+        # return. The present canonical SUCCESS plan needs at least66/64:
+        # audit_log53 + v2/selector13. Root reconciliation raises upper to70.
+        # Removing a writer/case, deleting history or charging excess to512 is
+        # not an authorized repair. Keep every mandatory obligation incomplete.
+        checks.missing("C03_canonical_history_fit", json.dumps({
+            "reason": "canonical fixture exceeds unchanged caps", "excess": excess,
+            "history_controls_lower": fit["history_controls_lower"],
+            "minimum_history_excess": max(0, fit["history_controls_lower"] - 64),
+            "table": "audit_log", "producers": fit["producers"]}, sort_keys=True))
         return None
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
     from runtime.models import ThreadRecord, ThreadMessageKind
     from runtime.runtime import RuntimeDir
     runtime = RuntimeDir.init(checks.args.root / "runtime")
-    for index, slug in enumerate(("fixture-a", "fixture-b")[:fit["orgs"]]):
+    for index, slug in enumerate(("fixture-a", "fixture-b")[:fit["dimensions"]["orgs"]]):
         org_root = runtime.orgs_dir / slug
         shutil.copytree(SOURCE / "e2e/template/org", org_root / "org")
+        if checks.args.case == "all":
+            # Effective session timeout selects org_settings BEFORE Settings.
+            # Bound the SAME copied synthetic input before its canonical seed;
+            # global Settings(15) alone would leave the tracked300s override.
+            config_path = org_root / "org/config.yaml"
+            config_text = config_path.read_text()
+            if not config_text.startswith("session_timeout_seconds: 300\n"):
+                raise ValueError("tracked synthetic timeout input changed; source accounting needs review")
+            config_path.write_text(config_text.replace("session_timeout_seconds: 300\n",
+                                                      "session_timeout_seconds: 15\n", 1))
         # No Product E2E controller, provider registry/profile or existing home
         # is copied. Only tracked synthetic declarative org input is selected.
         for name in ("case_manager", "case_worker", "code_reviewer"):
@@ -470,14 +630,15 @@ def seed(checks):
     for counts in checks.details["fixture_counts"].values():
         for table, count in counts.items():
             totals[table] = totals.get(table, 0) + count
-    checks.details["cumulative_created_rows"] = totals
+    checks.details["seed_snapshot_rows"] = totals  # surviving seed rows only; plan above is cumulative
     for table, maximum in (("tasks", 64), ("threads", 8), ("thread_messages", 64),
                            ("thread_invocations", 16), ("jobs", 8)):
         if totals.get(table, 0) > maximum:
             raise RuntimeError("original fixture cap exceeded: " + table)
     v2_rows = sum(count for table, count in totals.items()
-                  if table.startswith("authority_policy_v2") or table in (
-                      "authority_policy_selector_history", "authority_policy_active_selectors", "audit_log"))
+                  if history_table(table))
+    if sum(totals.values()) > 512:
+        raise RuntimeError("original canonical causal fixture row cap exceeded")
     if v2_rows > 64:
         raise RuntimeError("original v2/history fixture row cap exceeded")
     return runtime
@@ -724,8 +885,10 @@ async def held_task_cases(checks, runtime, state, entries):
     checks.require("C04_task_no_dequeue_before_release", task_queue_observation(state), before_queue)
     for name in ("D011", "D012", "D013", "D014", "D086", "D087", "D088", "D089"):
         checks.missing(name + "_recovering_valid_owner", (
-            "original bound TaskInvocation.prepare refuses before invocation/SID/lease creation in this epoch; "
-            "no valid pre-held owner supplied, so no private context or tracker generation is invented"))
+            "SOURCE ONLY / NOT RUN (accepted matrix lower-boundary limitation): "
+            + TASK_SOURCE_LIMITATIONS[name]["caller"] + "; requires "
+            + TASK_SOURCE_LIMITATIONS[name]["prerequisite"]
+            + "; held prepare cannot issue a fresh native owner; no surrogate credit"))
 
 
 async def ready_task_cases(checks, runtime, state, entries):
@@ -854,7 +1017,10 @@ async def ready_task_cases(checks, runtime, state, entries):
     checks.require("D007_ready_positive_retirement", not state.queue._native_work
         and state.queue._queue._unfinished_tasks == 0 and state.host_supervisor.active_count() == 0)
     for name in ("D088", "D089"):
-        checks.missing(name + "_ready_original_owner", "bound TaskInvocation uses _set_active_locked; register_recovery_session has no production caller; do not fabricate a recovery owner")
+        checks.missing(name + "_ready_original_owner", "SOURCE ONLY / NOT RUN: "
+            + TASK_SOURCE_LIMITATIONS[name]["caller"] + "; requires "
+            + TASK_SOURCE_LIMITATIONS[name]["prerequisite"]
+            + "; _set_active_locked/publish_recovery_session are separate uncredited dependencies")
 
 
 def request_path(template):
