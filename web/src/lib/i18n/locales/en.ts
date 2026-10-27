@@ -1522,6 +1522,8 @@ export const en = {
   'tasks.waiting.continuationPending': "Continuation pending",
   'tasks.waiting.childUnavailable': "Child status unavailable",
   'tasks.waiting.jobs': 'waiting on jobs',
+  'tasks.waiting.jobsFinishedHeld': 'jobs finished · held by root pause',
+  'tasks.waiting.jobsFinishedResumePending': 'jobs finished · resume pending',
   'tasks.rollup.pending': 'pending',
   'tasks.rollup.inProgress': 'in progress',
   'tasks.rollup.escalated': 'escalated',

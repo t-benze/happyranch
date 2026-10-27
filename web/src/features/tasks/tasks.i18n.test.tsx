@@ -649,6 +649,50 @@ describe('Task detail i18n', () => {
   });
 });
 
+describe('Task detail finished-job wait', () => {
+  function pauseProjection(effectiveHold: boolean) {
+    return {
+      org_slug: SLUG, root_task_id: 'TASK-77', lifecycle_status: 'in_progress',
+      held: effectiveHold, effective_hold: effectiveHold, generation: 1,
+      control_state: effectiveHold ? 'paused' : 'unheld',
+      paused_at: effectiveHold ? '2026-05-18T10:02:00Z' : null, resumed_at: null,
+      blockers: [], evidence_complete: true, observed_at: '2026-05-18T10:03:00Z',
+    };
+  }
+
+  test.each([
+    [true, '· jobs finished · held by root pause', '· 作业已完成 · 根任务暂停中'],
+    [false, '· jobs finished · resume pending', '· 作业已完成 · 等待恢复执行'],
+  ] as const)('all blocking jobs terminal never reads "waiting on jobs" (held=%s)', async (held, en, zh) => {
+    const task = rootTask({ child_wait: null, block_kind: 'blocked_on_job', blocked_on_job_ids: '["JOB-5"]' });
+    stubDetail(task, {
+      blocked_on_jobs: [{ job_id: 'JOB-5', status: 'completed' }],
+      pause: pauseProjection(held),
+    });
+    mount(`/orgs/${SLUG}/tasks/TASK-77`, 'en');
+    // Header badge and rail badge both use the finished-job projection.
+    await waitFor(() => expect(screen.getAllByText(en).length).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByText('· waiting on jobs')).toBeNull();
+    const requests = await countRequests(async () => {
+      await switchLocale('zh-CN');
+      expect(screen.getAllByText(zh).length).toBeGreaterThanOrEqual(2);
+      expect(screen.queryByText('· 等待作业')).toBeNull();
+    });
+    expect(requests).toEqual([]);
+  });
+
+  test('a still-running blocking job keeps the ordinary waiting label', async () => {
+    const task = rootTask({ child_wait: null, block_kind: 'blocked_on_job', blocked_on_job_ids: '["JOB-5"]' });
+    stubDetail(task, {
+      blocked_on_jobs: [{ job_id: 'JOB-5', status: 'running' }],
+      pause: pauseProjection(true),
+    });
+    mount(`/orgs/${SLUG}/tasks/TASK-77`, 'en');
+    await waitFor(() => expect(screen.getAllByText('· waiting on jobs').length).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByText(/jobs finished/)).toBeNull();
+  });
+});
+
 describe('shared StatusBadge seam', () => {
   test('delegated alone is neutral while the localized job qualifier remains', () => {
     render(
