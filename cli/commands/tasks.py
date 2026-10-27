@@ -13,7 +13,9 @@ from cli import _shared
 from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
-from runtime.infrastructure.db.task_reconciliation import ReconciliationError, identifier, request_body, require
+from runtime.infrastructure.db.task_reconciliation import (
+    ReconciliationError, ReconciliationResponse, identifier, request_body, require, strict_json,
+)
 
 
 def _lineage_response(response: httpx.Response) -> None:
@@ -83,10 +85,19 @@ def cmd_reconcile_failed_continuation(args: argparse.Namespace) -> None:
                 code = detail.get("code") if isinstance(detail, dict) else None
             except (ValueError, AttributeError):
                 code = None
-            # An uncertain server response is not proof that COMMIT failed.
-            print(json.dumps({"detail": {"code": code if type(code) is str else "storage_unavailable",
+            # Only closed service codes are reflected; never echo an arbitrary
+            # server body into a diagnostic about a potentially committed write.
+            safe_codes = {"database_busy", "storage_unavailable", "control_unavailable",
+                          "commit_uncertain", "rollback_uncertain"}
+            print(json.dumps({"detail": {"code": code if type(code) is str and code in safe_codes else "storage_unavailable",
                               "committed": None, "readback_required": True}}))
             raise SystemExit(1)
+        if response.is_success:
+            try:
+                ReconciliationResponse.model_validate(strict_json(response.content))
+            except (ValueError, ReconciliationError):
+                print(json.dumps({"detail": {"code": "invalid_response", "committed": None, "readback_required": True}}))
+                raise SystemExit(1) from None
         _lineage_response(response)
     except (DaemonNotRunning, DaemonStateInconsistent, httpx.HTTPError):
         print(json.dumps({"detail": {"code": "transport_unavailable", "committed": None, "readback_required": True}}))
