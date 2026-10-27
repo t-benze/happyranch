@@ -30,8 +30,20 @@ markup and keyboard behavior. It differs in these ways:
 - A plain click on a result starts one navigation, not two (Headless UI
   already navigates on mousedown). Ctrl/Cmd/Shift/Alt-click keep the browser's
   link behavior.
-- `/` and Ctrl/Cmd+K only focus a search box that is shown, so they never
-  focus the closed mobile menu's hidden box or swallow the key.
+- `/` and Ctrl/Cmd+K only focus a connected, visible search box outside inert
+  ancestry, so they never focus the closed mobile menu's hidden box or swallow
+  the key.
+- An idle-empty open panel releases modality, so Menu X is usable immediately
+  after clearing. Loading, errors, results and nonempty no-results panels stay
+  modal; Headless UI alone owns the sibling exclusion and scroll lock. Typing
+  or clearing after an error starts the existing retry. A populated Tab selects
+  the active result; an empty Tab just closes the panel and moves focus.
+- Deferred focus uses one identity across both search instances and MenuFocus.
+  A close preserves the selection through interim Menu focus. Reopening, another
+  navigation, user focus or trusted pointer input, a breakpoint or instance
+  cleanup cancels the old move. A cancelled push still closes and clears as
+  upstream; a rejected push releases ownership and retains upstream rejection
+  behavior. A route asset failure may hard-navigate to a new document.
 
 ## Keyboard
 
@@ -45,15 +57,23 @@ markup and keyboard behavior. It differs in these ways:
   closed mobile menu with `visibility: hidden` (Nextra only slides it off
   screen), so its search box, links and theme control are out of the Tab
   order and the accessibility tree, also before JavaScript runs. It stays
-  visible while sliding shut.
+  visible while sliding shut. After hydration MenuFocus also makes the aside
+  inert from the first closed layout commit, excluding even descendants whose
+  nested visibility transition continues. Reopening and desktop release only
+  MenuFocus's write, restoring its saved prior value; replacement and unmount
+  restore the held element too. CSS rules and slide timing are unchanged.
 - `components/MenuFocus.jsx`, rendered from the theme's `main`, closes the
   open mobile menu on Escape (results that are open close first; the Escape
   does not also clear the search box). When the menu closes with focus inside
-  it, focus moves to the Menu button, or after a navigation to the new page's
-  heading (as for a selected search result). When a breakpoint change hides
-  the focused control, focus moves to the shown link with the same href, the
-  shown search box, or else the Menu button (mobile) or the h1 (desktop). It
-  only acts when focus would otherwise be lost.
+  it, focus moves to the available Menu button before inert acquisition (or
+  blurs when a search modal still excludes Menu), then after an owned navigation
+  to the new page's heading. A reopened menu still follows Nextra's automatic
+  asPath close when a pending route completes. When a breakpoint hides the
+  focused control, focus moves to an available link with the same href, search
+  box, or else Menu (mobile) or h1 (desktop). If Headless still excludes those
+  targets, one observed ancestor inert release permits one re-check, bounded
+  to one second. Desktop sidebar controls remain reachable with the menu closed.
+  Deferred moves check ownership and current focus again before acting.
 
 It imports `flexsearch` and `@headlessui/react` directly, so both are declared
 in `package.json` at exactly the versions nextra-theme-docs 3.3.1 already
