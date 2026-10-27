@@ -27,8 +27,8 @@ subprocess/preparation entries bound the no-effect observations. SQLite sidecar
 metadata and unobserved source-specific/native boundaries are not covered by a
 file snapshot; their obligations remain explicit. Generic `{}` held requests
 supply no meaningful task/thread/workflow/job/session/multipart input credit.
-Failure-phase HX10.04/HX10.11 require a genuine negative-outcome fixture, which
-is still unimplemented. The245 held/early receipts never imply245 ready outcomes.
+Failure-phase HX10.04/HX10.11 now select the genuine failed-prefix source
+described below; their new observations remain NOT RUN. The245 held/early receipts never imply245 ready outcomes.
 
 An independent required-obligation ledger retains each H/HX phase, D001-D089,
 U01-U04/backend state and remaining C contract with source/head/fixture/observer,
@@ -86,8 +86,9 @@ The same copied synthetic config selects15s before canonical org-settings seed:
 the tracked300s override otherwise wins over global Settings(15). No production
 config or helper/callback protocol changes.
 
-ROOT step38 accepts **78** history/control rows ONLY for the current selected
-successful fixture. The denominator retains ALL `audit_log` rows plus
+Historical ROOT step38 accepted **78** history/control rows ONLY for the then-selected
+successful fixture. Step41 below supersedes the selected source accounting;
+these earlier allocations remain historical evidence. The denominator retains ALL `audit_log` rows plus
 `authority_policy_v2*`, `authority_policy_active_selector` and
 `authority_policy_active_selector_history`. Conservative source allocation is
 **74 base /78 conditional upper:13 authority/selector +61/65 audit**. It includes
@@ -162,7 +163,7 @@ restart/native-tail and all remaining C04/C08/C10 obligations stay incomplete.
 All new behavior NOT RUN; sensitivity PROOF NOT RUN (maker3/3 exhausted,
 QA0/3 unused and not released); historical JOB5572 failures and narrow C12
 proof are not replaced. Future allocating cases require their own real
-canonical producer ledger before implementation/execution;78 grants no new run.
+canonical producer ledger before implementation/execution; neither78 nor90 grants a new run.
 
 The existing C14 source subset adds exactly TWO original `scripts/daemon.sh
 status` commands and SIX current-interpreter `python -m cli.main` commands:
@@ -188,13 +189,75 @@ owned PID/group, argv/cwd/isolated environment, bounded stdout/stderr/exit,
 wall<=2s and positive reap; timeout/cancellation retains failure and original
 owned termination/reap. Discovery restoration follows positive owner retirement.
 All commands share the unchanged600s/512MiB, ONE hold<=10s and concurrency8,
-with zero new fixture DB rows. Original selected74/78 history,167/171 logical,
-512 cumulative and every other cap remain; this subset supplies no whole-matrix
+with zero new fixture DB rows of its own. Historical selected74/78 history,167/171 logical
+remain attributed; step41 corrects the cumulative source allowance below. The512
+ceiling and every other cap remain; this subset supplies no whole-matrix
 fit. New behavior NOT RUN / PROOF NOT RUN, maker3/3 exhausted and QA0/3 unused,
 not released. Source scheduling is not measured fit. Production launch/full
-setup/native Mac/genuine failed epoch/browser and remaining C14 stay NOT RUN.
+setup/native Mac/failed epoch/browser and remaining C14 stay NOT RUN.
 Historical JOB5572 failures/10s expiry, partial TASK13277, narrow two-assertion
 C12 proof and whole-feature/under10s UNVERIFIED dispositions remain unchanged.
+
+ROOT step41 accepts the bounded C05/C13 source extension (TASK13320), including
+independent TASK13317 R1–R3. The existing driver seeds and registers once, prepares
+consumer/executable inputs once, then runs ONE genuine failed-prefix epoch before
+the existing successful SAME-store epoch. The first org's ORIGINAL authority
+reader executes under its actual native recovery thread and SAME database RLock.
+A narrowly scoped SQLite authorizer denies only READ of
+`main.authority_policy_v2_attempts` during original discovery. The pinned plain
+Database constructor and complete source setter inventory establish known-original
+None; unknown provenance refuses replacement. Original `_view`/`_read`/discovery
+and owned rollback/check bodies run unchanged. Actual callback denial, original
+unavailable exception and underlying SQLite cause are observed separately from
+authority's normal None, the sweep's distinct first cause, exceptional native
+Future and coordinator completion. No query/cache flushing, fake result or
+normal-Future-negative-value credit follows.
+
+The genuine failed listener serves health200 with recovery_failed, serving=true,
+recovery_ready=false and ready_commits0, readiness503, and authenticated finite
+list/detail/messages for BOTH known transcripts. Missing/invalid auth and each
+request have separate effect windows. Only exact accepted HX10.04/HX10.11 raw
+requests select failed prebody503/daemon_recovery_failed with original guidance
+and zero receive/parser/spool/preparation/native effects. Valid canonical task
+owners select representative original state/queue refusals; this is not allD89
+or all245/22 coverage. Seed-to-P0 expected initialization is a separate window
+from zero request-induced writes; whole-lifetime zero writes is not claimed.
+
+Before the sole fresh reopen, original failed native Future/coordinator and sweep
+must settle, actual read-worker connection close/native return/callback retirement
+must complete, recovery/read executors must join, then original org/DB and
+server/socket close must succeed. First-cause and cleanup uncertainty remain;
+unknown authorizer restoration or retirement prohibits reopen. Original owner,
+read-domain, native Future, epoch and connections must be distinct in the fresh
+epoch while literal DB paths/inodes and known durable records persist. No seed,
+registry, preparation or pending-suffix replay occurs. The existing successful
+epoch retains its ONLY <=10s hold, ready_commits1, dedup semantics and THREE total
+harmless native chains with TWO simultaneous at most. This covers positive close
+after settled discovery failure, not stop while work is held or unsafe cleanup.
+
+Corrected selected source accounting is **86/90 history,187/191 logical rows and18
+cumulative publication leases**:73/77 audits plus13 authority/selector rows;
+six coherent-recovery leases, six dependency-synchronization leases and six
+first-publication/selector leases. Deleted leases remain charged. The original
+success-only167/171 ledger omitted four coherent-recovery leases: its corrected
+source total is171/175 with14 leases. The new failed prefix adds12 audits and4
+leases to that corrected plan (net12 audits and8 leases versus the historical
+written plan). First authority/settings/naming/selector installation moves to
+failed P0 and counts ONCE. Optional four root audits stay conditional. The512
+ceiling, two orgs,16 roots/64 tasks,8 threads/64 messages/16 tokens/8 jobs,
+512MiB/600s lifetime, concurrency8, ordinary HTTP2s and existing intentional
+reader deadlines<=3s remain unchanged. Two serial listener identities share the
+same lifetime; no hold, process allocation or resource reset is granted.
+
+All new behavior **NOT RUN / PROOF NOT RUN**; maker3/3 EXHAUSTED, QA0/3 UNUSED
+and NOT RELEASED. Static/source accounting is neither measured fit nor behavioral
+PASS. Original JOB5572 failures/10s expiry, partial/BLOCK TASK13277, all cases and
+ONLY the two historical C12 sensitivity assertions retain attribution. Normal
+negative-value native Futures, unsafe tails/COMMIT/cleanup, held stop/cancel,
+populated/partial-return recovery, other launch families, actual browser and
+Mac/full-launcher/setup remain open. Independent full final review, same-head
+scoped QA, guarded merge/exact-main checks and separately authorized operator
+observation remain ROOT-owned. Under10s remains UNVERIFIED.
 
 ## Actual-owner startup observations — ROOT13137
 
