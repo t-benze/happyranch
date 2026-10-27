@@ -1149,6 +1149,8 @@ class _DiagnosticServer(uvicorn.Server):
                 return
             if (not self.started or self.should_exit or self.lifespan.should_exit
                     or self.config.app is not self._diagnostic_app):
+                self._diagnostic_app.state.daemon._startup_recovery.fail(
+                    "startup_listener_unavailable", RuntimeError("startup_listener_unavailable"))
                 if observation is not None:
                     observation.record_interval("asgi_listener", started_ns, observation_time_ns(), "incomplete")
                 return
@@ -1159,13 +1161,18 @@ class _DiagnosticServer(uvicorn.Server):
             from runtime.daemon.startup_recovery import bind_http_listener
             bind_http_listener(app, self)
         except BaseException as exc:
+            self._diagnostic_app.state.daemon._startup_recovery.fail("startup_listener_failed", exc)
             if observation is not None:
                 observation.record_interval("asgi_listener", started_ns, observation_time_ns(),
                                             "failed" if isinstance(exc, Exception) else "incomplete")
             raise
         if observation is not None:
             observation.record_interval("asgi_listener", started_ns, observation_time_ns())
-        app.state.daemon._startup_recovery.signal_serving(app)
+        try:
+            app.state.daemon._startup_recovery.signal_serving(app)
+        except BaseException as exc:
+            app.state.daemon._startup_recovery.fail("startup_listener_failed", exc)
+            raise
 
 
 def main(argv: list[str] | None = None) -> int:

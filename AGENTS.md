@@ -89,8 +89,13 @@ P5 compatibility, P6 blocked/move/Pause/tokens and P7 stale producers follow onc
 in that order. Tokens retain their actual sweep outcome. No private loop or
 ordinary recovery wrapper runs alongside these phases.
 
-P8 retains each actual dormant consumer handle, then commits ready and releases
-ONE latch without an await. All original task/thread/dream/wake/schedule workers,
+P8 retains each actual dormant consumer handle. P9 commits ready and releases
+ONE latch without an await only after BOTH positive recovery/preparation and the
+original matching live listener agree. Recovery-first arms activation and returns
+without blocking ASGI startup; listener-first waits for native completion. Both
+orders converge on one commit. Every native/direct readiness renewal checks that
+same listener identity; loss/replacement/stop/failure holds fresh effects.
+All original task/thread/dream/wake/schedule workers,
 schedulers, breaker, zombie/disk/exchange/direct-connect/workspace-cleanup and
 dashboard suffixes wait that latch before their bodies run. Dashboard cold disk
 load uses the existing owned native executor after activation and is positively
@@ -101,8 +106,8 @@ New orgs inherit the same gate/read domain before map publication; add/remove/sw
 refuse during recovering/failed/stopping and never replace boot's captured tuple.
 
 Only the original matching Server's successful ASGI AND actual-listener signal
-can establish serving. Diagnostic/release intake additionally requires positive
-recovery readiness; either arrival order converges once. Stop revokes admission
+can establish serving. Consumer release and diagnostic/release intake require
+both genuine signals; either arrival order converges once. Stop revokes admission
 before the first await. Recovery/native tails/binding/publications/read owners
 join while the real loop can acknowledge work and before host/session/DB close;
 all partial consumer handles are retained and joined, including exchange reaper.
@@ -122,6 +127,26 @@ ownership still blocks dependent destruction and DB close. Executor-closed and
 shutdown-complete bookkeeping require the actual original closure barriers.
 These corrections are source only, NOT RUN / PROOF NOT RUN; the existing S case
 does not supply coordinator-cancellation or exceptional-close behavioral credit.
+
+The breaker scheduler registers each original runnable-token, delivery-read and
+probe-mint offload under the org native-user barrier BEFORE submission; cancellation
+joins that same native completion. Mint renews the captured validator after the
+synchronized DB lock and BEGIN wait, before effects and COMMIT. Offline callers
+retain the optional-validator default. Shared thread/dream/wake/schedule workers
+retain their original service epoch and skip a saved org only after the original
+close AND removal positively recorded detachment; replacement/unknown/stop/failure
+still refuses before dequeue, without consuming queued intent.
+
+Shutdown joins original maintenance operations and attempts independently owed
+host/consumer/dashboard/queue/job/service drains even after an ended error. Active
+maintenance is not an early reason to skip them. Positive final native/maintenance/
+executor/reader/service/runner barriers still precede DB destruction. Job and disk
+spawn/report waits preserve the first observed cause and original traceback;
+later real errors remain bounded secondary evidence. Successful spawn after
+cancellation captures its actual Process for original-owner stop/reap; failed
+spawn/report supplies no handle/report. These A corrections remain SOURCE ONLY,
+behavior/PROOF/resource fit NOT RUN; maker3/3 exhausted, QA0/3 not released,
+under10s UNVERIFIED. Existing assertions/helpers and execution limits are unchanged.
 
 Ordinary task source admission now checks the same original daemon epoch at
 queue enqueue/reservation/raw dequeue, direct worker submission/dispatcher/task

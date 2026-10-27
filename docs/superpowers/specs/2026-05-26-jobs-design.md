@@ -17,8 +17,13 @@ A final-admitted asynchronous spawn retains its original Task/registration and
 native attempt until actual creation is observed, even if its waiter is cancelled.
 The observed Process is captured before fallible accounting. Closure during
 creation suppresses script input and requests original owned termination/reap;
-cancellation retains its primary cause and any cleanup failure. The registration
-also occupies the org's existing native-user close barrier through its committed
+cancellation retains its original primary object/traceback and bounded real
+secondary errors, including later spawn OSError and repeated-cancel/done races.
+An already observed native failure keeps precedence. A failed spawn supplies no
+Process; a successful spawn after cancellation is captured and stopped/reaped.
+Post-creation admission renews the original matching listener before script input;
+listener loss still permits independently owed identity-only cleanup.
+The registration also occupies the org's existing native-user close barrier through its committed
 postcommit tail, or remains retained on uncertainty. Signals, output pumps,
 terminal CAS/first cause, registration release and native cleanup use identity
 validation independently of fresh admission. No closed gate proves quiescence.

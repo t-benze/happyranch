@@ -4496,12 +4496,19 @@ cases/proof NOT RUN, maker0/3 QA0/3 unchanged, under10s UNVERIFIED; root retains
 full final-source independent review, same-head behavioral QA and coherent delivery.
 
 P8 prepares every original normal consumer behind one unopened latch, records each
-actual handle immediately, and commits ready/releases without an await. All worker,
+actual handle immediately, and commits ready/releases without an await only when
+BOTH positive recovery/preparation and the original matching live listener agree.
+Recovery-first arms activation and returns without blocking ASGI/listener startup;
+listener-first stays held until native completion. One commit/latch release serves
+both orders. Every native/direct gate renews that actual listener conjunction;
+listener loss/replacement/failure and stopped/failed epochs refuse fresh effects.
+All worker,
 scheduler, reaper, direct-connect/workspace-cleanup and dashboard bodies wait it.
 Dashboard cold disk load is off-loop on the existing owned executor after activation;
 its Future remains owned through actual completion. Existing periodic dashboard
 cancellation behavior is unchanged. Original actual-listener proof and positive
-recovery readiness jointly admit diagnostics/release, in either arrival order once.
+recovery readiness jointly admit all fresh consumers and diagnostics/release,
+in either arrival order once.
 Shutdown closes intake synchronously, joins recovery/tails/binding/publications/read
 owners while the real loop can acknowledge them, then joins every partial consumer
 (including exchange reaper) before resource close. Unsafe/unsettled ownership blocks
@@ -4509,6 +4516,19 @@ close; wrapper cancellation supplies no quiescence. Full direct/HTTP/UI/readines
 launcher closure, correctness execution and independent final-source review/same-head
 QA remain root-owned. This incomplete source slice permits no partial merge or live
 activation. Behavior/resource/performance NOT RUN; sensitivity PROOF NOT RUN.
+
+Breaker runnable-token/read/mint offloads register their org native-user owner
+before submission and join their original native completion through cancellation.
+Probe mint renews the same captured admission after the synchronized lock and
+BEGIN wait before effects/COMMIT, preserving offline defaults and original durable
+probe dedup/Pause/move/claim controls. Shared thread/dream/wake/schedule workers
+retain their service epoch, skip only positively closed-and-removed original org
+selections before dequeue, and propagate replacement/unknown/failed/stop refusal.
+Shutdown attempts independent host/consumer/dashboard/queue/job/service drains,
+joins maintenance before its final idle checks and retains first cause; uncertainty
+still blocks dependent DB/executor destruction. Job/disk spawn/report waits retain
+the first actual cause/traceback plus bounded real secondaries and only read real
+successful results. No new behavioral/resource run or execution credit follows.
 
 P5 `compatibility_native_on_startup(state, recovery)` owns `compatibility` once
 following returned completion, original true-loop binding and idle handoffs.

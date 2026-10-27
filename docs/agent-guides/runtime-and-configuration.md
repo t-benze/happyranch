@@ -289,6 +289,15 @@ resumption awaiting the ORIGINAL lease.retired while recovery remains held and
 shutdown awaits it. Recovery releases SECOND; original shutdown joins both
 executors before org/DB/socket close. Every Event releases in finally before
 shutdown waits; unknown close/restoration/retirement refuses another epoch.
+
+Job and disk spawn/report waits also consume the SAME original completion through
+repeated cancellation and done/error races. First observed failure remains primary;
+otherwise the first cancellation and original traceback survive a later native
+OSError with bounded real secondary evidence. Process/report values are read only
+on genuine success; success-after-cancel still captures/stops/reaps the real child.
+All five partition A corrections are SOURCE ONLY: behavior/PROOF/resource fit NOT
+RUN, maker3/3 exhausted, QA0/3 unused/not released; under10s UNVERIFIED.
+
 S covers read-wrapper cancellation and live recovery stop; it does not cover
 recovery-coordinator cancellation. StartupRecovery.join cancellation/exception
 precedence and exceptional-close behavior remain ROOT-owned behavioral gaps.
@@ -306,10 +315,14 @@ an exceptional coordinator Task. Positive native/sweep/publication/binding idle
 proof precedes executor shutdown. State then attempts the independent read drain
 even if recovery close reports an error. Lifespan attempts independent service
 and diagnostic drains, preserves its earlier primary and prevents logging errors
-from replacing it. Only positive startup/read/service/revocation/host prerequisites
-permit dependent consumer/queue/job closure; close_all renews original attachment,
-runner and diagnostic barriers before DB close. Unknown ownership, failed cleanup
-or an unclosed executor retains the barrier and cannot set positive bookkeeping.
+from replacing it. Independently owed host, consumer/dashboard, queue, job and
+maintenance drains are attempted while the loop and DB remain available, even
+when an unrelated ended drain failed. Active maintenance is joined before the
+final idle preflight. Positive original startup/read/service/revocation/host/
+consumer/queue/job/maintenance barriers and executor closure permit dependent
+destruction; close_all renews attachment, runner and diagnostic barriers before
+DB close. Cancelled wrappers, native-uncertain failures, failed cleanup and an
+unclosed executor retain their barriers and cannot set positive bookkeeping.
 All corrected behavior NOT RUN / PROOF NOT RUN; no new case, epoch or invocation
 was allocated, and S's healthy reader cancellation is no coordinator proof.
 
@@ -718,6 +731,14 @@ through wrapper cancellation; fresh admission is separate from original terminal
 cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
 unavailable, without synthetic source failure, successful move deferral or no-op.
 Scheduled enqueue failures report the genuine committed pending/firing source.
+The thread breaker owns all three original offloads under the selected org's
+native-user close barrier before submission and joins through cancellation. Probe
+mint renews the same captured validator after its DB lock and BEGIN admission wait,
+before probe/token/lease writes and COMMIT; ordinary offline default is preserved.
+The four shared thread/dream/wake/schedule workers retain one service epoch. A
+saved org selection is skipped only after original close plus removal positively
+recorded matching detachment; replacement, unsettled close or failed/stopped epoch
+still refuses before dequeue. Queued and durable pending intent remains intact.
 Work-hour/schedule spawn callbacks recheck actual state/org and the awaited DB
 lock before the first task ID. Their original once/current-team/partial-commit
 semantics remain; a postcommit delivery refusal preserves task/source rows and
@@ -847,12 +868,19 @@ gate/read domain before publication. Add/remove/swap refuse recovering, failed
 or stopping epochs; they never rebind the original boot attachment tuple.
 All original suffix consumer bodies wait one activation latch, including every
 worker/scheduler/reaper and dashboard bootstrap. Handles are retained as they
-are prepared, so partial preparation cannot orphan earlier ones. Ready commit
-and latch release have no intervening await. Cold dashboard disk load runs on
+are prepared, so partial preparation cannot orphan earlier ones. BOTH actual
+original live listener and positive recovery/preparation precede the one ready
+commit/latch release without an intervening await. Recovery-first arms activation
+and returns so ASGI/listener startup can finish; listener-first remains held until
+native completion. All direct/native readiness renewals recheck the same listener;
+listener failure/loss/replacement, stop and failed epochs never admit fresh work.
+Cold dashboard disk load runs on
 the existing owned native executor after activation; its actual Future is joined
 before resource close. Existing periodic warm/cancellation behavior is unchanged.
 Stop closes intake before awaits and joins actual recovery/tail/binding/read and
-partial consumer owners before host/DB close; exchange reaper is included.
+partial consumer owners before DB close; host shutdown precedes runner joins and
+exchange reaper is included. Independent drains do not depend on maintenance already
+being idle; original maintenance completions are joined before destructive preflight.
 This remains incomplete source delivery: root owns UI/launcher/consumer and
 instrumentation closure, correctness execution and independent final review/same-head
 QA/guarded merge. Behavior/resource/performance/proof NOT RUN; under10s UNVERIFIED;

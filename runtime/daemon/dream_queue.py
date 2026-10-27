@@ -83,18 +83,26 @@ class DreamQueue:
 async def dream_worker_loop(state, settings: Settings) -> None:
     from runtime.daemon.dream_runner import run_dream
 
-    from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+    from runtime.daemon.startup_recovery import (
+        maintenance_service_validation, StartupUnavailable,
+    )
 
+    validate_service = maintenance_service_validation(state)
     while True:
-        require_ready(state)
+        validate_service()
         for org in list(state.orgs.values()):
-            require_ready(org)
+            if not state._worker_org_current(org, validate_service):
+                continue
             if org.dream_queue.size == 0:
                 continue
             try:
                 job = await asyncio.wait_for(org.dream_queue.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
+            except StartupUnavailable:
+                if not state._worker_org_current(org, validate_service):
+                    continue
+                raise
             try:
                 await run_dream(
                     org_state=org, dream_id=job.dream_id, settings=settings,

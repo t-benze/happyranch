@@ -89,18 +89,26 @@ class WakeQueue:
 async def wake_worker_loop(state, settings: Settings) -> None:
     from runtime.daemon.wake_runner import run_wake
 
-    from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+    from runtime.daemon.startup_recovery import (
+        maintenance_service_validation, StartupUnavailable,
+    )
 
+    validate_service = maintenance_service_validation(state)
     while True:
-        require_ready(state)
+        validate_service()
         for org in list(state.orgs.values()):
-            require_ready(org)
+            if not state._worker_org_current(org, validate_service):
+                continue
             if org.wake_queue.size == 0:
                 continue
             try:
                 job = await asyncio.wait_for(org.wake_queue.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
+            except StartupUnavailable:
+                if not state._worker_org_current(org, validate_service):
+                    continue
+                raise
             try:
                 await run_wake(
                     org_state=org, work_hour_id=job.work_hour_id, settings=settings,

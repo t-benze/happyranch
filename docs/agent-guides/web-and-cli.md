@@ -22,7 +22,11 @@ is not launcher duration. Missing startup fields mean unknown on older daemons.
 GET /api/v1/health/ready returns200 only for the actual matching serving listener
 AND accepted recovery-ready epoch without stop/closed/failed/unbound ownership;
 otherwise503 reports unavailable with truthful startup/guidance. Liveness200
-alone grants neither readiness, setup acceptance nor launch permission.
+alone grants neither readiness, setup acceptance nor launch permission. Native
+consumer release now uses that same BOTH-signals conjunction: recovery-first arms
+without blocking listener startup, listener-first waits for recovery, and the one
+ready commit/latch release admits work only while the original listener remains
+current. Listener failure/loss/replacement and stopped/failed epochs remain held.
 
 Shell start/status preserve their process identity line and append exactly one
 `startup serving=YES recovery=STATE launches=DISPOSITION` line (actual values

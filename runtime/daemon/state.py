@@ -83,15 +83,40 @@ class DaemonState:
 
     async def _await_maintenance_worker(self, worker):
         """Keep an original submitted maintenance worker visible through cancellation."""
-        from runtime.orchestrator.producer_move import await_producer_worker
+        from runtime.daemon.startup_recovery import _await_startup_owned
         self._maintenance_workers.add(worker)
         try:
-            return await await_producer_worker(worker)
+            return await _await_startup_owned(worker, self._startup_recovery._retain_secondary)
         finally:
             if worker.done() and not worker.cancelled():
                 failure = worker.exception()
                 if failure is None or not getattr(failure, "maintenance_native_unsettled", False):
-                    self._maintenance_workers.remove(worker)
+                    self._maintenance_workers.discard(worker)
+
+    async def _drain_maintenance_workers(self) -> None:
+        """Join original operations with the loop/DB alive, after producers stop."""
+        from runtime.daemon.startup_recovery import _await_startup_owned
+        primary = None
+        traceback = None
+        for worker in tuple(self._maintenance_workers):
+            try:
+                if worker is asyncio.current_task():
+                    raise _OrgBusyError("maintenance_self_join_refused")
+                await _await_startup_owned(worker, self._startup_recovery._retain_secondary)
+            except BaseException as exc:
+                if primary is None:
+                    primary, traceback = exc, exc.__traceback__
+                else:
+                    self._startup_recovery._retain_secondary(exc)
+            finally:
+                # Ended failures can be idle; cancelled wrappers and native
+                # termination uncertainty never supply original completion.
+                if worker.done() and not worker.cancelled():
+                    failure = worker.exception()
+                    if failure is None or not getattr(failure, "maintenance_native_unsettled", False):
+                        self._maintenance_workers.discard(worker)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
 
     def _bind_startup_owner(self, app) -> None:
         """One boot owner; construction binds references without DB work."""
@@ -597,6 +622,34 @@ class DaemonState:
             if current is not None:
                 current.close()
                 self.orgs.pop(slug)
+                # Positive original close AND removal, in one unsuspended segment.
+                # Missing map entries or failed/partial closes supply no evidence.
+                gate = self._startup_recovery
+                current._startup_detached = (self, gate, None if gate is None else gate.epoch,
+                                             current._startup_admission_refs, slug, current.root)
+
+    def _worker_org_current(self, org, validate_service) -> bool:
+        """Skip only a positively detached original selection in this epoch."""
+        from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+        validate_service()  # The SAME shared service survives, never a failed epoch.
+        gate = self._startup_recovery
+        detached = org._startup_detached
+        if (self.orgs.get(org.slug) is None and isinstance(detached, tuple)
+                and len(detached) == 6 and detached[0] is self and detached[1] is gate
+                and detached[2] == (None if gate is None else gate.epoch)
+                and detached[3] is org._startup_admission_refs
+                and detached[4] == org.slug and detached[5] == org.root
+                and isinstance(detached[3], tuple) and len(detached[3]) == 7
+                and all(current is original for current, original in zip(
+                    (org.orchestrator, org.db, org.sessions, org.thread_queue,
+                     org.dream_queue, org.wake_queue, org.schedule_queue), detached[3], strict=True))
+                and org._startup_state is self and org._startup_recovery is gate
+                and org._runner_admission_closed):
+            return False
+        if detached is not None or org._runner_admission_closed:
+            raise StartupUnavailable("startup_attachment_changed")
+        require_ready(org)  # Current replacement and unknown detachment still refuse.
+        return True
 
     async def close_all(self) -> None:
         self._stop_runner_admission()

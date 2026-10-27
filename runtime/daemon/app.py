@@ -471,6 +471,7 @@ async def _shutdown_lifespan(
 ) -> None:
     import asyncio
     import logging
+    from runtime.daemon.startup_recovery import _await_startup_owned
     recovery = state._startup_recovery
     primary = revocation_error
     traceback = None if primary is None else primary.__traceback__
@@ -485,44 +486,40 @@ async def _shutdown_lifespan(
 
     async def drain(operation, code: str) -> bool:
         try:
-            await operation
+            await _await_startup_owned(asyncio.ensure_future(operation), recovery._retain_secondary)
             return True
         except BaseException as exc:
             remember(code, exc)
             return False
 
-    # Known-ended exceptional outcomes cannot abandon independent owed drains.
-    # These run while the REAL loop, host and DB resources still exist.
+    # Independently owed drains run with the real loop, host and DB alive.
+    # Maintenance being active is a reason to JOIN, not to skip these owners.
     await drain(state._drain_startup(), "startup_drain_incomplete")
     releases_closed = await drain(state._drain_thread_releases(), "startup_release_drain_incomplete")
     moves_closed = await drain(state.team_move_service.close(), "startup_move_drain_incomplete")
-    prerequisites = revocation_error is None and releases_closed and moves_closed
-    try:
-        state._assert_startup_idle()
-        if not recovery._closed:
-            raise RuntimeError("startup_executor_close_incomplete")
-    except BaseException as exc:
-        prerequisites = False
-        remember("startup_shutdown_owner_unsettled", exc)
-    if prerequisites and state.host_supervisor is not None:
+    host_closed = True
+    if state.host_supervisor is not None:
         try:
             state.host_supervisor.shutdown()
         except BaseException as exc:
-            prerequisites = False
+            host_closed = False
             remember("startup_host_shutdown_incomplete", exc)
-    if prerequisites:
-        for org in state.orgs.values():
-            try:
-                org.dashboard_projection.cancel_scheduler()
-            except BaseException as exc:
-                remember("startup_dashboard_cancel_incomplete", exc)
-        handles = set(recovery._consumers)
-        for org in state.orgs.values():
-            handles.update(org._runner_tasks)
-        for task in handles:
-            task.cancel()
-        # Every partial/dormant handle is retained and positively joined.
-        outcomes = await asyncio.gather(*handles, return_exceptions=True)
+
+    for org in state.orgs.values():
+        try:
+            org.dashboard_projection.cancel_scheduler()
+        except BaseException as exc:
+            remember("startup_dashboard_cancel_incomplete", exc)
+    handles = set(recovery._consumers)
+    for org in state.orgs.values():
+        handles.update(org._runner_tasks)
+    for task in handles:
+        task.cancel()
+    # Never cancel a to_thread wrapper to pretend the native operation ended.
+    consumers_closed = True
+    try:
+        outcomes = await _await_startup_owned(
+            asyncio.gather(*handles, return_exceptions=True), recovery._retain_secondary)
         for outcome in outcomes:
             if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
                 remember("startup_consumer_failed", outcome)
@@ -530,28 +527,37 @@ async def _shutdown_lifespan(
                     logging.getLogger(__name__).error("Startup consumer ended with error: %r", outcome)
                 except BaseException as exc:
                     remember("startup_consumer_observation_failed", exc)
-        for org in state.orgs.values():
-            reaped = await drain(org.dashboard_projection.reap_scheduler(), "startup_dashboard_reap_incomplete")
-            prerequisites = prerequisites and reaped
-        try:
-            recovery.assert_consumers_idle()
-            recovery.assert_native_idle()
-        except BaseException as exc:
-            prerequisites = False
-            remember("startup_consumer_join_incomplete", exc)
-        queue_closed = await drain(state.queue.stop(), "startup_queue_drain_incomplete")
-        try:
-            state.queue.assert_native_idle()
-        except BaseException as exc:
-            queue_closed = False
-            remember("startup_queue_owner_unsettled", exc)
-        from runtime.daemon.jobs_runner import terminate_all_inflight
-        jobs_closed = await drain(terminate_all_inflight(grace_seconds=5), "startup_jobs_drain_incomplete")
-        prerequisites = prerequisites and queue_closed and jobs_closed
+    except BaseException as exc:
+        consumers_closed = False
+        remember("startup_consumer_join_incomplete", exc)
+    for org in state.orgs.values():
+        reaped = await drain(org.dashboard_projection.reap_scheduler(), "startup_dashboard_reap_incomplete")
+        consumers_closed = consumers_closed and reaped
+
+    # Queue, jobs and maintenance have independent original ownership. A failed
+    # host/service/consumer result does not make these joins impossible.
+    queue_closed = await drain(state.queue.stop(), "startup_queue_drain_incomplete")
+    from runtime.daemon.jobs_runner import terminate_all_inflight
+    jobs_closed = await drain(terminate_all_inflight(grace_seconds=5), "startup_jobs_drain_incomplete")
+    await drain(state._drain_maintenance_workers(), "startup_maintenance_drain_incomplete")
     diagnostics_closed = await drain(state._drain_cleanup_diagnostics(), "startup_diagnostics_drain_incomplete")
-    if prerequisites and diagnostics_closed:
-        # close_all renews actual attachment, service, consumer, queue, reader,
-        # diagnostic and org/runner fences. No ended error bypasses those checks.
+    prerequisites = (revocation_error is None and releases_closed and moves_closed and host_closed
+                     and consumers_closed and queue_closed and jobs_closed and diagnostics_closed)
+    try:
+        # Destructive close depends on positive barriers, after all owed joins.
+        recovery.assert_consumers_idle()
+        recovery.assert_native_idle()
+        state.queue.assert_native_idle()
+        state._assert_startup_idle()
+        for org in state.orgs.values():
+            org._assert_runners_idle()
+        if not recovery._closed:
+            raise RuntimeError("startup_executor_close_incomplete")
+    except BaseException as exc:
+        prerequisites = False
+        remember("startup_shutdown_owner_unsettled", exc)
+    if prerequisites:
+        # close_all renews attachment/service/queue/reader/native-user barriers.
         await drain(state.close_all(), "startup_database_close_incomplete")
     if primary is not None:
         raise primary.with_traceback(traceback)

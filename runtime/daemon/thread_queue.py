@@ -96,22 +96,30 @@ async def thread_worker_loop(state, settings: Settings) -> None:
     """
     from runtime.daemon.thread_runner import run_invocation
     from runtime.orchestrator.team_move import DeferredTeamMove
-    from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
+    from runtime.daemon.startup_recovery import (
+        maintenance_service_validation, StartupUnavailable,
+    )
 
+    validate_service = maintenance_service_validation(state)
     while True:
-        require_ready(state)
+        validate_service()
         all_orgs = list(state.orgs.values())
         if not all_orgs:
             await asyncio.sleep(0.5)
             continue
         for org in all_orgs:
-            require_ready(org)
+            if not state._worker_org_current(org, validate_service):
+                continue
             if org.thread_queue.size == 0:
                 continue
             try:
                 job = await asyncio.wait_for(org.thread_queue.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
+            except StartupUnavailable:
+                if not state._worker_org_current(org, validate_service):
+                    continue
+                raise
             try:
                 await run_invocation(
                     org_state=org,

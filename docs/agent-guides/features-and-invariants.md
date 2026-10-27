@@ -25,13 +25,29 @@ are not hard I/O/RSS/time certificates or a performance claim.
 
 /health is liveness200 plus bounded sanitized startup scalars; /health/ready200
 requires actual matching listener and accepted recovery-ready epoch, without
-stop/closed/failed/unbound ownership. Otherwise readiness503 includes truthful
-state/guidance. Cached host-session semantics remain, with no DB/history/probe
+stop/closed/failed/unbound ownership. The one ready commit and consumer latch
+also require BOTH signals: recovery-first arms without awaiting ASGI/listener
+startup, listener-first waits for recovery. Direct/native gates renew the same
+original listener identity; loss/replacement/failure never admits fresh effects.
+Otherwise readiness503 includes truthful state/guidance. Cached host-session
+semantics remain, with no DB/history/probe
 or raw cause/path/native/task collection. Owner-to-serving time is not launcher
 duration; missing launcher evidence stays null. Source/static handoff, additive
 TS API and retained source are not runtime/proof PASS. Root owns UI/launcher/
 consumer instrumentation, isolated OpenAPI snapshot synchronization, finite
 verification and independent final source/QA/merge gates. No activation follows.
+
+All three breaker offloads remain registered under the original org native-user
+barrier through actual completion, including cancellation. Probe mint renews the
+captured validator after DB lock/BEGIN admission and before effects/COMMIT. Shared
+thread/dream/wake/schedule workers skip stale saved orgs only with positive original
+close-and-removal evidence and the same healthy service epoch, before dequeue.
+Shutdown joins retained maintenance and attempts independent owed drains before
+idle destruction checks; unknown owners remain barriers. Job/disk spawn/report
+waits preserve first cause/traceback and bounded actual secondary errors, capture
+only successful Process/report results, and retain original-owner stop/reap duties.
+These source corrections change no test/helper, resource allocation or readiness
+acceptance: behavior/PROOF NOT RUN, maker3/3 exhausted, QA0/3 not released.
 
 
 ## Current explicit coding execution and caller return — ROOT13015

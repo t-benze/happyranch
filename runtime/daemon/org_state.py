@@ -146,6 +146,7 @@ class OrgState:
     _startup_reads: Any = field(init=False, default=None, repr=False)
     _startup_read_revoked: bool = field(init=False, default=False, repr=False)
     _startup_read_file: Any = field(init=False, default=None, repr=False)
+    _startup_detached: tuple | None = field(init=False, default=None, repr=False)
 
     def _acquire_thread_release(self, operation) -> bool:
         a = self._thread_release_attachment

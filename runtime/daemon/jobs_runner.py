@@ -728,24 +728,32 @@ async def run_job(
 
         spawn = asyncio.create_task(create_process())
         cancellation = None
-        while True:
-            try:
-                proc = await asyncio.shield(spawn)
-                break
-            except asyncio.CancelledError as exc:
-                # Observe this SAME spawn; cancelling its wrapper is not exit.
-                cancellation = cancellation or exc
-                if spawn.done():
-                    try:
-                        proc = spawn.result()
-                    except BaseException as failure:
-                        failure.add_note(f"original job spawn waiter cancellation: {cancellation!r}")
-                        raise
-                    break
-            except BaseException as exc:
-                if cancellation is not None:
-                    exc.add_note(f"job spawn waiter was cancelled: {cancellation!r}")
+        cancellation_traceback = None
+        spawn_errors = []
+
+        def retain_spawn_error(error):
+            if len(spawn_errors) < 8 and not any(error is item for item in spawn_errors):
+                spawn_errors.append(error)
+
+        from runtime.daemon.startup_recovery import _await_startup_owned
+        try:
+            proc = await _await_startup_owned(spawn, retain_spawn_error)
+        except BaseException as primary:
+            primary_traceback = primary.__traceback__
+            native_error = None if not spawn.done() or spawn.cancelled() else spawn.exception()
+            seen = set()
+            for secondary in (native_error, *spawn_errors):
+                if secondary is not None and secondary is not primary and id(secondary) not in seen:
+                    seen.add(id(secondary))
+                    primary.add_note("original job spawn secondary: " + repr(secondary)[:512])
+            if not isinstance(primary, asyncio.CancelledError):
                 raise
+            cancellation, cancellation_traceback = primary, primary_traceback
+            # The same owned completion has been consumed. Obtain a handle only
+            # for genuine success; a later failure cannot replace cancellation.
+            if spawn.cancelled() or spawn.exception() is not None:
+                raise primary.with_traceback(primary_traceback)
+            proc = spawn.result()
         if registration is not None:
             # Capture even when scratch reset or later accounting fails. The
             # original org native-user barrier retains DB-close ownership.
@@ -762,6 +770,14 @@ async def run_job(
                       and (registration.startup_binding[1]._stop.is_set()
                            or registration.startup_binding[1]._status != "ready"
                            or registration.startup_binding[1]._closed))
+    if registration is not None and registration.startup_binding is not None:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        try:
+            require_job_admission(db=registration.db, org_slug=registration.org_slug)
+        except StartupUnavailable:
+            # Creation already happened; actual listener loss forbids script
+            # input while identity-only original-owner stop/reap remains owed.
+            startup_closed = True
     if cancellation is None and not startup_closed:
         proc.stdin.write(script_text.encode("utf-8"))
     proc.stdin.close()
@@ -835,7 +851,7 @@ async def run_job(
     primary_failure = None
     try:
         if cancellation is not None:
-            raise cancellation
+            raise cancellation.with_traceback(cancellation_traceback)
         if startup_closed:
             _signal_registered_job(registration, "daemon_shutdown")
             try:

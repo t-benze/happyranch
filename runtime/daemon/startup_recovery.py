@@ -182,6 +182,7 @@ class StartupRecovery:
         self._coordinator: asyncio.Task | None = None
         self._consumers: list[asyncio.Task] = []
         self._preparation_complete = False
+        self._activation_requested = False
         self._dashboard_loads: set[Future] = set()
         self._services_signalled = False
         self._http_references: StartupHTTPReferences | None = None
@@ -426,9 +427,12 @@ class StartupRecovery:
 
     def signal_serving(self, app: Any) -> None:
         """Only the real Server's matching, successful startup calls this."""
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("startup_wrong_listener_loop")
         first = False
         with self._lock:
-            if app is not self.app or self._loop is None or self._closed or self._stop.is_set():
+            if (app is not self.app or self._closed or self._stop.is_set()
+                    or self._first_cause is not None or not self._listener_current()):
                 raise RuntimeError("startup_listener_attachment_mismatch")
             if not self._serving:
                 self._serving_ns = time.monotonic_ns()
@@ -437,14 +441,33 @@ class StartupRecovery:
         if first and self._observation is not None:
             self._observation.listener(self._serving_ns)
             self._emit_observation("serving")
-        self._signal_services()
+        if self._activation_requested:
+            self.activate()
+        else:
+            self._signal_services()
+
+    def _listener_current(self) -> bool:
+        """Renew the original listener conjunction for native and HTTP callers."""
+        refs = self._http_references
+        try:
+            return (isinstance(refs, StartupHTTPReferences) and refs.gate is self
+                    and refs.epoch == self.epoch and refs.state is self.state
+                    and refs.app is self.app and self.app.state is refs.app_state
+                    and self.app.state.daemon is self.state
+                    and getattr(self.app.state, "startup_http", None) is refs
+                    and self.state._startup_recovery is self
+                    and self._loop is not None and self._loop.is_running()
+                    and not self._loop.is_closed() and refs.listener_current())
+        except (AttributeError, TypeError):
+            return False
 
     def _signal_services(self) -> None:
         # The original listener observation and recovery may arrive in either
         # order. Their conjunction is consumed once, on the actual loop.
         with self._lock:
             if (self._services_signalled or not self._serving or self._status != "ready"
-                    or self._stop.is_set() or self._closed):
+                    or self._stop.is_set() or self._closed or self._first_cause is not None
+                    or not self._listener_current()):
                 return
             self._services_signalled = True
         for service in (self.state._cleanup_diagnostics, self.state._thread_release_service):
@@ -559,8 +582,10 @@ class StartupRecovery:
         with self._lock:
             binding = self._binding
             result = {"state": self._status, "epoch": self.epoch,
-                    "serving": self._serving,
-                    "recovery_ready": self._status == "ready" and not self._stop.is_set(),
+                    "serving": self._serving and self._listener_current(),
+                    "recovery_ready": (self._status == "ready" and not self._stop.is_set()
+                                       and not self._closed and self._first_cause is None
+                                       and self._serving and self._listener_current()),
                     "stopping": self._stop.is_set(), "phase": self._phase,
                     "error_code": self._error_code,
                     "ready_commits": self._ready_commits,
@@ -587,7 +612,11 @@ class StartupRecovery:
 
     def require_ready(self) -> None:
         with self._lock:
-            allowed = self._status == "ready" and not self._stop.is_set() and not self._closed
+            allowed = (self._status == "ready" and not self._stop.is_set() and not self._closed
+                       and self._first_cause is None and self._serving
+                       and self._ready_commits == 1 and self._preparation_complete
+                       and self._latch is not None and self._latch.is_set()
+                       and self._listener_current())
         if not allowed:
             with self._lock:
                 recovering = self._status == "recovering" and not self._stop.is_set()
@@ -896,13 +925,18 @@ class StartupRecovery:
                                           self._retain_secondary, on_cancel=cancelled)
 
     def activate(self) -> None:
-        """One non-await commit on the true loop, after dormant handles exist."""
+        """Arm recovery-first; either signal commits once on the real loop."""
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("startup_wrong_activation_loop")
         self.state._assert_attachments_unchanged(self._attachments)
         self._publications.assert_idle()
         self._assert_binding_complete(required=True)
         with self._lock:
+            if self._status == "ready":
+                # The second original signal must never manufacture a commit.
+                if not self._listener_current() or self._stop.is_set() or self._closed:
+                    raise RuntimeError("startup_activation_unavailable")
+                return
             if (self._native is None or not self._native.done() or self._native.cancelled()
                     or self._closed or self._stop.is_set() or self._first_cause is not None
                     or self._status != "recovering" or self._latch is None
@@ -911,6 +945,12 @@ class StartupRecovery:
             outcome = self._native.result()
             if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
                 raise RuntimeError("startup_activation_outcome_unavailable")
+            self._activation_requested = True
+            if not self._serving:
+                # Do not await here: ASGI must return before the listener exists.
+                return
+            if not self._listener_current():
+                raise RuntimeError("startup_listener_attachment_mismatch")
             self._status = "ready"
             self._phase = "ready"
             self._ready_commits += 1
