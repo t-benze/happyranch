@@ -161,6 +161,27 @@ no host is silently injected. Explicitly unbound standalone owners retain None
 self-launch; the actual daemon host's passthrough still owns admission and terminal
 settlement. Initial/fallback/nudge retain that same supplied host.
 
+Direct create_task captures one ordinary selection before agent loading/ID
+observation and renews it inside the original move/DB task writer after BEGIN,
+before insertion. An observed next ID is not a committed task. Selected native
+writers (including coding settings and direct-connect profile operations) renew
+their captured validator after BEGIN and after successful COMMIT before live
+registry publication/body entry. Postcommit refusal settles only that exact
+proven active no-effect reservation; failed settlement retains its durable owner
+and original/secondary causes without publishing an admitted live writer.
+Default document/profile/terminal/compensation writers remain independently owed.
+
+Follow-up SYSTEM and cap/mint retain ONE original ordinary or authentic P2/P4/P6
+selection, including org/queue/epoch/phase and native owner. Selected writers
+renew after DB/BEGIN IMMEDIATE waits before fresh effects; cap projection/bump/
+mint share the same transaction. The SYSTEM commit stays separate: a later
+refusal preserves that committed marker and rolls back uncommitted cap/token
+work. Existing P2 body/tail bookkeeping, P4/P6 registered real-loop handoffs,
+SAME pending acknowledgements and cap32 remain. No coroutine submission alone
+proves delivery. Original terminal/result/tracker/lease cleanup stays ungated.
+These corrections are SOURCE ONLY / NOT RUN / PROOF NOT RUN, resources
+UNMEASURED and under10s UNVERIFIED; no execution allocation or activation follows.
+
 Fresh thread and producer reservations retain their original org/DB, daemon gate,
 epoch, reference selection and loop across move/DB/ctx waits. Their selected
 writers renew after BEGIN before the first claim/journal write, and reservation

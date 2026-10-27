@@ -39,6 +39,44 @@ def _require_thread_producer(orch: "Orchestrator") -> Any:
     return None
 
 
+def _thread_producer_validation(orch: "Orchestrator") -> Any:
+    """Keep one original ordinary, P2 or P4/P6 choice across writer waits."""
+    from runtime.daemon.startup_publication import current_publication
+    from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+    from runtime.orchestrator.run_step import _startup_sweep_owner
+
+    publication = _require_thread_producer(orch)
+    sweep = _startup_sweep_owner(orch)
+    state, gate, org = orch._startup_state, orch._startup_recovery, orch._startup_org
+    refs = None if org is None else org._startup_admission_refs
+    epoch = None if gate is None else gate.epoch
+    phase = None if gate is None else gate._phase
+    loop = None if gate is None else gate._loop
+    main_loop, queue = orch._main_loop, orch._thread_queue
+    ordinary = (ordinary_admission_validation(orch)
+                if publication is None and (sweep is None or state is None) else None)
+
+    def validate():
+        if (orch._startup_state is not state or orch._startup_recovery is not gate
+                or orch._startup_org is not org
+                or org is not None and org._startup_admission_refs is not refs
+                or orch._main_loop is not main_loop or orch._thread_queue is not queue
+                or gate is not None and (gate.epoch != epoch or gate._loop is not loop
+                                         or gate._phase != phase)
+                or _startup_sweep_owner(orch) is not sweep
+                or current_publication(orch) is not publication):
+            raise StartupUnavailable("startup_thread_producer_selection_changed")
+        if ordinary is not None:
+            ordinary()
+        else:
+            # These selectors must still authenticate the captured owner, never
+            # adopt a different ready owner after a lock or transaction wait.
+            _require_thread_producer(orch)
+
+    validate()
+    return publication, validate
+
+
 def _append_followup_system_and_reinvoke(
     orch: "Orchestrator",
     *,
@@ -50,7 +88,7 @@ def _append_followup_system_and_reinvoke(
     reinvoke: bool = True,
 ) -> None:
     """Keep normal posting semantics; a native startup scope owns failures."""
-    publication = _require_thread_producer(orch)
+    publication, validate = _thread_producer_validation(orch)
     from contextlib import nullcontext
     try:
         with publication.attempt(orch, "thread_attempted") if publication is not None else nullcontext():
@@ -58,6 +96,7 @@ def _append_followup_system_and_reinvoke(
                 orch, thread_id=thread_id, dispatcher=dispatcher,
                 original_id=original_id, source_task_id=source_task_id,
                 system_payload=system_payload, reinvoke=reinvoke,
+                validate_admission=validate,
             )
     except BaseException as exc:
         if publication is not None:
@@ -74,6 +113,7 @@ def _append_followup_system_and_reinvoke_owned(
     source_task_id: str,
     system_payload: dict,
     reinvoke: bool = True,
+    validate_admission=None,
 ) -> None:
     """Append a SYSTEM message + optionally mint/enqueue a TASK_FOLLOWUP re-invocation.
 
@@ -97,7 +137,12 @@ def _append_followup_system_and_reinvoke_owned(
     """
     db = orch._db
     audit = orch._audit
-    publication = _require_thread_producer(orch)
+    if validate_admission is None:
+        publication, validate_admission = _thread_producer_validation(orch)
+    else:
+        validate_admission()
+        from runtime.daemon.startup_publication import current_publication
+        publication = current_publication(orch)
 
     # Append system message (separate from the atomic cap+mint below — the
     # system message ordering relative to concurrent system messages is not
@@ -107,6 +152,7 @@ def _append_followup_system_and_reinvoke_owned(
         thread_id=thread_id, speaker=dispatcher,
         kind=_TMK.SYSTEM,
         system_payload=system_payload,
+        validate_admission=validate_admission,
     )
     if publication is not None:
         publication.count("markers_written")
@@ -138,6 +184,7 @@ def _append_followup_system_and_reinvoke_owned(
         thread_id=thread_id,
         agent_name=dispatcher,
         triggering_seq=sys_seq,
+        validate_admission=validate_admission,
     )
     if new_cap is not None:
         audit.log_thread_turn_cap_auto_extended(

@@ -13,6 +13,14 @@ and reads back its SAME gate/loop/resolver without I/O. Ready-only dynamic org
 attachment inherits these references before exposure. Explicit standalone
 construction keeps its offline contract; missing production attachment refuses.
 
+Selected native-writer reservation carries the original callback through BEGIN
+and successful COMMIT before live publication/body entry. Coding settings forwards
+its selected validator; direct-connect/ProfileCoordinator keeps its existing
+forwarding and profile fences. Postcommit refusal settles only the proven exact
+committed no-effect reservation; failed settlement retains its durable owner and
+primary/secondary evidence. Default document/profile/settlement/compensation
+writers stay ungated. Source only; behavior/proof NOT RUN, no activation follows.
+
 Fresh thread and producer reservations retain their original org/DB, daemon gate,
 epoch, reference selection and loop across move/DB/ctx waits. Their selected
 writers renew after BEGIN before the first claim/journal write, and reservation

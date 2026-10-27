@@ -799,7 +799,8 @@ class Orchestrator:
 
     def create_task(self, brief: str, team: str | None = None) -> str:
         """Create an agent-managed root; human teams require explicit API owner."""
-        self._require_startup_ready()
+        from runtime.daemon.startup_recovery import ordinary_admission_validation
+        validate = ordinary_admission_validation(self)
         team = team or self._teams.task_default_team
         owner = self._teams.executable_manager_for_team(team)
         if owner is None:
@@ -810,7 +811,7 @@ class Orchestrator:
             raise ValueError("unknown_owner")
         task_id = self._db.next_task_id()
         task = TaskRecord(id=task_id, brief=brief, team=team)
-        self._db.insert_task(task)
+        self._db.insert_task(task, validate_admission=validate)
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 

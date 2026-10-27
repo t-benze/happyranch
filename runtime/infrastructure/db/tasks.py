@@ -930,16 +930,25 @@ class TasksMixin:
 
     @_task_move_admission
     @_synchronized
-    def insert_task(self, task: TaskRecord) -> None:
+    def insert_task(self, task: TaskRecord, *, validate_admission=None) -> None:
+        if validate_admission is not None:
+            validate_admission()
         began = not self._conn.in_transaction
         if began:
             self._conn.execute("BEGIN IMMEDIATE")
         try:
+            if validate_admission is not None:
+                validate_admission()
             self._insert_task_uncommitted(task)
             self._conn.commit()
-        except BaseException:
+        except BaseException as exc:
             if began:
-                self._conn.rollback()
+                try:
+                    self._conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    exc.add_note(f"selected task insertion rollback also failed: {secondary!r}")
             raise
 
     def _insert_task_uncommitted(self, task: TaskRecord) -> None:

@@ -107,7 +107,9 @@ class CodingSettingsStore:
             with admission.move.gate if admission is not None else nullcontext():
                 with self.db._lock:
                     validate()
-                    writer = reservation.enter_context(native_writer(self.db, publisher='org_settings'))
+                    writer = reservation.enter_context(native_writer(
+                        self.db, publisher='org_settings', validate_admission=validate,
+                    ))
             yield writer
 
     def _state(self, conn, references, budget):

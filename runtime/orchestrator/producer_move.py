@@ -210,8 +210,33 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
         if not settlement:
             admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
         if durable:
-            admission.write_writer(state)
+            admission.write_writer(state, validate_admission=validate_admission)
             disposition.writer_id = key
+        try:
+            if validate_admission is not None:
+                validate_admission()
+        except BaseException as exc:
+            # COMMIT succeeded, but no live publication or caller body began.
+            # Settle only THIS exact active reservation, independently of fresh
+            # admission. A failed proof/save retains its durable active owner.
+            if durable:
+                try:
+                    if admission.writer_store.history_uncommitted().get(key) != state:
+                        raise DeferredTeamMove('team_move_writer_owner_changed')
+                    admission.write_writer(state.model_copy(update={'state': 'settled'}))
+                except BaseException as secondary:
+                    disposition.uncertain = True
+                    # The registry is also the existing uncertainty barrier.
+                    # Retain failed settlement custody, never admitted body
+                    # publication (even if the settlement COMMIT is uncertain).
+                    admission.writers[key] = dict(
+                        owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams),
+                        admitted=False, admission_error=exc, settlement_error=secondary,
+                    )
+                    admission.writer_epoch += 1
+                    exc.add_note(f'native writer {key} no-effect settlement failed: {secondary!r}')
+                    logger.exception('Retaining committed native writer %s after admission refusal', key)
+            raise
         admission.writer_epoch += 1
         admission.writers[key] = dict(owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
     primary = None
@@ -526,15 +551,20 @@ class ProducerMoveAdmission:
         self.sessions = None
         self.writer_epoch = 0
 
-    def write_writer(self, state):
+    def write_writer(self, state, *, validate_admission=None):
         if self.db._conn.in_transaction:
             raise DeferredTeamMove('team_move_writer_sql_owner_unavailable')
         try:
             self.db._conn.execute('BEGIN IMMEDIATE')
+            if validate_admission is not None:
+                validate_admission()
             self.writer_store.save_uncommitted(state)
             self.db._conn.commit()
-        except BaseException:
-            self.db._conn.rollback()
+        except BaseException as exc:
+            try:
+                self.db._conn.rollback()
+            except BaseException as secondary:
+                exc.add_note(f'native writer {state.writer_id} rollback failed: {secondary!r}')
             raise
 
     def check_uncommitted(self, *, agents=(), teams=(), global_write=False):
