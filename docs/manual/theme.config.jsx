@@ -1,6 +1,10 @@
 import { ImageZoom } from 'nextra/components'
+import { getComponents } from 'nextra-theme-docs'
 import { ManualSearch } from './components/ManualSearch'
+import { MenuFocus } from './components/MenuFocus'
 import { ScreenshotPlaceholder } from './components/ScreenshotPlaceholder'
+
+const { h1: NextraH1 } = getComponents({ isRawLayout: false, components: {} })
 
 // HappyRanch brand mark — the leaf/sprig glyph lifted from the marketing
 // mockup (currentColor so it picks up the brand green in both themes).
@@ -50,6 +54,10 @@ export default {
   // through to Nextra's default zoomable image, so a real shot swaps in later
   // by just replacing `(TODO)` with an image path — no prose change needed.
   components: {
+    // Each page's h1 is the skip link's destination (pages/_app.jsx).
+    // tabIndex -1 lets the link focus it, with or without JavaScript, and
+    // keeps it out of the Tab order. Nextra's own h1 keeps its styling.
+    h1: props => <NextraH1 id="hr-content" tabIndex={-1} {...props} />,
     img: props => {
       const alt = props.alt || ''
       const isPlaceholder = props.src === 'TODO'
@@ -63,6 +71,14 @@ export default {
       return <ImageZoom {...props} />
     }
   },
+  // MenuFocus renders nothing; it keeps keyboard focus visible when the mobile
+  // menu closes or the layout changes breakpoint (components/MenuFocus.jsx).
+  main: ({ children }) => (
+    <>
+      <MenuFocus />
+      {children}
+    </>
+  ),
   // Bridge from the docs site to the marketing site — a top-nav "Website" link
   // so docs.happyranch.ai feels connected to happyranch.ai once both are live.
   navbar: {

@@ -56,6 +56,10 @@
  *      render), so focus moved before it would be lost with the replaced
  *      heading. Nothing moves if the navigation fails or is replaced, or focus
  *      went elsewhere.
+ * Change from upstream (search shortcut):
+ *   6. `/` and Ctrl/Cmd+K only act on a search input that is shown. Upstream
+ *      focused the closed mobile menu's input, which is hidden (and before
+ *      styles/globals.css hid it, sat off screen), and swallowed the key.
  * `clsx` and `escape-string-regexp` are replaced by the small local helpers
  * below so no undeclared package is imported.
  */
@@ -103,6 +107,13 @@ function renderString(stringOrFunction, props = {}) {
   return result || ''
 }
 
+// Whether an element is rendered and not visibility:hidden (change 6 above).
+function isShown(element) {
+  return element.checkVisibility
+    ? element.checkVisibility({ visibilityProperty: true })
+    : element.getClientRects().length > 0
+}
+
 // Headless UI selects an option on mousedown; stop the result link's plain
 // click from pushing the same URL a second time (change 4 above).
 function preventRepeatNavigation(event) {
@@ -119,8 +130,9 @@ function preventRepeatNavigation(event) {
 
 // Focuses the selected heading, or the article's h1, of the page now showing
 // (change 5 above). Does nothing if the URL is no longer the selected one or
-// focus is already somewhere other than the page or the search input.
-function focusSelectedResult(route, input) {
+// focus is already somewhere other than the page or `input` (the search input,
+// or for MenuFocus.jsx the control left in the closing mobile menu).
+export function focusSelectedResult(route, input) {
   const target = new URL(route, location.href)
   if (target.pathname !== location.pathname || target.hash !== location.hash) {
     return
@@ -207,6 +219,7 @@ function Search({
       const tagName = activeElement?.tagName.toLowerCase()
       if (
         !input ||
+        !isShown(input) ||
         !tagName ||
         INPUTS.has(tagName) ||
         activeElement?.isContentEditable
