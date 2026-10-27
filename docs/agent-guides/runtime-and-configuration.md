@@ -200,9 +200,10 @@ C12 proof and whole-feature/under10s UNVERIFIED dispositions remain unchanged.
 
 ROOT step41 accepts the bounded C05/C13 source extension (TASK13320), including
 independent TASK13317 R1–R3. The existing driver seeds and registers once, prepares
-consumer/executable inputs once, then runs ONE genuine failed-prefix epoch before
-the existing successful SAME-store epoch. The first org's ORIGINAL authority
-reader executes under its actual native recovery thread and SAME database RLock.
+consumer/executable inputs once. ROOT step43 adds T/N/S serial epochs before
+that genuine failed-prefix epoch and its immediate successful SAME-store epoch;
+the selected implementation order and costs are described below. The first
+org's ORIGINAL authority reader executes under its actual native recovery thread and SAME database RLock.
 A narrowly scoped SQLite authorizer denies only READ of
 `main.authority_policy_v2_attempts` during original discovery. The pinned plain
 Database constructor and complete source setter inventory establish known-original
@@ -220,8 +221,9 @@ request have separate effect windows. Only exact accepted HX10.04/HX10.11 raw
 requests select failed prebody503/daemon_recovery_failed with original guidance
 and zero receive/parser/spool/preparation/native effects. Valid canonical task
 owners select representative original state/queue refusals; this is not allD89
-or all245/22 coverage. Seed-to-P0 expected initialization is a separate window
-from zero request-induced writes; whole-lifetime zero writes is not claimed.
+or all245/22 coverage. Initial T P0 installation is a separate window from
+repeated failed P0 (six native-writer audits per org) and zero request-induced
+writes; whole-lifetime zero writes is not claimed.
 
 Before the sole fresh reopen, original failed native Future/coordinator and sweep
 must settle, actual read-worker connection close/native return/callback retirement
@@ -235,27 +237,84 @@ epoch retains its ONLY <=10s hold, ready_commits1, dedup semantics and THREE tot
 harmless native chains with TWO simultaneous at most. This covers positive close
 after settled discovery failure, not stop while work is held or unsafe cleanup.
 
-Corrected selected source accounting is **86/90 history,187/191 logical rows and18
-cumulative publication leases**:73/77 audits plus13 authority/selector rows;
+The previous step41 source accounting was **86/90 history,187/191 logical rows
+and18 cumulative publication leases**:73/77 audits plus13 authority/selector rows;
 six coherent-recovery leases, six dependency-synchronization leases and six
 first-publication/selector leases. Deleted leases remain charged. The original
 success-only167/171 ledger omitted four coherent-recovery leases: its corrected
 source total is171/175 with14 leases. The new failed prefix adds12 audits and4
 leases to that corrected plan (net12 audits and8 leases versus the historical
-written plan). First authority/settings/naming/selector installation moves to
-failed P0 and counts ONCE. Optional four root audits stay conditional. The512
+written plan). That pair moved first authority/settings/naming/selector
+installation to failed P0, ONCE. Optional four root audits stay conditional. The512
 ceiling, two orgs,16 roots/64 tasks,8 threads/64 messages/16 tokens/8 jobs,
 512MiB/600s lifetime, concurrency8, ordinary HTTP2s and existing intentional
-reader deadlines<=3s remain unchanged. Two serial listener identities share the
-same lifetime; no hold, process allocation or resource reset is granted.
+reader deadlines<=3s remain unchanged. That historical pair has two serial
+listener identities; it grants no additional invocation or resource reset.
+
+ROOT step43 accepts the exact TASK13325 plan with independent TASK13326 R1/R2
+corrected: ONE seed/registry/consumer/executable preparation → T positive closure
+→ N positive closure → S positive closure → original discovery failure → immediate
+fresh success, on the SAME literal stores. Five serial epochs share the original
+lifetime; no seed reset, history deletion or preparation replay occurs.
+
+N cancels the genuine original P4 binding Task at the last synchronous binder
+return, preserving its coroutine/references. Original completion normally supplies
+False and is consumed in original native failure retirement. The transport and
+top native Future are exceptional, with the original callback cancellation first
+and distinct transport/phase/coordinator causes observed. This is not the human
+negative-disposition channel or the successful result-comparison branch.
+
+T seeds one synthetic ordinary legacy TASK-091 through original insert/claim/
+publish/admit writers, with its own actual INTEGER result and one inert running
+JOB-001 row (no native registration, PID, process or claimed provider provenance).
+Original accepted common recovery commits completion/receipt/job settlement and
+starts its real nonempty retained native tail. Only that tail's original current-
+parent-handoff SELECT of main.task_completion_recoveries is denied on its SAME
+connection/RLock/context. Known-original None authorizer provenance, clean
+no-transaction state and restoration are required. The original delayed async
+finally merges a real committed root transition AFTER sticky failure; deferred
+merge is allowed, while the owner's entire sole final batch/report/reconcile/
+cleanup remains suppressed. Committed history remains. Its actual Thread/Future,
+context reset, effect settlement and safe close precede N; N and final success
+also retain/join their actual later zero-job tails.
+
+S holds original first-org native discovery outside all locks. A FRESH one-reader
+observer pre-releases auxiliary SQL before submitting the original projection;
+healthy SQL/DTO/encoding must reach original worker close before cancellation.
+Cancellation targets that exact read waiter, retaining its native Future/lease/
+connection/slot. Original server stop closes admission and latch; OrgState.close
+refuses before Database.close while recovery stays owned. Reader close releases
+FIRST. Native/inline _retire is observed separately from actual request-loop
+resumption awaiting the ORIGINAL lease.retired while recovery remains held and
+shutdown awaits it. Recovery releases SECOND; original shutdown joins both
+executors before org/DB/socket close. Every Event releases in finally before
+shutdown waits; unknown close/restoration/retirement refuses another epoch.
+S covers read-wrapper cancellation and live recovery stop; it does not cover
+recovery-coordinator cancellation. StartupRecovery.join cancellation/exception
+precedence remains a ROOT-owned production risk outside this source unit.
+
+The current selected preconstructor ledger is **124/128 history,241/245 logical
+INSERT identities and30 cumulative leases** (111/115 audits plus13 authority/
+selector rows). Three extra P0s add36 audits/12 leases, canonical T adds one each
+task/root/result/recovery/job and its consumer adds two audits. Claim/binding/
+terminal/marker/job settlement UPDATE existing rows. Inserted/deleted leases stay
+charged:12 coherent recovery,12 synchronization,6 first-publication/selector.
+The independently reconstructed complete per-table source selection is required
+before constructors. Historical64,74/78,86/90 history and167/171,187/191 logical
+allowances remain historical. All other caps, including512 cumulative rows,
+512MiB/600s, two orgs,16 roots/64 tasks and two simultaneous harmless provider
+children, remain. Three extra serial epochs and <=3s observation windows are
+SOURCE selections only; the original2s read deadline/ordinary HTTP and existing
+<=10s success hold remain distinct. Actual SQL/WAL/bytes/RSS/time and full-matrix
+fit are unmeasured. No product invocation or new allocation follows source changes.
 
 All new behavior **NOT RUN / PROOF NOT RUN**; maker3/3 EXHAUSTED, QA0/3 UNUSED
 and NOT RELEASED. Static/source accounting is neither measured fit nor behavioral
 PASS. Original JOB5572 failures/10s expiry, partial/BLOCK TASK13277, all cases and
-ONLY the two historical C12 sensitivity assertions retain attribution. Normal
-negative-value native Futures, unsafe tails/COMMIT/cleanup, held stop/cancel,
-populated/partial-return recovery, other launch families, actual browser and
-Mac/full-launcher/setup remain open. Independent full final review, same-head
+ONLY the two historical C12 sensitivity assertions retain attribution. Human
+negative disposition, irreversible COMMIT/rollback/close uncertainty,
+recovery-coordinator cancellation, populated/partial-return recovery, other launch
+families, actual browser and Mac/full-launcher/setup remain open. Independent full final review, same-head
 scoped QA, guarded merge/exact-main checks and separately authorized operator
 observation remain ROOT-owned. Under10s remains UNVERIFIED.
 

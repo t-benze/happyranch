@@ -177,6 +177,52 @@ FAILURE_ASSERTIONS = {
 }
 
 
+# Independent ROOT step43 / TASK13326 reconstructed table, not product-derived.
+# This closed source selection is checked BEFORE any fixture constructor.
+NTS_SELECTED_ROWS = {
+    "audit_log": 111,
+    "authority_policy_active_selector": 2,
+    "authority_policy_active_selector_history": 3,
+    "authority_policy_v2_activations": 1,
+    "authority_policy_v2_attempts": 1,
+    "authority_policy_v2_control_audit": 4,
+    "authority_policy_v2_releases": 1,
+    "authority_policy_v2_session_bindings": 1,
+    "identity_name_claims": 8,
+    "identity_name_owners": 8,
+    "identity_name_schema": 2,
+    "jobs": 1,
+    "org_settings": 10,
+    "remote_runner_schema_migrations": 4,
+    "session_token_usage": 3,
+    "task_completion_recoveries": 1,
+    "task_pause_controls": 12,
+    "task_results": 5,
+    "tasks": 14,
+    "thread_messages": 2,
+    "threads": 2,
+    "workflow_adapter_versions": 2,
+    "workflow_authority_pointers": 2,
+    "workflow_cutover_events": 2,
+    "workflow_cutover_state": 2,
+    "workflow_draft_adapter_versions": 2,
+    "workflow_publication_journals": 3,
+    "workflow_publication_leases": 30,
+    "workflow_submission_schema_versions": 2
+}
+
+NTS_ASSERTIONS = {
+    "N": {"C05": ("original_binding", "completion_normal_false", "original_consumer",
+                    "first_cause", "no_ready"), "C08": ("retired",)},
+    "T": {"C05": ("canonical_selected", "actual_thread_context", "actual_denial",
+                    "late_finally_merge", "whole_batch_suppressed", "no_new_effects",
+                    "committed_prefix"), "C08": ("retired",)},
+    "S": {"C08": ("live_handles", "waiter_cancelled", "stop_admission", "close_refused",
+                    "loop_retirement_ack", "shutdown_order", "first_causes"),
+          "C13": ("durable_handoff",)},
+}
+
+
 class Checks:
     def __init__(self, args):
         self.args = args
@@ -249,6 +295,17 @@ class Checks:
                     self.expect(name + "_" + phase, "C02", phase,
                                 tuple(name + suffix for suffix in ("_held_status", "_held_code", "_one_observed_request", "_prebody_receive_zero", "_original_parser_spool_native_zero")) if phase == "recovering" else (),
                                 "original docs/OpenAPI and other method controls remain root-owned")
+            for group, cases in NTS_ASSERTIONS.items():
+                for case, suffixes in cases.items():
+                    self.expect(case + "_selected_" + group, case, group,
+                        tuple(case + "_" + group + "_" + suffix for suffix in suffixes),
+                        "original binding/tail/stop ownership and positive serial closure; behavior NOT RUN until allocated")
+            self.expect("C08_success_consumed_owner", "C08", "recovering",
+                ("C08_success_consumed_zero_job_tail_retired",),
+                "original consumed-owner zero-job tail's actual retained Thread/Future and positive original drain")
+            self.expect("C03_selected_extra_epochs", "C03", "T/N/S",
+                ("C03_T_initial_p0", "C03_new_epoch_cumulative"),
+                "independently complete five-epoch preconstructor ledger; one seed, no reset")
             for case, suffixes in FAILURE_ASSERTIONS.items():
                 self.expect(case + "_selected_failed_epoch", case, "recovery_failed",
                     tuple(case + "_failed_" + suffix for suffix in suffixes),
@@ -501,7 +558,7 @@ def counters(checks, db):
 def fixture_accounting(case):
     """Cumulative canonical INSERT plan, not measured rows or resource PASS.
 
-    The selected 90 denominator deliberately retains ALL audit_log rows, including
+    The selected 128 denominator deliberately retains ALL audit_log rows, including
     config/native-writer/outer audits; the 512 causal allowance cannot absorb
     its excess. Mutable journals/selectors are identities, not new rows on
     every UPDATE. Publication leases are counted even after their DELETE.
@@ -520,7 +577,7 @@ def fixture_accounting(case):
     producers = [{"owner": "seed_counter -> Database canonical v2 writers",
                   "multiplicity": 1, "tables": dict(tables)}]
     if case == "all":
-        # These are the accepted failed-prefix + fresh success paths, with mandatory native
+        # These are accepted T/N/S/failed-prefix/fresh paths, with mandatory native
         # and outer tails. No survivor-only count, history reuse or quota reset.
         producers += [
             {"owner": "DaemonState.from_runtime -> ensure_authority_selector (fixture-b only)",
@@ -530,11 +587,11 @@ def fixture_accounting(case):
              "multiplicity": 2, "tables": {"org_settings": 5, "audit_log": 5}},
             # NativeWriterStore.save_uncommitted appends BOTH active/settled
             # even when the selected authority writer is an unchanged read.
-            # First load: identity_names_load + from_runtime selector +
+            # Each P0: identity_names_load + from_runtime selector +
             # _build_state selector, in EACH org. Runtime/use: identity+selector
             # in EACH org again. Existing sentinels prevent config reseeding.
-            {"owner": "failed + fresh _build_state: 2 epochs * 2 orgs * 3 intervals * active/settled",
-             "multiplicity": 12, "tables": {"audit_log": 2}},
+            {"owner": "T/N/S/failed/fresh _build_state: 5 epochs * 2 orgs * 3 intervals * active/settled",
+             "multiplicity": 30, "tables": {"audit_log": 2}},
             {"owner": "runtime/use -> from_runtime: 2 orgs * 2 native_writer intervals * active/settled",
              "multiplicity": 4, "tables": {"audit_log": 2}},
             {"owner": "P5 agent_yaml_frontmatter_migration: both orgs, active/settled",
@@ -552,6 +609,11 @@ def fixture_accounting(case):
             # ONE legacy_static audit, not a v2 binding/attempt or selector audit.
             {"owner": "TWO fixture-b managers -> legacy_static binding + orchestration_step",
              "multiplicity": 2, "tables": {"audit_log": 2}},
+            {"owner": "ONCE canonical T insert/claim/publish/admit/job writers",
+             "multiplicity": 1, "tables": {"tasks": 1, "task_results": 1,
+                "task_completion_recoveries": 1, "jobs": 1}},
+            {"owner": "T original accepted common consumer: bound completion_report + orchestration_step",
+             "multiplicity": 1, "tables": {"audit_log": 2}},
             {"owner": "C13 completed suspended disk tick -> one original summary per org",
              "multiplicity": 2, "tables": {"audit_log": 1}},
             {"owner": "fixture-a worker -> _log_verdict_if_delegated",
@@ -571,12 +633,12 @@ def fixture_accounting(case):
              "tables": {"workflow_authority_pointers": 2, "workflow_publication_journals": 3}},
             # Deleted rows remain cumulative: coherent recover runs even
             # when the authority pointer is unchanged in either reopen.
-            {"owner": "recover_or_publish -> recover: failed/fresh/runtime-use * two orgs",
-             "multiplicity": 6, "tables": {"workflow_publication_leases": 1}},
+            {"owner": "recover_or_publish -> recover: T/N/S/failed/fresh/runtime-use * two orgs",
+             "multiplicity": 12, "tables": {"workflow_publication_leases": 1}},
             {"owner": "initial fence/publication(two orgs) + fixture-b selector fence/publication, ONCE",
              "multiplicity": 6, "tables": {"workflow_publication_leases": 1}},
-            {"owner": "ProfileCoordinator empty dependency synchronization: failed/fresh/runtime-use * two orgs",
-             "multiplicity": 6, "tables": {"workflow_publication_leases": 1}},
+            {"owner": "ProfileCoordinator empty dependency synchronization: T/N/S/failed/fresh/runtime-use * two orgs",
+             "multiplicity": 12, "tables": {"workflow_publication_leases": 1}},
             {"owner": "refresh_names install (founder + three tracked agents)", "multiplicity": 2,
              "tables": {"identity_name_schema": 1, "identity_name_owners": 4, "identity_name_claims": 4}},
             {"owner": "Database native remote-schema markers", "multiplicity": 2,
@@ -605,32 +667,35 @@ def fixture_accounting(case):
         producers.append({"owner": "two _root_worktree_batch admissions -> original start/finish",
                           "multiplicity": 2, "tables": {"audit_log": 2}, "conditional": True})
     history = lambda rows: sum(count for table, count in rows.items() if history_table(table))
-    limits = {"orgs": 2, "roots": 16, "tasks": 64, "history_controls": 90 if case == "all" else 64,
+    limits = {"orgs": 2, "roots": 16, "tasks": 64, "history_controls": 128 if case == "all" else 64,
               "causal_rows": 512, "threads": 8, "messages": 64, "tokens": 16,
               "jobs": 8, "simultaneous_harmless_children": 2, "browser_contexts": 1,
               "listeners": 2, "concurrent_requests": 8, "fixture_bytes": 512 * 1024 * 1024,
               "wall_seconds": 600, "hold_seconds": 10, "http_seconds": 2, "child_seconds": 15}
-    dimensions = {"orgs": 1 if case == "C12" else 2, "roots": 1 if case == "C12" else 12,
+    dimensions = {"orgs": 1 if case == "C12" else 2, "roots": 1 if case == "C12" else 13,
                   "tasks": upper["tasks"], "history_controls": history(upper),
                   # Count ALL planned canonical rows conservatively here too,
                   # including controls and retired leases, without moving them
                   # out of the independent history/control denominator.
                   "causal_rows": sum(upper.values()), "threads": upper.get("threads", 0),
                   "messages": upper.get("thread_messages", 0),
-                  "tokens": upper.get("thread_invocations", 0) + upper.get("session_token_usage", 0), "jobs": 0,
+                  "tokens": upper.get("thread_invocations", 0) + upper.get("session_token_usage", 0), "jobs": upper.get("jobs", 0),
                   "simultaneous_harmless_children": 0 if case == "C12" else 2,
                   "browser_contexts": 0, "listeners": 0 if case == "C12" else 2,
                   "concurrent_requests": 0 if case == "C12" else 8}
     return {"kind": "SOURCE_ONLY_NOT_RUN", "producers": producers,
             "historical_success_allocation": {"history": [74, 78], "logical": [167, 171], "leases_written": 10},
             "corrected_success_source": {"history": [74, 78], "logical": [171, 175], "leases": 14},
-            "epochs": "one failed prefix; positive closure; one fresh success on SAME stores; serial listeners",
+            "prior_failed_reopen_source": {"history": [86, 90], "logical": [187, 191], "leases": 18},
+            "epochs": "T/N/S/failed/fresh, SAME stores, one preparation; positive serial listener custody",
+            "additional_native_lifetimes": "3 recovery/read executors and servers, 1 S read waiter; T nonempty tail + N/final-success empty-job tails (3 total), each retained/joined",
+            "observer_seconds": 3, "no_execution_allocation": "maker3/3 EXHAUSTED; QA0/3 UNUSED/NOT RELEASED",
             "created_rows_upper": upper, "selected_path_rows": tables,
             "history_controls_lower": history(tables), "dimensions": dimensions, "limits": limits,
             "native_launches_total": 0 if case == "C12" else 3,
             "native_scheduling": "none selected" if case == "C12" else "one original worker; ready_task_cases awaits original native retirement before adding one worker and dedup task; <=2 live, no total-launch cap",
             "mutable_updates": "Pause journal prepare/commit/retry(empty)/started/result_processing/close and move reservations do not insert history rows; no Pause control() call or move operation; no repository-preparation stream for repos={}",
-            "zero_producers": "no memory bodies/impressions, attachments, model spend (native output still creates the separately counted forensic usage rows), jobs, thread invocation, workflow instance, candidate/pin/evaluation/continuation, new v2 generation or host SQL receipt; HostSessionStore.publish is in memory",
+            "zero_producers": "no memory bodies/impressions, attachments, model spend (native output still creates the separately counted forensic usage rows), job processes (one inert T row is charged), thread invocation, workflow instance, candidate/pin/evaluation/continuation, new v2 generation or host SQL receipt; HostSessionStore.publish is in memory",
             "runtime_limits": "byte/wall/hold/HTTP/child limits require actual observation; no source timing/resource PASS"}
 
 
@@ -648,11 +713,15 @@ def seed(checks):
               for name, count in fit["dimensions"].items() if count > fit["limits"][name]}
     fit["excess"] = excess
     checks.save()
+    if checks.args.case == "all" and fit["selected_path_rows"] != NTS_SELECTED_ROWS:
+        checks.missing("C03_canonical_history_fit", "incomplete five-epoch producer inventory; constructors refused")
+        return None
     if excess:
         # Independent pre-constructor admission, not an unconditional all-case
-        # return. ROOT step41 accepts ONLY this selected two-epoch plan:
-        # audit_log73 + authority/selector13 =86, conditional upper90.
-        # Logical187/191 includes18 cumulative publication leases.
+        # return. ROOT step43 accepts ONLY the complete five-epoch source plan:
+        # audit_log111 + authority/selector13 =124, conditional upper128.
+        # Logical241/245 includes30 cumulative publication leases.
+        # Historical step41:86/90,187/191,18; earlier64/74-78/167-171 retained.
         # Future allocating cases need their own canonical producer ledger;
         # removing writers/history or moving an excess to512 is not a repair.
         checks.missing("C03_canonical_history_fit", json.dumps({
@@ -714,6 +783,40 @@ def seed(checks):
                     task_type="subtask" if index == 0 else "task",
                     brief="Owned harmless startup child; report only own actual fixture session")
                 db.insert_task(native_task)
+                if index == 1:
+                    from datetime import datetime, timedelta, timezone
+                    from runtime.models import JobRecord, JobStatus, JobInterpreter
+                    from runtime.daemon.jobs_runner import _INFLIGHT
+                    stamp = datetime.now(timezone.utc)
+                    origin, recovery = "fixture-T-origin", "fixture-T-recovery"
+                    db.insert_task(TaskRecord(id="TASK-091", team="engineering", assigned_agent="case_manager",
+                        status=TaskStatus.IN_PROGRESS, task_type="task", current_session_id=origin,
+                        brief="Synthetic interrupted root; no real provider invocation claimed"))
+                    if not db.claim_task_completion_recovery(task_id="TASK-091", agent="case_manager",
+                            origin_session_id=origin, recovery_session_id=recovery,
+                            provider_session_id="synthetic-T-not-native-provenance",
+                            claimed_at=stamp.isoformat(), expires_at=(stamp + timedelta(seconds=120)).isoformat()):
+                        raise RuntimeError("canonical T claim refused")
+                    if not db.publish_task_completion_recovery_binding(task_id="TASK-091", agent="case_manager",
+                            origin_session_id=origin, recovery_session_id=recovery):
+                        raise RuntimeError("canonical T binding refused")
+                    if not db.admit_task_completion_callback(task_id="TASK-091", agent="case_manager",
+                            session_id=recovery, status="completed", confidence_score=100,
+                            output_summary="Synthetic accepted recovery fixture",
+                            decision_json=json.dumps({"action": "done", "summary": "Synthetic recovery complete"})):
+                        raise RuntimeError("canonical T callback refused")
+                    result = db.get_accepted_task_completion_recovery_result(task_id="TASK-091", agent="case_manager")
+                    if result is None or type(result["id"]) is not int or len(db.get_task_results("TASK-091")) != 1:
+                        raise RuntimeError("canonical T genuine INTEGER callback missing")
+                    db.insert_job(JobRecord(id="JOB-001", task_id="TASK-091", agent_name="case_manager",
+                        title="Inert interrupted residue", rationale="No process or native registration",
+                        script_text=":", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+                        persistent=True, created_at=stamp.isoformat()))
+                    if any(row.job_id == "JOB-001" for row in _INFLIGHT.values()):
+                        raise RuntimeError("T residue unexpectedly has native ownership")
+                    checks.details["T_seed"] = {"task": "TASK-091", "agent": "case_manager", "origin": origin,
+                        "session": recovery, "result": dict(result), "job": "JOB-001",
+                        "native_provider_provenance": False}
                 checks.details.setdefault("native_task_selections", {})[slug] = {
                     "task_id": native_task.id, "agent": native_task.assigned_agent}
                 # Original offline workspace bootstrap, before daemon attachment;
@@ -1315,6 +1418,7 @@ class EntryObservation:
         self.handlers = {fn.__code__: fn.__module__ + "." + fn.__qualname__ for fn in functions if hasattr(fn, "__code__")}
         self.totals = dict.fromkeys(("parser", "spool", "native", "preparation"), 0)
         self.active = False
+        self.startup_tails, self.startup_tail_inputs = [], []
 
     def profile(self, frame, event, _arg):
         if not self.active or event != "call":
@@ -2490,7 +2594,7 @@ class FailureObservation(EntryObservation):
                 self.leases.append(lease)
         if name == "check" and event == "return" and owner is self.reader:
             self.reader_checks.append((id(owner.conn), owner.conn.in_transaction, owner.unsafe is None, bool(self.errors)))
-        if name == "negative" and event == "call":
+        if name == "negative" and event == "call" and owner not in self.sweeps:
             self.sweeps.append(owner)
         if name == "executor_shutdown" and event == "return":
             self.event("executor_joined", owner=id(owner), shutdown=owner._shutdown,
@@ -2516,7 +2620,7 @@ class FailureObservation(EntryObservation):
                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "set_authorizer":
                         setters.append((path.relative_to(SOURCE).as_posix(), node.lineno))
         own_setters = [row for row in setters if row[0] == "scripts/verify_startup_recovery.py"]
-        if setters != own_setters or len(own_setters) != 2:
+        if setters != own_setters or len(own_setters) != 4:
             raise RuntimeError("unknown SQLite authorizer owner; no callback replacement")
         self.checks.details["failed_authorizer_provenance"] = {
             "constructor_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -2613,6 +2717,582 @@ class FailureObservation(EntryObservation):
                 and sys.getprofile() is None and threading.getprofile() is None)
 
 
+class SelectedObservation(FailureObservation):
+    """N/T/S pass-through owners; never supply a result, acknowledgement or eligibility."""
+
+    def __init__(self, app, state, checks, group):
+        super().__init__(app, state, checks)
+        from runtime.orchestrator import run_step
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.daemon.startup_recovery import StartupRecovery
+        from runtime.daemon.startup_publication import StartupPublications
+        from runtime.infrastructure.database import Database
+        from runtime.daemon import jobs_runner, app as app_module
+        from runtime.workflows.recovery import classify_task
+        self.group, self.run_step = group, run_step
+        self.entered, self.release = threading.Event(), threading.Event()
+        self.binding_completed = threading.Event()
+        self.binding, self.transport_error = None, None
+        self.completion_reads, self.failures, self.tail_handles = [], [], []
+        self.completion_callers = []
+        self.classifications, self.dispatch_kinds = [], []
+        self.merges, self.final_batches, self.reconciles, self.cleanups, self.reports = [], [], [], [], []
+        self.terminations, self.kill_calls, self.finalized = [], [], []
+        self.first_effect_counts = {}
+        self.original_binder = Orchestrator.bind_thread_queue_references
+        self.original_wait = StartupPublications._wait_future
+        self.original_handoff = Database.handoff_consumed_task_completion_recovery_parent_effect
+        self.patch_owners = Orchestrator, StartupPublications, Database
+        extra = (
+            ("sweep_init", run_step._StartupSweepOwner.__init__),
+            ("sweep_fail", run_step._StartupSweepOwner.fail),
+            ("merge", run_step._StartupSweepOwner.merge),
+            ("kill", run_step._kill_jobs_for_terminating_task),
+            ("late_finally", run_step._await_root_worktree_batch),
+            ("batch", run_step._root_worktree_batch), ("batch_impl", run_step._root_worktree_batch_impl),
+            ("reconcile", run_step._root_worktree_reconcile),
+            ("cleanup", run_step._await_worktree_cleanup),
+            ("terminate", jobs_runner.terminate_jobs_for_task),
+            ("audit", Database.insert_audit_log.__wrapped__),
+            ("audit", Database.insert_audit_log_uncommitted.__wrapped__),
+            ("report", Database.admit_terminal_worktree_root),
+            ("report", Database.append_terminal_worktree_audit),
+            ("shutdown", app_module._shutdown_lifespan),
+            ("startup_drain", state._drain_startup.__func__),
+            ("admission_stop", state._stop_runner_admission.__func__),
+            ("classification", classify_task),
+            ("dispatch_kind", Database.authority_policy_v2_completion_dispatch_context.__wrapped__),
+            ("gate_fail", StartupRecovery.fail),
+        )
+        self.watched.update({fn.__code__: name for name, fn in extra})
+        self.completed_code = next(code for code in StartupRecovery.bind_returned_references.__code__.co_consts
+                                   if getattr(code, "co_name", None) == "completed")
+
+    def profile(self, frame, event, arg):
+        super().profile(frame, event, arg)
+        if not self.active:
+            return
+        values = frame.f_locals
+        owner = values.get("self")
+        name = self.watched.get(frame.f_code)
+        delivery = self.run_step._ROOT_WORKTREE_OWNER_EVENTS.get()
+        if name == "dispatch_kind" and event == "return" and values.get("root_task_id") == "TASK-091":
+            self.dispatch_kinds.append(getattr(arg, "kind", None))
+        if name == "classification" and event == "return" and values.get("task_id") == "TASK-091":
+            self.classifications.append(getattr(arg, "kind", None))
+        if name == "sweep_init" and event == "return" and owner.orch._startup_recovery is self.state._startup_recovery:
+            if owner not in self.sweeps:
+                self.sweeps.append(owner)
+        if name == "sweep_fail" and event == "call" and owner in self.sweeps:
+            self.first_effect_counts.setdefault(id(owner), owner.counts["effects_started"])
+            self.failures.append((owner, values["cause"]))
+        if name == "gate_fail" and event == "call" and owner is self.state._startup_recovery:
+            self.event("gate_cause", code=values["code"], cause=id(values["cause"]))
+        if frame.f_code is self.completed_code and event == "return" and values.get("binding") is self.binding:
+            self.event("binding_callback_return", binding=id(self.binding), error=id(self.binding.error))
+            self.binding_completed.set()
+        if (frame.f_code.co_name == "run" and frame.f_code.co_qualname.startswith("_StartupSweepOwner.start_tail.")
+                and event == "call"):
+            sweep = values["self"]
+            if sweep in self.sweeps:
+                thread = threading.current_thread()
+                with sweep._lock:
+                    future = sweep._tails.get(thread)
+                if future is None:
+                    raise RuntimeError("actual retained tail reservation missing")
+                self.tail_handles.append((sweep, thread, future))
+                self.event("tail_reserved", owner=id(sweep), tail=id(thread), future=id(future))
+        if name == "kill" and event == "call" and values.get("orch") in [sweep.orch for sweep in self.sweeps]:
+            self.kill_calls.append({key: values.get(key) for key in
+                                   ("orch", "task_id", "recovery_owner", "recovery_job_ids", "root_transitions")})
+        if name == "terminate" and event == "return" and values.get("task_id") == "TASK-091" and isinstance(arg, list):
+            self.terminations.append((threading.get_ident(), list(arg)))
+        if name in ("late_finally", "merge") and event == "call" and delivery is not None:
+            sweep = delivery.get("startup")
+            if sweep in self.sweeps and values.get("orch", sweep.orch) is sweep.orch:
+                self.merges.append({"boundary": name, "sweep": sweep, "thread": threading.get_ident(),
+                    "delivery": delivery, "first": sweep._first,
+                    "transitions": tuple(values.get("transitions", ())),
+                    "teardown_incomplete": values.get("teardown_incomplete"), "at": time.monotonic()})
+        if name in ("batch", "batch_impl", "reconcile", "cleanup") and event == "call":
+            orch = values.get("orch")
+            # _await_worktree_cleanup receives orch in args. Count the actual
+            # executor boundary as well as finalizer-origin calls after reset.
+            if name == "cleanup":
+                args = values.get("args", ())
+                orch = args[0] if args else None
+            if orch in [sweep.orch for sweep in self.sweeps]:
+                row = {"name": name, "orch": orch, "delivery": delivery, "at": time.monotonic()}
+                if name == "reconcile":
+                    self.reconciles.append(row)
+                elif name == "cleanup":
+                    self.cleanups.append(row)
+                elif delivery is None or delivery.get("startup") not in self.sweeps:
+                    self.final_batches.append(row)
+        if event == "call" and (name == "report" or name == "audit" and values.get("action", "").startswith("root_worktree")):
+            self.reports.append((owner, values.get("action")))
+        if name == "finalize" and event == "return" and owner in self.sweeps:
+            self.finalized.append(owner)
+
+    def selected_discover(self, reads, *args, **kwargs):
+        if self.group != "S" or getattr(self.local, "authority", None) is None:
+            return self.original_discover(reads, *args, **kwargs)
+        db, orch = self.local.authority
+        gate = self.state._startup_recovery
+        sweep = gate._sweep_owner
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            native = True
+        else:
+            native = False
+        if (self.entered.is_set() or not native or threading.get_ident() != gate._native_thread
+                or reads.db is not db or reads.conn is not db._conn or reads.caller_owned
+                or orch is not self.state.orgs["fixture-a"].orchestrator
+                or sweep is None or self.run_step._ROOT_WORKTREE_OWNER_EVENTS.get() is not sweep.delivery
+                or db._lock._is_owned() or db._conn.in_transaction or sweep._lock._is_owned()
+                or gate._lock.locked() or self.state.orgs["fixture-a"].workflow_authority._publisher_lock._is_owned()):
+            raise RuntimeError("S original unlocked discovery owner unavailable")
+        self.event("S_discovery_held", owner=id(sweep), native=id(gate._native))
+        self.entered.set()
+        remaining = min(3, self.checks.started + 600 - time.monotonic())
+        if remaining <= 0 or not self.release.wait(remaining):
+            raise TimeoutError("S original discovery observation expired")
+        self.event("S_discovery_released")
+        return self.original_discover(reads, *args, **kwargs)
+
+    def binder(self, orch, thread_queue, loop):
+        value = self.original_binder(orch, thread_queue, loop)
+        if self.group != "N" or orch is not self.state.orgs["fixture-b"].orchestrator:
+            return value
+        gate = self.state._startup_recovery
+        binding = gate._binding
+        if (binding is None or self.binding is not None or binding.task is not asyncio.current_task()
+                or binding.task.get_coro() is not binding.coroutine or asyncio.get_running_loop() is not gate._loop
+                or loop is not gate._loop or orch._thread_queue is not thread_queue or orch._main_loop is not loop
+                or gate._lock.locked() or any(org.db._lock._is_owned()
+                    or org.workflow_authority._publisher_lock._is_owned() for org in self.state.orgs.values())):
+            raise RuntimeError("N original binding Task/coroutine/locks changed")
+        self.binding = binding
+        self.event("N_original_binding", binding=id(binding), task=id(binding.task), coroutine=id(binding.coroutine), loop=id(loop))
+        binding.task.cancel()  # Actual Task; original bind/completed coroutines are untouched.
+        return value
+
+    def wait_future(self, publications, future):
+        try:
+            value = self.original_wait(publications, future)
+        except BaseException as exc:
+            if self.group == "N" and self.binding is not None and future is self.binding.future:
+                gate = self.state._startup_recovery
+                if (threading.get_ident() != gate._native_thread or gate._lock.locked()
+                        or any(org.db._lock._is_owned() or org.workflow_authority._publisher_lock._is_owned()
+                               for org in self.state.orgs.values())):
+                    raise RuntimeError("N transport observation under wrong owner/lock") from exc
+                remaining = min(3, self.checks.started + 600 - time.monotonic())
+                if remaining <= 0 or not self.binding_completed.wait(remaining):
+                    raise TimeoutError("N actual binding callback not observed") from exc
+                self.transport_error = exc
+                self.event("N_transport_exception", error=id(exc))
+            raise  # Identical original exception and traceback, no manufactured completion.
+        if self.binding is not None and future is self.binding.completion:
+            self.completion_reads.append((value, threading.get_ident()))
+            self.completion_callers.append(sys._getframe(2).f_code.co_qualname)
+            self.event("N_completion_consumed", value=value, future=id(future))
+        return value
+
+    def handoff(self, db, **kwargs):
+        if self.group != "T" or db is not self.state.orgs["fixture-b"].db or kwargs.get("task_id") != "TASK-091":
+            return self.original_handoff(db, **kwargs)
+        gate = self.state._startup_recovery
+        sweep = gate._sweep_owner
+        delivery = self.run_step._ROOT_WORKTREE_OWNER_EVENTS.get()
+        thread = threading.current_thread()
+        conn = db._conn
+        seed = self.checks.details["T_seed"]
+        exact = dict(task_id="TASK-091", agent=seed["agent"], recovery_session_id=seed["session"],
+                     result_row_id=seed["result"]["id"], terminal_status="completed")
+        if (sweep is None or delivery is not sweep.delivery or sweep.orch is not self.state.orgs["fixture-b"].orchestrator
+                or thread not in sweep._tails or threading.get_ident() == sweep._body_thread
+                or any(kwargs.get(key) != value for key, value in exact.items())
+                or not self.terminations or self.terminations[-1] != (threading.get_ident(), [])
+                or not any(row["recovery_job_ids"] == ("JOB-001",) for row in self.kill_calls)):
+            raise RuntimeError("T original nonempty retained tail/context/termination not selected")
+        self.event("T_parent_handoff", owner=id(sweep), delivery=id(delivery), connection=id(conn), tail=id(thread))
+        with db._lock:
+            if type(conn) is not sqlite3.Connection or conn.in_transaction:
+                raise RuntimeError("T current-owner SELECT entered with unknown connection/transaction")
+            def authorize(action, table, column, database, trigger):
+                if action == sqlite3.SQLITE_READ and database == "main" and table == "task_completion_recoveries":
+                    if len(self.denials) < 8:
+                        self.denials.append({"thread": threading.get_ident(), "connection": id(conn),
+                                            "table": table, "database": database, "action": action})
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+            installed, primary = False, None
+            try:
+                conn.set_authorizer(authorize)
+                installed = True
+                return self.original_handoff(db, **kwargs)
+            except BaseException as exc:
+                primary = exc
+                self.errors.append(exc)
+                self.event("T_original_select_error", error=id(exc), clean=not conn.in_transaction)
+                raise
+            finally:
+                if installed:
+                    try:
+                        conn.set_authorizer(None)
+                        self.restored = not conn.in_transaction
+                        self.event("T_authorizer_restored", clean=self.restored)
+                    except BaseException as exc:
+                        self.restoration_errors.append(exc)
+                        if primary is None:
+                            raise
+                        primary.add_note("T known-None restoration failed: " + type(exc).__name__)
+
+    def install_selected(self):
+        def discover(reads, *args, **kwargs):
+            return self.selected_discover(reads, *args, **kwargs)
+        # Same pinned constructor + closed FOUR setter sites (two faults/two
+        # known-None restores), freshly inspected before replacing callbacks.
+        super().install(discover)
+        binder_owner, wait_owner, handoff_owner = self.patch_owners
+        def binder(orch, thread_queue, loop):
+            return self.binder(orch, thread_queue, loop)
+        def wait(publications, future):
+            return self.wait_future(publications, future)
+        def handoff(db, **kwargs):
+            return self.handoff(db, **kwargs)
+        binder_owner.bind_thread_queue_references = binder
+        wait_owner._wait_future = wait
+        handoff_owner.handoff_consumed_task_completion_recovery_parent_effect = handoff
+
+    def restore(self):
+        binder_owner, wait_owner, handoff_owner = self.patch_owners
+        binder_owner.bind_thread_queue_references = self.original_binder
+        wait_owner._wait_future = self.original_wait
+        handoff_owner.handoff_consumed_task_completion_recovery_parent_effect = self.original_handoff
+        return (super().restore()
+                and binder_owner.bind_thread_queue_references is self.original_binder
+                and wait_owner._wait_future is self.original_wait
+                and handoff_owner.handoff_consumed_task_completion_recovery_parent_effect is self.original_handoff)
+
+
+async def selected_until(checks, predicate, *, seconds=3):
+    deadline = min(checks.started + 600, time.monotonic() + seconds)
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("selected original N/T/S boundary not observed")
+        await asyncio.sleep(.001)
+
+
+async def stopped_reader(checks, observer, state, server, handle):
+    """One healthy close-only reader; native retirement and loop resumption differ."""
+    from runtime.daemon.routes.threads import _project_thread_messages
+    gate, pool = state._startup_recovery, state._startup_reads
+    read_observer = ReaderObservation(observer)  # Separate from the original four-reader evidence.
+    read_observer.sql_release["close"].set()  # R2: auxiliary SQL MUST forward before close.
+    loop, loop_task = asyncio.get_running_loop(), asyncio.current_task()
+    original_thread = threading.get_ident()
+    waiter = None
+    before = pool.snapshot()
+    projection_returns = []
+    def projection(db, budget):
+        value = _project_thread_messages(db, "THR-001", 0, 10)
+        projection_returns.append(value)
+        return value
+    async def read():
+        token = read_observer.current.set("close")
+        try:
+            return await pool.read(state.orgs["fixture-a"], projection)
+        finally:
+            read_observer.current.reset(token)
+    read_observer.start(pool)
+    checks.details["S_reader_originals"] = {"loop": id(loop), "task": id(loop_task), "thread": original_thread}
+    try:
+        waiter = asyncio.create_task(read())
+        await selected_until(checks, lambda: bool(read_observer.seen("close", "close_enter")), seconds=1)
+        actual = read_observer.owners["close"]
+        lease, future = actual["lease"], actual["future"]
+        checks.require("C08_S_live_handles", len(projection_returns) == 1 and MESSAGE in json.dumps(projection_returns[0], ensure_ascii=False)
+            and bool(read_observer.seen("close", "aux_sql_forward")) and lease.primary_error is None
+            and lease.budget.refusal is None and time.monotonic() < lease.budget.deadline
+            and actual["waiter"] is waiter and lease.future is future and future.running()
+            and lease in pool._leases and lease.started and lease.connection is not None
+            and not lease.retired.done() and gate._native is not None and not gate._native.done())
+        if any(row["status"] == "FAIL" and row["assertion"] == "C08_S_live_handles" for row in checks.rows):
+            raise RuntimeError("S unhealthy earlier unwind cannot earn close-only credit")
+        waiter.cancel()
+        outcome = (await asyncio.gather(waiter, return_exceptions=True))[0]
+        checks.require("C08_S_waiter_cancelled", isinstance(outcome, asyncio.CancelledError)
+            and waiter.cancelled() and future.running() and not future.cancelled()
+            and lease in pool._leases and lease.connection is not None and not lease.retired.done())
+        server.should_exit = True
+        await selected_until(checks, lambda: gate._stop.is_set() and any(
+            row["name"] == "recovery_close_call" for row in observer.events), seconds=1)
+        sweep = gate._sweep_owner
+        checks.require("C08_S_stop_admission", sweep is not None and sweep._first is not None
+            and str(sweep._first) == "startup_sweep_stopped" and not sweep.admission_open()
+            and gate.snapshot()["ready_commits"] == 0 and not gate._latch.is_set()
+            and not gate._native.done() and not handle.done() and not observer.release.is_set()
+            and state._runner_shutdown and gate._publications._closed
+            and any(row["name"] == "admission_stop_call" for row in observer.events)
+            and any(row["name"] == "startup_drain_call" for row in observer.events))
+        before_close = sum(row["name"] == "db_close_call" for row in observer.events)
+        close_refusal = None
+        try:
+            state.orgs["fixture-a"].close()
+        except RuntimeError as exc:
+            close_refusal = exc
+        checks.require("C08_S_close_refused", close_refusal is not None
+            and str(close_refusal) == "startup_native_still_owned"
+            and before_close == sum(row["name"] == "db_close_call" for row in observer.events) == 0)
+        # R1: _retire is native/inline. Only THIS actual loop coroutine resuming
+        # from the ORIGINAL retired Future is evidence that shutdown left it live.
+        read_observer.close_release.set()
+        wrapped = asyncio.wrap_future(lease.retired, loop=loop)
+        await asyncio.wait_for(asyncio.shield(wrapped), timeout=max(.001, min(1, checks.started + 600 - time.monotonic())))
+        observer.event("S_loop_retirement_observed", loop=id(asyncio.get_running_loop()), task=id(asyncio.current_task()),
+                       retired=id(lease.retired), wrapped=id(wrapped), native=id(gate._native))
+        checks.require("C08_S_loop_retirement_ack", asyncio.get_running_loop() is loop and asyncio.current_task() is loop_task
+            and threading.get_ident() == original_thread and loop is gate._loop and wrapped.done()
+            and lease.retired.done() and future.done() and not future.cancelled()
+            and lease.close_proven and lease.close_error is None and lease.connection is None and lease not in pool._leases
+            and all(len(read_observer.seen("close", name)) == 1 for name in
+                    ("open", "close_enter", "close_return", "worker_exit", "future_done", "retired"))
+            and len({read_observer.seen("close", name)[0]["thread"] for name in
+                    ("open", "close_enter", "close_return", "worker_exit")}) == 1
+            and read_observer.seen("close", "close_return")[0]["at"] <= read_observer.seen("close", "worker_exit")[0]["at"]
+                <= read_observer.seen("close", "future_done")[0]["at"] <= read_observer.seen("close", "retired")[0]["at"]
+            and not observer.release.is_set() and not gate._native.done() and not handle.done()
+            and gate._sweep_owner is sweep and not gate._closed)
+        observer.event("S_read_before_recovery_release")
+        observer.release.set()  # Read retired/observed FIRST; native discovery SECOND.
+        checks.details["S_reader"] = {"events": read_observer.rows, "before": before,
+            "after": pool.snapshot(), "lease": id(lease), "future": id(future),
+            "retired": id(lease.retired), "waiter": id(waiter), "close_refusal": str(close_refusal)}
+    finally:
+        # Never await shutdown or a native join while withholding a release.
+        read_observer.release()
+        observer.release.set()
+        if waiter is not None:
+            if not waiter.done():
+                waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+        read_observer.restore()
+
+
+def selected_outcomes(checks, observer, gate):
+    from concurrent.futures import CancelledError as NativeCancelledError
+    group = observer.group
+    sweeps = observer.sweeps
+    common = (gate._native is not None and gate._native.done() and not gate._native.cancelled()
+        and gate._native.exception() is not None and gate.snapshot()["ready_commits"] == 0
+        and not gate._latch.is_set() and not gate._consumers and not gate._preparation_complete
+        and observer.totals["preparation"] == observer.totals["native"] == 0)
+    if group == "N":
+        binding = observer.binding
+        checks.require("C05_N_original_binding", binding is not None and gate._binding is binding
+            and binding.task is not None and binding.task.get_coro() is binding.coroutine and binding.task.cancelled()
+            and binding.orgs_bound == 2 and binding.jobs_bound
+            and all(org.orchestrator._main_loop is gate._loop and org.orchestrator._thread_queue is org.thread_queue
+                    for org in observer.state.orgs.values()))
+        checks.require("C05_N_completion_normal_false", binding is not None and binding.completion.done()
+            and not binding.completion.cancelled() and binding.completion.exception() is None
+            and binding.completion.result() is False and isinstance(binding.error, asyncio.CancelledError)
+            and binding.future.cancelled() and not binding.observed)
+        checks.require("C05_N_original_consumer", len(observer.completion_reads) == 1 and observer.completion_reads[0][0] is False
+            and observer.completion_reads[0][1] in {row["thread"] for row in observer.events if row["name"] == "N_transport_exception"}
+            and observer.completion_callers == ["StartupRecovery.bind_returned_references"]
+            and isinstance(observer.transport_error, NativeCancelledError) and binding is not None and observer.transport_error is not binding.error
+            and gate._native.exception() is observer.transport_error and observer.binding_completed.is_set())
+        checks.require("C05_N_first_cause", binding is not None and gate._first_cause is binding.error
+            and gate._error_code == "startup_binding_failed" and observer.transport_error is not gate._first_cause
+            and any(cause is observer.transport_error for cause in gate._secondary)
+            and any(row["name"] == "gate_cause" and row["cause"] == id(binding.error) for row in observer.events))
+        checks.require("C05_N_no_ready", common)
+    elif group == "T":
+        db = observer.state.orgs["fixture-b"].db
+        seed = checks.details["T_seed"]
+        task, result = db.get_task("TASK-091"), db.get_accepted_task_completion_recovery_result(task_id="TASK-091", agent="case_manager")
+        recovery = dict(db._conn.execute("SELECT * FROM task_completion_recoveries WHERE task_id=?", ("TASK-091",)).fetchone())
+        job = dict(db._conn.execute("SELECT * FROM jobs WHERE id=?", ("JOB-001",)).fetchone())
+        selected = [sweep for sweep in sweeps if sweep.orch is observer.state.orgs["fixture-b"].orchestrator]
+        sweep = selected[0] if len(selected) == 1 else None
+        cause = observer.errors[0] if len(observer.errors) == 1 else None
+        tails = [row for row in observer.tail_handles if row[0] is sweep]
+        checks.require("C05_T_canonical_selected", type(seed["result"]["id"]) is int
+            and result is not None and dict(result) == seed["result"] and len(db.get_task_results("TASK-091")) == 1
+            and recovery["accepted_result_id"] == seed["result"]["id"] and recovery["state"] == "callback_consumed"
+            and recovery["accepted_result_session_id"] == recovery["recovery_session_id"] == seed["session"]
+            and bool(observer.classifications) and set(observer.classifications) == {"legacy"}
+            and bool(observer.dispatch_kinds) and set(observer.dispatch_kinds) == {"no_v2"}
+            and any(row["recovery_job_ids"] == ("JOB-001",) and row["root_transitions"] for row in observer.kill_calls))
+        checks.require("C05_T_actual_thread_context", len(tails) == 1 and sweep is not None
+            and tails[0][1].ident != sweep._body_thread and len(observer.terminations) == 1
+            and observer.terminations[0] == (tails[0][1].ident, [])
+            and any(row["name"] == "T_parent_handoff" and row["delivery"] == id(sweep.delivery)
+                    and row["tail"] == id(tails[0][1]) for row in observer.events))
+        checks.require("C05_T_actual_denial", isinstance(cause, sqlite3.DatabaseError) and bool(observer.denials)
+            and sweep is not None and sweep._first is cause and gate._first_cause is cause
+            and len(tails) == 1 and tails[0][2].exception() is cause and observer.restored and not observer.restoration_errors
+            and not db._conn.in_transaction and all(row["table"] == "task_completion_recoveries"
+                and row["database"] == "main" and row["connection"] == id(db._conn)
+                and row["thread"] == tails[0][1].ident for row in observer.denials))
+        merged = [row for row in observer.merges if row["sweep"] is sweep]
+        valid_transition = lambda event: (event.before["id"] == event.after["id"] == "TASK-091"
+            and event.before["status"] == "in_progress" and event.after["status"] == "completed")
+        checks.require("C05_T_late_finally_merge", sweep is not None and any(
+            row["boundary"] == "late_finally" and row["first"] is cause and row["teardown_incomplete"] is True
+            and any(valid_transition(event) for event in row["transitions"]) for row in merged)
+            and any(row["boundary"] == "merge" and row["first"] is cause for row in merged)
+            and any(valid_transition(event) for event in sweep.delivery["events"]))
+        checks.require("C05_T_whole_batch_suppressed", common and sweep is not None
+            and sweep._sealed and sweep._boundary_complete and not sweep._batch_attempted
+            and not sweep.delivery["active"] and observer.finalized.count(sweep) == 1
+            and not any(row["orch"] is sweep.orch for row in observer.final_batches + observer.reconciles + observer.cleanups)
+            and not any(owner is db for owner, _ in observer.reports))
+        checks.require("C05_T_no_new_effects", sweep is not None and not sweep._tails and not sweep._humans
+            and sweep.counts["tails_started"] == sweep.counts["tails_settled"] == 1
+            and sweep.counts["effects_started"] == sweep.counts["effects_settled"] == observer.first_effect_counts.get(id(sweep)))
+        audits = [dict(row) for row in db._conn.execute("SELECT action,payload FROM audit_log WHERE task_id=?", ("TASK-091",))]
+        checks.require("C05_T_committed_prefix", task.status.value == "completed" and task.current_session_id == seed["session"]
+            and result is not None and result["id"] == seed["result"]["id"] and recovery["state"] == "callback_consumed"
+            and job["status"] == "failed" and job["reason"] == "task_ended"
+            and sum(row["action"] == "completion_report" for row in audits) == 1
+            and sum(row["action"] == "orchestration_step" for row in audits) == 1
+            and any(row["action"] == "completion_report" and json.loads(row["payload"]).get("_result_row_id") == seed["result"]["id"] for row in audits))
+        checks.details["T_committed"] = {"task": task.model_dump(mode="json"), "result": dict(result) if result else None,
+                                       "recovery": recovery, "job": job, "audits": audits}
+    else:
+        checks.require("C08_S_first_causes", common and len(sweeps) == 1
+            and str(sweeps[0]._first) == "startup_sweep_stopped"
+            and gate._first_cause is gate._native.exception() is sweeps[0]._first
+            and not sweeps[0]._batch_attempted and sweeps[0]._sealed and sweeps[0]._boundary_complete)
+
+
+async def selected_epoch(checks, runtime, group):
+    """One of THREE extra serial epochs. Every handle must retire before return."""
+    import uvicorn
+    from runtime.config import Settings
+    from runtime.daemon import __main__ as daemon
+    from runtime.daemon.app import create_app
+    baseline, identities = failed_counts(runtime), store_paths(runtime)
+    unchanged = immutable_records(runtime)
+    first_row = len(checks.rows)
+    state = daemon._build_state(Settings(project_root=SOURCE, session_timeout_seconds=15))
+    if tuple(state.orgs) != ("fixture-a", "fixture-b"):
+        raise RuntimeError("selected N/T/S original org order changed")
+    after_p0 = failed_counts(runtime)
+    wanted = {}
+    for slug in state.orgs:
+        wanted[slug] = dict.fromkeys(baseline[slug], 0)
+        if group == "T":
+            wanted[slug].update(audit_log=11, org_settings=5, workflow_authority_pointers=1,
+                workflow_publication_journals=1 if slug == "fixture-a" else 2,
+                identity_name_schema=1, identity_name_owners=4, identity_name_claims=4)
+            if slug == "fixture-b":
+                wanted[slug].update(authority_policy_active_selector=1,
+                    authority_policy_active_selector_history=1, authority_policy_v2_control_audit=1)
+        else:
+            wanted[slug].update(audit_log=6)
+    checks.require("C03_T_initial_p0" if group == "T" else "C03_new_epoch_cumulative",
+        {slug: {table: n - baseline[slug][table] for table, n in counts.items()} for slug, counts in after_p0.items()}, wanted)
+    app = create_app(state)
+    gate, reads = state._startup_recovery, state._startup_reads
+    observer = SelectedObservation(app, state, checks, group)
+    orgs, connections = dict(state.orgs), {slug: org.db._conn for slug, org in state.orgs.items()}
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    server = daemon._DiagnosticServer(uvicorn.Config(app, host="127.0.0.1", port=sock.getsockname()[1],
+        log_level="warning", timeout_graceful_shutdown=15), app)
+    handle, primary, shutdown_error, restoration_error = None, None, None, None
+    durable, first = None, None
+    restored = False
+    try:
+        observer.install_selected()
+        handle = asyncio.create_task(server.serve(sockets=[sock]))
+        if group == "S":
+            await selected_until(checks, lambda: server.started and observer.entered.is_set())
+            await stopped_reader(checks, observer, state, server, handle)
+        await selected_until(checks, lambda: gate._coordinator is not None and gate._coordinator.done())
+        await asyncio.shield(gate._coordinator)
+        first = gate._first_cause
+        selected_outcomes(checks, observer, gate)
+        durable = database_observation(runtime)
+        if group in ("N", "S"):
+            checks.require("C13_S_durable_handoff" if group == "S" else "C05_N_no_ready",
+                           immutable_records(runtime), unchanged)
+    except BaseException as exc:
+        primary = exc
+    finally:
+        observer.release.set()
+        server.should_exit = True
+        try:
+            if handle is not None:
+                await asyncio.wait_for(asyncio.shield(handle), timeout=20)
+        except BaseException as exc:
+            shutdown_error = exc
+        finally:
+            try:
+                sock.close()
+            except BaseException as exc:
+                shutdown_error = shutdown_error or exc
+            try:
+                restored = observer.restore()
+            except BaseException as exc:
+                restoration_error = exc
+        joined = [row for row in observer.events if row["name"] == "executor_joined"
+                  and row["owner"] in (id(gate._executor), id(reads._executor))
+                  and row["shutdown"] and not row["threads_alive"]]
+        closed = [row for row in observer.events if row["name"] == "db_close_call"
+                  and row["owner"] in {id(org.db) for org in orgs.values()}]
+        bindings = gate._binding is None or (gate._binding.task is not None and gate._binding.task.done()
+                    and gate._binding.completion.done() and not gate._binding.completion.cancelled())
+        native_retired = (gate._native is not None and gate._native.done() and not gate._native.cancelled()
+            and gate._coordinator is not None and gate._coordinator.done() and gate._closed and bindings
+            and gate._sweep_owner is None and len(joined) == 2 and reads._closed and not reads._leases
+            and all(not thread.is_alive() and future.done() and not future.cancelled()
+                    for _, thread, future in observer.tail_handles)
+            and all(sweep._boundary_complete and sweep._sealed and not sweep._tails and not sweep._humans
+                    and sweep.counts["effects_started"] == sweep.counts["effects_settled"] for sweep in observer.sweeps))
+        # N and final-success retain the canonical consumed owner's zero-job
+        # native tail, not a deleted ledger/replayed completion.
+        if group == "N":
+            native_retired &= (len(observer.tail_handles) == 1 and any(
+                row["recovery_job_ids"] == () for row in observer.kill_calls))
+        ordered = (len(closed) == 2 and len(joined) == 2 and max(row["at"] for row in joined) <= min(row["at"] for row in closed)
+            and all(observer.connection_closes.get(id(conn), (None, False))[1] for conn in connections.values()))
+        safe = (native_retired and ordered and restored and not observer.restoration_errors
+            and shutdown_error is None and restoration_error is None and state._shutdown_complete
+            and handle is not None and handle.done() and not handle.cancelled() and handle.exception() is None
+            and sock.fileno() == -1 and all(not listener.is_serving() for listener in server.servers)
+            and first is not None and gate._first_cause is first)
+        checks.require("C08_" + group + ("_shutdown_order" if group == "S" else "_retired"), safe)
+        checks.details[group + "_epoch"] = {"epoch": gate.epoch, "recovery": id(gate), "reads": id(reads),
+            "native": id(gate._native), "coordinator": id(gate._coordinator), "events": observer.events,
+            "denials": observer.denials, "tails": [{"sweep": id(sweep), "thread": id(thread), "ident": thread.ident,
+                "future": id(future), "alive": thread.is_alive()} for sweep, thread, future in observer.tail_handles],
+            "failures": [{"sweep": id(sweep), "cause": id(cause), "kind": type(cause).__name__} for sweep, cause in observer.failures],
+            "errors": {"primary": None if primary is None else type(primary).__name__,
+                "shutdown": None if shutdown_error is None else type(shutdown_error).__name__,
+                "restoration": None if restoration_error is None else type(restoration_error).__name__}}
+        for error in (shutdown_error, restoration_error):
+            if error is not None:
+                if primary is None:
+                    primary = error
+                elif error is not primary:
+                    primary.add_note("Selected original closure also failed: " + type(error).__name__)
+        if primary is not None:
+            raise primary.with_traceback(primary.__traceback__)
+        if not safe:
+            raise RuntimeError(group + " original ownership/restoration unknown; reopen refused")
+    if durable is None or database_observation(runtime) != durable or store_paths(runtime) != identities:
+        raise RuntimeError(group + " durable handoff/identity changed; reopen refused")
+    if any(row["status"] == "FAIL" for row in checks.rows[first_row:]):
+        raise RuntimeError(group + " original selected assertion failed; reopen refused")
+
+
 async def failed_prefix(checks, runtime, token):
     import uvicorn
     from runtime.config import Settings
@@ -2635,12 +3315,7 @@ async def failed_prefix(checks, runtime, token):
     wanted = {}
     for slug in ("fixture-a", "fixture-b"):
         wanted[slug] = {table: 0 for table in baseline[slug]}
-        wanted[slug].update(audit_log=11, org_settings=5, workflow_authority_pointers=1,
-                           workflow_publication_journals=1 if slug == "fixture-a" else 2,
-                           identity_name_schema=1, identity_name_owners=4, identity_name_claims=4)
-        if slug == "fixture-b":
-            wanted[slug].update(authority_policy_active_selector=1,
-                               authority_policy_active_selector_history=1, authority_policy_v2_control_audit=1)
+        wanted[slug].update(audit_log=6)
     checks.require("C03_failed_p0_expected_rows", {
         slug: {table: n - baseline[slug][table] for table, n in rows.items()}
         for slug, rows in after_p0.items()}, wanted)
@@ -2880,10 +3555,13 @@ async def serving(checks, runtime):
     from runtime.daemon import __main__ as daemon, runtimes, paths
     from runtime.daemon.app import create_app
     from runtime.daemon.startup_recovery import StartupUnavailable
+    from runtime.orchestrator import run_step
     consumers = prepare_consumers(checks)
     runtimes.register(runtime.root)
     token = paths.ensure_token()
     prepare_task_executable(checks)
+    for group in ("T", "N", "S"):
+        await selected_epoch(checks, runtime, group)
     failed = await failed_prefix(checks, runtime, token)
     if database_observation(runtime) != failed["durable"]:
         raise RuntimeError("same-store durable handoff changed; fresh startup refused")
@@ -2918,6 +3596,20 @@ async def serving(checks, runtime):
         finally:
             conn.close()
     original = daemon._sweep_on_startup
+    original_tail = run_step._StartupSweepOwner.start_tail
+    def observe_tail(owner, operation):
+        caller = sys._getframe(1)
+        if caller.f_code is not run_step._kill_jobs_for_terminating_task.__code__:
+            raise RuntimeError("successful consumed-owner tail caller changed")
+        observation.startup_tail_inputs.append({key: caller.f_locals[key] for key in
+                                               ("task_id", "recovery_owner", "recovery_job_ids")})
+        thread = original_tail(owner, operation)
+        with owner._lock:
+            future = owner._tails.get(thread)
+        if future is None or owner.orch._startup_recovery is not state._startup_recovery:
+            raise RuntimeError("successful original consumed-owner tail lost its reservation")
+        observation.startup_tails.append((owner, thread, future))
+        return thread
     entered, release = threading.Event(), threading.Event()
     wait_error = []
 
@@ -2937,6 +3629,7 @@ async def serving(checks, runtime):
         return result
 
     daemon._sweep_on_startup = held
+    run_step._StartupSweepOwner.start_tail = observe_tail
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -2962,6 +3655,16 @@ async def serving(checks, runtime):
             if time.monotonic() >= deadline:
                 raise TimeoutError("listener/hold not observed")
             await asyncio.sleep(.01)
+        checks.require("C08_success_consumed_zero_job_tail_retired", len(observation.startup_tails) == 1
+            and len(observation.startup_tail_inputs) == 1
+            and observation.startup_tail_inputs[0]["task_id"] == "TASK-091"
+            and observation.startup_tail_inputs[0]["recovery_job_ids"] == ()
+            and observation.startup_tail_inputs[0]["recovery_owner"] == ("case_manager", checks.details["T_seed"]["session"],
+                                                                       checks.details["T_seed"]["result"]["id"], "completed")
+            and all(not thread.is_alive() and future.done() and not future.cancelled() and future.exception() is None
+                and owner._boundary_complete and owner._sealed and not owner._tails and not owner._humans
+                and owner.counts["tails_started"] == owner.counts["tails_settled"] == 1
+                for owner, thread, future in observation.startup_tails))
         # Test-side discovery points ONLY to the actual already-serving owner.
         # Never call daemon main or publish a wrapper/start/epoch/authority fact.
         if not (server.started and state._startup_recovery.snapshot()["serving"]
@@ -3132,6 +3835,7 @@ async def serving(checks, runtime):
             checks.require("C08_original_lifespan_positive_close", state._shutdown_complete)
         finally:
             daemon._sweep_on_startup = original
+            run_step._StartupSweepOwner.start_tail = original_tail
             asyncio.sleep = maintenance_waits.original_sleep
             sock.close()
         # Restore only our exact synthetic discovery files after positive owner
