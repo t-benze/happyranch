@@ -1784,6 +1784,10 @@ stat/allocation and contained unlink with metadata-only O_PATH descriptors,
 never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
+Any different linked registration strictly beneath a worktree candidate retains
+its containing candidate, even if ignored, detached or not named as a task root.
+Use the complete reciprocal census at admission and immediately before Git
+remove, contained repair and single retry; siblings do not veto one another.
 Preserve manifests/locks/output, dirty worktrees and
 branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never

@@ -2695,7 +2695,12 @@ mount gates and durable manifest/lock/output exclusions remain.
 Recursive mtime+ctime age of at least one hour and no-follow/same-filesystem containment
 apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
-branches/remotes; branches remain, ignored contents are disposable. Git removal
+branches/remotes; branches remain. Any different linked registration strictly
+beneath the candidate retains that containing worktree, including ignored,
+detached and nonmatching task-root names. This uses every row of the complete
+reciprocal census, at admission and the final checks before remove, repair and
+retry; siblings such as TASK-10 do not retain TASK-1. Other ignored contents
+inside an admitted worktree remain disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
 never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
 linked-admin census reconciles entries, metadata pointers and worktree backlinks
