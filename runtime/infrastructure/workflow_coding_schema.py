@@ -484,17 +484,21 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             'workflow_coding_mappings', 'workflow_admission_records', 'audit_log', 'workflow_authorization_revisions')
         native_queued = queued is not None and table in (
             *queued.admitted.keys(), *CODING_TABLES)
-        # Bounded audit prefetch owns the original six-column native storage
-        # contract even without a mapping; observe every cell on that allowance.
-        if native_setup or native_import or native_mapping or native_queued or (bounded_coding and table == 'audit_log'):
+        # Only coding-native families share the coding allowance. Ordinary
+        # tasks/results/audit/document rows keep the preceding layouts'
+        # unbounded discriminator and audit watermark: real org history is
+        # far larger than the coding reader's cooperative allowance.
+        table_bounded = bounded_coding and (native_setup or native_import or native_mapping
+                                            or native_queued or table in CODING_TABLES)
+        if native_setup or native_import or native_mapping or native_queued:
             selected_columns = columns
         if not selected_columns:
             continue
         selected = ','.join('"' + column.replace('"', '""') + '"' for column in selected_columns)
-        file_key = _audit_log_file_key(conn) if table == 'audit_log' and not bounded_coding else None
+        file_key = _audit_log_file_key(conn) if table == 'audit_log' and not table_bounded else None
         watermark = _audit_log_watermark(conn, file_key)
         last_id = watermark
-        if bounded_coding:
+        if table_bounded:
             # Every selected cell, including ordinary audit scalars/payloads,
             # receives fresh type/per-value/remaining-byte gates before fetch.
             # The mapping path never trusts an audit watermark. Ordinary
@@ -537,7 +541,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 if table == 'workflow_coding_mappings':
                     raise ValueError('workflow_coding_mapping_row_mismatch')
             if imported is not None and native_import:
-                if bounded_coding:
+                if table_bounded:
                     # Fixed six-row import comparison is also charged here.
                     for _, expected in imported.rows:
                         for _ in expected:
@@ -549,7 +553,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 # never an exemption based solely on namespace, ID or digest.
                 if table == 'workflow_authorization_revisions':
                     for entry in storage.issuances:
-                        if bounded_coding:
+                        if table_bounded:
                             budget.step()
                         expected = dict(id=entry.authorization_id, namespace=entry.namespace,
                             revision=entry.revision, authority_bytes=entry.authority_bytes,
@@ -568,14 +572,14 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                         and (data['namespace'], data['authorization_revision_id']) in storage.pointers):
                     continue
             for column, raw in zip(selected_columns, row, strict=True):
-                if bounded_coding:
+                if table_bounded:
                     budget.step()  # scalar classification or one metadata decode
                 if column in scalar:
                     if _coding_scalar(column, raw):
                         raise ValueError(f'workflow_coding_data_unsupported: {table}.{column}; coding reader required')
                 else:
                     _refuse_coding_metadata(raw, location=f'{table}.{column}',
-                                            budget=budget if bounded_coding else None)
+                                            budget=budget if table_bounded else None)
             last_id = rowid
         if file_key is not None:
             if advances is not None:
