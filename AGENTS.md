@@ -167,11 +167,19 @@ Only positive actual report completion attaches a report before the same first
 exception is rethrown; repeated cancellation cannot skip the original joins.
 Marked projection native uncertainty escapes operation isolation to the retained
 maintenance barrier and stops further ticks; ordinary errors remain isolated.
-The zombie owner joins every original captured committed child's cleanup on
-success or exceptional unwind, including failed v2/legacy parent publication.
-An ended child error/cancellation does not skip later children or the root batch;
-first cause/traceback and bounded real secondaries survive, with truthful root
-teardown-incomplete and no terminal replay or rescan.
+The zombie owner retains the exact original legacy child only after a positive
+cancellation COMMIT, before the separate audit or any import/publication tail.
+Audit or parent-publication failure still owes that child's hook exactly once;
+failed/uncertain cancellation never supplies positive cleanup proof. Periodic
+joins stay outside writer/capture locks; synchronous callers retain the original
+inline hook, including audit failure. Callers without an orchestrator retain
+original audit/error behavior.
+Every captured committed child is joined on success or exceptional unwind,
+including failed v2/legacy parent publication. An ended child error/cancellation
+does not skip later children or the root batch; the original audit/publication
+cause and traceback stay first, actual cleanup errors are bounded secondaries,
+and root teardown stays incomplete after a tail failure. No terminal replay,
+rescan or cleanup-success inference follows.
 
 Daemon-bound thread invocation requires the supplied host to be present and
 identical to the actual bound daemon host, including direct entry with an omitted

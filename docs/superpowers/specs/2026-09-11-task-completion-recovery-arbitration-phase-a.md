@@ -20,12 +20,19 @@ after the whole outer cleanup batch positively settles. Claimed/possible launch,
 changed ownership, existing uncertainty or any real cleanup failure remains
 sticky and suppresses the whole batch; no exception class or purpose grants
 admission. The primary exception/traceback and secondary cleanup evidence remain.
-The periodic zombie owner drains EVERY original captured committed child on
-success and exceptional unwind, including v2/legacy parent-publication failure.
-Each original child cleanup is joined outside owner/DB locks independently of
-other ended errors or cancellation, before the original root batch finishes with
-truthful teardown-incomplete. First cause/traceback and bounded real secondaries
-survive; no terminal-child rescan, replay or cleanup-success inference follows.
+The zombie owner retains the exact original legacy child only after a positive
+cancellation COMMIT, before the separate audit or any import/publication tail.
+Audit or parent-publication failure still owes that child's hook exactly once;
+failed/uncertain cancellation never supplies positive cleanup proof. Synchronous
+callers retain the original inline hook, including audit failure; callers without
+an orchestrator retain original audit/error behavior. The periodic owner drains
+EVERY captured committed child on success and exceptional unwind, including v2/legacy parent
+publication failure. Each original child cleanup is joined outside writer/capture
+locks independently of other ended errors or cancellation, before the original
+root batch finishes. Original audit/publication cause and traceback stay first,
+actual cleanup errors are bounded secondaries, and root teardown stays incomplete
+after a tail failure. No terminal-child rescan, replay or cleanup-success inference
+follows.
 Genuine deferred discovery carries its authenticated original entry through the
 actual adoption COMMIT to prepared. Repeated clean preclaim refusals retain that
 SAME proof, SIDs, attempt and reservation only after current owner/INTEGER callback/

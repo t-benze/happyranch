@@ -51,11 +51,19 @@ only successful Process/report results, and retain original-owner stop/reap duti
 The SAME disk reap Task must actually succeed before reaped/report assertions;
 failed/cancelled reap and marked projection uncertainty retain the maintenance
 barrier and cannot retire or start a later tick.
-The zombie owner joins every original captured committed child's cleanup on
-success or exceptional unwind, including failed v2/legacy parent publication.
-An ended child error/cancellation does not skip later children or the root batch;
-first cause/traceback and bounded real secondaries survive, with truthful root
-teardown-incomplete and no terminal replay or rescan. Job exception custody begins
+The zombie owner retains the exact original legacy child only after a positive
+cancellation COMMIT, before the separate audit or any import/publication tail.
+Audit or parent-publication failure still owes that child's hook exactly once;
+failed/uncertain cancellation never supplies positive cleanup proof. Periodic
+joins stay outside writer/capture locks; synchronous callers retain the original
+inline hook, including audit failure. Callers without an orchestrator retain
+original audit/error behavior.
+Every captured committed child is joined on success or exceptional unwind,
+including failed v2/legacy parent publication. An ended child error/cancellation
+does not skip later children or the root batch; the original audit/publication
+cause and traceback stay first, actual cleanup errors are bounded secondaries,
+and root teardown stays incomplete after a tail failure. No terminal replay,
+rescan or cleanup-success inference follows. Job exception custody begins
 before registration/scratch/accounting/input/pump setup; joined identity-safe
 cleanup precedes classification, while unknown cleanup keeps DB-close barriers
 and provides no safe pre-launch deferral proof.

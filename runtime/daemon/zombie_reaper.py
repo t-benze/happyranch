@@ -326,19 +326,33 @@ def _sweep_org_zombies(
                             block_kind=None,
                             note="zombie reaped: session died without completing",
                         )
-                    audit.log_zombie_cancelled(task_id, agent)
-                    if orchestrator is not None:
-                        from runtime.orchestrator.run_step import (
-                            _enqueue_parent_if_waiting,
-                            _reclaim_terminal_task_worktree,
-                        )
-                        try:
+                    # Only the successful original COMMIT creates this
+                    # obligation. Retain it before the separate audit or any
+                    # import/publication tail; the periodic owner joins once.
+                    deferred_child = (orchestrator is not None
+                        and t.parent_task_id is not None
+                        and deferred_child_worktrees is not None)
+                    if deferred_child:
+                        deferred_child_worktrees.append(t)
+                    postcommit_error = None
+                    try:
+                        audit.log_zombie_cancelled(task_id, agent)
+                        if orchestrator is not None:
+                            from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
                             _enqueue_parent_if_waiting(orchestrator, task_id)
-                        finally:
-                            if t.parent_task_id is not None and deferred_child_worktrees is not None:
-                                deferred_child_worktrees.append(t)
-                            else:
+                    except BaseException as exc:
+                        postcommit_error = exc
+                        raise
+                    finally:
+                        if orchestrator is not None and not deferred_child:
+                            try:
+                                from runtime.orchestrator.run_step import _reclaim_terminal_task_worktree
                                 _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
+                            except BaseException as exc:
+                                if postcommit_error is None:
+                                    raise
+                                if exc is not postcommit_error:
+                                    postcommit_error.add_note("zombie cleanup also failed: " + repr(exc)[:512])
     except BaseException:
         root_tail_failed = True
         raise

@@ -4597,11 +4597,19 @@ errors and cannot publish reaped/report success or retire native ownership.
 Projection propagates that same marked uncertainty through operation isolation to
 the original maintenance Future/barrier and stops the loop; ordinary errors remain
 isolated.
-The zombie owner joins every original captured committed child's cleanup on
-success or exceptional unwind, including failed v2/legacy parent publication.
-An ended child error/cancellation does not skip later children or the root batch;
-first cause/traceback and bounded real secondaries survive, with truthful root
-teardown-incomplete and no terminal replay or rescan. Job successful Process custody spans registration validation, scratch,
+The zombie owner retains the exact original legacy child only after a positive
+cancellation COMMIT, before the separate audit or any import/publication tail.
+Audit or parent-publication failure still owes that child's hook exactly once;
+failed/uncertain cancellation never supplies positive cleanup proof. Periodic
+joins stay outside writer/capture locks; synchronous callers retain the original
+inline hook, including audit failure. Callers without an orchestrator retain
+original audit/error behavior.
+Every captured committed child is joined on success or exceptional unwind,
+including failed v2/legacy parent publication. An ended child error/cancellation
+does not skip later children or the root batch; the original audit/publication
+cause and traceback stay first, actual cleanup errors are bounded secondaries,
+and root teardown stays incomplete after a tail failure. No terminal replay,
+rescan or cleanup-success inference follows. Job successful Process custody spans registration validation, scratch,
 accounting, input and partial pump setup, with identity-safe joined process/output
 cleanup on every exception. Unknown cleanup preserves DB-close barriers and cannot
 be classified as execution failure or safe pre-launch deferral. No new behavioral/
