@@ -30,6 +30,30 @@ markup and keyboard behavior. It differs in these ways:
 - A plain click on a result starts one navigation, not two (Headless UI
   already navigates on mousedown). Ctrl/Cmd/Shift/Alt-click keep the browser's
   link behavior.
+- `/` and Ctrl/Cmd+K only focus a search box that is shown, so they never
+  focus the closed mobile menu's hidden box or swallow the key.
+
+## Keyboard
+
+- "Skip to content" (`pages/_app.jsx`) is the first Tab stop on every manual
+  page. It is visually hidden until focused, works without JavaScript, and
+  moves focus to the page's h1, which `theme.config.jsx` gives
+  `id="hr-content"` and `tabIndex={-1}` (each page has exactly one h1; keep
+  it that way). `styles/globals.css` keeps the navbar scroll padding while it
+  scrolls there. Next.js's own 404 page has no skip link.
+- Below the md breakpoint (767px and narrower), `styles/globals.css` hides the
+  closed mobile menu with `visibility: hidden` (Nextra only slides it off
+  screen), so its search box, links and theme control are out of the Tab
+  order and the accessibility tree, also before JavaScript runs. It stays
+  visible while sliding shut.
+- `components/MenuFocus.jsx`, rendered from the theme's `main`, closes the
+  open mobile menu on Escape (results that are open close first; the Escape
+  does not also clear the search box). When the menu closes with focus inside
+  it, focus moves to the Menu button, or after a navigation to the new page's
+  heading (as for a selected search result). When a breakpoint change hides
+  the focused control, focus moves to the shown link with the same href, the
+  shown search box, or else the Menu button (mobile) or the h1 (desktop). It
+  only acts when focus would otherwise be lost.
 
 It imports `flexsearch` and `@headlessui/react` directly, so both are declared
 in `package.json` at exactly the versions nextra-theme-docs 3.3.1 already
