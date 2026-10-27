@@ -11,8 +11,10 @@
  * follows a locale switch without resubmission (W2a review R1).
  */
 import type { MessageKey, MessageParams } from '@/lib/i18n';
+import { startupRefusalKey } from './threadErrors';
 
 export type AddOrgError =
+  | { kind: 'mapped'; key: MessageKey }
   | { kind: 'noActiveRuntime' }
   | { kind: 'dirHasData'; slug: string }
   | { kind: 'exists'; slug: string }
@@ -21,6 +23,11 @@ export type AddOrgError =
   | { kind: 'raw'; message: string };
 
 export function classifyAddOrgError(err: unknown, submittedSlug: string): AddOrgError {
+  const startupKey = startupRefusalKey(err);
+  if (startupKey) {
+    // Org creation is a mutation; read-specific copy cannot describe its refusal.
+    return { kind: 'mapped', key: startupKey === 'startup.error.reader' ? 'startup.error.unavailable' : startupKey };
+  }
   const e = err as { code?: string; status?: number; message?: string };
   if (e.code === 'no_active_runtime') return { kind: 'noActiveRuntime' };
   if (e.code === 'org_dir_has_data') return { kind: 'dirHasData', slug: submittedSlug };
@@ -39,6 +46,8 @@ export type Translator = (key: MessageKey, params?: MessageParams) => string;
 
 export function renderAddOrgError(error: AddOrgError, t: Translator): string {
   switch (error.kind) {
+    case 'mapped':
+      return t(error.key);
     case 'noActiveRuntime':
       return t('org.add.error.noActiveRuntime');
     case 'dirHasData':

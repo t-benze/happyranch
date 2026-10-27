@@ -2221,10 +2221,22 @@ class Coordinator:
         if command[-1:] != [b'']:
             raise Hold(f'{kind} command identity unobservable')
         command = command[:-1]
-        expected = [b'-m', b'runtime.daemon', b'--reader-guarded-start=online-team-move@3']
-        tail = [b'run', b'python', *expected] if kind == 'wrapper' else expected
-        if len(command) != len(tail) + 1 or command[1:] != tail:
+        expected = [b'-m', b'runtime.daemon']
+        prefix = [b'run', b'python', *expected] if kind == 'wrapper' else expected
+        if (len(command) != len(prefix) + 4 or command[1:-3] != prefix
+                or command[-1] != b'--reader-guarded-start=online-team-move@3'):
             raise Hold(f'{kind} is not the original lifecycle command')
+        # cmd_start transports exactly these two ordered arguments. Validate
+        # the observer's closed grammar, not arbitrary flags or environment
+        # origins. Even valid telemetry grants no boot/readiness/timing proof.
+        clock, launch_id = command[-3:-1]
+        if (clock, launch_id) != (b'--startup-clock=unavailable', b'--startup-launch-id=unavailable'):
+            match = re.fullmatch(rb'--startup-clock=([0-9a-f]{32}):(linux|darwin):([1-9][0-9]{0,19})', clock)
+            if (len(clock) > len(b'--startup-clock=') + 60 or match is None
+                    or match[2] != sys.platform.encode()
+                    or launch_id != b'--startup-launch-id=' + match[1]):
+                raise Hold(f'{kind} startup marker identity differs or is unavailable')
+        marker_identity = digest(clock + b'\0' + launch_id)
         environment = bounded('environ').split(b'\0')
         env = dict(value.split(b'=', 1) for value in environment if b'=' in value)
         if (any(key.encode() in env for key in _MARKERS)
@@ -2247,7 +2259,8 @@ class Coordinator:
         # No raw environment/command payload is saved. Only closed identities.
         return {'pid': pid, 'start_identity': row.start_identity, 'ppid': row.ppid,
                 'executable': executable, 'executable_identity': actual_identity,
-                'cwd': cwd, 'home': str(self.home), 'uid': os.getuid()}
+                'cwd': cwd, 'home': str(self.home), 'uid': os.getuid(),
+                'startup_marker_sha256': marker_identity}
 
     def started_processes(self, wrapper_pid: int, port: int) -> dict:
         file_pins = {name: identity(self.home / name) for name in ('daemon.pid', 'daemon.port')}
@@ -2267,7 +2280,8 @@ class Coordinator:
             if (key in self.before_start or (self.original_process is not None and key == self.original_process)
                     or int(process['start_identity']) < self.start_floor):
                 raise Hold('start reported an existing/reused/unattributed original process; import held')
-        if (pid == wrapper_pid or daemon['ppid'] != wrapper_pid
+        if (wrapper['startup_marker_sha256'] != daemon['startup_marker_sha256']
+                or pid == wrapper_pid or daemon['ppid'] != wrapper_pid
                 or int(daemon['start_identity']) < int(wrapper['start_identity'])):
             raise Hold('original uv wrapper/Python child relationship unavailable; import held')
         later = {r.pid: r for r in checked_processes()}

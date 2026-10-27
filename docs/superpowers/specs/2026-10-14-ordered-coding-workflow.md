@@ -42,8 +42,16 @@ code at downgrade; document blockers and returned/live/held drain rules remain.
 
 The existing human setup coordinator retains present maintenance, backup,
 source/UI/loaded-object and original operation/receipt custody. Its normal run
-no longer invokes F/E→G→H→I→J migrations. The original supported deployment/start
-owns inert coding initialization; post-start revalidation requires complete
+authenticates only the exact normal wrapper/Python commands, including the ordered
+startup-clock/launch-id arguments before the guarded-start flag. The closed local
+marker must have a matching launch id, or both values must be unavailable; the
+pair digest must agree across wrapper/Python and repeated original observations.
+Missing/partial/duplicate/reordered/foreign markers or extra arguments hold, with
+all original executable/source/home/UID/PID/birth/ancestry and pid/port checks
+retained. Telemetry grants no boot/readiness/timing authority; fresh recovery-ready
+remains independent before import/Settings, with no second start or replay.
+Its normal run no longer invokes F/E→G→H→I→J migrations. The original supported
+deployment/start owns inert coding initialization; post-start revalidation requires complete
 coding storage on each normally admitted selected-runtime org, with document
 identity unchanged except I+coding=J. Existing explicit document migration tools
 remain separate. No old-folder or historical uncertainty settlement is a new

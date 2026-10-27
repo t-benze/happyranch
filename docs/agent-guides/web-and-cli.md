@@ -54,10 +54,25 @@ prints the actual disposition. Offline `doctor` remains an editable-pointer
 check with no daemon. Ordinary startup503 is explicitly not accepted/exit1;
 no queue/retry/replay or global client preflight is added, including callbacks.
 Setup accepts only the complete finite two-line output, authenticates the ORIGINAL
-wrapper/Python pair independently, and requires fresh positive recovery readiness
+wrapper/Python pair independently with the exact normal argv and ordered
+`--startup-clock`/`--startup-launch-id` pair before the guarded-start flag. The
+closed <=60-character clock token requires matching lowercase hex32 launch id,
+local linux domain and 1–20 positive decimal digits for nanoseconds, or the exact producer
+fallback unavailable/unavailable. A closed pair digest must match both processes
+and all original rereads; missing/partial/duplicate/reordered/foreign markers or
+extra arguments hold. Markers remain untrusted telemetry, with no boot/readiness/
+timing authority. Setup requires fresh positive recovery readiness
 before dependent reads/import and Settings handoff, alongside every existing
 source/native/schema/backup/cooperative-window fence. A held attempt keeps its
 receipts and original owner; it authorizes no second start or import.
+
+Add Org and onboarding use their shared locale-neutral error descriptor and the
+existing finite startup-refusal key owner before org/raw fallbacks. Operation-time
+client holds and genuine startup503s render existing translated guidance on each
+render, retaining input without retry. Read-specific refusals use the existing
+unavailable/input-kept key for creation. Unrelated org errors still substitute the
+submitted slug; 401, network, unknown503 and other raw messages keep their existing
+handling and exact text. Locale changes issue no request.
 
 Mac keeps HTTP/process ownership separate from its typed recovery observation.
 An alive recovering/failed/unknown daemon is never crashed/restarted for readiness;

@@ -47,7 +47,11 @@ startup, all missing/malformed/failed/stopping observations hold. Curl is requir
 before start; status exit0 is process liveness only. CLI web still opens readable
 threads while held and prints disposition; startup503s are not accepted, never
 queued/replayed. Offline doctor/current callback transport are unchanged. Setup
-parses the complete finite output, keeps original wrapper/daemon custody and
+parses the complete finite output and exact normal wrapper/Python argv, including
+the ordered startup-clock/launch-id pair before the guarded-start flag. Only the
+closed matching local-domain marker or explicit unavailable/unavailable pair is
+accepted; its digest must agree across both processes and repeated observations.
+Telemetry grants no boot/readiness/timing proof. Setup keeps original custody and
 requires fresh recovery-ready alongside all original source/native/backup/import
 fences. Mac retains separate process and typed recovery state, one cancellable
 bounded120s observation window with post-await original owner/port checks and
@@ -76,9 +80,14 @@ list/detail/messages stay mounted and readable; other org pages and onboarding
 mount behind a held-route gate (URL kept, Threads action). Held reads (dashboard,
 identities, agents, thread tasks, tokens) and inbox/tail SSE start only after
 ready; every effect is disabled and rechecked at operation time and after awaits.
-Drafts/selections/focus survive; startup503s map to "not accepted" copy and only
-refresh the observation, never retry/replay. Persisted queued/working rows are
-labelled recorded history while held. en+zh-CN; source only, behavior NOT RUN.
+Drafts/selections/focus survive; startup503s map to existing translated refusal
+copy and only refresh the observation, never retry/replay. Add Org and onboarding
+share the finite startup-refusal key owner before org/raw fallbacks; client holds
+and daemon refusals retain neutral descriptors for locale changes and keep input.
+Read-specific refusals use the existing unavailable/input-kept key for creation.
+Unrelated org errors, submitted-slug substitution and raw diagnostics remain.
+Persisted queued/working rows are labelled recorded history while held.
+en+zh-CN; source only, behavior NOT RUN.
 
 On the same native thread, each original org's positively settled sweep/tails/
 human/bookkeeping/finally boundary precedes its original v2 publication. Actual
@@ -5325,8 +5334,10 @@ Receipt-only/partial recovery directories are incomplete; only verified, durably
 establishes a complete backup. Failed receipt persistence prevents later effects.
 The start-reported uv wrapper PID and daemon.pid Python PID remain distinct:
 checked executable/source/home/custody, fresh start identities and direct ancestry
-must agree, then status uses the actual daemon PID/port. Both identities are
-revalidated through serving/import; missing/moving/reused facts hold.
+must agree, including the exact ordered argv marker pair (or unavailable pair)
+and its digest across both processes. No extra/partial/duplicate/foreign marker
+arguments are accepted. Status then uses the actual daemon PID/port. Both
+identities are revalidated through serving/import; missing/moving/reused facts hold.
 
 Private complete recovery inventory and WAL-inclusive SQLite backups precede
 locked dependency/UI preparation and controlled start. Full post-start coding
