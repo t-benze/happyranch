@@ -46,6 +46,37 @@ remaining producer/causal/failure/reader/native/restart/CLI/browser verification
 full independent final-source review, same-head QA and guarded merge. Required
 lint/static checks grant no behavioral acceptance; no fourth maker run follows.
 
+TASK13281 adds source for the nineteen task/host selections
+(D001-D014/D017/D086-D089), authenticated against the explicit
+`--direct-inventory` original89 JSON. Each selected ID has independent held and
+ready obligations; missing original entries, owner/effect observations, native
+markers or retirement remain incomplete. The state-only `C03_direct_gate_refuses`
+still covers only the state guard. Proposed held probes retain genuine P2 pending
+tuples in both orgs under the same original sweep/mutex hold, compare queue counts,
+metadata, reservations, tracker/host ownership and independent SQL/files, and
+record exact original refusal frames. Deep entries without an authentic prepared
+invocation or granted host context remain explicitly missing. D089 has no
+production caller; current bound tasks use `_set_active_locked` and recovery uses
+`publish_recovery_session`. Neither supplies credit for D088/D089.
+
+The proposed ready chain uses the isolated existing binary registry and original
+queue/dispatcher/invocation/host/tracker with `scripts/startup_task_child.py` as a
+real harmless child. It writes its own PID marker and submits only its own
+prompt-bound callback to the original fixture service; host handles/receipts and
+positive outer retirement come from production. Eight pending-key contenders,
+non-deduplicating enqueue/put and per-entry effect observations precede the existing
+maintenance-switch/stop keepers. This source is INCOMPLETE and NOT RUN. Cumulative
+task/root arithmetic is thirteen tasks/twelve roots (including nine writer cases),
+three native children and at most two simultaneous children. The cumulative
+canonical bootstrap/session/callback/outer audit-history expansion has not been
+reconciled against the original64-history/512-causal caps. Therefore `--case all`
+currently records that missing fit and returns incomplete2 BEFORE product
+constructors; it does not skip a failed assertion or report a pass. Resolving that
+source prerequisite and authentic missing deep/tracker selections remains required
+before this bounded stage is complete. No fit/sizing execution, cap increase,
+historical failure reset or new maker process is authorized. The C12 counter
+function, its independent observer and assertions remain byte-identical.
+
 ## Actual-owner startup observations — ROOT13137
 
 Normal boot retains its original P0 prerequisites and P2–P9 order. The earliest

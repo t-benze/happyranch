@@ -9,6 +9,7 @@ The JSON receipt distinguishes individual observations from complete cases.
 from __future__ import annotations
 
 import argparse
+import copy
 from contextvars import ContextVar
 import asyncio
 import hashlib
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import resource
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -54,6 +56,26 @@ ASSET_BYTES = b"Owned ROOT13137 startup gate asset\n"
 LITERAL_IDS = tuple(f"HX09.{n:02d}" for n in range(1, 10)) + tuple(
     f"HX10.{n:02d}" for n in range(1, 14))
 EARLY_IDS = ("H001", "H003", "H008", "H011", "H153", "H156", "H157", "HX01")
+TASK_DIRECT = {
+    "D001": ("runtime/daemon/runner.py", "enqueue_task"),
+    **{f"D{n:03d}": ("runtime/daemon/queue.py", "TaskQueue." + symbol)
+       for n, symbol in enumerate(("enqueue", "put_nowait", "enqueue_if_absent", "_consume",
+                                  "_submit", "start_workers"), 2)},
+    "D008": ("runtime/daemon/dispatcher.py", "Dispatcher.run_step"),
+    "D009": ("runtime/daemon/dispatcher.py", "Dispatcher.task_admission_allowed"),
+    **{f"D{n:03d}": ("runtime/orchestrator/orchestrator.py", "Orchestrator." + symbol)
+       for n, symbol in enumerate(("run_step", "_run_agent", "_run_agent_impl",
+                                  "_launch_agent_with_scratch", "_run_agent_launch_contained"), 10)},
+    "D017": ("runtime/orchestrator/run_step.py", "run_step_impl"),
+    "D086": ("runtime/orchestrator/host_supervisor.py", "HostSessionSupervisor.run"),
+    "D087": ("runtime/orchestrator/host_supervisor.py", "HostSessionSupervisor._execute_attempt"),
+    "D088": ("runtime/daemon/sessions.py", "SessionTracker.set_active"),
+    "D089": ("runtime/daemon/sessions.py", "SessionTracker.register_recovery_session"),
+}
+TASK_PHASE_ASSERTIONS = {
+    "recovering": ("original_entry", "startup_refusal", "queue_unchanged", "effects_unchanged"),
+    "ready": ("original_entry", "owned_effect", "native_marker", "positive_retirement"),
+}
 # Independent mandatory selections, never inferred from collected PASS rows.
 REMAINING = {
     "C01": "populated workflow/returned graph and real browser transcript/lock reuse",
@@ -142,8 +164,26 @@ class Checks:
                 self.expect(name + "_recovery_failed", "C05", "recovery_failed", (),
                             "genuine negative-outcome/failure fixture not implemented; ready-to-failed is not proof")
             for number in range(1, 90):
-                self.expect(f"D{number:03d}", "C03", "direct", (),
-                            "valid original producer/causal/native fixture and independent effect observer not implemented")
+                name = f"D{number:03d}"
+                if name not in TASK_DIRECT:
+                    self.expect(name, "C03", "direct", (),
+                                "valid original producer/causal/native fixture and independent effect observer not implemented")
+                    continue
+                for phase, suffixes in TASK_PHASE_ASSERTIONS.items():
+                    assertions = (tuple(f"{name}_{phase}_{slug}_{suffix}"
+                                        for slug in ("fixture-a", "fixture-b") for suffix in suffixes)
+                                  if phase == "recovering" else
+                                  tuple(f"{name}_{phase}_{suffix}" for suffix in suffixes))
+                    self.expect(name + "_" + phase, "C03", phase, assertions,
+                        "each original entry needs its OWN valid selection/effects; a general gate or final marker cannot supply it")
+                    self.obligations[name + "_" + phase]["original_owner"] = ":".join(TASK_DIRECT[name])
+            self.expect("C04_task_pending_dedup", "C04", "ready", (
+                "C04_task_eight_contenders_one_winner", "C04_task_original_pending_metadata",
+                "C04_task_enqueue_put_nowait_not_deduplicated", "C04_task_one_launch_for_pending_owner"),
+                "one genuine pending key, original queue ownership and original native retirement")
+            self.expect("C04_task_global_hold", "C04", "recovering", (
+                "C04_task_both_orgs_pending_before_release", "C04_task_no_dequeue_before_release"),
+                "original P2 publications retained in both fixture orgs during ONE original sweep hold")
             for number in range(1, 5):
                 for phase in ("recovering", "recovery_failed", "ready"):
                     self.expect(f"U{number:02d}_" + phase, "C11", phase, (),
@@ -337,14 +377,34 @@ def counters(checks, db):
 def seed(checks):
     # Literal fit is recorded BEFORE the first product constructor. Runtime
     # producers must remain inside it; a refusal is not replaced with raw SQL.
-    fit = {"orgs": 1 if checks.args.case == "C12" else 2, "roots": 1 if checks.args.case == "C12" else 10,
-           "tasks": 1 if checks.args.case == "C12" else 10, "results": 1, "v2_history_and_controls": 11,
+    fit = {"orgs": 1 if checks.args.case == "C12" else 2, "roots": 1 if checks.args.case == "C12" else 12,
+           "tasks": 1 if checks.args.case == "C12" else 13, "results": 1 if checks.args.case == "C12" else 4,
+           "v2_history_and_controls": 11,
            "workflow_causal_rows": 0, "threads": 0 if checks.args.case == "C12" else 2,
            "messages": 0 if checks.args.case == "C12" else 2, "tokens": 0, "jobs": 0,
-           "provider_children": 0, "listeners": 0 if checks.args.case == "C12" else 1,
+           "provider_children": 0 if checks.args.case == "C12" else 3,
+           "simultaneous_harmless_children": 0 if checks.args.case == "C12" else 2,
+           "listeners": 0 if checks.args.case == "C12" else 1,
            "browser_contexts": 0}
+    if checks.args.case == "all":
+        fit["cumulative_task_arithmetic"] = "1 counter root + 9 existing writer roots + 1 native child + 1 native root + 1 ready dedup root = 13 tasks / 12 roots"
+        fit["native_children"] = "3 total; original worker + one direct start_workers positive; <=2 simultaneous, each original session timeout<=15s"
+        # The nine writer cases create Pause journals/reservations, not v2
+        # generations. Count their IDs even though release later retires them.
+        fit["pause_control_roots"] = 12
+        fit["additional_v2_generations"] = 0
+        fit["causal_rows_cap"] = 512
+        fit["history_controls_cap"] = 64
+        fit["audit_fit"] = "UNRESOLVED: canonical bootstrap/session/callback/outer writers add audit history; no constructor authorized until its cumulative source count is reconciled"
     checks.details["fixture_fit_before_constructors"] = fit
     checks.save()
+    if checks.args.case == "all":
+        # Do not turn task-count arithmetic into an invented history fit.
+        # Source inspection still owes the exact cumulative canonical audit
+        # expansion of bootstrap + THREE native task/callback/outer tails.
+        # This source-stage limitation is deliberately before ANY constructor.
+        checks.missing("C03_canonical_history_fit", "reconcile cumulative canonical bootstrap/session/callback/outer audit writers against original64 cap before constructors; task/root fit alone is insufficient")
+        return None
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
     from runtime.models import ThreadRecord, ThreadMessageKind
@@ -381,6 +441,26 @@ def seed(checks):
                 db.insert_thread(ThreadRecord(id="THR-001", subject="Owned recovery transcript"))
                 db.append_thread_message(thread_id="THR-001", speaker="founder",
                                          kind=ThreadMessageKind.MESSAGE, body_markdown=MESSAGE)
+                from runtime.models import TaskRecord, TaskStatus
+                native_task = TaskRecord(id="TASK-090", status=TaskStatus.PENDING,
+                    team="engineering", assigned_agent="case_worker" if index == 0 else "case_manager",
+                    parent_task_id="TASK-001" if index == 0 else None,
+                    task_type="subtask" if index == 0 else "task",
+                    brief="Owned harmless startup child; report only own actual fixture session")
+                db.insert_task(native_task)
+                checks.details.setdefault("native_task_selections", {})[slug] = {
+                    "task_id": native_task.id, "agent": native_task.assigned_agent}
+                # Original offline workspace bootstrap, before daemon attachment;
+                # no generated permission or materialization behavior is replaced.
+                from runtime.config import Settings
+                from runtime.orchestrator._paths import OrgPaths
+                from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+                from runtime.orchestrator.prompt_loader import load_agent
+                paths = OrgPaths(root=org_root)
+                adapter = ClaudeWorkspaceAdapter(Settings(project_root=SOURCE), paths, slug=slug)
+                definition = load_agent(paths, native_task.assigned_agent)
+                adapter.ensure_workspace_ready(paths.workspaces_dir / native_task.assigned_agent,
+                    native_task.assigned_agent, definition.system_prompt)
             checks.details.setdefault("fixture_counts", {})[slug] = {
                 name: db._conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
                 for (name,) in db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
@@ -401,6 +481,380 @@ def seed(checks):
     if v2_rows > 64:
         raise RuntimeError("original v2/history fixture row cap exceeded")
     return runtime
+
+
+def load_task_inputs(checks):
+    path = checks.args.direct_inventory
+    if path is None:
+        return {}
+    data = path.read_bytes()
+    digest = "eaf4206c9c9455f8223fe81f3191859f8d09b4e9d9335f281c1d1079d42e3966"
+    if len(data) > 256 * 1024 or hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("accepted direct inventory identity mismatch")
+    selected = {row["id"]: row for row in json.loads(data)["entries"] if row["id"] in TASK_DIRECT}
+    if set(selected) != set(TASK_DIRECT):
+        raise ValueError("selected nineteen direct IDs missing or duplicated")
+    for name, row in selected.items():
+        if (row["file"], row["symbol"]) != TASK_DIRECT[name]:
+            raise ValueError("selected original task producer changed: " + name)
+    checks.details["task_direct_inventory"] = {"path": str(path), "sha256": digest, "entries": selected}
+    return selected
+
+
+def prepare_task_executable(checks):
+    """Use the existing isolated binary registry, never a production fake hook."""
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    directory = checks.args.root / "native"
+    directory.mkdir(mode=0o700)
+    executable = directory / "claude"
+    executable.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -I "
+        + shlex.quote(str(SOURCE / "scripts/startup_task_child.py")) + " --binding "
+        + shlex.quote(str(directory / "binding.json")) + ' "$@"\n')
+    executable.chmod(0o700)
+    set_binary("claude", str(executable))
+    checks.details["task_executable"] = {"path": str(executable),
+        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "helper_sha256": hashlib.sha256((SOURCE / "scripts/startup_task_child.py").read_bytes()).hexdigest()}
+
+
+class TaskEntries:
+    """Observe ORIGINAL frames/returns; never replace their bodies or grants."""
+
+    def __init__(self, state):
+        import importlib
+        self.state, self.rows, self.dispatcher = state, [], None
+        self.codes = {}
+        self.running = {}
+        for name, (path, symbol) in TASK_DIRECT.items():
+            value = importlib.import_module(path[:-3].replace("/", "."))
+            for part in symbol.split("."):
+                value = getattr(value, part)
+            self.codes[value.__code__] = name
+        self.phase = "recovering"
+        self.selected = None
+        self.active = False
+        self.effect_entries = {"native_spawn": 0, "invocation_prepare": 0}
+        from runtime.orchestrator.task_pause import TaskInvocation
+        self.effect_codes = {subprocess.Popen.__init__.__code__: "native_spawn",
+                             TaskInvocation.prepare.__code__: "invocation_prepare"}
+
+    def profile(self, frame, event, value):
+        if not self.active or event not in ("call", "return"):
+            return
+        if event == "call" and frame.f_code in self.effect_codes:
+            self.effect_entries[self.effect_codes[frame.f_code]] += 1
+        name = self.codes.get(frame.f_code)
+        if name is None:
+            return
+        if len(self.rows) >= 512:
+            raise RuntimeError("task original entry observation cap")
+        local = frame.f_locals
+        owner = local.get("self", local.get("orch", local.get("state")))
+        request = local.get("request")
+        item = local.get("item")
+        slug = (getattr(request, "org", None) or local.get("slug")
+                or (item[0] if item is not None else None)
+                or getattr(owner, "_slug", None)
+                or getattr(getattr(owner, "_startup_org", None), "slug", None))
+        task = (getattr(request, "logical_id", None) or local.get("task_id")
+                or (item[1] if item is not None else None))
+        row = {"id": name, "phase": self.phase, "event": event, "org": slug,
+               "task": task, "owner": id(owner), "thread": threading.get_ident(),
+               "selected": self.selected, "monotonic": time.monotonic()}
+        if name in ("D001", "D002", "D003", "D004") and event == "return":
+            queue = self.state.queue
+            row["queue_items"] = copy.deepcopy(list(queue._queue._queue))
+            row["pending"] = sorted((s, t, n) for (s, t), n in queue._pending_counts.items())
+            row["reservations"] = sorted(queue._admission_reservations)
+            if name == "D004":
+                row["dedup_result"] = value
+        if name == "D006" and event == "return" and value is not None:
+            row["work"] = {"identity": id(value), "item": value.item,
+                "attachment": id(value.attachment), "registered": value in self.state.queue._native_work,
+                "task_created": value.task is not None}
+        if name == "D005" and event == "return":
+            work = local.get("work")
+            row["work_retired"] = (work is not None and not work.failures
+                and work not in self.state.queue._native_work and work.run is not None
+                and work.run.done() and not work.run.cancelled()
+                and work.retirement is not None and work.retirement.done()
+                and not work.retirement.cancelled())
+        if name in ("D011", "D012", "D013", "D014"):
+            from runtime.orchestrator.task_pause import current_invocation
+            invocation = current_invocation()
+            row["invocation"] = None if invocation is None else {
+                "identity": invocation.identity, "task": invocation.task.id,
+                "agent": invocation.agent, "session": invocation.session_id,
+                "prepared": invocation.move_reservation is not None,
+                "live": invocation.store._live.get(invocation.identity) is invocation}
+        if name in ("D008", "D010", "D017") and event == "return" and slug in self.state.orgs:
+            org = self.state.orgs[slug]
+            row["outer_live"] = sorted(org.db._task_pause_store._live)
+            row["outer_reservations"] = sorted(org.orchestrator._team_moves._reservations)
+        if name == "D007" and event == "call":
+            # Retain the ACTUAL lifecycle-created Dispatcher for direct probes.
+            self.dispatcher = local["dispatcher"]
+            row["lifecycle_recovery"] = local.get("recovery") is self.state._startup_recovery
+            row["registered_before"] = len(self.state.queue._worker_tasks)
+        if name == "D007" and event == "return":
+            row["registered_after"] = len(self.state.queue._worker_tasks)
+            row["handles_live"] = all(not task.done() for task in self.state.queue._worker_tasks)
+        if name == "D087" and event == "return" and value is not None:
+            from dataclasses import asdict
+            ctx = local["ctx"]  # SAME lease.ctx supplied by original run().
+            running = ctx.running()
+            row.update(context=id(ctx), outcome={
+                "terminal": value.terminal_reason.value,
+                "cleanup_error": value.cleanup_error, "error": value.error,
+                "receipt": None if value.receipt is None else asdict(value.receipt)},
+                running=None if running is None else {
+                    "backend": running.backend, "token": running.token,
+                    "request_id": running.request_id, "pid": running.root_pid,
+                    "start_identity": running.start_identity,
+                    "returncode": None if running.process is None else running.process.poll()})
+            self.running[(slug, task)] = row
+        if name == "D009" and event == "return":
+            row["admitted"] = value
+        self.rows.append(row)
+
+    def start(self):
+        if sys.getprofile() is not None or threading.getprofile() is not None:
+            raise RuntimeError("existing original observer cannot be replaced")
+        self.active = True
+        threading.setprofile_all_threads(self.profile)
+
+    def close(self):
+        self.active = False
+        threading.setprofile_all_threads(None)
+
+    def entries(self, name, phase, *, selected=None, task=None):
+        return [row for row in self.rows if row["id"] == name and row["phase"] == phase
+                and row["event"] == "call" and (selected is None or row["selected"] == selected)
+                and (task is None or (row["org"], row["task"]) == task)]
+
+
+def task_queue_observation(state):
+    queue = state.queue
+    with queue._admission_lock:
+        result = {"items": [(slug, task, metadata) for slug, task, metadata in queue._queue._queue],
+            "pending": sorted((slug, task, n) for (slug, task), n in queue._pending_counts.items()),
+            "reservations": sorted(queue._admission_reservations),
+            "unfinished": queue._queue._unfinished_tasks,
+            "workers": [(id(task), task.done()) for task in queue._worker_tasks],
+            "native": sorted(id(work) for work in queue._native_work)}
+    result["trackers"] = {}
+    for slug, org in state.orgs.items():
+        with org.sessions._lock:
+            result["trackers"][slug] = {
+                "active": sorted((task, agent, sid) for (task, agent), sid in org.sessions._active.items()),
+                "pids": sorted((task, agent, sorted(pids.items())) for (task, agent), pids in org.sessions._pids.items()),
+                "controls": sorted((task, agent, sorted((sid, id(control)) for sid, control in controls.items()))
+                                   for (task, agent), controls in org.sessions._cancel_controls.items()),
+                "recovery": sorted(org.sessions._recovery_sessions)}
+    host = state.host_supervisor
+    result["host"] = {"active": host.active_count(), "queued": host._admission.queue_depth(),
+                      "admitted": host._admission.admitted_total(), "released": host._admission.released_total()}
+    return copy.deepcopy(result)
+
+
+async def held_task_cases(checks, runtime, state, entries):
+    from runtime.daemon.runner import enqueue_task
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    from runtime.orchestrator.run_step import run_step_impl
+    if not checks.details.get("task_direct_inventory"):
+        return  # mandatory per-ID ledger remains NOT RUN.
+    dispatcher = entries.dispatcher
+    if dispatcher is None or dispatcher._state is not state:
+        raise RuntimeError("actual dormant task dispatcher not observed")
+    queue = state.queue
+    before_queue = task_queue_observation(state)
+    checks.require("C04_task_both_orgs_pending_before_release", all(
+        any(item[:2] == [slug, "TASK-090"] or item[:2] == (slug, "TASK-090")
+            for item in before_queue["items"]) for slug in ("fixture-a", "fixture-b")))
+    for slug in ("fixture-a", "fixture-b"):
+        org = state.orgs[slug]
+        item = next((item for item in queue._queue._queue if item[:2] == (slug, "TASK-090")), None)
+        if item is None:
+            raise RuntimeError("original P2 pending owner absent: " + slug)
+        calls = {
+            "D001": lambda: enqueue_task(state, slug, item[1], metadata=item[2]),
+            "D002": lambda: queue.enqueue(slug, item[1], metadata=item[2]),
+            "D003": lambda: queue.put_nowait(slug, item[1], metadata=item[2]),
+            "D004": lambda: queue.enqueue_if_absent(slug, item[1], metadata=item[2]),
+            "D005": lambda: queue._consume(dispatcher, item),
+            "D006": lambda: queue._submit(dispatcher, item),
+            "D007": lambda: queue.start_workers(dispatcher, n=1),
+            "D008": lambda: dispatcher.run_step(slug, item[1], metadata=item[2], attachment=org),
+            "D009": lambda: dispatcher.task_admission_allowed(slug, item[1], metadata=item[2], attachment=org),
+            "D010": lambda: org.orchestrator.run_step(item[1], metadata=item[2]),
+            "D017": lambda: run_step_impl(org.orchestrator, item[1], metadata=item[2]),
+        }
+        for name, call in calls.items():
+            entries.selected = name + "/" + slug
+            before = fixture_effects(runtime, state, checks.args.root)
+            queue_before = task_queue_observation(state)
+            effect_entries = dict(entries.effect_entries)
+            refusal = None
+            try:
+                result = call()
+                if asyncio.iscoroutine(result):
+                    await result
+            except StartupUnavailable as exc:
+                refusal = exc.code
+                trace = exc.__traceback__
+                frames = []
+                while trace is not None and len(frames) < 32:
+                    frames.append({"file": trace.tb_frame.f_code.co_filename,
+                                   "symbol": trace.tb_frame.f_code.co_qualname, "line": trace.tb_lineno})
+                    trace = trace.tb_next
+                checks.details.setdefault("task_held_refusals", []).append({
+                    "id": name, "org": slug, "task": item[1], "metadata": copy.deepcopy(item[2]),
+                    "code": exc.code, "original_frames": frames})
+            finally:
+                entries.selected = None
+            # Different denial, invalid input, no-op or success cannot earn credit.
+            prefix = name + "_recovering_" + slug
+            checks.require(prefix + "_original_entry",
+                len(entries.entries(name, "recovering", selected=name + "/" + slug)), 1)
+            checks.require(prefix + "_startup_refusal", refusal, "daemon_recovering")
+            checks.require(prefix + "_queue_unchanged", task_queue_observation(state), queue_before)
+            checks.require(prefix + "_effects_unchanged",
+                           (fixture_effects(runtime, state, checks.args.root), dict(entries.effect_entries)),
+                           (before, effect_entries))
+    checks.require("C04_task_no_dequeue_before_release", task_queue_observation(state), before_queue)
+    for name in ("D011", "D012", "D013", "D014", "D086", "D087", "D088", "D089"):
+        checks.missing(name + "_recovering_valid_owner", (
+            "original bound TaskInvocation.prepare refuses before invocation/SID/lease creation in this epoch; "
+            "no valid pre-held owner supplied, so no private context or tracker generation is invented"))
+
+
+async def ready_task_cases(checks, runtime, state, entries):
+    """Original queue, native child, callback, outer retirement before stop cases."""
+    from runtime.daemon.runner import enqueue_task
+    selected = checks.details["native_task_selections"]
+    deadline = time.monotonic() + 15
+
+    async def retired():
+        while state.queue._queue._unfinished_tasks or state.queue._native_work:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("original native queue retirement incomplete; retain handles/owners")
+            await asyncio.sleep(.01)
+
+    await retired()
+    # Ordinary direct lifecycle call, distinct from the privileged original
+    # held registration. The added handle stays under the original queue stop.
+    registered = len(state.queue._worker_tasks)
+    state.queue.start_workers(entries.dispatcher, n=1)
+    checks.require("D007_ready_original_entry", bool(entries.entries("D007", "ready")))
+    checks.require("D007_ready_owned_effect", len(state.queue._worker_tasks), registered + 1)
+    # This new ready task uses the canonical ID/root producer, never a reused
+    # terminal task. Its ID is included in the PRE-constructor cumulative fit.
+    org = state.orgs["fixture-b"]
+    task = org.orchestrator.create_task("Owned harmless startup child; report own actual fixture session", team="engineering")
+    binding_path = checks.args.root / "native/binding.json"
+    binding = json.loads(binding_path.read_bytes())
+    binding["tasks"]["fixture-b/" + task] = "case_manager"
+    binding_path.write_text(json.dumps(binding))
+    metadata = {"trigger": "startup-fixture-owned-dedup"}
+    # Eight scheduled eligible producers share one pending key. They yield to
+    # the event loop together; none yields between its original reservation/put.
+    async def contender():
+        won = state.queue.enqueue_if_absent("fixture-b", task, metadata=metadata,
+            publisher=lambda: enqueue_task(state, "fixture-b", task, metadata=metadata))
+        if won:
+            pending = task_queue_observation(state)
+            checks.require("C04_task_original_pending_metadata", [item for item in pending["items"]
+                if item[:2] == ("fixture-b", task)], [("fixture-b", task, metadata)])
+            # Both original APIs deliberately keep duplicate pending tuples.
+            # Before this coroutine yields, consumers cannot take that key.
+            state.queue.put_nowait("fixture-b", task, metadata=metadata)
+            state.queue.enqueue("fixture-b", task, metadata=metadata)
+            pending = task_queue_observation(state)
+            checks.require("C04_task_enqueue_put_nowait_not_deduplicated", [item for item in pending["items"]
+                if item[:2] == ("fixture-b", task)], [("fixture-b", task, metadata)] * 3)
+        return won
+    results = await asyncio.gather(*(contender() for _ in range(8)))
+    checks.require("C04_task_eight_contenders_one_winner", sorted(results), [False] * 7 + [True])
+    selected = {**selected, "fixture-b-dedup": {"task_id": task, "agent": "case_manager", "org": "fixture-b"}}
+    await retired()
+    markers = [json.loads(path.read_bytes()) for path in sorted((checks.args.root / "native").glob("fixture-*-TASK-*.json"))]
+    checks.details["task_native_markers"] = markers
+    checks.details["task_original_entries"] = entries.rows
+    checks.details["task_final_queue"] = task_queue_observation(state)
+    for key, selection in selected.items():
+        slug, task_id = selection.get("org", key), selection["task_id"]
+        org = state.orgs[slug]
+        actual = org.db.get_task(task_id)
+        own_markers = [m for m in markers if (m["org"], m["task"]) == (slug, task_id)]
+        host = entries.running.get((slug, task_id))
+        receipt = None if host is None else host["outcome"]["receipt"]
+        result = org.db.get_latest_task_result(task_id, selection["agent"], own_markers[0]["session"]) if len(own_markers) == 1 else None
+        journal = invocation_observation(org, task_id)
+        checks.details.setdefault("task_original_retirement", {})[slug + "/" + task_id] = {
+            "task": actual.model_dump(mode="json"), "host": host, "journal": journal,
+            "result_id": None if result is None else result["id"]}
+        positive = (actual.status.value == "completed" and result is not None
+            and type(result["id"]) is int and result["id"] > 0 and receipt is not None
+            and receipt["quiescent"] is True and receipt["terminal_reason"] == "success"
+            and host["outcome"]["error"] is None and host["outcome"]["cleanup_error"] is None
+            and host["running"] is not None and host["running"]["pid"] > 0
+            and host["running"]["returncode"] == 0 and len(own_markers) == 1
+            and own_markers[0]["pid"] == host["running"]["pid"]
+            and not journal["reservations"] and not journal["live"]
+            and not org.sessions._active and not org.sessions._pids and not org.sessions._cancel_controls
+            and not state.queue._native_work and state.host_supervisor.active_count() == 0)
+        checks.require("C03_" + slug + "_" + task_id + "_native_owner_positive_retirement", positive)
+        # Credit only each separately observed owner, not all nineteen from a
+        # final marker. D088/D089 are NOT supplied by _set_active_locked.
+        for name in TASK_DIRECT:
+            original = entries.entries(name, "ready", task=(slug, task_id))
+            if not original:
+                continue
+            checks.require(name + "_ready_original_entry", bool(original))
+            # The frame retains the actual selected task/owner; admission has
+            # its own result oracle and host execution its own genuine ctx.
+            if name == "D009":
+                effect = any(row.get("admitted") is True and (row["org"], row["task"]) == (slug, task_id)
+                    for row in entries.rows if row["id"] == name and row["event"] == "return")
+            elif name in ("D086", "D087"):
+                effect = host is not None and receipt is not None
+            elif name in ("D001", "D002", "D003", "D004"):
+                effect = any(any(item[:2] == (slug, task_id) for item in row.get("queue_items", ()))
+                    and (name != "D004" or row.get("dedup_result") is True)
+                    for row in entries.rows if row["id"] == name and row["event"] == "return"
+                    and (row["org"], row["task"]) == (slug, task_id))
+            elif name == "D005":
+                effect = any(row.get("work_retired") is True for row in entries.rows
+                    if row["id"] == name and (row["org"], row["task"]) == (slug, task_id))
+            elif name == "D006":
+                effect = any(row.get("work", {}).get("registered") is True
+                    and row["work"]["attachment"] == id(org) and row["work"]["task_created"]
+                    for row in entries.rows if row["id"] == name and (row["org"], row["task"]) == (slug, task_id))
+            elif name in ("D008", "D010", "D017"):
+                effect = journal["journal"] is not None and any(
+                    row.get("outer_live") == [] and row.get("outer_reservations") == []
+                    for row in entries.rows if row["id"] == name and row["event"] == "return"
+                    and (row["org"], row["task"]) == (slug, task_id))
+            elif name in ("D011", "D012", "D013", "D014"):
+                effect = any(row.get("invocation") is not None
+                    and row["invocation"]["prepared"] and row["invocation"]["live"]
+                    and row["invocation"]["task"] == task_id
+                    and len(own_markers) == 1 and row["invocation"]["session"] == own_markers[0]["session"]
+                    for row in original)
+            else:
+                effect = False
+                checks.missing(name + "_ready_boundary_specific_effect", "original entry/terminal observed; boundary-specific preparation/publication/dequeue oracle still required")
+            checks.require(name + "_ready_native_marker", len(own_markers), 1)
+            checks.require(name + "_ready_positive_retirement", positive)
+            if effect:
+                checks.require(name + "_ready_owned_effect", effect)
+        if key == "fixture-b-dedup":
+            checks.require("C04_task_one_launch_for_pending_owner", len(own_markers), 1)
+    checks.require("D007_ready_native_marker", len(markers), 3)
+    checks.require("D007_ready_positive_retirement", not state.queue._native_work
+        and state.queue._queue._unfinished_tasks == 0 and state.host_supervisor.active_count() == 0)
+    for name in ("D088", "D089"):
+        checks.missing(name + "_ready_original_owner", "bound TaskInvocation uses _set_active_locked; register_recovery_session has no production caller; do not fabricate a recovery owner")
 
 
 def request_path(template):
@@ -545,7 +999,7 @@ async def raw_request(port, method, target, token, case, body=b""):
 def fixture_effects(runtime, state, scratch):
     """Independent RO SQL + bounded concrete file/native ownership observations."""
     files, owners = {}, {}
-    roots = [scratch / "temp"]
+    roots = [scratch / "temp", scratch / "native"]
     for slug, org in state.orgs.items():
         roots.extend((org.root / "workspaces", org.root / "jobs"))
         owners[slug] = {"reservations": sorted(org.orchestrator._team_moves._reservations),
@@ -554,9 +1008,13 @@ def fixture_effects(runtime, state, scratch):
     deadline, size = time.monotonic() + 2, 0
     for root in roots:
         for path in sorted(root.rglob("*")):
-            if len(files) >= 4096 or time.monotonic() >= deadline or path.is_symlink():
+            if len(files) >= 4096 or time.monotonic() >= deadline:
                 raise ValueError("independent file observation unavailable/budget")
-            if path.is_file():
+            if path.is_symlink():
+                # The canonical workspace pair/skill links are real fixture
+                # metadata. Observe literal link bytes without following them.
+                files[str(path)] = {"symlink": os.readlink(path)}
+            elif path.is_file():
                 size += path.stat().st_size
                 if size > 4 * 1024 * 1024:
                     raise ValueError("independent file byte budget")
@@ -940,7 +1398,8 @@ async def task_invocation_wait_cases(checks, state):
     store, orch = org.db._task_pause_store, org.orchestrator
     # Literal fit BEFORE these additional canonical task producers: one ready
     # preparation, registry and seven wait cases <=9 tasks/Pause rows,
-    # zero callbacks/v2 generations/provider children/jobs; cumulative tasks<=10.
+    # zero callbacks/v2 generations/provider children/jobs in THIS keeper;
+    # include all nine IDs in seed's cumulative thirteen-task/twelve-root fit.
     checks.details["C03_fit_before_task_producers"] = {"new_tasks": 9, "pause_rows": 9,
         "max_simultaneous_reservations": 1, "new_v2_rows": 0, "providers": 0}
     def create(number):
@@ -1096,7 +1555,8 @@ async def serving(checks, runtime):
     from runtime.daemon.startup_recovery import StartupUnavailable
     runtimes.register(runtime.root)
     token = paths.ensure_token()
-    state = daemon._build_state(Settings(project_root=SOURCE))
+    prepare_task_executable(checks)
+    state = daemon._build_state(Settings(project_root=SOURCE, session_timeout_seconds=15))
     if set(state.orgs) != {"fixture-a", "fixture-b"}:
         raise AssertionError("P0 failed to attach both original fixture orgs")
     selected = checks.details.pop("_http_inputs")
@@ -1104,6 +1564,7 @@ async def serving(checks, runtime):
     app = create_app(state)
     wire = []
     observation = EntryObservation(app)
+    task_entries = TaskEntries(state)
     checks.details["wire"] = wire
     from starlette.routing import Match
     def identity(route):
@@ -1170,7 +1631,11 @@ async def serving(checks, runtime):
     wait_error = []
 
     def held(db, queue, slug, orchestrator=None):
-        if slug == "fixture-a":
+        # Preserve genuine P2 pending publications in BOTH orgs. The single
+        # native hold is after the original second-org sweep and under its
+        # SAME writer mutex; no manual queue slots or fabricated publication.
+        result = original(db, queue, slug, orchestrator)
+        if slug == "fixture-b":
             with db._lock:
                 checks.details["native_sweep_thread"] = threading.get_ident()
                 checks.details["hold_started_monotonic"] = time.monotonic()
@@ -1178,16 +1643,21 @@ async def serving(checks, runtime):
                 if not release.wait(10):
                     wait_error.append("held-window expired")
                     raise TimeoutError("owned native hold exceeded10s")
-        return original(db, queue, slug, orchestrator)
+        return result
 
     daemon._sweep_on_startup = held
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
+    (checks.args.root / "native/binding.json").write_text(json.dumps({
+        "root": str(checks.args.root), "port": port, "token": token,
+        "tasks": {slug + "/" + row["task_id"]: row["agent"]
+                  for slug, row in checks.details["native_task_selections"].items()}}))
     server = daemon._DiagnosticServer(uvicorn.Config(app, host="127.0.0.1", port=port,
         log_level="warning", timeout_graceful_shutdown=15), app)
     maintenance_waits = MaintenanceWaits()
     asyncio.sleep = maintenance_waits.sleep
+    task_entries.start()
     handle = asyncio.create_task(server.serve(sockets=[sock]))
     checks.details["listener"] = {"host": "127.0.0.1", "port": port}
     checks.details["request_loop_thread"] = threading.get_ident()
@@ -1202,6 +1672,8 @@ async def serving(checks, runtime):
             await asyncio.sleep(.01)
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
                 headers={"Authorization": "Bearer " + token}, timeout=2, follow_redirects=False) as client:
+            await held_task_cases(checks, runtime, state, task_entries)
+            task_entries.close()
             before = fixture_effects(runtime, state, checks.args.root)
             observation.start()
             await early_cases(checks, runtime, port, token, wire, "recovering")
@@ -1231,7 +1703,8 @@ async def serving(checks, runtime):
                 denied = await client.get(f"/api/v1/orgs/{slug}/threads?page_size=2",
                                           headers={"Authorization": "Bearer invalid-fixture-token"})
                 checks.require(f"C02_{slug}_original_auth_preserved", denied.status_code, 401)
-            # Original direct producer gate; no queue or host is replaced.
+            # State guard ONLY. The nineteen direct obligations have their own
+            # original entries, valid ownership and independent effect oracles.
             try:
                 state._require_startup_ready()
             except StartupUnavailable as exc:
@@ -1282,6 +1755,8 @@ async def serving(checks, runtime):
             observation.close()
             checks.details["hold_before_release_seconds"] = time.monotonic() - checks.details["hold_started_monotonic"]
             checks.require("C02_original_hold_not_expired", not wait_error and checks.details["hold_before_release_seconds"] < 10)
+            task_entries.phase = "ready"
+            task_entries.start()
             release.set()
             deadline = time.monotonic() + 15
             while True:
@@ -1298,6 +1773,8 @@ async def serving(checks, runtime):
             checks.require("C09_original_ready_commit", status["ready_commits"], 1)
             checks.require("C09_original_ready_serving", status["serving"] and status["recovery_ready"])
             state._require_startup_ready()
+            await ready_task_cases(checks, runtime, state, task_entries)
+            task_entries.close()
             response = await client.get("/api/v1/orgs/fixture-a/threads/THR-001/messages?limit=10")
             checks.require("C01_post_ready_transcript", response.status_code == 200 and MESSAGE in response.text)
             checks.details["completed_startup"] = state._startup_recovery.snapshot()
@@ -1321,6 +1798,9 @@ async def serving(checks, runtime):
             response = await client.get("/api/v1/health/ready")
             checks.require("C08_stop_closes_ready", response.status_code, 503)
     finally:
+        if task_entries.active:
+            task_entries.close()
+        checks.details["task_original_entries"] = task_entries.rows
         if observation.active:
             observation.close()
         release.set()
@@ -1353,17 +1833,19 @@ def main():
     parser.add_argument("--web-dist", type=Path)
     parser.add_argument("--http-inventory", type=Path)
     parser.add_argument("--routing-inventory", type=Path, help="accepted literal22 JSON, explicit caller-supplied path")
+    parser.add_argument("--direct-inventory", type=Path, help="accepted original89 direct records; nineteen task/host selections")
     parser.add_argument("--web", action="store_true")
     args = parser.parse_args()
     isolate(args)  # precedes EVERY product import and constructor
     checks = Checks(args)
     try:
-        if args.case == "all" and args.web:
-            web(checks)
         if args.case == "all":
             checks.details["_http_inputs"] = load_http_inputs(checks)
+            load_task_inputs(checks)
         runtime = seed(checks)
-        if args.case == "all":
+        if args.case == "all" and runtime is not None:
+            if args.web:
+                web(checks)
             asyncio.run(serving(checks, runtime))
     except BaseException as exc:
         checks.rows.append({"assertion": "driver_completion", "status": "FAIL", "exception": type(exc).__name__,
