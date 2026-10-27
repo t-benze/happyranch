@@ -4799,6 +4799,14 @@ its actual predecessor route and requires no live SID. Same-key semantic replay
 requires current same-owner eligibility but precedes fresh digest/hold checks;
 another command/digest conflicts, and another key for the pair is pair_owned.
 
+A later genuine independent outgoing supersession of operator13286 preserves
+the original GET audit ID/time, canonical command and command/payload/receipt
+hashes, and intact-pair advisory traversal. Fresh admission still checks the
+operator's independent unowned topology and live eligibility: terminal13286 and
+its successor gain no writer/preflight or old QA13184 retry authority. Original
+dispatch/session deletion or drift, competing13112-outgoing/13203-incoming
+producers, outgoing13217 and invented13217→13286 ancestry still refuse.
+
 The writer refuses inherited transactions outside its rollback scope. It builds
 and hashes the complete successful response before COMMIT. Insert/validation
 failures roll back owned work; uncertain COMMIT or rollback errors remain503,

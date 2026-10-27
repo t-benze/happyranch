@@ -774,9 +774,12 @@ class TaskReconciliation:
         # Exactly current <- successor <- predecessor; owner is not a vertex.
         require([edges[0]["successor_id"], edges[0]["predecessor_id"], self.scope["predecessor"]]
                 == ["TASK-13217", "TASK-13203", "TASK-13112"])
+        # Fresh snapshot_v2 checks the independent operator's unowned topology.
+        # Its later unrelated outgoing supersession does not alter this frozen
+        # pair or original producer; receipt validation authenticates the saved
+        # dispatch/session separately. The historical endpoint stays closed.
         require(not self.edge_candidates(outgoing=self.scope["current"])
-                and not self.edge_candidates(incoming=self.scope["owner"])
-                and not self.edge_candidates(outgoing=self.scope["owner"]), "competing_successors")
+                and not self.edge_candidates(incoming=self.scope["owner"]), "competing_successors")
         local = snapshot["local_retry"]
         keys(local, "parent_id agents observations")
         require(local["parent_id"] == self.scope["owner"] and type(local["agents"]) is list and len(local["agents"]) == 2)
