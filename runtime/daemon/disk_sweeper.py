@@ -826,11 +826,33 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     spawn = asyncio.create_task(spawn_admitted())
     cause = None
-    cancelled = False
-    cancellation = None
-    admission_error = None
-    cancellation_traceback = None
+    primary = None
+    primary_traceback = None
+    secondary_errors = []
+    secondary_cancellations = []
     spawn_errors = []
+
+    def retain_failure(error, context, interruption=None):
+        # Each original join selects its own first event; later phases cannot
+        # replace that exception/traceback or its interruption attribution.
+        nonlocal primary, primary_traceback, cause
+        if error is None:
+            return
+        if primary is None:
+            primary, primary_traceback = error, error.__traceback__
+            if cause is None:
+                cause = interruption
+        else:
+            # Cancellation storms cannot exhaust the evidence for actual
+            # cleanup/publication failures. Both buckets remain bounded.
+            secondaries = (secondary_cancellations if isinstance(error, asyncio.CancelledError)
+                           else secondary_errors)
+            if (error is not primary and len(secondaries) < 8
+                    and not any(error is item for item in secondaries)):
+                secondaries.append(error)
+                primary.add_note(context + repr(error)[:512])
+        if getattr(error, "maintenance_native_unsettled", False):
+            primary.maintenance_native_unsettled = True
 
     def retain_spawn_error(error):
         if len(spawn_errors) < 8 and not any(error is item for item in spawn_errors):
@@ -840,23 +862,19 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     try:
         process = await _await_startup_owned(spawn, retain_spawn_error)
     except asyncio.CancelledError as exc:
-        cancellation, cancellation_traceback = exc, exc.__traceback__
+        retain_failure(exc, "original disk spawn secondary: ", 'shutdown')
         native_error = None if not spawn.done() or spawn.cancelled() else spawn.exception()
-        seen = set()
         for secondary in (native_error, *spawn_errors):
-            if secondary is not None and secondary is not exc and id(secondary) not in seen:
-                seen.add(id(secondary))
-                exc.add_note("original disk spawn secondary: " + repr(secondary)[:512])
+            retain_failure(secondary, "original disk spawn secondary: ")
         # Failed native creation supplies no Process. In particular, do not let
         # result() replace an earlier cancellation with the later spawn error.
         if spawn.cancelled() or spawn.exception() is not None:
-            raise exc.with_traceback(cancellation_traceback)
+            raise primary.with_traceback(primary_traceback)
         process = spawn.result()
-        cause, cancelled = 'shutdown', True
     except Exception as exc:
+        retain_failure(exc, "original disk spawn secondary: ")
         for secondary in spawn_errors:
-            if secondary is not exc:
-                exc.add_note("original disk spawn secondary: " + repr(secondary)[:512])
+            retain_failure(secondary, "original disk spawn secondary: ")
         from runtime.daemon.startup_recovery import StartupUnavailable
         if isinstance(exc, StartupUnavailable):
             exc.add_note(f"Initial disk summary {summary} published before spawn refusal.")
@@ -865,26 +883,26 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         try:
             await native_call(atomic_json, summary, initial)
         except BaseException as secondary:
-            exc.add_note("disk spawn failure publication secondary: " + repr(secondary)[:512])
-            raise exc.with_traceback(exc.__traceback__)
+            retain_failure(secondary, "disk spawn failure publication secondary: ")
+            raise primary.with_traceback(primary_traceback)
         return initial
     try:
-        if not cancelled:
+        if primary is None:
             try:
                 validate()
             except Exception as exc:
-                admission_error = exc
-                cause = 'startup_admission_closed'
-        if not cancelled and admission_error is None:
+                retain_failure(exc, "disk admission secondary: ", 'startup_admission_closed')
+        if primary is None:
             await asyncio.wait_for(process.wait(), max(.001, deadline - time.monotonic()))
-        if process.returncode:
+        if process.returncode and cause is None:
             cause = f'worker_exit:{process.returncode}'
     except asyncio.TimeoutError:
         cause = 'deadline'
     except asyncio.CancelledError as exc:
-        if cancellation is None:
-            cancellation, cancellation_traceback = exc, exc.__traceback__
-        cause, cancelled = 'shutdown', True
+        retain_failure(exc, "owned disk wait secondary: ", 'shutdown')
+    except BaseException as exc:
+        retain_failure(exc, "owned disk wait secondary: ")
+        raise
     finally:
         # Reconcile the entire group even if its leader exited first.
         reap_errors = []
@@ -901,21 +919,18 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
             try:
                 await _await_startup_owned(reap, retain_reap_error)
             except asyncio.CancelledError as exc:
-                if cancellation is None:
-                    cancellation, cancellation_traceback = exc, exc.__traceback__
-                cause, cancelled = 'shutdown', True
+                retain_failure(exc, "owned disk reap secondary: ", 'shutdown')
             # The joined wait preserves its first cancellation even when the
             # SAME reap fails. Only its actual successful result proves reap.
             reap.result()
+            for secondary in reap_errors:
+                retain_failure(secondary, "owned disk reap secondary: ")
         except BaseException as cleanup:
-            primary = cancellation or admission_error or cleanup
+            retain_failure(cleanup, f"owned disk worker {process.pid} termination/reap failed: ")
             primary.maintenance_native_unsettled = True
-            seen = set()
-            for secondary in (cleanup, *reap_errors):
-                if secondary is not primary and id(secondary) not in seen:
-                    seen.add(id(secondary))
-                    primary.add_note(f"owned disk worker {process.pid} termination/reap failed: " + repr(secondary)[:512])
-            raise primary.with_traceback(cancellation_traceback if primary is cancellation else primary.__traceback__)
+            for secondary in reap_errors:
+                retain_failure(secondary, f"owned disk worker {process.pid} termination/reap failed: ")
+            raise primary.with_traceback(primary_traceback)
     def finish():
         try:
             report = _read_json(summary)
@@ -941,35 +956,23 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         report = await (await_native(finish_worker) if await_native is not None
                         else _await_startup_owned(finish_worker, retain_report_error))
     except BaseException as exc:
-        primary = cancellation or admission_error or exc
-        primary_traceback = cancellation_traceback if primary is cancellation else primary.__traceback__
+        retain_failure(exc, "owned disk report secondary: ",
+                       'shutdown' if isinstance(exc, asyncio.CancelledError) else None)
         native_error = (None if not finish_worker.done() or finish_worker.cancelled()
                         else finish_worker.exception())
-        seen = set()
-        for secondary in (*report_errors, exc, native_error):
-            if secondary is not None and secondary is not primary and id(secondary) not in seen:
-                seen.add(id(secondary))
-                primary.add_note("owned disk report secondary: " + repr(secondary)[:512])
+        for secondary in (native_error, *report_errors):
+            retain_failure(secondary, "owned disk report secondary: ")
         if (not finish_worker.done() or finish_worker.cancelled()
                 or finish_worker.exception() is not None):
             # No report is fabricated on failed/cancelled native completion.
+            if not finish_worker.done() or finish_worker.cancelled():
+                primary.maintenance_native_unsettled = True
             raise primary.with_traceback(primary_traceback)
         report = finish_worker.result()
-        if isinstance(primary, asyncio.CancelledError):
-            cancellation, cancellation_traceback = primary, primary_traceback
-            cancelled = True
-        else:
-            primary.disk_sweep_report = report
-            raise primary.with_traceback(primary_traceback)
-    if cancelled:
-        cancellation.disk_sweep_report = report
-        if admission_error is not None:
-            cancellation.add_note(f"disk admission closed after native creation: {admission_error!r}")
-        raise cancellation.with_traceback(cancellation_traceback)
-    if admission_error is not None:
-        admission_error.disk_sweep_report = report
-        admission_error.add_note(f"Owned disk worker {process.pid} stopped/reaped; retain original report {summary}.")
-        raise admission_error
+    if primary is not None:
+        primary.disk_sweep_report = report
+        primary.add_note(f"Owned disk worker {process.pid} stopped/reaped; retain original report {summary}.")
+        raise primary.with_traceback(primary_traceback)
     return report
 
 

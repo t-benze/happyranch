@@ -299,11 +299,17 @@ shutdown waits; unknown close/restoration/retirement refuses another epoch.
 Job and disk spawn/report waits also consume the SAME original completion through
 repeated cancellation and done/error races. First observed failure remains primary;
 otherwise the first cancellation and original traceback survive a later native
-OSError with bounded real secondary evidence. Process/report values are read only
+OSError with bounded real secondary evidence. Across disk spawn/reap/report, the
+first exception/traceback and its interruption attribution are latched once:
+earlier post-spawn admission failure precedes later shutdown cancellation, while
+earlier spawn cancellation stays primary. Actual later errors are bounded and
+identity-deduplicated. Process/report values are read only
 on genuine success; success-after-cancel still captures/stops/reaps the real child.
 Disk cleanup separately consumes the SAME actual reap Task result after a remembered
 cancellation. Failed/cancelled reap retains maintenance_native_unsettled and real
 secondary evidence, skips successful reap/report assertions and blocks destruction.
+Successful reap permits the original report join; only actual successful report
+completion attaches it before rethrowing that same first exception/traceback.
 Marked projection uncertainty likewise propagates through the sweep's ordinary
 isolation to its original retained maintenance Future; no later tick runs beside
 the unknown owner. Ordinary projection failures remain independently isolated.

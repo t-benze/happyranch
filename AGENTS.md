@@ -154,12 +154,17 @@ Shutdown joins original maintenance operations and attempts independently owed
 host/consumer/dashboard/queue/job/service drains even after an ended error. Active
 maintenance is not an early reason to skip them. Positive final native/maintenance/
 executor/reader/service/runner barriers still precede DB destruction. Job and disk
-spawn/report waits preserve the first observed cause and original traceback;
-later real errors remain bounded secondary evidence. Successful spawn after
+spawn/reap/report waits preserve the first observed cause, original traceback
+and interruption attribution: earlier post-spawn admission failure precedes
+later shutdown cancellation, while earlier spawn cancellation stays primary.
+Later real errors remain bounded, identity-deduplicated secondary evidence.
+Successful spawn after
 cancellation captures its actual Process for original-owner stop/reap; failed
 spawn/report supplies no handle/report. Disk reap separately consumes the SAME
 actual reap Task result: a failed/cancelled reap retains native uncertainty and
 its actual secondary error, without a reaped/report assertion or retirement.
+Only positive actual report completion attaches a report before the same first
+exception is rethrown; repeated cancellation cannot skip the original joins.
 Marked projection native uncertainty escapes operation isolation to the retained
 maintenance barrier and stops further ticks; ordinary errors remain isolated.
 The zombie owner joins every original captured committed child's cleanup on
