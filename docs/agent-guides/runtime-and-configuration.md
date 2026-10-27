@@ -3538,6 +3538,22 @@ naturally allocated synthetic positive/replay/crash proof is UNPROVEN under
 Founder299seq11, never full behavioral PASS.
 
 
+The additional closed v2 THR291 producer has no startup installation or schema
+effect either. ROOT13286 source approval518/recovery525 does not grant deployment,
+restart or live application. Compatible loaded producer AND receipt/retry readers
+must be independently identified before a separate human application decision.
+Only genuinely fresh ordinary SAME13286 SID/no selected-SID result with live,
+unblocked/unheld ownership can operate; ended/spent SIDs and terminal13286 refuse.
+The existing escalation/continue prerequisite applies while13286 is nonterminal;
+a later exact operator change needs separately assessed human approval. Preserve
+FAILED13112/QA13184, authentic13203→13217 and FAILED13217/no successor. This
+source root is not another ancestry edge or old QA retry grant. Stored-version
+v1/v2 readers coexist; rollback must retain both, with no receipt/history deletion.
+Retain body/key and use nonmutating SAME-key GET on uncertain commit. Positive
+and dependent fault proof remains NOT RUN/PROOF NOT RUN; integration including
+callback/lifespan/SessionTracker SKIPPED24342/211270–271; Python units RETIRED.
+
+
 ### Current owner review discovery (THR139 seq506)
 
 GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human`

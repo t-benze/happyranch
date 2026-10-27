@@ -73,10 +73,10 @@ describe('openapi coverage', () => {
     expect(EXCLUDED_PATHS.has(route)).toBe(false);
   });
 
-  test('THR299 writer is agent-only and advisory retry reader is browser-included', () => {
+  test('Closed THR299/THR291 writer is agent-only and advisory retry reader is browser-included', () => {
     const writer = 'POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation';
     const reader = 'GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification';
-    expect(EXCLUDED_PATHS.get(writer)).toBe('agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant');
+    expect(EXCLUDED_PATHS.get(writer)).toBe('agent-only closed v1 THR299 TASK10725 / v2 THR291 TASK13286 ordinary manager operations; no browser write grant');
     expect(INCLUDED_PATHS.has(writer)).toBe(false);
     expect(INCLUDED_PATHS.has(reader)).toBe(true);
     expect(EXCLUDED_PATHS.has(reader)).toBe(false);

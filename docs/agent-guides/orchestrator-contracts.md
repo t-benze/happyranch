@@ -5141,7 +5141,7 @@ no renderer write, fake session, receipt insertion or new host API is involved.
 
 ## Exact failed-continuation reconciliation (THR299)
 
-Founder seq4/11/13 and SAME root TASK10725 authorize exactly org happyranch,
+Literal v1: Founder seq4/11/13 and SAME root TASK10725 authorize exactly org happyranch,
 team engineering, manager engineering_manager, FAILED TASK10343 → existing
 TASK10554, current TASK10565, original thread THR293. Only TASK10725's genuine
 ordinary manager session from THR299 may operate it. Its actual registry,
@@ -5261,6 +5261,98 @@ causal/restoration/repetition/instantaneous queue proof remain UNPROVEN. Static
 or isolated fixtures are not public acceptance. General integration SKIPPED24342;
 Python units retired; no ad hoc Product E2E. Actual post-install receipt and
 both original retry validations are owned by SAME TASK10725, before naming use.
+
+### Closed THR291 version2 continuation (Founder seq518/525)
+
+The same POST and GET additionally decode integer2 / lexical `--version 2` for
+ONLY happyranch/engineering/engineering_manager, route predecessor TASK13112,
+existing_successor_id TASK13203, current_descendant_id TASK13217, thread_id
+THR291 and operator_task_id TASK13286 (wire IDs retain their hyphens). All body
+fields, strict scalar/UTF8/16KiB rules and envelopes remain as above. Only command,
+receipt and preflight versions become1|2; response/history/retry envelopes stay1.
+The v2 descendant is historical FAILED13217, not the live source operator.
+This adds only FAILED13112→existing13203. It preserves the genuine13203→13217
+supersession and requires no outgoing13217 edge;13286 is independent, not its
+successor. Neither terminal historical parent can spawn, and13286 still has no
+verified ancestry to QA13184. This receipt does not authorize its old QA retry.
+
+The four original root trigger/dispatch/audit pins are13112:495/496/412325,
+13203:510/511/417037,13217:518/519/417747,13286:525/526/422353 in THR291.
+Each service invocation must join uniquely to its actual original task/manager,
+Founder message, system dispatch and audit. Original brief digests and immutable
+invocation/trigger/dispatch references are frozen. The original old-edge audit
+417748 remains authenticated by its escalation producer. No caller-supplied
+ancestry/closure or missing-invocation shortcut exists. No historical process,
+preparation, job or outer-settlement closure is required or certified.
+
+Fresh admission requires actual current executable engineering_manager, a live
+uncancelled/unblocked ordinary SAME13286 tracker binding, manager_decision start
+and NO result for that selected SID. Ended13203/13217 SIDs, spent13286 SIDs,
+worker/thread/recovery sessions and a terminal13286 refuse. Existing escalation
+and separately Founder-approved continue must produce a genuinely fresh ordinary
+session while13286 remains nonterminal. If it ends first, a human-selected exact
+new operator binding needs a separately assessed bounded amendment; no arbitrary
+future owner is authorized.
+
+V2 holds sorted unique13112/13203/13217/13286 gates after the selected owner lease,
+then DB RLock and ONE owned BEGIN IMMEDIATE. Fresh preflight/writer require raw
+held=false/even generations even on terminal roots. The fixed snapshot contains
+those four roots plus QA13184, its FAILED13112 parent/revisit13135 identity,
+original dispatch bindings, Founder518/525 references, the one old edge and
+per-root bounded sorted child projections/result row hashes. Snapshot local_retry
+uses parent13286 and both agent observations; historical validation retains
+original identities/rows without requiring later unchanged owner lifecycle or
+membership. Fresh writer recomputes all relevant state, results, children,
+registry, topology, controls and digest. Heartbeat/progress/updated_at remain
+excluded. No task/result/child/control/queue row changes occur.
+
+Every bounded global receipt envelope/canonical command is decoded before
+selection. Both closed saved shapes receive pure nonrecursive primitive and
+producer-consistency validation: claim/frozen owner/session/binding and exact
+registry; sorted context-appropriate roots/children/statuses, dispatch membership
+and sole owner/origin copy; closed pins and the variable legitimate v1 frozen
+path or sole v2 old edge; sorted unheld/even holds (absent implies generation0);
+local parent/agent/failed/retry correspondence and duplicated retry lists; v2
+child/projection/parent and result/enclosing-root identities, including repeated
+QA and local observations from the same capture. SQL-backed positive references
+and nonnegative counters are bounded by SQLite signed64; bool is excluded on
+every duplicated copy before equality. Full lowercase SHA256 syntax, optional
+nullable metadata and unassigned observed children retain their producer types.
+Malformed disjoint evidence refuses before a digest, successful historical or
+advisory result, or append; this pass reads no original DB references or current
+liveness. Stored version picks the immutable historical producer; relevant
+receipts receive complete original-reference/frozen validation without recursive
+receipt/edge scans. Disjoint valid v1/v2 operations coexist in either order;
+keys stay globally unique and competing endpoints/producers refuse. Unrelated
+valid insertion does not change the selected snapshot digest. Receipt GET checks
+its actual predecessor route and requires no live SID. Same-key semantic replay
+requires current same-owner eligibility but precedes fresh digest/hold checks;
+another command/digest conflicts, and another key for the pair is pair_owned.
+
+A later genuine independent outgoing supersession of operator13286 preserves
+the original GET audit ID/time, canonical command and command/payload/receipt
+hashes, and intact-pair advisory traversal. Fresh admission still checks the
+operator's independent unowned topology and live eligibility: terminal13286 and
+its successor gain no writer/preflight or old QA13184 retry authority. Original
+dispatch/session deletion or drift, competing13112-outgoing/13203-incoming
+producers, outgoing13217 and invented13217→13286 ancestry still refuse.
+
+The writer refuses inherited transactions outside its rollback scope. It builds
+and hashes the complete successful response before COMMIT. Insert/validation
+failures roll back owned work; uncertain COMMIT or rollback errors remain503,
+retaining primary/secondary causes. CLI sends once; transport/server uncertainty
+prints committed:null/readback_required:true, preserves the exact file/key and
+requires SAME-key historical GET. A missing receipt while a request is in flight
+is not permission to resend. Old version1 canonical bytes and historical meanings
+remain unchanged; generic coherent_read_view and final retry/spawn fences remain.
+
+This is SOURCE only under ROOT13286 and accepted design13292/QA13299. Live POST,
+installation/restart and any desired old QA retry need separate human action.
+C01–C10 positive/dependent replay/race/rollback proof is NOT RUN/PROOF NOT RUN:
+no exact naturally allocated isolated closed-producer venue is available. Existing
+integration including callback/lifespan/SessionTracker is SKIPPED24342/211270–271;
+Python units RETIRED. Lint and mirror checks supply no runtime/Product/custody PASS.
+
 
 
 ### Current owner review discovery (THR139 seq506)

@@ -3519,6 +3519,23 @@ Founder299seq11; reviewed source is distinct from installation/reconciliation
 and TASK10565's naming acceptance.
 
 
+Closed version2 additionally records ONLY FAILED13112→existing13203 under
+Founder THR291seq518/525, preserving13203→13217 and FAILED13217/no successor.
+The independent ordinary operator13286 is bound to Founder525/dispatch526, never
+an ancestry edge; its genuine fresh SAME-task SID/no selected-SID result and
+live unblocked/unheld ownership are mandatory. Terminal13286 refuses; arbitrary
+future operators are forbidden. All four root gates, original service provenance,
+full frozen observations and writer-time digest revalidation precede one audit.
+Disjoint literal v1/v2 receipts coexist with global key and endpoint conflicts;
+stored-version history survives owner end. Response hashing precedes COMMIT;
+uncertainty requires exact-body/key custody and nonmutating readback, no resend.
+No UNKNOWN, failure, child/result/status, final-spawn fence or native denial is
+cleared. This source grant supplies no live application, deployment/restart or
+QA13184 retry. Separate human application needs compatible loaded code and the
+existing nonterminal13286 escalation/continue prerequisite. Positive/dependent
+proof NOT RUN/PROOF NOT RUN; integration SKIPPED24342/211270–271, units RETIRED.
+
+
 ### Current owner review discovery (THR139 seq506)
 
 GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human`

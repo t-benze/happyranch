@@ -1993,8 +1993,8 @@ class TasksMixin:
 
     @_synchronized
     def reconcile_failed_continuation(self, org: object, predecessor_id: str, body: dict) -> dict:
-        """Caller holds ordinary owner lease and both sorted root gates."""
-        return TaskReconciliation(self).reconcile(org, predecessor_id, body)
+        """Caller holds the selected ordinary owner lease and sorted root gates."""
+        return TaskReconciliation(self, body["version"]).reconcile(org, predecessor_id, body)
 
     def _retry_reconciliation_rows(self, *, incoming: str | None = None, outgoing: str | None = None) -> list[dict]:
         validator = TaskReconciliation(self)
