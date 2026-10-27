@@ -887,25 +887,34 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         cause, cancelled = 'shutdown', True
     finally:
         # Reconcile the entire group even if its leader exited first.
+        reap_errors = []
+        def retain_reap_error(error):
+            if len(reap_errors) < 8 and not any(error is item for item in reap_errors):
+                reap_errors.append(error)
         try:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             # The process is already owned; stop/reap is independent of readiness.
-            from runtime.orchestrator.producer_move import await_producer_worker
             reap = asyncio.create_task(process.wait())
             try:
-                await await_producer_worker(reap)
+                await _await_startup_owned(reap, retain_reap_error)
             except asyncio.CancelledError as exc:
                 if cancellation is None:
                     cancellation, cancellation_traceback = exc, exc.__traceback__
                 cause, cancelled = 'shutdown', True
+            # The joined wait preserves its first cancellation even when the
+            # SAME reap fails. Only its actual successful result proves reap.
+            reap.result()
         except BaseException as cleanup:
             primary = cancellation or admission_error or cleanup
             primary.maintenance_native_unsettled = True
-            if primary is not cleanup:
-                primary.add_note(f"owned disk worker {process.pid} termination/reap failed: " + repr(cleanup)[:512])
+            seen = set()
+            for secondary in (cleanup, *reap_errors):
+                if secondary is not primary and id(secondary) not in seen:
+                    seen.add(id(secondary))
+                    primary.add_note(f"owned disk worker {process.pid} termination/reap failed: " + repr(secondary)[:512])
             raise primary.with_traceback(cancellation_traceback if primary is cancellation else primary.__traceback__)
     def finish():
         try:

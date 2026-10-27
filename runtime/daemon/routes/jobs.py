@@ -1300,14 +1300,21 @@ async def _run_job_core_impl(
             # startup refusal is neither a move deferral nor execution failure.
             raise
         except DeferredTeamMove:
+            if registration.process is not None:
+                # A successful Process is no pre-launch deferral proof. Keep
+                # original ownership when its validation/cleanup refuses.
+                raise
             defer_owned_job(registration)
             return None
         except Exception as exc:
+            if getattr(exc, "job_native_unsettled", False):
+                raise  # No execution classification before positive cleanup.
             failed_tail = True
             result = JobRunResult(status='failed', exit_code=None, duration_ms=None,
                 stdout_head=None, stderr_head=str(exc)[:4096], stdout_bytes=0, stderr_bytes=0,
                 truncated_stdout=False, truncated_stderr=False,
-                reason='spawn_failed' if isinstance(exc, (FileNotFoundError, OSError)) else 'internal_error')
+                reason=('spawn_failed' if registration.process is None
+                    and isinstance(exc, (FileNotFoundError, OSError)) else 'internal_error'))
 
         # Execution handling ends here: publication failures cannot rewrite its result.
         candidate = None

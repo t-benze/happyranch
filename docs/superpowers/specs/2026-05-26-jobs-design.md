@@ -15,7 +15,15 @@ construction keeps its offline contract; missing production attachment refuses.
 
 A final-admitted asynchronous spawn retains its original Task/registration and
 native attempt until actual creation is observed, even if its waiter is cancelled.
-The observed Process is captured before fallible accounting. Closure during
+The observed Process immediately enters exception cleanup custody before fallible
+registration validation, scratch reset, on_started accounting, stdin and partial
+pump setup. Ordinary errors and saved cancellation both join identity-validated
+stop/reap/output settlement; repeated cancellation cannot retire that same cleanup
+Task. Earlier cancellation keeps its original object/traceback with bounded real
+secondary errors. Refused/failed cleanup retains explicit native uncertainty and
+the original registration/native-user DB barrier, with no terminal execution
+classification or safe pre-launch deferral. Standalone callers owe their same
+actual Process and output tasks proportionately. Closure during
 creation suppresses script input and requests original owned termination/reap;
 cancellation retains its original primary object/traceback and bounded real
 secondary errors, including later spawn OSError and repeated-cancel/done races.

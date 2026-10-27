@@ -80,7 +80,7 @@ def _sweep_once(
                 )
         except Exception as exc:
             from runtime.daemon.startup_recovery import StartupUnavailable
-            if isinstance(exc, StartupUnavailable):
+            if isinstance(exc, StartupUnavailable) or getattr(exc, "maintenance_native_unsettled", False):
                 raise
             logger.exception("direct-connect projection sweep failed for operation %s", operation_id)
 

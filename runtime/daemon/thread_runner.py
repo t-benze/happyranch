@@ -1036,16 +1036,21 @@ async def run_invocation(
         finally:
             import sys
             primary = sys.exception()
-            try:
-                owner.finish(deferred=deferred, failed=failed)
-            except BaseException as settlement:
-                owner.owner_live = False
-                # Retain process-local attribution when durable settlement refuses.
-                if primary is not None:
-                    primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
-                    logger.exception("C2 lifecycle settlement failed while preserving primary error")
-                else:
-                    raise
+            if getattr(primary, "thread_native_unsettled", False):
+                # Retain the actual preparation and org native-user barrier;
+                # neither a submission error nor a cancelled Future proves exit.
+                pass
+            else:
+                try:
+                    owner.finish(deferred=deferred, failed=failed)
+                except BaseException as settlement:
+                    owner.owner_live = False
+                    # Retain process-local attribution when durable settlement refuses.
+                    if primary is not None:
+                        primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
+                        logger.exception("C2 lifecycle settlement failed while preserving primary error")
+                    else:
+                        raise
 
 
 async def _run_invocation_owned(
@@ -1683,6 +1688,32 @@ async def _run_invocation_owned(
                 seq=inv.triggering_seq, kind="invocation_settled", status="failed",
             )
 
+        async def _await_invocation_worker(function):
+            # The runner/preparation spans the SAME callable's supervisor and
+            # direct_terminal finally, including repeated wrapper cancellation.
+            from runtime.daemon.startup_recovery import _await_startup_owned
+            secondaries = []
+            def retain(error):
+                if len(secondaries) < 8 and not any(error is item for item in secondaries):
+                    secondaries.append(error)
+            native_owner = object()
+            if not org_state._acquire_native_task(native_owner):
+                raise StartupUnavailable("startup_thread_admission_closed")
+            native = None
+            try:
+                native = loop.run_in_executor(None, function)
+                return await _await_startup_owned(native, retain)
+            except BaseException as primary:
+                if native is None or not native.done() or native.cancelled():
+                    primary.thread_native_unsettled = True
+                for secondary in secondaries:
+                    if secondary is not primary:
+                        primary.add_note("thread native worker secondary: " + repr(secondary)[:512])
+                raise
+            finally:
+                if native is not None and native.done() and not native.cancelled():
+                    org_state._release_native_task(native_owner)
+
         # Spawn subprocess in a thread pool (executors are synchronous).
         fallback_executed = move_owner.state.phase != "initial"
         if move_owner.state.phase != "initial":
@@ -1691,7 +1722,7 @@ async def _run_invocation_owned(
             prompt += "\nYou MUST post exactly one genuine terminal reply or decline for this invocation.\n"
         try:
             loop = asyncio.get_event_loop()
-            phase = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
+            phase = await _await_invocation_worker(lambda: _invoke(prompt, resume_sid))
             if phase.terminal_reason in _INTERRUPTED_TERMINALS:
                 await _settle_interrupted(phase)
                 return
@@ -1745,9 +1776,7 @@ async def _run_invocation_owned(
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
                 fallback_executed = True
-                phase = await loop.run_in_executor(
-                    None, lambda: _invoke(full_prompt, None),
-                )
+                phase = await _await_invocation_worker(lambda: _invoke(full_prompt, None))
                 if phase.terminal_reason in _INTERRUPTED_TERMINALS:
                     await _settle_interrupted(phase)
                     return
@@ -1758,6 +1787,8 @@ async def _run_invocation_owned(
         except (DeferredTeamMove, StartupUnavailable):
             raise
         except Exception as exc:
+            if getattr(exc, "thread_native_unsettled", False):
+                raise
             _settle_or_fail_reply(
                 org_state, invocation_token=invocation_token, claim=claim,
                 status=ThreadInvocationStatus.FAILED,
@@ -1917,12 +1948,12 @@ async def _run_invocation_owned(
             retry_exc: Exception | None = None
             retry_phase: _InvokeResult | None = None
             try:
-                retry_phase = await loop.run_in_executor(
-                    None, lambda: _invoke(retry_prompt, retry_resume_sid),
-                )
+                retry_phase = await _await_invocation_worker(lambda: _invoke(retry_prompt, retry_resume_sid))
             except (DeferredTeamMove, StartupUnavailable):
                 raise
             except Exception as exc:
+                if getattr(exc, "thread_native_unsettled", False):
+                    raise
                 logger.warning(
                     "run_invocation: token %s nudge re-invoke crashed: %s",
                     invocation_token[:8], exc,

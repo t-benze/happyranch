@@ -29,6 +29,8 @@ stop/closed/failed/unbound ownership. The one ready commit and consumer latch
 also require BOTH signals: recovery-first arms without awaiting ASGI/listener
 startup, listener-first waits for recovery. Direct/native gates renew the same
 original listener identity; loss/replacement/failure never admits fresh effects.
+A matching successful listener remains served when recovery fails before its
+signal, with the original cause retained and the ready latch still closed.
 Otherwise readiness503 includes truthful state/guidance. Cached host-session
 semantics remain, with no DB/history/probe
 or raw cause/path/native/task collection. Owner-to-serving time is not launcher
@@ -46,6 +48,12 @@ Shutdown joins retained maintenance and attempts independent owed drains before
 idle destruction checks; unknown owners remain barriers. Job/disk spawn/report
 waits preserve first cause/traceback and bounded actual secondary errors, capture
 only successful Process/report results, and retain original-owner stop/reap duties.
+The SAME disk reap Task must actually succeed before reaped/report assertions;
+failed/cancelled reap and marked projection uncertainty retain the maintenance
+barrier and cannot retire or start a later tick. Job exception custody begins
+before registration/scratch/accounting/input/pump setup; joined identity-safe
+cleanup precedes classification, while unknown cleanup keeps DB-close barriers
+and provides no safe pre-launch deferral proof.
 These source corrections change no test/helper, resource allocation or readiness
 acceptance: behavior/PROOF NOT RUN, maker3/3 exhausted, QA0/3 not released.
 
@@ -3291,7 +3299,11 @@ acknowledgement; no consumer runs before P8. Native selectors and P7 recovery
 retain their original contract. Stop/refusal never consumes their history.
 
 Actual executor workers remain joined under existing org runner/native ownership
-through wrapper cancellation; fresh admission is separate from original terminal,
+through wrapper cancellation. Each thread initial/fallback/nudge consumes its
+original native completion, including supervisor and direct_terminal DB tails,
+before preparation.finish and runner retirement. Uncertain submission retains
+preparation and native-user close ownership, with original error/traceback and
+bounded real secondaries. Fresh admission is separate from original terminal,
 cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
 unavailable, without synthetic source failure, successful move deferral or no-op.
 Scheduled enqueue failures report the genuine committed pending/firing source.

@@ -214,6 +214,12 @@ authority's normal None, the sweep's distinct first cause, exceptional native
 Future and coordinator completion. No query/cache flushing, fake result or
 normal-Future-negative-value credit follows.
 
+A successful matching listener observation is independent of recovery success,
+including failure before the listener signal and native failure racing activation.
+It retains the original recovery cause and leaves readiness/latch/fresh admission
+closed. Listener identity, app/loop/epoch, actual startup and stop checks still
+apply; healthy listener-first and recovery-first each release exactly once.
+
 The genuine failed listener serves health200 with recovery_failed, serving=true,
 recovery_ready=false and ready_commits0, readiness503, and authenticated finite
 list/detail/messages for BOTH known transcripts. Missing/invalid auth and each
@@ -295,6 +301,21 @@ repeated cancellation and done/error races. First observed failure remains prima
 otherwise the first cancellation and original traceback survive a later native
 OSError with bounded real secondary evidence. Process/report values are read only
 on genuine success; success-after-cancel still captures/stops/reaps the real child.
+Disk cleanup separately consumes the SAME actual reap Task result after a remembered
+cancellation. Failed/cancelled reap retains maintenance_native_unsettled and real
+secondary evidence, skips successful reap/report assertions and blocks destruction.
+Marked projection uncertainty likewise propagates through the sweep's ordinary
+isolation to its original retained maintenance Future; no later tick runs beside
+the unknown owner. Ordinary projection failures remain independently isolated.
+Thread initial/fallback/nudge each join their actual native executor completion
+through repeated cancellation, including supervisor and direct_terminal tails,
+before preparation.finish, runner retirement and DB close. Uncertain submission
+retains its original preparation and org native-user barrier.
+Job Process custody begins before fallible registration/scratch/accounting/input/
+pump setup. Every post-create error joins identity-safe process/output cleanup;
+an earlier cancellation keeps its object/traceback and bounded real secondaries.
+Unknown cleanup forbids terminal classification or safe pre-launch deferral and
+retains native DB-close barriers. Standalone runners owe their same actual child.
 All five partition A corrections are SOURCE ONLY: behavior/PROOF/resource fit NOT
 RUN, maker3/3 exhausted, QA0/3 unused/not released; under10s UNVERIFIED.
 

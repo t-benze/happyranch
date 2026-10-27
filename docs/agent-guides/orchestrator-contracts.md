@@ -4483,7 +4483,11 @@ acknowledgement; no consumer runs before P8. Native selectors and P7 recovery
 retain their original contract. Stop/refusal never consumes their history.
 
 Actual executor workers remain joined under existing org runner/native ownership
-through wrapper cancellation; fresh admission is separate from original terminal,
+through wrapper cancellation. Thread initial/fallback/nudge each consume the SAME
+original native completion, including supervisor/lease/DB and direct_terminal tails,
+before preparation.finish and runner retirement. Uncertain submissions retain the
+original preparation and native-user close barrier. First cause/traceback and
+bounded real secondaries remain visible; fresh admission is separate from original terminal,
 cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
 unavailable, without synthetic source failure, successful move deferral or no-op.
 Scheduled enqueue failures report the genuine committed pending/firing source.
@@ -4500,7 +4504,10 @@ actual handle immediately, and commits ready/releases without an await only when
 BOTH positive recovery/preparation and the original matching live listener agree.
 Recovery-first arms activation and returns without blocking ASGI/listener startup;
 listener-first stays held until native completion. One commit/latch release serves
-both orders. Every native/direct gate renews that actual listener conjunction;
+both orders. A matching successful listener signal remains accepted after recovery
+failure, retaining the failure surface and original cause while readiness/latch/
+fresh effects stay closed. Failed/replaced/missing listeners and wrong app/loop/
+epoch or stop remain refusals. Every native/direct gate renews that actual listener conjunction;
 listener loss/replacement/failure and stopped/failed epochs refuse fresh effects.
 All worker,
 scheduler, reaper, direct-connect/workspace-cleanup and dashboard bodies wait it.
@@ -4528,7 +4535,16 @@ Shutdown attempts independent host/consumer/dashboard/queue/job/service drains,
 joins maintenance before its final idle checks and retains first cause; uncertainty
 still blocks dependent DB/executor destruction. Job/disk spawn/report waits retain
 the first actual cause/traceback plus bounded real secondaries and only read real
-successful results. No new behavioral/resource run or execution credit follows.
+successful results. Disk reap independently consumes its SAME actual Task result;
+failed/cancelled reap retains maintenance_native_unsettled plus real secondary
+errors and cannot publish reaped/report success or retire native ownership.
+Projection propagates that same marked uncertainty through operation isolation to
+the original maintenance Future/barrier and stops the loop; ordinary errors remain
+isolated. Job successful Process custody spans registration validation, scratch,
+accounting, input and partial pump setup, with identity-safe joined process/output
+cleanup on every exception. Unknown cleanup preserves DB-close barriers and cannot
+be classified as execution failure or safe pre-launch deferral. No new behavioral/
+resource run or execution credit follows.
 
 P5 `compatibility_native_on_startup(state, recovery)` owns `compatibility` once
 following returned completion, original true-loop binding and idle handoffs.

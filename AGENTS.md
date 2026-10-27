@@ -93,8 +93,12 @@ P8 retains each actual dormant consumer handle. P9 commits ready and releases
 ONE latch without an await only after BOTH positive recovery/preparation and the
 original matching live listener agree. Recovery-first arms activation and returns
 without blocking ASGI startup; listener-first waits for native completion. Both
-orders converge on one commit. Every native/direct readiness renewal checks that
-same listener identity; loss/replacement/stop/failure holds fresh effects.
+orders converge on one commit. A genuine matching listener still establishes
+serving when recovery failed before its signal, including a racing native failure;
+the original recovery cause remains, health/read access stays available and the
+ready latch/fresh admission stay closed. Wrong/replaced/missing listeners, wrong
+app/loop/epoch and stop still refuse. Every native/direct readiness renewal checks
+that same listener identity; loss/replacement/stop/failure holds fresh effects.
 All original task/thread/dream/wake/schedule workers,
 schedulers, breaker, zombie/disk/exchange/direct-connect/workspace-cleanup and
 dashboard suffixes wait that latch before their bodies run. Dashboard cold disk
@@ -144,7 +148,12 @@ executor/reader/service/runner barriers still precede DB destruction. Job and di
 spawn/report waits preserve the first observed cause and original traceback;
 later real errors remain bounded secondary evidence. Successful spawn after
 cancellation captures its actual Process for original-owner stop/reap; failed
-spawn/report supplies no handle/report. These A corrections remain SOURCE ONLY,
+spawn/report supplies no handle/report. Disk reap separately consumes the SAME
+actual reap Task result: a failed/cancelled reap retains native uncertainty and
+its actual secondary error, without a reaped/report assertion or retirement.
+Marked projection native uncertainty escapes operation isolation to the retained
+maintenance barrier and stops further ticks; ordinary errors remain isolated.
+These A corrections remain SOURCE ONLY,
 behavior/PROOF/resource fit NOT RUN; maker3/3 exhausted, QA0/3 not released,
 under10s UNVERIFIED. Existing assertions/helpers and execution limits are unchanged.
 
@@ -218,7 +227,12 @@ construction keeps its offline contract; missing production attachment refuses.
 
 A final-admitted asynchronous spawn retains its original Task/registration and
 native attempt until actual creation is observed, even if its waiter is cancelled.
-The observed Process is captured before fallible accounting. Closure during
+The observed Process immediately enters original-owner exception cleanup custody
+before registration validation, scratch reset, accounting, stdin and pump setup.
+Any failure joins identity-validated stop/reap and actual output settlement through
+repeated cancellation, preserving the original cause/traceback and bounded real
+secondaries. Refused/failed cleanup keeps native uncertainty and DB-close barriers;
+no terminal classification or safe pre-launch deferral follows it. Closure during
 creation suppresses script input and requests original owned termination/reap;
 cancellation retains its primary cause and any cleanup failure. The registration
 also occupies the org's existing native-user close barrier through its committed
@@ -255,7 +269,12 @@ acknowledgement; no consumer runs before P8. Native selectors and P7 recovery
 retain their original contract. Stop/refusal never consumes their history.
 
 Actual executor workers remain joined under existing org runner/native ownership
-through wrapper cancellation; fresh admission is separate from original terminal,
+through wrapper cancellation. Thread initial, evicted-session fallback and nudge
+each consume the SAME submitted completion, including supervisor/lease/DB and
+self-launch direct_terminal work, before preparation.finish or runner retirement.
+Submission uncertainty retains the preparation and org native-user barrier;
+first causes/tracebacks and bounded genuine secondaries remain visible.
+Fresh admission is separate from original terminal,
 cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
 unavailable, without synthetic source failure, successful move deferral or no-op.
 Scheduled enqueue failures report the genuine committed pending/firing source.

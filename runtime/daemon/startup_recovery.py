@@ -432,7 +432,7 @@ class StartupRecovery:
         first = False
         with self._lock:
             if (app is not self.app or self._closed or self._stop.is_set()
-                    or self._first_cause is not None or not self._listener_current()):
+                    or not self._listener_current()):
                 raise RuntimeError("startup_listener_attachment_mismatch")
             if not self._serving:
                 self._serving_ns = time.monotonic_ns()
@@ -441,10 +441,22 @@ class StartupRecovery:
         if first and self._observation is not None:
             self._observation.listener(self._serving_ns)
             self._emit_observation("serving")
-        if self._activation_requested:
-            self.activate()
+        with self._lock:
+            activate = self._activation_requested and self._first_cause is None
+        if activate:
+            try:
+                self.activate()
+            except RuntimeError:
+                # Native failure can race the healthy observation above. Keep
+                # the actual listener's failure surface, never its ready latch.
+                with self._lock:
+                    failed_listener = (self._first_cause is not None
+                        and self._status == "recovery_failed" and not self._closed
+                        and not self._stop.is_set() and self._listener_current())
+                if not failed_listener:
+                    raise
         else:
-            self._signal_services()
+            self._signal_services()  # Failed recovery cannot signal readiness.
 
     def _listener_current(self) -> bool:
         """Renew the original listener conjunction for native and HTTP callers."""
