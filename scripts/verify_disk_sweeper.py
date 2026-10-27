@@ -988,6 +988,65 @@ def damaged_registration(f, repo, path, kind):
         for action in reversed(restore):action()
 
 
+def descendant_setup(f, *, nested=True):
+    """Exact F1 topology; local excludes belong only to this disposable primary."""
+    repo, outer = f.worktree('TASK-1')
+    base_head = f.git(repo, 'rev-parse', 'HEAD').strip()
+    f.git(repo, 'branch', 'fixture-base', base_head)
+    (outer / 'source').write_text('distinct outer commit\n')
+    f.git(outer, 'commit', '-qam', 'outer fixture role')
+    outer_head = f.git(outer, 'rev-parse', 'HEAD').strip()
+    assert outer_head != base_head
+    exclude = repo / '.git/info/exclude'
+    exclude.write_bytes(exclude.read_bytes() + b'\n/.claude/worktrees/\n')
+    (outer / 'ignored').mkdir()
+    (outer / 'ignored/payload').write_bytes(b'outer ignored payload' * 1024)
+    candidate = dict(path=str(outer), repo=str(repo), workspace=str(f.workspace), phase='worktree')
+    deadline = time.monotonic() + 12
+    # The original ordinary gates admit before adding a different registration.
+    ds.admit(candidate, ds.Evidence(f.org, deadline, writing=True), deadline, now=NOW)
+    baseline = outer / '.claude/worktrees/TASK-1-baseline'
+    if nested:
+        descendant_add(f, repo, baseline, base_head)
+        descendant_ready(f, repo, outer, baseline, outer_head, base_head)
+    return repo, outer, baseline, outer_head, base_head
+
+
+def descendant_add(f, repo, baseline, base_head):
+    baseline.parent.mkdir(parents=True, exist_ok=True)
+    f.git(repo, 'worktree', 'add', '--detach', str(baseline), base_head)
+    (baseline / 'ignored').mkdir()
+    (baseline / 'ignored/payload').write_bytes(b'detached ignored payload' * 1024)
+
+
+def descendant_ready(f, repo, outer, baseline, outer_head, base_head):
+    deadline = time.monotonic() + 12
+    assert f.git(outer, 'check-ignore', str(baseline)).strip() == str(baseline)
+    for tree, head in ((outer, outer_head), (baseline, base_head)):
+        assert f.git(tree, 'status', '--porcelain', '--untracked-files=all') == ''
+        assert f.git(tree, 'rev-parse', 'HEAD').strip() == head
+        assert f.git(tree, 'rev-list', '-n1', 'HEAD', '--not', '--branches', '--remotes') == ''
+        observed = fs.snapshot(tree, deadline)
+        assert all(max(v.st_ctime, v.st_mtime) <= NOW - 3600 for v in observed.values())
+        assert all(stat.S_ISDIR(v.st_mode) or v.st_nlink == 1 for v in observed.values())
+    assert f.git(repo, 'rev-parse', 'refs/heads/task/TASK-1').strip() == outer_head
+    assert f.git(repo, 'rev-parse', 'refs/heads/fixture-base').strip() == base_head
+    rows = ds.registrations(repo, deadline)
+    assert set(rows) == {str(repo), str(outer), str(baseline)}, rows
+    assert 'detached' in rows[str(baseline)] and 'locked' not in rows[str(baseline)]
+    assert all('prunable' not in value for value in rows.values())
+    ds.Evidence(f.org, deadline, writing=True).ownership(outer, f.workspace, 'TASK-1')
+
+
+def descendant_snapshot(f, repo, *trees):
+    # Types/modes/bytes include roots, both backlinks, complete admin and local
+    # excludes. Times intentionally excluded: exact fixture moves change ctime.
+    return dict(contents=candidate_contents(*trees, repo / '.git/worktrees', repo / '.git/info/exclude'),
+                heads=[f.git(tree, 'rev-parse', 'HEAD') for tree in trees],
+                refs=f.git(repo, 'show-ref'),
+                porcelain=f.git(repo, 'worktree', 'list', '--porcelain', '-z'))
+
+
 def c19():
     """Git exit0 omissions must not create empty/complete inventories."""
     observed=[]
@@ -1020,6 +1079,37 @@ def c19():
             assert before==candidate_contents(q,repo/'.git/worktrees')
             assert registered==f.git(repo,'worktree','list','--porcelain')
             assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-2')
+    # C4: authentic nested registration moved without updating its backlink.
+    with fixture() as f:
+        repo, outer, baseline, _, _ = descendant_setup(f)
+        p = f.scratch('TASK-2'); safe, z = f.worktree('TASK-3', 'z-safe')
+        valid = descendant_snapshot(f, repo, outer, baseline)
+        held = f.base / 'held-baseline'
+        baseline.rename(held)
+        corrupted = candidate_contents(outer, held, repo / '.git/worktrees', repo / '.git/info/exclude')
+        calls = []; real = ds.git
+        def trace(root, deadline, *args):
+            calls.append((str(root), args)); return real(root, deadline, *args)
+        try:
+            diagnostic = f.git(repo, 'worktree', 'list', '--porcelain')
+            assert 'prunable' in diagnostic, diagnostic
+            with patch.object(ds, 'git', trace), refuse_mutations(): dry = f.sweep('dry_run')
+            with patch.object(ds, 'git', trace): report = f.sweep()
+            for result in (dry, report):
+                assert result['discovery'] == 'partial' and result['outcome'] == 'incomplete', result
+                assert result['unreached'] is None and result['known_candidate_count'] == 2, result
+                assert any(scope['path'] == str(repo) and scope['candidate_count'] is None for scope in result['discovery_scopes']), result
+                assert all(c['path'] != str(outer) for c in result['candidates']), result
+            assert all(row(report, x)['state'] == 'removed' and not x.exists() for x in (p, z)), report
+            assert not any(root == str(repo) for root, args in calls), calls
+            assert not any(args[:2] == ('worktree', 'prune') for root, args in calls), calls
+            assert corrupted == candidate_contents(outer, held, repo / '.git/worktrees', repo / '.git/info/exclude')
+        finally:
+            held.rename(baseline)
+        assert valid == descendant_snapshot(f, repo, outer, baseline)
+        observed.append(dict(case='C4_nested_missing_path', unknown_candidate_count=None,
+                             safe_scopes_removed=2, bad_repo_git_calls=0, exact_move_restored=True,
+                             restoration='bytes/types/modes/backlinks/HEAD/refs/porcelain; ctime excluded'))
     return observed
 
 
@@ -1061,10 +1151,146 @@ def c20():
     return observed
 
 
+def descendant_cases():
+    observations = []
+    # C1/C5 share the exact F1 setup; preview uses the real JSON/audit path.
+    for preview in (False, True):
+        with fixture() as f:
+            repo, outer, baseline, _, _ = descendant_setup(f)
+            before = descendant_snapshot(f, repo, outer, baseline)
+            with refuse_mutations():
+                if preview:
+                    projected, summary = policy_sweep(f, dry_run=True)
+                    ds._manual_audit(projected, [str(f.org)], summary)
+                    report = projected['orgs'][0]
+                else:
+                    report = f.sweep()
+            retained(report, outer, 'linked_descendant:' + str(baseline))
+            assert len(report['candidates']) == 1, report
+            assert report['phases']['worktree']['removed_attributable_bytes'] == 0, report
+            assert row(report, outer).get('allocated_bytes') is None, report
+            assert before == descendant_snapshot(f, repo, outer, baseline)
+            if preview:
+                saved = f.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+                assert len(saved) == 1 and saved[0][:2] == ('', 'daemon'), saved
+                payload = json.loads(saved[0][2])
+                assert payload['org'] == report and payload['summary_path'] == str(summary), payload
+                assert payload['outcome'] == projected['outcome'] == 'complete'
+            observations.append(dict(case='C5' if preview else 'C1', retained_descendant=str(baseline),
+                                     mutation_attempts=0, removed_attribution=0, preservation='exact snapshot'))
+    # C2: a locked sibling TASK-10 must not veto TASK-1 by string prefix.
+    with fixture() as f:
+        repo, outer = f.worktree('TASK-1'); _, sibling = f.worktree('TASK-10')
+        f.git(repo, 'worktree', 'lock', str(sibling))
+        (outer / 'ignored').mkdir(); (outer / 'ignored/payload').write_bytes(b'cache' * 2048)
+        before = descendant_snapshot(f, repo, sibling)
+        sibling_row = ds.registrations(repo, time.monotonic() + 12)[str(sibling)]
+        calls = []; real = ds.git
+        def trace(root, deadline, *args):
+            calls.append(args); return real(root, deadline, *args)
+        with patch.object(ds, 'git', trace): report = f.sweep()
+        assert row(report, outer)['state'] == 'removed' and not outer.exists(), report
+        assert row(report, outer)['removed_attributable_bytes'] > 0, report
+        retained(report, sibling, 'locked')
+        after = descendant_snapshot(f, repo, sibling)
+        # TASK-1 admin removal is expected; compare the sibling's exact metadata
+        # separately, and full refs/HEADs without its removed registration row.
+        assert candidate_contents(sibling, repo / '.git/worktrees' / sibling.name) == {
+            k: v for k, v in before['contents'].items()
+            if k == str(sibling) or k.startswith(str(sibling) + '/')
+            or k == str(repo / '.git/worktrees' / sibling.name)
+            or k.startswith(str(repo / '.git/worktrees' / sibling.name) + '/')}
+        assert before['heads'] == after['heads'] and before['refs'] == after['refs']
+        assert str(outer) not in ds.registrations(repo, time.monotonic() + 12)
+        assert sibling_row == ds.registrations(repo, time.monotonic() + 12)[str(sibling)]
+        assert not any(args[:2] == ('worktree', 'prune') for args in calls), calls
+        observations.append(dict(case='C2', state='removed', positive_attribution=True, sibling='locked TASK-10 preserved', prune=0))
+    # C3: deterministic introductions AFTER each named successful admission.
+    for boundary in ('initial_to_final', 'final_to_remove', 'failure_to_admission',
+                     'retry_to_repair', 'repaired_to_retry'):
+        with fixture() as f:
+            repo, outer, baseline, outer_head, base_head = descendant_setup(f, nested=False)
+            readonly = outer / 'ignored/readonly'
+            if boundary == 'repaired_to_retry': readonly.mkdir(); readonly.chmod(0o555)
+            calls = []; repairs = []; introductions = []; censuses = []; admits = []; mode_changes = []
+            realgit, realadmit, realmutate, realrows = ds.git, ds.admit, ds.mutate, ds.registrations
+            def introduce():
+                assert not introductions
+                descendant_add(f, repo, baseline, base_head)
+                descendant_ready(f, repo, outer, baseline, outer_head, base_head)
+                introductions.append(descendant_snapshot(f, repo, outer, baseline))
+            def admit(candidate, evidence, deadline, **kwargs):
+                result = realadmit(candidate, evidence, deadline, **kwargs)
+                admits.append(len(admits) + 1)
+                target = {'initial_to_final': 1, 'final_to_remove': 2,
+                          'retry_to_repair': 3, 'repaired_to_retry': 4}.get(boundary)
+                if len(admits) == target: introduce()
+                return result
+            def registrations(root, deadline, **kwargs):
+                result = realrows(root, deadline, **kwargs)
+                if introductions and str(baseline) in result: censuses.append(len(admits))
+                return result
+            def git(root, deadline, *args):
+                if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')): calls.append(args)
+                if args[:2] == ('worktree', 'remove'):
+                    assert len(calls) == 1, calls
+                    try:
+                        return realgit(root, deadline, '--THR307-controlled-invalid-option')
+                    except ds.Retain as exc:
+                        assert 'unknown option' in str(exc), exc
+                        if boundary == 'failure_to_admission': introduce()
+                        raise
+                return realgit(root, deadline, *args)
+            def mutate(path, tree, deadline, *, remove):
+                assert not remove
+                old = readonly.stat() if boundary == 'repaired_to_retry' else None
+                result = realmutate(path, tree, deadline, remove=False)
+                repairs.append(result)
+                if old:
+                    assert stat.S_IMODE(old.st_mode) == 0o555
+                    changed = readonly.stat()
+                    assert stat.S_IMODE(changed.st_mode) == 0o755
+                    assert set(result) == {'ignored/readonly'}, result
+                    assert fs.identity(old) == fs.identity(changed)
+                    assert changed.st_ctime_ns >= old.st_ctime_ns
+                    mode_changes.append(dict(path=str(readonly), before_mode=oct(stat.S_IMODE(old.st_mode)),
+                                             after_mode=oct(stat.S_IMODE(changed.st_mode)),
+                                             before_ctime_ns=old.st_ctime_ns, after_ctime_ns=changed.st_ctime_ns))
+                return result
+            with patch.object(ds, 'admit', admit), patch.object(ds, 'git', git), \
+                    patch.object(ds, 'mutate', mutate), patch.object(ds, 'registrations', registrations):
+                report = f.sweep()
+            assert len(introductions) == 1 and censuses, (boundary, admits, censuses, report)
+            expected_admits = {'initial_to_final': 1, 'final_to_remove': 2, 'failure_to_admission': 2,
+                               'retry_to_repair': 3, 'repaired_to_retry': 4}[boundary]
+            assert len(admits) == expected_admits, (boundary, admits, report)
+            # For b/d/e the first returned post-introduction census is precisely
+            # the final pre-action call, not a veto inside another admission.
+            assert censuses[0] == expected_admits, (boundary, censuses)
+            removes = [args for args in calls if args[:2] == ('worktree', 'remove')]
+            assert len(removes) == (0 if boundary in ('initial_to_final', 'final_to_remove') else 1), calls
+            assert len(repairs) == (1 if boundary == 'repaired_to_retry' else 0), repairs
+            assert not any(args[:2] == ('worktree', 'prune') for args in calls), calls
+            current = row(report, outer)
+            assert current['state'] == ('retained' if not removes else 'partial_or_unknown'), report
+            assert 'linked_descendant:' + str(baseline) in current['reason'], report
+            assert current.get('removed_attributable_bytes') is None and current.get('retry_count', 0) == 0, current
+            assert report['phases']['worktree']['removed_attributable_bytes'] == 0, report
+            if removes:
+                assert current['first_remove_error'].startswith('git_failed:')
+                assert report['phases']['worktree']['attribution_unknown'] is True
+            assert introductions[0] == descendant_snapshot(f, repo, outer, baseline)
+            observations.append(dict(case='C3', boundary=boundary, remove_attempts=len(removes),
+                                     completed_repairs=len(repairs), retry_attempts=0,
+                                     completed_admissions=len(admits), last_census_reached=True,
+                                     state=current['state'], earlier_owned_mode_changes=mode_changes))
+    return observations
+
+
 def c21():
     """Transitions wrap actual shipping boundaries, with real Git failures."""
     from contextlib import ExitStack
-    observations=[]
+    observations=descendant_cases()
     for when in ('after_discovery','after_failure','after_repair','partial_failure'):
         for kind in ('admin_alias','unreadable_admin','conflicting_backlink'):
             with fixture() as f, ExitStack() as changes:
