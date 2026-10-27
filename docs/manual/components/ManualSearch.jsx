@@ -56,10 +56,17 @@
  *      render), so focus moved before it would be lost with the replaced
  *      heading. Nothing moves if the navigation fails or is replaced, or focus
  *      went elsewhere.
- * Change from upstream (search shortcut):
- *   6. `/` and Ctrl/Cmd+K only act on a search input that is shown. Upstream
+ * Changes from upstream (search shortcut and panel modality):
+ *   6. `/` and Ctrl/Cmd+K only act on a connected, visible search input outside
+ *      inert ancestry. Upstream
  *      focused the closed mobile menu's input, which is hidden (and before
  *      styles/globals.css hid it, sat off screen), and swallowed the key.
+ *   7. An open but idle-empty panel is non-modal; loading, error, results and
+ *      nonempty no-results panels retain Headless UI's modality. Headless UI
+ *      alone owns its sibling exclusion and scroll lock.
+ * Deferred focus has one identity-owned slot shared with MenuFocus. Closing
+ * preserves a selection's identity through interim Menu focus; reopening,
+ * another navigation, user focus/pointer input or a breakpoint cancels it.
  * `clsx` and `escape-string-regexp` are replaced by the small local helpers
  * below so no undeclared package is imported.
  */
@@ -107,8 +114,9 @@ function renderString(stringOrFunction, props = {}) {
   return result || ''
 }
 
-// Whether an element is rendered and not visibility:hidden (change 6 above).
-function isShown(element) {
+// A visible element outside inert ancestry (change 6 above).
+function isAvailable(element) {
+  if (!element?.isConnected || element.closest('[inert]')) return false
   return element.checkVisibility
     ? element.checkVisibility({ visibilityProperty: true })
     : element.getClientRects().length > 0
@@ -128,17 +136,49 @@ function preventRepeatNavigation(event) {
   }
 }
 
-// Focuses the selected heading, or the article's h1, of the page now showing
-// (change 5 above). Does nothing if the URL is no longer the selected one or
-// focus is already somewhere other than the page or `input` (the search input,
-// or for MenuFocus.jsx the control left in the closing mobile menu).
-export function focusSelectedResult(route, input) {
+// One deferred-focus owner across both search instances and MenuFocus. These
+// module exports are internal coordination, not browser globals or debug hooks.
+let deferredFocus = null
+export const focusSlot = () => deferredFocus
+export const ownsFocus = id => deferredFocus?.id === id
+
+export function dropFocus(id) {
+  if (id !== undefined && !ownsFocus(id)) return
+  const previous = deferredFocus
+  deferredFocus = null
+  previous?.cancel?.()
+}
+
+export function claimFocus(kind, fields = {}) {
+  dropFocus()
+  const id = Symbol(kind)
+  deferredFocus = { id, kind, ...fields, cancel: null }
+  return id
+}
+
+export function scheduleFocus(id, frames, callback) {
+  if (!ownsFocus(id)) return
+  deferredFocus.cancel?.()
+  let frame
+  const next = () => {
+    if (!ownsFocus(id)) return
+    if (--frames > 0) frame = requestAnimationFrame(next)
+    else callback()
+  }
+  frame = requestAnimationFrame(next)
+  deferredFocus.cancel = () => cancelAnimationFrame(frame)
+}
+
+// Focus the selected heading (or h1) only for the showing route while BODY or
+// one of the allowed controls owns focus. MenuFocus supplies its interim;
+// search also permits its refocused input (change 5 above).
+export function focusSelectedResult(route, allowed) {
   const target = new URL(route, location.href)
   if (target.pathname !== location.pathname || target.hash !== location.hash) {
     return
   }
   const active = document.activeElement
-  if (active && active !== document.body && active !== input) return
+  if (active && active !== document.body && ![allowed].flat().includes(active)) return
   const main = document.querySelector('.nextra-content main')
   if (!main) return
   const id = target.hash && decodeURIComponent(target.hash.slice(1))
@@ -206,7 +246,7 @@ function Search({
   results
 }) {
   const themeConfig = useThemeConfig()
-  const { setMenu } = useMenu()
+  const { menu, setMenu } = useMenu()
   const router = useNextRouter()
   const [focused, setFocused] = useState(false)
   const mounted = useMounted()
@@ -219,7 +259,7 @@ function Search({
       const tagName = activeElement?.tagName.toLowerCase()
       if (
         !input ||
-        !isShown(input) ||
+        !isAvailable(input) ||
         !tagName ||
         INPUTS.has(tagName) ||
         activeElement?.isContentEditable
@@ -278,34 +318,52 @@ function Search({
     [onChange]
   )
 
-  // The selected result whose page focus moves to (change 5 above). It is set
-  // in the same update as closing the menu, so this effect runs after the
-  // commit that re-creates the page's headings. A new selection or unmounting
-  // cancels the pending move.
+  // The request is published with the menu-close update, so its frame follows
+  // the commit that re-creates Nextra headings and Headless's refocus frame.
   const [focusRequest, setFocusRequest] = useState(null)
+  const selection = useRef(null)
+  useEffect(() => () => {
+    if (selection.current !== null) dropFocus(selection.current)
+  }, [])
   useEffect(() => {
     if (!focusRequest) return
-    // Frames run in request order, so this runs after Headless UI's own
-    // frame that refocuses the input after a pointer selection.
-    const id = requestAnimationFrame(() => {
+    const { id, route } = focusRequest
+    scheduleFocus(id, 1, () => {
+      const slot = focusSlot()
+      if (ownsFocus(id) && (!matchMedia('(max-width: 767px)').matches || !menu)) {
+        focusSelectedResult(route, [inputRef.current, slot.interim])
+      }
+      dropFocus(id)
       setFocusRequest(null)
-      focusSelectedResult(focusRequest.route, inputRef.current)
     })
-    return () => cancelAnimationFrame(id)
-  }, [focusRequest])
+    return () => dropFocus(id)
+  }, [focusRequest, menu])
 
   const handleSelect = useCallback(
     async searchResult => {
       if (!searchResult) return
+      const id = claimFocus('select', {
+        route: searchResult.route,
+        input: inputRef.current,
+        phase: 'pending'
+      })
+      selection.current = id
       setFocusRequest(null)
       inputRef.current?.blur()
-      const navigated = await router.push(searchResult.route)
+      let navigated
+      try {
+        navigated = await router.push(searchResult.route)
+      } finally {
+        // Preserve upstream false/rejection behavior; only release ownership.
+        if (navigated !== true) dropFocus(id)
+      }
       setMenu(false)
       onChange('')
-      if (navigated) setFocusRequest({ route: searchResult.route })
+      if (navigated && ownsFocus(id)) setFocusRequest({ route: searchResult.route, id })
     },
     [router, setMenu, onChange]
   )
+  const hasContent = Boolean(error || loading || results.length || value)
 
   return (
     <Combobox onChange={handleSelect}>
@@ -345,6 +403,7 @@ function Search({
         {icon}
       </div>
       <ComboboxOptions
+        modal={hasContent}
         transition
         anchor={{ to: 'top end', gap: 10, padding: 16 }}
         className={({ open }) =>

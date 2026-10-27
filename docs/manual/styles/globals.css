@@ -446,7 +446,8 @@ html:has(.hr-skip:focus) {
 
 /* Nextra only slides the closed mobile menu off screen, which left its search
    box and links in the Tab order. Hide it while closed (also before the page's
-   JavaScript runs); it stays visible while sliding shut. */
+   JavaScript runs); it stays visible while sliding shut. MenuFocus also makes
+   the aside inert from the first closed frame. */
 @media (max-width: 767px) {
   .nextra-sidebar-container[class*='translate3d(0,-100%,0)'] {
     visibility: hidden;
