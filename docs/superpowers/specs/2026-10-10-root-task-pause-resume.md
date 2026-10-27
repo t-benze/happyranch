@@ -89,6 +89,15 @@ settlement, terminal lifecycle and restart cannot discharge it. A genuinely
 settled known-quiescent original adds no unknown blocker; an unclaimed
 recovery alone is not execution, while actual recovery launch has its own
 drain evidence.
+Both original run-step unwind layers distinguish that refusal from cleanup
+failure only after rechecking the same invocation/attempt, committed journal
+proof, current task/callback and claim exclusions, original native return (or
+its separately retained unknown owner), reservation and completed preparation
+obligations. The original final settlement writer keeps recovery_deferred only
+after the whole outer cleanup batch positively settles. Claimed/possible launch,
+changed ownership, existing uncertainty or any real cleanup failure remains
+sticky and suppresses the whole batch; no exception class or purpose grants
+admission. The primary exception/traceback and secondary cleanup evidence remain.
 Passthrough receipts describe absence of containment, not descendant cleanup.
 The original job owner commits its running-only terminal row, one original-trigger
 audit, actual producer observation and this strict Pause entry disposition in one

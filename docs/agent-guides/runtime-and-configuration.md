@@ -3713,6 +3713,15 @@ StartupUnavailable from the original TaskInvocation recovery launch propagates
 unchanged, preserving the successful original return, committed recovery proof,
 SIDs and current owner instead of durably failing held recovery. Original native,
 terminal, tracker and release settlement remains independently owed.
+Both original run-step unwind layers distinguish that refusal from cleanup
+failure only after rechecking the same invocation/attempt, committed journal
+proof, current task/callback and claim exclusions, original native return (or
+its separately retained unknown owner), reservation and completed preparation
+obligations. The original final settlement writer keeps recovery_deferred only
+after the whole outer cleanup batch positively settles. Claimed/possible launch,
+changed ownership, existing uncertainty or any real cleanup failure remains
+sticky and suppresses the whole batch; no exception class or purpose grants
+admission. The primary exception/traceback and secondary cleanup evidence remain.
 
 
 ## THR299 compatible reconciliation installation

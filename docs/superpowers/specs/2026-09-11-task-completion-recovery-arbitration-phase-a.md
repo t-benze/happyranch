@@ -11,6 +11,15 @@ unchanged from its original recovery launch. It does not mutate the successful
 original return or durably fail held recovery; committed recovery proof/SIDs and
 current ownership remain. Original native/terminal/tracker/release settlement is
 independently owed. Genuine execution errors retain their existing failure path.
+Both original run-step unwind layers distinguish that refusal from cleanup
+failure only after rechecking the same invocation/attempt, committed journal
+proof, current task/callback and claim exclusions, original native return (or
+its separately retained unknown owner), reservation and completed preparation
+obligations. The original final settlement writer keeps recovery_deferred only
+after the whole outer cleanup batch positively settles. Claimed/possible launch,
+changed ownership, existing uncertainty or any real cleanup failure remains
+sticky and suppresses the whole batch; no exception class or purpose grants
+admission. The primary exception/traceback and secondary cleanup evidence remain.
 
 THR-247 grants one and only one recovery opportunity after a clean Codex
 provider exit omits the exact authenticated callback. Its durable claim starts

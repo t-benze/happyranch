@@ -373,6 +373,15 @@ TaskInvocation.recover_return propagates StartupUnavailable from the original
 recovery launch unchanged. It preserves the successful original return and
 committed recovery proof/SIDs/current owner instead of durably failing held
 recovery; original terminal/native/tracker/release settlement remains owed.
+Both original run-step unwind layers distinguish that refusal from cleanup
+failure only after rechecking the same invocation/attempt, committed journal
+proof, current task/callback and claim exclusions, original native return (or
+its separately retained unknown owner), reservation and completed preparation
+obligations. The original final settlement writer keeps recovery_deferred only
+after the whole outer cleanup batch positively settles. Claimed/possible launch,
+changed ownership, existing uncertainty or any real cleanup failure remains
+sticky and suppresses the whole batch; no exception class or purpose grants
+admission. The primary exception/traceback and secondary cleanup evidence remain.
 The reference-only P4 binder validates all seven captured identities and the
 three producer attachments, preserving its actual Task/coroutine/phase/loop
 owner and ready-only dynamic attachment. Genuine P2/P3/P6 document owners retain

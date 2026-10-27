@@ -1620,11 +1620,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     tail_token = _task_tail.set(tail)
     tail_failed = False
     disposition = None
+    primary = None
     try:
         with _defer_root_worktree_batches(orch, transitions) as delivery:
             _run_step_owned(orch, task_id, metadata)
-    except BaseException:
-        tail_failed = True
+    except BaseException as exc:
+        primary = exc
+        # Only the actual invocation returned by the inner owner may carry
+        # its authenticated no-new-launch refusal through this second tail.
+        tail_failed = not (len(tail) == 1 and not tail[0][1]
+                           and tail[0][0]._held_recovery_refusal(exc))
         raise
     finally:
         tail_failed |= delivery['teardown_incomplete']
@@ -1634,9 +1639,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             if tail_failed:
                 logger.warning('task %s outer cleanup retained: %s processes=%s',
                     task_id, disposition.reason, disposition.processes)
-        except BaseException:
+        except BaseException as secondary:
             tail_failed = True
-            raise
+            if primary is None:
+                raise
+            primary.add_note(f"Root worktree tail also failed: {type(secondary).__name__}")
         finally:
             _task_tail.reset(tail_token)
             from runtime.orchestrator.task_pause import settle_live
@@ -1647,7 +1654,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 except BaseException as exc:
                     settlement_errors.append(exc)
             if settlement_errors:
-                raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
+                if primary is None:
+                    raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
+                for secondary in settlement_errors:
+                    primary.add_note(f"Task Pause tail also failed: {type(secondary).__name__}")
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -1762,7 +1772,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         elif invocation.admitted:
             invocation.phase("retry_deferred", started_at=None, captured_generation=None)
     except BaseException as exc:
-        root_delivery['teardown_incomplete'] = True
+        root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(exc)
         from runtime.daemon.startup_recovery import StartupUnavailable
         if isinstance(exc, StartupUnavailable):
             raise
@@ -1774,19 +1784,34 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             invocation.phase("unknown")
         raise
     finally:
-        root_delivery['teardown_incomplete'] |= sys.exc_info()[0] is not None
+        primary = sys.exception()
+        if primary is not None:
+            root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(primary)
         from runtime.orchestrator.task_pause import release_live
         try:
             release_live(invocation, failed=root_delivery['teardown_incomplete'])
-        except BaseException:
+        except BaseException as secondary:
             root_delivery['teardown_incomplete'] = True
-            raise
+            invocation.move_reservation.cleanup_failed = True
+            try:
+                invocation.failed_cleanup()
+            except BaseException as persistence:
+                secondary.add_note(f"Task release uncertainty save failed: {type(persistence).__name__}")
+            if primary is None:
+                raise
+            primary.add_note(f"Task live release also failed: {type(secondary).__name__}")
         finally:
             _invocation.reset(token)
             root_delivery['active'] = False
             _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-            _root_worktree_batch(orch, root_delivery['events'],
-                teardown_incomplete=root_delivery['teardown_incomplete'])
+            try:
+                _root_worktree_batch(orch, root_delivery['events'],
+                    teardown_incomplete=root_delivery['teardown_incomplete'])
+            except BaseException as secondary:
+                invocation.move_reservation.cleanup_failed = True
+                if primary is None:
+                    raise
+                primary.add_note(f"Inner root worktree tail also failed: {type(secondary).__name__}")
 
 
 def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:

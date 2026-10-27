@@ -155,6 +155,7 @@ class TaskInvocation:
     _repository_retained_effects: list = field(default_factory=list, repr=False)
     _repository_worker_active: bool = False
     _startup_validation: Callable[[], None] | None = field(default=None, repr=False)
+    _held_recovery: dict | None = field(default=None, repr=False)
 
     def repository_preparation_binding(self):
         from runtime.orchestrator.workspace_adapters import _repo_owner_binding
@@ -559,6 +560,14 @@ class TaskInvocation:
                 # back into an unclaimed preparation or erase its attempt.
                 raise PauseControlError("pause_control_unavailable")
             unknown_owner = None
+            original_reservation = self.move_reservation
+            original_terminal = deepcopy(getattr(self, "native_terminal_observation", None))
+            original_launch = (None if original_reservation is None else
+                (original_reservation.owner_id, original_reservation.session_id,
+                 original_reservation.possible_launch, original_reservation.quiescent,
+                 original_reservation.cleanup_failed))
+            deferred_return = (deepcopy(entry) if self.owner == "recovery"
+                               and entry["phase"] == "recovery_deferred" else None)
             if proof is None:
                 if (self.unsettled or entry["phase"] == "unknown" or entry["context"].get("execution_unknown")
                         or (self.move_reservation is not None and self.move_reservation.cleanup_failed)):
@@ -586,6 +595,15 @@ class TaskInvocation:
             entry["session_id"] = proof["recovery_session_id"]
             entry["started_at"] = entry["captured_generation"] = None
             self.store.save_journal_uncommitted(row)
+        self._held_recovery = dict(store=self.store, move=self.orch._team_moves,
+            sessions=self.orch._sessions, host=self.orch._host_supervisor,
+            reservation=self.move_reservation, attempt=self.refusal_attempt_id,
+            entry=deepcopy(entry), result=result,
+            returned=(result.success, result.session_id, result.agent_session_id, result.duration_seconds),
+            terminal=original_terminal, original_launch=original_launch, deferred=deferred_return,
+            intervals=[(i, dict(i)) for i in self._repository_effect_intervals],
+            original_unknown=None if unknown_owner is None else (deepcopy(original), original_reservation))
+        held_recovery = self._held_recovery
         self.task, self.owner, self.session_id = current, "recovery", proof["recovery_session_id"]
         self.admitted = self.attempt_committed = self.unsettled = False
         try:
@@ -607,14 +625,97 @@ class TaskInvocation:
                 resume_session_id=proof["provider_session_id"], origin_runtime_session_id=proof["origin_session_id"],
                 timeout_seconds_override=120, recovery=True)
             return self.admitted, recovery_result, recovery_report
-        except (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError):
+        except StartupUnavailable as exc:
+            # Capture only THIS original refusal. The unwind and settlement
+            # owners independently authenticate it; its class grants nothing.
+            held_recovery["error"] = exc
+            raise
+        except (DeferredRootPause, DeferredTeamMove, PauseControlError):
             raise
         except Exception as exc:
             result.success = False
             result.error = f"completion recovery launch failed: {exc}"
             return self.admitted, result, None
 
+    def _held_recovery_refusal(self, error: BaseException | None) -> bool:
+        """Authenticate the SAME unclaimed return at each original unwind seam.
+
+        This is settlement evidence, never launch admission or unknown clearance.
+        No snapshot is restored and a failed observation retains its first cause.
+        """
+        held = self._held_recovery
+        if held is None or error is None or held.get("error") is not error or getattr(error, "__notes__", ()):
+            return False
+        try:
+            from runtime.orchestrator.launch_refusals import _current
+            with self.store.db._lock:
+                reservation = self.move_reservation
+                if (self.store is not held["store"] or self.orch._team_moves is not held["move"]
+                        or self.orch._sessions is not held["sessions"] or self.orch._host_supervisor is not held["host"]
+                        or (held["sessions"] is not None
+                            and held["sessions"].get_active(self.task.id, self.agent) is not None)
+                        or reservation is not held["reservation"] or reservation is None
+                        or self.refusal_attempt_id != held["attempt"] or self.owner != "recovery"
+                        or self.admitted or self.attempt_committed or self.unsettled or self.launch_observed
+                        or self.recovery_deadline is not None
+                        or reservation.coordinator is not held["move"]
+                        or held["move"]._reservations.get(self.identity) is not reservation
+                        or (reservation.owner_id, reservation.task_id, reservation.session_id,
+                            reservation.identity.org_slug, reservation.identity.agent_id)
+                            != (self.identity, self.task.id, self.session_id, self.store.org_slug, self.agent)
+                        or not reservation.owner_live or reservation.possible_launch or reservation.cleanup_failed
+                        or not all(reservation.repository_obligations.values()) or self._repository_worker_active
+                        or len(self._repository_effect_intervals) < len(held["intervals"])
+                        or any(self._repository_effect_intervals[n] is not i or i != saved
+                               for n, (i, saved) in enumerate(held["intervals"]))
+                        or any(not i["closed"] or i["failed"]
+                               for i in self._repository_effect_intervals[len(held["intervals"]):])
+                        or not _current(self)):
+                    return False
+                row = self.store.row_uncommitted(self.store.root_uncommitted(self.task.id)["id"])
+                entry = self._entry(row)
+                if (entry["context"].get("execution_unknown") or entry["context"].get("producer_settled")
+                        or entry["phase"] not in {"prepared", "recovery_deferred"}
+                        or {**entry, "phase": "recovery_deferred"} != held["entry"]):
+                    return False
+                result, proof = held["result"], entry["context"]["recovery_return"]
+                if (held["returned"] != (True, proof["origin_session_id"], proof["provider_session_id"],
+                                        proof["duration_seconds"])
+                        or held["returned"] != (result.success, result.session_id, result.agent_session_id,
+                                               result.duration_seconds)):
+                    return False
+                original_unknown = held["original_unknown"]
+                if original_unknown is not None:
+                    original, prior = original_unknown
+                    # This original unknown is a SEPARATE owner; a clean
+                    # recovery refusal cannot settle or rewrite its evidence.
+                    return (prior is not reservation and held["move"]._reservations.get(original["id"]) is prior
+                        and prior.owner_id == original["id"] and not prior.owner_live
+                        and prior.session_id == original["session_id"]
+                        and original in row["journal"]["entries"])
+                if held["deferred"] is not None:
+                    # Existing native deferred discovery/adoption authenticated
+                    # this durable SAME proof before redelivery. Require its
+                    # complete entry unchanged, alongside all current fences.
+                    return held["deferred"] == held["entry"]
+                terminal = held["terminal"]
+                receipt = None if terminal is None else terminal["receipt"]
+                return (held["original_launch"] == (self.identity, proof["origin_session_id"], True, True, False)
+                    and receipt is not None and terminal["request"]["org"] == self.store.org_slug
+                    and terminal["request"]["logical_id"] == self.task.id
+                    and terminal["request"]["agent_id"] == self.agent
+                    and terminal["request"]["invocation_kind"] == "task"
+                    and receipt["backend"] != "passthrough" and receipt["quiescent"] is True
+                    and receipt["cleanup_status"] != "incomplete" and not receipt["survivors"]
+                    and terminal["cleanup_error"] is None)
+        except BaseException as secondary:
+            if self.move_reservation is not None:
+                self.move_reservation.cleanup_failed = True
+            error.add_note(f"Held recovery authentication failed: {type(secondary).__name__}")
+            return False
+
     def _begin_launch_attempt(self) -> None:
+        self._held_recovery = None
         # A returned producer's positive PID belongs to its previous attempt.
         # Reset only local refusal attribution before fallible preparation;
         # durable launch/unknown evidence and live-attempt protection survive.
@@ -949,9 +1050,25 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
     reservation = invocation.move_reservation
     native_entry = None
     close_disposition = None
+    held = invocation._held_recovery
+    if held is not None and "error" in held and not failed:
+        failed = (cleanup is None or cleanup.kind != "safe"
+                  or not invocation._held_recovery_refusal(original_error))
     if failed and reservation is not None:
         reservation.failed_cleanup()
     try:
+        if held is not None and "error" in held and not failed:
+            with invocation.store.writer(invocation.task.id) as (_, row):
+                if not invocation._held_recovery_refusal(original_error):
+                    failed = True
+                    reservation.failed_cleanup()
+                else:
+                    # Every native preparation interval and the whole outer
+                    # batch settled positively. Keep only this SAME unclaimed
+                    # recovery for the existing deferred reader/redelivery.
+                    entry = invocation._entry(row)
+                    entry["phase"] = "recovery_deferred"
+                    invocation.store.save_journal_uncommitted(row)
         if failed:
             with invocation.store.writer(invocation.task.id) as (_, row):
                 entry = invocation._entry(row)
@@ -1020,6 +1137,14 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
                         removed=owned and invocation.orch._team_moves._reservations.get(reservation.owner_id) is None)
         except BaseException as exc:
             failed = True
+            if held is not None and "error" in held:
+                # A genuine final release failure cannot leave this held
+                # recovery looking clean, even if release partly completed.
+                reservation.cleanup_failed = True
+                try:
+                    invocation.failed_cleanup()
+                except BaseException as secondary:
+                    exc.add_note(f"Move release uncertainty save failed: {type(secondary).__name__}")
             if tail_error is None:
                 raise
             tail_error.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
