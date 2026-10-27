@@ -75,8 +75,9 @@ positive outer retirement come from production. Eight pending-key contenders,
 non-deduplicating enqueue/put and per-entry effect observations precede the existing
 maintenance-switch/stop keepers. All behavior remains NOT RUN.
 
-TASK13284's source accounting completes the bounded accounting correction while
-retaining a concrete resource refusal. Thirteen tasks/twelve roots fit64/16.
+TASK13307 applies ROOT step38 acceptance of TASK13301's corrected selected-plan
+accounting; TASK13284's original shortage report remains historical evidence.
+Thirteen tasks/twelve roots fit64/16.
 Three total launches fit the TWO SIMULTANEOUS cap: one original worker drains
 both initial tasks, and ready_task_cases awaits native retirement before adding
 one worker and the single dedup task. Each native session still requires its own
@@ -85,24 +86,29 @@ The same copied synthetic config selects15s before canonical org-settings seed:
 the tracked300s override otherwise wins over global Settings(15). No production
 config or helper/callback protocol changes.
 
-The original64 history/control denominator includes ALL `audit_log` rows plus
+ROOT step38 accepts **78** history/control rows ONLY for the current selected
+successful fixture. The denominator retains ALL `audit_log` rows plus
 `authority_policy_v2*`, `authority_policy_active_selector` and
-`authority_policy_active_selector_history`. Literal source accounting finds
-**at least66 rows:13 authority/selector +53 audit**, exceeding64 by **at least2**:
+`authority_policy_active_selector_history`. Conservative source allocation is
+**74 base /78 conditional upper:13 authority/selector +61/65 audit**. It includes
+the eight original P5 audits omitted by the historical66/70 allocation:
 
 - seed_counter:10 authority/selector +1 admitted-stage audit;
 - fixture-b initializer:3 authority/selector rows;
 - initial org settings:2 orgs *5 `upsert_org_setting` config audits =10;
 - original _build_state:2 orgs *3 native-writer intervals *2 active/settled audits =12;
 - supported runtime/use reopen:2 orgs *2 intervals *2 audits =8;
+- P5 agent_yaml_frontmatter_migration:2 orgs *active/settled =4 audits;
+- P5 identity_names_compatibility:2 orgs *active/settled =4 audits;
 - three native tails:3 *5 session-start/native-start/scratch/session-end/completion audits =15;
 - two EMPTY-selector manager tails:2 *2 legacy binding/step audits =4;
 - genuine worker delegated verdict:1 audit;
 - completed original suspended disk tick:2 org summary audits.
 
 At most two original root-reconciliation start/finish pairs raise the selected
-successful plan's upper bound to70 (excess6); bounded preservation can omit a
-pair, so those four rows are excluded from the lower bound. The inert admitted `done` v2
+successful plan's conditional upper to78; bounded preservation can omit a
+pair, so those four rows are excluded from the conservative base allocation.
+The inert admitted `done` v2
 attempt takes D2-B' on startup and is not charged invented refusal/generation
 rows. Nine writer cases create nine task IDs and at most nine Pause controls;
 three native root controls give a conservative12-control upper bound. Journal
@@ -113,20 +119,50 @@ Empty repositories create no repository-preparation streams; empty retries add
 no process; the host receipt publisher is in memory. Complete-I marker/cutover,
 authority publication journals/pointers, cumulative released leases, naming,
 settings, remote markers and transcripts are separately charged in the source
-plan under the512 canonical causal ceiling. That larger ceiling cannot absorb
-any64-history excess, and surviving seed rows are labelled snapshots only.
+plan:167 base/171 conditional-upper logical rows under the independent512
+ceiling. Every history remains cumulative;512 cannot absorb history/control
+excess, and surviving seed rows are labelled snapshots only. The original64-plus-
+causal matrix and later64-all-audit restriction remain historical evidence;
+this accepted correction covers this selected fixture only, not whole-matrix fit.
+C12-only retains its independent64 ceiling and original proof meaning.
 
 Before product constructors the driver checks independent dimensions against
-unchanged caps and records the producer/table/multiplicity and minimum excess.
-The current all-case therefore returns clean-incomplete2 (FAIL1 still wins for
-any actual failure); it cannot run Web or construct a fixture by omission or by
-moving audits to another denominator. No writer, case, failure or allocation is
+selected independent caps and records the producer/table/multiplicity and any
+excess. The corrected selected fixture is source-admissible; the all-case ledger
+still returns incomplete2 while obligations are missing (FAIL1 wins for any
+actual failure). No observed runtime exit or resource fit is claimed. It cannot
+construct a fixture by omission or by moving audits to another denominator.
+No writer, case, failure or allocation is
 removed/reset. A changed fixture plan requires root disposition within the
 existing contract. Source accounting is not runtime/resource or timing PASS;
 byte/wall/hold/request/process limits still need actual observation. Maker3/3
 remains exhausted, QA0/3 separate unused; new behavior NOT RUN/PROOF NOT RUN.
 The C12 counter function, independent observer and both proof assertions remain
 byte-identical. Whole feature incomplete; under10s UNVERIFIED.
+
+The existing driver now contains zero-new-row selected C04/C08/C10 reader cases
+on the SAME mounted StartupReads pool. Pass-through executor/connection observers
+hold two original workers at auxiliary canonical SQL, queue two real readers,
+and check a fifth HTTP read for503/startup_reader_busy with no extra submission
+or connection. Actual coroutine cancellation of one queued waiter must cancel
+its genuine Future without native work and positively acknowledge retirement.
+The other cancellation occurs while its worker is inside original close: the
+connection/Future/slot stay owned until same-thread close returns, Future
+completion and callback retirement precede reuse. The other running read and
+queued read expire concurrently against their original2s admission deadlines;
+original SQL is forwarded, no partial200 is accepted, and the queued selection
+expires before opening a connection. ONLY these intentional deadline HTTP
+observers use3s; ordinary requests stay2s. Independent bounded events accompany
+counter deltas; both orgs' complete original transcripts compare before/after.
+Observers are prepared before the ONE <=10s recovery hold and release/restore
+all barriers/patches in finally, observing native Futures and retirement. At
+most five concurrent attempts remain within8;600s/512MiB and every other cap
+remain. Source scheduling is not measured fit. Full drain/failed-close/stop/
+restart/native-tail and all remaining C04/C08/C10 obligations stay incomplete.
+All new behavior NOT RUN; sensitivity PROOF NOT RUN (maker3/3 exhausted,
+QA0/3 unused and not released); historical JOB5572 failures and narrow C12
+proof are not replaced. Future allocating cases require their own real
+canonical producer ledger before implementation/execution;78 grants no new run.
 
 ## Actual-owner startup observations — ROOT13137
 

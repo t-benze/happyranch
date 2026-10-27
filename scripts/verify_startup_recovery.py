@@ -29,6 +29,7 @@ import threading
 import time
 import traceback
 from urllib.parse import unquote, urlsplit
+from typing import Any
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
@@ -116,6 +117,42 @@ REMAINING = {
 }
 
 
+READER_ASSERTIONS = {
+    'C04': (
+        'C04_reader_two_running_two_queued',
+        'C04_reader_actual_admission_bounds',
+        'C04_reader_fifth_busy',
+        'C04_reader_fifth_no_submission_or_connection',
+        'C04_reader_independent_native_bounds',
+    ),
+    'C08': (
+        'C08_reader_queued_cancel_actual_waiter_cancelled',
+        'C08_reader_close_actual_waiter_cancelled',
+        'C08_reader_queued_cancel_no_native_work',
+        'C08_reader_running_cancel_retains_owner',
+        'C08_reader_close_then_future_then_retirement',
+        'C08_reader_close_same_worker_close',
+        'C08_reader_deadline_same_worker_close',
+        'C08_reader_running_cancel_error_preserved',
+        'C08_reader_all_selected_slots_retired',
+    ),
+    'C10': (
+        'C10_reader_fixture-a_original_transcript_before',
+        'C10_reader_fixture-b_original_transcript_before',
+        'C10_reader_queue_original_deadline',
+        'C10_reader_deadline_503',
+        'C10_reader_queued_deadline_503',
+        'C10_reader_deadline_original_retirement',
+        'C10_reader_queued_deadline_original_retirement',
+        'C10_reader_queued_deadline_before_open',
+        'C10_reader_delayed_original_sql_forwarded',
+        'C10_reader_exact_lifecycle_counters',
+        'C10_reader_fixture-a_original_transcript_restored',
+        'C10_reader_fixture-b_original_transcript_restored',
+    ),
+}
+
+
 class Checks:
     def __init__(self, args):
         self.args = args
@@ -135,6 +172,9 @@ class Checks:
             "C12_history_fetch_count_matches_sql", "C12_fetch_is_not_cache_hit"),
             "canonical history and independent ORIGINAL-entry/SQL observers")
         if args.case == "all":
+            for case, assertions in READER_ASSERTIONS.items():
+                self.expect(case + "_selected_reader_lifecycle", case, "recovering", assertions,
+                            "original mounted pool, canonical two transcripts, real native Futures/SQL/close/retirement; zero new rows")
             for case, reason in REMAINING.items():
                 self.expect(case + "_remaining_contract", case, "remaining", (), reason)
             for number in range(1, 246):
@@ -416,7 +456,7 @@ def counters(checks, db):
 def fixture_accounting(case):
     """Cumulative canonical INSERT plan, not measured rows or resource PASS.
 
-    The 64 denominator deliberately retains ALL audit_log rows, including
+    The selected 78 denominator deliberately retains ALL audit_log rows, including
     config/native-writer/outer audits; the 512 causal allowance cannot absorb
     its excess. Mutable journals/selectors are identities, not new rows on
     every UPDATE. Publication leases are counted even after their DELETE.
@@ -452,6 +492,10 @@ def fixture_accounting(case):
              "multiplicity": 6, "tables": {"audit_log": 2}},
             {"owner": "runtime/use -> from_runtime: 2 orgs * 2 native_writer intervals * active/settled",
              "multiplicity": 4, "tables": {"audit_log": 2}},
+            {"owner": "P5 agent_yaml_frontmatter_migration: both orgs, active/settled",
+             "multiplicity": 2, "tables": {"audit_log": 2}},
+            {"owner": "P5 identity_names_compatibility: both orgs, active/settled",
+             "multiplicity": 2, "tables": {"audit_log": 2}},
             {"owner": "seed TASK-090 + ready_task_cases.create_task + nine TaskInvocation cases",
              "multiplicity": 1, "tables": {"tasks": 12}},
             # Each original callback owns its genuine INTEGER task_results row.
@@ -512,7 +556,7 @@ def fixture_accounting(case):
         producers.append({"owner": "two _root_worktree_batch admissions -> original start/finish",
                           "multiplicity": 2, "tables": {"audit_log": 2}, "conditional": True})
     history = lambda rows: sum(count for table, count in rows.items() if history_table(table))
-    limits = {"orgs": 2, "roots": 16, "tasks": 64, "history_controls": 64,
+    limits = {"orgs": 2, "roots": 16, "tasks": 64, "history_controls": 78 if case == "all" else 64,
               "causal_rows": 512, "threads": 8, "messages": 64, "tokens": 16,
               "jobs": 8, "simultaneous_harmless_children": 2, "browser_contexts": 1,
               "listeners": 2, "concurrent_requests": 8, "fixture_bytes": 512 * 1024 * 1024,
@@ -554,14 +598,14 @@ def seed(checks):
     checks.save()
     if excess:
         # Independent pre-constructor admission, not an unconditional all-case
-        # return. The present canonical SUCCESS plan needs at least66/64:
-        # audit_log53 + v2/selector13. Root reconciliation raises upper to70.
-        # Removing a writer/case, deleting history or charging excess to512 is
-        # not an authorized repair. Keep every mandatory obligation incomplete.
+        # return. ROOT step38 accepts ONLY this selected successful plan:
+        # audit_log61 + authority/selector13 =74, conditional upper78.
+        # Future allocating cases need their own canonical producer ledger;
+        # removing writers/history or moving an excess to512 is not a repair.
         checks.missing("C03_canonical_history_fit", json.dumps({
-            "reason": "canonical fixture exceeds unchanged caps", "excess": excess,
+            "reason": "canonical fixture exceeds selected independent caps", "excess": excess,
             "history_controls_lower": fit["history_controls_lower"],
-            "minimum_history_excess": max(0, fit["history_controls_lower"] - 64),
+            "minimum_history_excess": max(0, fit["history_controls_lower"] - fit["limits"]["history_controls"]),
             "table": "audit_log", "producers": fit["producers"]}, sort_keys=True))
         return None
     from runtime.infrastructure.database import Database
@@ -648,8 +692,8 @@ def seed(checks):
                   if history_table(table))
     if sum(totals.values()) > 512:
         raise RuntimeError("original canonical causal fixture row cap exceeded")
-    if v2_rows > 64:
-        raise RuntimeError("original v2/history fixture row cap exceeded")
+    if v2_rows > fit["limits"]["history_controls"]:
+        raise RuntimeError("selected v2/history fixture row cap exceeded")
     return runtime
 
 
@@ -1374,6 +1418,295 @@ async def early_cases(checks, runtime, port, token, wire, phase):
     await asyncio.gather(*(observe(*row) for row in targets))
 
 
+class ReaderObservation:
+    """Pass-through observations for ONLY this mounted pool's native readers."""
+
+    def __init__(self, wire_observation: Any) -> None:
+        self.wire = wire_observation
+        self.current = ContextVar("startup_reader_selection", default=None)
+        self.native = threading.local()
+        self.lock = threading.Lock()
+        self.rows = []
+        self.owners = {}
+        self.sql_release = {name: threading.Event() for name in ("close", "deadline")}
+        self.close_release = threading.Event()
+        self.pool = None
+        self.original_connect = sqlite3.connect
+
+    def event(self, name: str, boundary: str) -> None:
+        with self.lock:
+            if len(self.rows) >= 192:
+                raise RuntimeError("selected reader observation cap")
+            self.rows.append({"selection": name, "boundary": boundary,
+                              "thread": threading.get_ident(), "at": time.monotonic()})
+
+    def seen(self, name: str, boundary: str) -> list[dict[str, Any]]:
+        with self.lock:
+            return [dict(row) for row in self.rows
+                    if row["selection"] == name and row["boundary"] == boundary]
+
+    def start(self, pool: Any) -> None:
+        self.pool = pool
+        self.read_uris = {Path(org.db.db_path).absolute().as_uri() + "?mode=ro" for org in pool.state.orgs.values()}
+        self.had_submit_override = "submit" in pool._executor.__dict__
+        self.original_submit = pool._executor.submit
+        pool._executor.submit = self.submit
+        sqlite3.connect = self.connect
+
+    def submit(self, function: Any, lease: Any, projection: Any) -> Any:
+        wire = self.wire.current.get()
+        name = self.current.get() or (None if wire is None else wire.get("case"))
+        if name not in ("close", "deadline", "queued_cancel", "queued_deadline"):
+            self.event(name or "other", "other_submit")
+            return self.original_submit(function, lease, projection)
+        owner = {"lease": lease, "waiter": asyncio.current_task(), "deadline": lease.budget.deadline}
+        self.owners[name] = owner
+        self.event(name, "submit")
+
+        def native() -> bytes:
+            self.native.selection = (name, lease)
+            self.event(name, "worker_entry")
+            try:
+                return function(lease, projection)
+            finally:
+                self.event(name, "worker_exit")
+                del self.native.selection
+
+        future = self.original_submit(native)
+        owner["future"] = future
+        future.add_done_callback(lambda done: self.event(name, "future_cancelled" if done.cancelled() else "future_done"))
+        lease.retired.add_done_callback(lambda done: self.event(name, "retired"))
+        return future
+
+    def connect(self, database: str, *args: Any, **kwargs: Any) -> Any:
+        selected = getattr(self.native, "selection", None)
+        if selected is None:
+            if database in self.read_uris and kwargs.get("uri"):
+                self.event("other", "other_open")
+            return self.original_connect(database, *args, **kwargs)
+        name, lease = selected
+        if database != lease.references[3].absolute().as_uri() + "?mode=ro" or not kwargs.get("uri"):
+            raise AssertionError("selected reader did not open its original admitted RO database")
+        conn = self.original_connect(database, *args, **kwargs)
+        self.event(name, "open")
+        observer = self
+
+        class Connection:
+            def __getattr__(self, key: str) -> Any:
+                return getattr(conn, key)
+
+            @property
+            def row_factory(self) -> Any:
+                return conn.row_factory
+
+            @row_factory.setter
+            def row_factory(self, value: Any) -> None:
+                conn.row_factory = value
+
+            def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+                # Delay an ORIGINAL auxiliary SQL statement, after the canonical
+                # thread/message reads. Neither its cursor nor DTO is replaced.
+                if "FROM thread_invocations" in sql and name in observer.sql_release:
+                    observer.event(name, "aux_sql_wait")
+                    if not observer.sql_release[name].wait(3):
+                        raise TimeoutError("selected original SQL barrier expired")
+                    observer.event(name, "aux_sql_forward")
+                result = conn.execute(sql, parameters)
+                observer.event(name, "sql_forwarded")
+                return result
+
+            def close(self) -> None:
+                observer.event(name, "close_enter")
+                if name == "close" and not observer.close_release.wait(3):
+                    raise TimeoutError("selected original close barrier expired")
+                conn.close()  # Original connection, on its actual opening worker.
+                observer.event(name, "close_return")
+
+        return Connection()
+
+    def release(self) -> None:
+        for permit in self.sql_release.values():
+            permit.set()
+        self.close_release.set()
+
+    def restore(self) -> None:
+        sqlite3.connect = self.original_connect
+        if self.had_submit_override:
+            self.pool._executor.submit = self.original_submit
+        else:
+            del self.pool._executor.submit
+
+
+async def reader_cases(checks: Checks, state: Any, client: Any, observer: ReaderObservation) -> None:
+    """Zero-row C04/C08/C10 subset inside the ONE original recovery hold."""
+    from runtime.daemon.routes.threads import _project_thread_messages
+    from runtime.daemon.startup_reads import StartupReadUnavailable
+    pool = state._startup_reads
+    baseline = await asyncio.gather(*(client.get(f"/api/v1/orgs/{slug}/threads/THR-001/messages?limit=10")
+                                     for slug in ("fixture-a", "fixture-b")))
+    for slug, response in zip(("fixture-a", "fixture-b"), baseline):
+        checks.require("C10_reader_" + slug + "_original_transcript_before",
+                       response.status_code == 200 and MESSAGE in response.text)
+    before = pool.snapshot()
+    attempts = []
+    observer.start(pool)
+
+    async def until(predicate: Any, deadline: float) -> None:
+        while not predicate():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("selected original reader boundary not observed")
+            await asyncio.sleep(.001)
+
+    async def controlled(name: str, slug: str) -> Any:
+        marker = observer.current.set(name)
+        try:
+            # Actual coroutine waiter, original admission and canonical SQL/DTO.
+            # A cancelled socket alone would not establish Task cancellation.
+            return await pool.read(state.orgs[slug],
+                lambda db, budget: _project_thread_messages(db, "THR-001", 0, 10))
+        finally:
+            observer.current.reset(marker)
+
+    async def http(name: str, slug: str) -> Any:
+        # ONLY the two intentional 2s-deadline observers get <=3s transport.
+        return await asyncio.wait_for(client.get(f"/api/v1/orgs/{slug}/threads/THR-001/messages?limit=10",
+                          headers={"X-Startup-Case": name}, timeout=3), 3)
+
+    async def cancel(name: str) -> None:
+        owner = observer.owners[name]
+        owner["waiter"].cancel()
+        done, pending = await asyncio.wait((owner["waiter"],), timeout=2)
+        if pending:
+            raise TimeoutError("actual reader waiter did not acknowledge cancellation")
+        result = (await asyncio.gather(*done, return_exceptions=True))[0]
+        checks.require("C08_reader_" + name + "_actual_waiter_cancelled", isinstance(result, asyncio.CancelledError))
+
+    try:
+        attempts.append(asyncio.create_task(controlled("close", "fixture-a")))
+        attempts.append(asyncio.create_task(http("deadline", "fixture-b")))
+        await until(lambda: all(observer.seen(name, "aux_sql_wait") for name in ("close", "deadline")), time.monotonic() + 2)
+        attempts.append(asyncio.create_task(controlled("queued_cancel", "fixture-b")))
+        attempts.append(asyncio.create_task(http("queued_deadline", "fixture-a")))
+        await until(lambda: len(observer.owners) == 4, time.monotonic() + 2)
+        owners = observer.owners
+        running = ("close", "deadline")
+        queued = ("queued_cancel", "queued_deadline")
+        checks.require("C04_reader_two_running_two_queued", all(owners[n]["future"].running() for n in running)
+            and all(not owners[n]["future"].running() and not owners[n]["future"].done() for n in queued)
+            and all(observer.seen(n, "open") and observer.seen(n, "aux_sql_wait") for n in running)
+            and all(not observer.seen(n, "worker_entry") and not observer.seen(n, "open") for n in queued))
+        checks.require("C04_reader_actual_admission_bounds", pool.snapshot()["active"] == 2
+            and pool.snapshot()["queued"] == 2 and pool.snapshot()["admitted"] - before["admitted"] == 4)
+        selected_before = (len(owners), len(observer.rows), pool.snapshot())
+        busy = await client.get("/api/v1/orgs/fixture-a/threads/THR-001/messages?limit=10",
+                                headers={"X-Startup-Case": "fifth_busy"})
+        checks.require("C04_reader_fifth_busy", (busy.status_code, busy.json().get("detail", {}).get("code")),
+                       (503, "startup_reader_busy"))
+        checks.require("C04_reader_fifth_no_submission_or_connection", len(owners) == selected_before[0]
+            and len(observer.rows) == selected_before[1]
+            and pool.snapshot()["admitted"] == selected_before[2]["admitted"]
+            and pool.snapshot()["refused"] == selected_before[2]["refused"] + 1)
+        await cancel("queued_cancel")
+        q = owners["queued_cancel"]
+        await until(lambda: q["lease"].retired.done(), time.monotonic() + 2)
+        checks.require("C08_reader_queued_cancel_no_native_work", q["future"].cancelled()
+            and observer.seen("queued_cancel", "future_cancelled") and observer.seen("queued_cancel", "retired")
+            and not observer.seen("queued_cancel", "worker_entry") and not observer.seen("queued_cancel", "open")
+            and not q["lease"].started and q["lease"].connection is None)
+        observer.sql_release["close"].set()
+        await until(lambda: observer.seen("close", "close_enter"), time.monotonic() + 2)
+        await cancel("close")
+        c = owners["close"]
+        checks.require("C08_reader_running_cancel_retains_owner", c["future"].running()
+            and not c["lease"].retired.done() and not c["lease"].close_proven
+            and c["lease"].connection is not None and not observer.seen("close", "close_return")
+            and not observer.seen("queued_deadline", "worker_entry")
+            and pool.snapshot()["active"] == 2 and pool.snapshot()["queued"] == 1)
+        checks.require("C10_reader_queue_original_deadline", owners["queued_deadline"]["lease"].budget.deadline
+            == owners["queued_deadline"]["deadline"] and not observer.seen("queued_deadline", "worker_entry"))
+        # Release both expired selections together. The queued original must
+        # refuse without opening; the running original forwards its SAME SQL.
+        expired = max(owners[n]["deadline"] for n in ("deadline", "queued_deadline"))
+        await until(lambda: time.monotonic() > expired + .02, expired + .5)
+        observer.sql_release["deadline"].set()
+        deadline_results = await asyncio.gather(attempts[1], attempts[3])
+        for name, response in zip(("deadline", "queued_deadline"), deadline_results):
+            checks.require("C10_reader_" + name + "_503", (response.status_code, response.json().get("detail", {}).get("code")),
+                           (503, "startup_reader_deadline"))
+            lease = owners[name]["lease"]
+            checks.require("C10_reader_" + name + "_original_retirement", lease.retired.done()
+                and owners[name]["future"].done() and observer.seen(name, "retired")
+                and isinstance(lease.primary_error, StartupReadUnavailable)
+                and lease.primary_error.code == "startup_reader_deadline"
+                and lease.budget.deadline == owners[name]["deadline"])
+        checks.require("C10_reader_queued_deadline_before_open", not observer.seen("queued_deadline", "open")
+            and observer.seen("queued_deadline", "worker_entry")[0]["at"] > owners["queued_deadline"]["deadline"])
+        observer.close_release.set()
+        await until(lambda: c["lease"].retired.done(), time.monotonic() + 2)
+        checks.require("C08_reader_close_then_future_then_retirement", c["future"].done()
+            and c["lease"].close_proven and c["lease"].connection is None
+            and observer.seen("close", "close_return")[0]["at"] <= observer.seen("close", "future_done")[0]["at"]
+            <= observer.seen("close", "retired")[0]["at"])
+        for name in running:
+            threads = [row["thread"] for boundary in ("open", "sql_forwarded", "close_enter", "close_return")
+                       for row in observer.seen(name, boundary)]
+            checks.require("C08_reader_" + name + "_same_worker_close", len(set(threads)) == 1
+                and threads[0] != checks.details["request_loop_thread"] and owners[name]["lease"].close_error is None)
+        checks.require("C08_reader_running_cancel_error_preserved",
+            isinstance(c["future"].exception(), StartupReadUnavailable)
+            and c["future"].exception().code == "startup_reader_unavailable"
+            and c["lease"].primary_error is None and c["lease"].close_error is None)
+        checks.require("C10_reader_delayed_original_sql_forwarded", bool(observer.seen("deadline", "aux_sql_forward"))
+            and observer.seen("deadline", "aux_sql_forward")[0]["at"] > owners["deadline"]["deadline"]
+            and observer.seen("deadline", "close_return")[0]["at"] > owners["deadline"]["deadline"])
+        active = leases = peak_active = peak_leases = 0
+        for row in observer.rows:
+            active += int(row["boundary"] == "worker_entry") - int(row["boundary"] == "worker_exit")
+            leases += int(row["boundary"] == "submit") - int(row["boundary"] == "retired")
+            peak_active, peak_leases = max(peak_active, active), max(peak_leases, leases)
+        checks.require("C04_reader_independent_native_bounds", (peak_active, peak_leases, active, leases,
+            sum(row["boundary"] == "open" for row in observer.rows),
+            sum(row["boundary"] == "close_return" for row in observer.rows),
+            sum(row["boundary"] in ("other_submit", "other_open") for row in observer.rows)), (2, 4, 0, 0, 2, 2, 0))
+        after = pool.snapshot()
+        checks.require("C10_reader_exact_lifecycle_counters",
+            {key: after[key] - before[key] for key in ("admitted", "started", "closed", "retired", "cancelled", "deadline", "refused")},
+            {"admitted": 4, "started": 3, "closed": 3, "retired": 4, "cancelled": 2, "deadline": 2, "refused": 1})
+        checks.require("C08_reader_all_selected_slots_retired", after["active"] == 0 and after["queued"] == 0)
+        restored = await asyncio.gather(*(client.get(f"/api/v1/orgs/{slug}/threads/THR-001/messages?limit=10")
+                                       for slug in ("fixture-a", "fixture-b")))
+        for slug, response, original in zip(("fixture-a", "fixture-b"), restored, baseline):
+            checks.require("C10_reader_" + slug + "_original_transcript_restored",
+                           response.status_code == 200 and MESSAGE in response.text and response.json() == original.json())
+    finally:
+        primary = sys.exception()
+        observer.release()
+        try:
+            for task in attempts:
+                if not task.done():
+                    task.cancel()
+            done, pending = await asyncio.wait(attempts, timeout=2)
+            if pending:
+                raise TimeoutError("selected reader coroutine cleanup incomplete")
+            await asyncio.gather(*done, return_exceptions=True)
+            # Observe original Futures AND callback acknowledgements; no private
+            # retirement, connection close or cross-thread SQLite operation.
+            native = [asyncio.wrap_future(owner[key]) for owner in observer.owners.values()
+                      for key in ("future",) if not owner[key].cancelled()]
+            native += [asyncio.wrap_future(owner["lease"].retired) for owner in observer.owners.values()]
+            await asyncio.wait_for(asyncio.gather(*native, return_exceptions=True), 3)
+        except BaseException as secondary:
+            checks.details["reader_cleanup_error"] = type(secondary).__name__
+            if primary is None:
+                raise
+            primary.add_note("Selected reader cleanup also failed: " + type(secondary).__name__)
+        finally:
+            observer.restore()
+            checks.details["reader_lifecycle"] = {"before": before, "after": pool.snapshot(),
+                "events": observer.rows, "allocation": "zero new durable rows; <=5 simultaneous reads; original hold only",
+                "exclusions": "full failed-close/drain/stop/restart/native-tail cases remain unimplemented"}
+
+
 async def literal_cases(checks, runtime, port, token, wire, phase, entries, index):
     async def observe(entry):
         name, method, target = entry["id"], entry["method"], entry["request_target"]
@@ -1740,6 +2073,7 @@ async def serving(checks, runtime):
     wire = []
     observation = EntryObservation(app)
     task_entries = TaskEntries(state)
+    reader_observation = ReaderObservation(observation)  # reusable barriers before the sole hold
     checks.details["wire"] = wire
     from starlette.routing import Match
     def identity(route):
@@ -1852,6 +2186,7 @@ async def serving(checks, runtime):
             before = fixture_effects(runtime, state, checks.args.root)
             observation.start()
             await early_cases(checks, runtime, port, token, wire, "recovering")
+            await reader_cases(checks, state, client, reader_observation)
             await literal_cases(checks, runtime, port, token, wire, "recovering", selected["literal22"], index)
             # Original static selections are separate from the22 variants.
             static_entries = [{"id": name, "method": "GET", "request_target": target, "request_body": None,
