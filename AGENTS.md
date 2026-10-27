@@ -1894,7 +1894,7 @@ acceptance, including real Founder UI actions, remain pending. This implementati
 enablement, deployment or a Phase1-completion claim.
 
 
-**THR299 exact failed-continuation remedy.** Only the genuine ordinary
+**THR299 exact failed-continuation remedy (literal v1).** Only the genuine ordinary
 TASK10725 engineering_manager session in happyranch/engineering may write the
 current-time authenticated FAILED10343 → existing10554 receipt, preserving
 10565, older10319 and original FAILED dev10450/QA10329. The bounded verifier
@@ -1912,6 +1912,26 @@ occurs. Compatible-reader rollback is required. See
 and CLI/runtime guides. Founder299seq11 leaves unreachable synthetic positive
 and dependent proof UNPROVEN; merge/install/real reconciliation remain separate,
 owned by SAME TASK10725 before naming use.
+
+**THR291 closed continuation source (v2; Founder seq518/525, ROOT13286).**
+The same receipt boundary additionally permits ONLY FAILED13112→existing13203,
+retaining authenticated13203→13217 and FAILED13217 with no successor.
+TASK13286 is the independent ordinary source operator, bound to Founder525 /
+dispatch526, never another ancestry edge. Current executable engineering_manager
+in happyranch/engineering, a genuinely fresh ordinary SAME13286 SID/no selected-SID
+result, unblocked/uncancelled live ownership and all four unheld root gates are
+required. Terminal13286 refuses; arbitrary replacement operators are forbidden.
+Stored versions select immutable original readers; disjoint v1/v2 receipts coexist
+with global key and pair/endpoint conflict checks. One owned transaction appends
+only one current audit. Historical readback survives owner end; uncertainty keeps
+the exact body/key with committed:null/readback_required:true and no auto-resend.
+No UNKNOWN custody, old failure, result, child or final-spawn fence is cleared.
+Source delivery grants no live POST, deployment/restart or old QA13184 retry.
+Separate human application requires compatible loaded code and the existing
+escalation/continue prerequisite while13286 is nonterminal. See the linked closed
+contract for exact pins and limits; unavailable positive/dependent proof is
+NOT RUN/PROOF NOT RUN, integration SKIPPED24342/211270–271, units RETIRED.
+
 
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel; each organization is loaded from `<runtime>/orgs/<slug>/org/`.
 

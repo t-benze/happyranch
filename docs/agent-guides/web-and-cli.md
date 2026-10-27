@@ -3406,6 +3406,22 @@ mixing refuse. The minimal receipt plus receipt_sha256 matches POST; historical
 lookup never establishes current retry validity or authority to spawn a child.
 
 
+V2 on these same boundaries is restricted to THR291 / ordinary TASK13286 and
+FAILED13112→existing13203, with historical FAILED13217 as current_descendant_id.
+Use lexical `--version 2` for preflight, integer2 in the unchanged command body,
+thread THR-291, successor TASK-13203, descendant TASK-13217 and operator TASK-13286,
+on predecessor TASK-13112. The current operator needs a genuinely fresh ordinary
+SAME13286 SID/no selected-SID result and live unblocked/unheld ownership; terminal
+13286 refuses. Preserve13203→13217;13286 is not an ancestry edge or old QA retry
+parent. A separately human-approved application and compatible loaded code are
+required. The existing escalation/continue prerequisite must occur while13286 is
+nonterminal; no arbitrary replacement owner is allowed. On write transport/server
+uncertainty CLI exits1 with committed:null/readback_required:true: retain exact
+body/key and GET that key, without automatic resend/new key. A missing in-flight
+readback is inconclusive. Historical receipt GET selects its stored v1/v2 producer
+and actual predecessor route after owner end; browser POST remains excluded.
+
+
 ### Current owner review discovery (THR139 seq506)
 
 GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human`

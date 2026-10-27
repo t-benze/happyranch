@@ -23,7 +23,8 @@ from tests.integration.conftest import seed_workspace
 pytestmark = pytest.mark.integration
 
 
-def test_thr299_public_read_and_scope_refusal(live_daemon: str, runtime: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", [1, 2])
+def test_thr299_public_read_and_scope_refusal(live_daemon: str, runtime: Path, tmp_path: Path, version: int) -> None:
     """C03/C09 only: real HTTP/CLI negative/read; no new-producer acceptance.
 
     Uses the retained isolated parent and unmodified real daemon fixture, never
@@ -61,7 +62,7 @@ def test_thr299_public_read_and_scope_refusal(live_daemon: str, runtime: Path, t
     duplicate = httpx.get(route + "?mode=retry&mode=receipt&target_agent=dev_agent", headers=headers)
     assert duplicate.status_code == 422
     assert httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"}).status_code == 401
-    body = {"version": 1, "operation_key": "synthetic-negative", "existing_successor_id": task_id,
+    body = {"version": version, "operation_key": "synthetic-negative", "existing_successor_id": task_id,
             "current_descendant_id": task_id, "thread_id": "synthetic", "operator_task_id": task_id,
             "session_id": "not-an-authority", "expected_state_digest": "0" * 64}
     write = httpx.post(route.replace("retry-verification", "reconcile-failed-continuation"), headers=headers, json=body)
@@ -137,8 +138,8 @@ def test_thr299_isolated_old_validator_bound_and_local_failure(tmp_path: Path) -
         db.close()
 
 
-@pytest.fixture
-def isolated_session_history() -> Iterator[tuple]:
+@pytest.fixture(params=[1, 2], ids=["v1-thr299", "v2-thr291"])
+def isolated_session_history(request: pytest.FixtureRequest) -> Iterator[tuple]:
     """Audit-row validator fixture only: no task, live SID or producer receipt.
 
     The literal owner is required by the selector, but these rows are invented
@@ -146,18 +147,22 @@ def isolated_session_history() -> Iterator[tuple]:
     No generic Database initializer, public writer or retired unit is invoked.
     """
     from types import SimpleNamespace
-    from runtime.infrastructure.db.task_reconciliation import SCOPE, TaskReconciliation
+    from runtime.infrastructure.db.task_reconciliation import TaskReconciliation
+
+    # Literal independent input: deriving the fixture from the selected producer
+    # would hide a decoder that accidentally selected the old owner for v2.
+    owner = {1: "TASK-10725", 2: "TASK-13286"}[request.param]
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, timestamp TEXT, task_id TEXT, "
                  "agent TEXT, action TEXT, payload TEXT)")
-    selected = {"id": 1, "timestamp": "2026-10-01T00:00:00+00:00", "task_id": SCOPE["owner"],
-                "agent": SCOPE["manager"], "action": "session_start",
+    selected = {"id": 1, "timestamp": "2026-10-01T00:00:00+00:00", "task_id": owner,
+                "agent": "engineering_manager", "action": "session_start",
                 "payload": '{"session_id":"isolated-selected","invocation_purpose":"manager_decision",'
                            '"reasoning_effort":"high","optional":{"temperature":0.25}}'}
     conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", selected)
-    validator = TaskReconciliation(SimpleNamespace(_conn=conn))
+    validator = TaskReconciliation(SimpleNamespace(_conn=conn), request.param)
     binding = validator.original_session("isolated-selected")
     try:
         yield conn, validator, selected, binding

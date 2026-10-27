@@ -63,7 +63,8 @@ def cmd_reconcile_failed_continuation(args: argparse.Namespace) -> None:
     try:
         path = Path(args.from_file)
         require(path.is_absolute() and path.is_file(), "invalid_request", 422)
-        raw = path.read_bytes()
+        with path.open("rb") as stream:
+            raw = stream.read(16385)
         require(len(raw) <= 16384, "invalid_request", 422)
         body = request_body(raw)
         identifier(args.task_id)
@@ -72,12 +73,23 @@ def cmd_reconcile_failed_continuation(args: argparse.Namespace) -> None:
     try:
         client = OpcClient.from_env()
         slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
-        _lineage_response(client.post(
+        response = client.post(
             f"/api/v1/orgs/{quote(slug, safe='')}/tasks/{quote(args.task_id, safe='')}/reconcile-failed-continuation",
             json=body,
-        ))
+        )
+        if response.status_code >= 500:
+            try:
+                detail = response.json().get("detail", {})
+                code = detail.get("code") if isinstance(detail, dict) else None
+            except (ValueError, AttributeError):
+                code = None
+            # An uncertain server response is not proof that COMMIT failed.
+            print(json.dumps({"detail": {"code": code if type(code) is str else "storage_unavailable",
+                              "committed": None, "readback_required": True}}))
+            raise SystemExit(1)
+        _lineage_response(response)
     except (DaemonNotRunning, DaemonStateInconsistent, httpx.HTTPError):
-        print(json.dumps({"detail": {"code": "transport_unavailable"}}))
+        print(json.dumps({"detail": {"code": "transport_unavailable", "committed": None, "readback_required": True}}))
         raise SystemExit(1) from None
 
 
@@ -102,7 +114,7 @@ def cmd_verify_retry_link(args: argparse.Namespace) -> None:
             require(re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", args.operation_key) is not None, "invalid_request", 422)
         if args.mode == "preflight":
             identifier(args.session_id)
-            require(args.version == "1", "invalid_request", 422)
+            require(args.version in ("1", "2"), "invalid_request", 422)
     except ReconciliationError:
         _lineage_local_error()
     try:
@@ -1298,7 +1310,7 @@ def register(sub) -> None:
             command.add_argument("--operation-key", default=None, help="Read back SAME original operation after transport ambiguity")
         command.set_defaults(func=cmd_preparation_recovery, action=action)
 
-    reconcile = sub.add_parser("reconcile-failed-continuation", help="Exact THR299 ordinary-owner receipt; no task allocation")
+    reconcile = sub.add_parser("reconcile-failed-continuation", help="Closed v1 THR299/TASK10725 or v2 THR291/TASK13286 receipt; preserve body/key on uncertainty; no task allocation")
     reconcile.add_argument("task_id")
     reconcile.add_argument("--org", default=None)
     reconcile.add_argument("--from-file", required=True)
@@ -1311,7 +1323,8 @@ def register(sub) -> None:
     verify.add_argument("--json", action="store_true", help="Responses are always JSON")
     for name in ("target-agent", "failed-child-id", "operation-key", "existing-successor-id",
                  "current-descendant-id", "thread-id", "operator-task-id", "version", "session-id"):
-        verify.add_argument("--" + name, default=None)
+        verify.add_argument("--" + name, default=None,
+                            help="Closed lexical 1 (THR299) or 2 (THR291); preflight only" if name == "version" else None)
     verify.set_defaults(func=cmd_verify_retry_link)
     for action in ("pause", "resume"):
         parser = sub.add_parser(action, help=f"{action.title()} a root task's future admissions")
