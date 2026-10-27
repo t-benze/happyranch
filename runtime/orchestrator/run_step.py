@@ -6163,7 +6163,9 @@ def _session_failed_note(result, report) -> str:
     # A selected human cause or recognized terminal notice must lead any raw
     # stdout diagnostic fragment.  Complete stderr inspection can validly
     # select no cause, while stdout still contains the JSON envelope.
-    if not err and out:
+    # A recognized notice is already the validated cause taken from stdout;
+    # an arbitrary 300-character stdout slice next to it only misleads.
+    if not err and not notice and out:
         bits.append(f"stdout: {out.replace(chr(10), ' ')[:300]}")
     # ``error`` is built from full provider output, so it must never be copied
     # wholesale into durable task state.  Tails above already preserve it.

@@ -604,6 +604,57 @@ def _parse_pi_session_id(stdout: str) -> str | None:
     return None
 
 
+_PI_NOTICE_MAX_CHARS = 300
+
+
+def _parse_pi_terminal_error_notice(stdout: str, stderr: str) -> str | None:
+    """Return Pi's final provider error, when the run ended on one.
+
+    Pi exits 0 even when every model request failed (for example an HTTP 402
+    insufficient-balance response). The error is only visible in the JSON
+    event stream as the final assistant message with ``stopReason: "error"``
+    and an ``errorMessage``. Without this, the failure note shows an arbitrary
+    slice of stdout (often the echoed prompt) instead of the real cause.
+
+    Only the LAST assistant message counts: a transient error followed by a
+    successful retry is not a terminal failure. Reporting-only; this never
+    drives classification, retries or breaker accounting.
+    """
+    if not stdout:
+        return None
+    last_assistant: dict | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        candidates: list[object] = []
+        if event.get("type") in ("message_end", "turn_end"):
+            candidates.append(event.get("message"))
+        elif event.get("type") == "agent_end" and isinstance(event.get("messages"), list):
+            candidates.extend(event["messages"])
+        for message in candidates:
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                last_assistant = message
+    if last_assistant is None or last_assistant.get("stopReason") != "error":
+        return None
+    error_message = last_assistant.get("errorMessage")
+    if not isinstance(error_message, str) or not error_message.strip():
+        return None
+    source = "/".join(
+        part for part in (last_assistant.get("provider"), last_assistant.get("model"))
+        if isinstance(part, str) and part
+    )
+    label = f"provider error ({source})" if source else "provider error"
+    text = " ".join(error_message.split())
+    return f"{label}: {text}"[:_PI_NOTICE_MAX_CHARS]
+
+
 def _parse_opencode_session_id(stdout: str) -> str | None:
     """Extract the top-level ``sessionID`` from opencode 1.18.25
     `--format json` NDJSON events.
@@ -998,6 +1049,7 @@ def _run_command(
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
     terminal_error_notice_parser: Callable[[str, str], "str | None"] | None = None,
+    exit_zero_error_notice_parser: Callable[[str, str], "str | None"] | None = None,
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
     pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
@@ -1314,6 +1366,17 @@ def _run_command(
                 )
         # ── end D7A strict enforcement ───────────────────────────────
 
+        # Reporting-only: some providers exit 0 after a terminal model error.
+        # The notice explains a later missing callback; it never changes
+        # success, classification, retry or breaker accounting.
+        exit_zero_notice: str | None = None
+        if exit_zero_error_notice_parser is not None:
+            try:
+                exit_zero_notice = exit_zero_error_notice_parser(full_stdout, full_stderr)
+            except Exception as exc:
+                logger.warning("exit-zero notice parser raised: %s", exc)
+                exit_zero_notice = None
+
         return ExecutorResult(
             success=True,
             duration_seconds=int(time.monotonic() - start_time),
@@ -1324,6 +1387,7 @@ def _run_command(
             token_usage=token_usage,
             agent_session_id=agent_session_id,
             rate_limited=rate_limited,
+            terminal_error_notice=exit_zero_notice,
             provider_launched=True,
         )
 
@@ -1950,6 +2014,7 @@ class PiExecutor:
             session_id_parser=_parse_pi_session_id,
             provider="pi",
             on_throttle_event=on_throttle_event,
+            exit_zero_error_notice_parser=_parse_pi_terminal_error_notice,
             pre_launch_validator=pre_launch_validator,
             org_slug=org_slug,
             running=running,
