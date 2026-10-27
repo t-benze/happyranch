@@ -416,52 +416,123 @@ class TaskReconciliation:
         unrelated envelopes cannot disappear and full readers cannot recurse.
         """
         version, snapshot = payload["version"], payload["snapshot"]
-        keys(payload["operator_claim"], "task_id assigned_agent team current_session_id_sha256 status block_kind cancelled_at step revision active_chain_sha256 active_fanout_sha256 note_sha256 blocked_on_job_ids_sha256 result_row_id")
+
+        def strings(record: dict, names: str, *, nullable: bool = False) -> None:
+            for name in names.split():
+                require((nullable and record[name] is None) or type(record[name]) is str)
+
+        def sha256(record: dict, names: str, *, nullable: bool = False) -> None:
+            for name in names.split():
+                value = record[name]
+                require((nullable and value is None) or
+                        (type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None))
+
+        def positive_integer(value: Any) -> None:
+            require(type(value) is int and value > 0)
+
+        def reference(record: dict, number: str) -> None:
+            keys(record, number + " row_digest")
+            positive_integer(record[number])
+            sha256(record, "row_digest")
+
+        def binding(record: dict) -> None:
+            keys(record, "task_id agent session_start_audit_id session_start_row_digest session_id_sha256 invocation_purpose")
+            strings(record, "task_id agent invocation_purpose")
+            positive_integer(record["session_start_audit_id"])
+            sha256(record, "session_start_row_digest session_id_sha256")
+            require(record["invocation_purpose"] == "manager_decision")
+
+        def dispatch_shape(record: dict) -> None:
+            keys(record, "root_id thread_id invocation_id invocation_digest triggering_seq trigger_message_digest dispatch_audits dispatch_messages" +
+                 (" original_brief_sha256" if version == 2 else ""))
+            strings(record, "root_id thread_id")
+            positive_integer(record["invocation_id"])
+            positive_integer(record["triggering_seq"])
+            sha256(record, "invocation_digest trigger_message_digest" +
+                   (" original_brief_sha256" if version == 2 else ""))
+            for name, number in (("dispatch_audits", "id"), ("dispatch_messages", "seq")):
+                require(type(record[name]) is list and len(record[name]) == 1)
+                reference(record[name][0], number)
+
+        def edge_shape(record: dict) -> None:
+            keys(record, "producer predecessor_id successor_id records")
+            strings(record, "producer predecessor_id successor_id")
+            require(record["producer"] in ("manager_supersession", "escalation_superseded"))
+            require(type(record["records"]) is list and len(record["records"]) == 1)
+            reference(record["records"][0], "id")
+
+        claim = payload["operator_claim"]
+        keys(claim, "task_id assigned_agent team current_session_id_sha256 status block_kind cancelled_at step revision active_chain_sha256 active_fanout_sha256 note_sha256 blocked_on_job_ids_sha256 result_row_id")
+        strings(claim, "task_id assigned_agent team status")
+        strings(claim, "block_kind cancelled_at", nullable=True)
+        sha256(claim, "current_session_id_sha256")
+        sha256(claim, "active_chain_sha256 active_fanout_sha256 note_sha256 blocked_on_job_ids_sha256", nullable=True)
+        for name in ("step", "revision"):
+            require(type(claim[name]) is int and claim[name] >= 0)
+        require(claim["result_row_id"] is None)
+        # Validate each saved copy: dict equality alone equates bool with int.
+        binding(payload["operator_binding"])
+        binding(snapshot["operator_binding"])
         keys(snapshot["registry"], "team manager_kind manager_principal executable_manager")
-        keys(snapshot["origin"], "thread_id owner_dispatch composed_by composed_from_task_id" if version == 1
+        strings(snapshot["registry"], "team manager_kind manager_principal executable_manager")
+        origin = snapshot["origin"]
+        keys(origin, "thread_id owner_dispatch composed_by composed_from_task_id" if version == 1
              else "thread_id owner_dispatch source_approval recovery_trigger")
-        for name, limit in (("tasks", 23), ("holds", 4), ("dispatch_bindings", 5), ("edge_bindings", 18)):
-            require(type(snapshot[name]) is list and len(snapshot[name]) <= limit)
+        strings(origin, "thread_id" + (" composed_by composed_from_task_id" if version == 1 else ""))
+        dispatch_shape(origin["owner_dispatch"])
+        for name, minimum, maximum in (("tasks", 7 if version == 1 else 5, 23 if version == 1 else 5),
+                                       ("holds", 2 if version == 1 else 4, 2 if version == 1 else 4)):
+            require(type(snapshot[name]) is list and minimum <= len(snapshot[name]) <= maximum)
         for task in snapshot["tasks"]:
             TaskReconciliation.projection_shape(task)
         for hold in snapshot["holds"]:
             keys(hold, "root_task_id control_present generation held")
-            require(type(hold["control_present"]) is bool and type(hold["generation"]) is int and type(hold["held"]) is bool)
-        for dispatch in snapshot["dispatch_bindings"]:
-            keys(dispatch, "root_id thread_id invocation_id invocation_digest triggering_seq trigger_message_digest dispatch_audits dispatch_messages" +
-                 (" original_brief_sha256" if version == 2 else ""))
-            require(type(dispatch["invocation_id"]) is int and dispatch["invocation_id"] > 0
-                    and type(dispatch["triggering_seq"]) is int and dispatch["triggering_seq"] > 0)
-            for name, fields in (("dispatch_audits", "id row_digest"), ("dispatch_messages", "seq row_digest")):
-                require(type(dispatch[name]) is list and len(dispatch[name]) == 1)
-                keys(dispatch[name][0], fields)
-        for edge in snapshot["edge_bindings"]:
-            keys(edge, "producer predecessor_id successor_id records")
-            require(edge["producer"] in ("manager_supersession", "escalation_superseded"))
-            require(type(edge["records"]) is list and len(edge["records"]) == 1)
-            keys(edge["records"][0], "id row_digest")
+            strings(hold, "root_task_id")
+            require(type(hold["control_present"]) is bool and type(hold["generation"]) is int
+                    and 0 <= hold["generation"] <= 2**63 - 1 and type(hold["held"]) is bool)
+        for records in (payload["dispatch_bindings"], snapshot["dispatch_bindings"]):
+            require(type(records) is list and len(records) == (5 if version == 1 else 4))
+            for record in records:
+                dispatch_shape(record)
+        for records in (payload["old_edge_bindings"], snapshot["edge_bindings"]):
+            require(type(records) is list and ((2 <= len(records) <= 18) if version == 1 else len(records) == 1))
+            for record in records:
+                edge_shape(record)
         local = snapshot["local_retry"]
         keys(local, "parent_id agents" + (" observations" if version == 2 else ""))
+        strings(local, "parent_id")
         require(type(local["agents"]) is list and len(local["agents"]) == 2)
         for item in local["agents"]:
             keys(item, "target_agent failed_children retries")
+            strings(item, "target_agent")
             for name, fields in (("failed_children", "id assigned_agent status parent_task_id revisit_of_task_id"),
                                  ("retries", "id revisit_of_task_id")):
                 require(type(item[name]) is list and len(item[name]) <= CAP)
                 for row in item[name]:
                     keys(row, fields)
+                    if name == "failed_children":
+                        strings(row, "id assigned_agent status parent_task_id")
+                        strings(row, "revisit_of_task_id", nullable=True)
+                    else:
+                        strings(row, "id revisit_of_task_id")
         if version == 2:
             for name in ("source_approval", "recovery_trigger"):
-                keys(snapshot["origin"][name], "seq row_digest")
+                reference(origin[name], "seq")
             require(type(local["observations"]) is list and len(local["observations"]) == 4)
             for observation in local["observations"]:
                 keys(observation, "root_id children results")
+                strings(observation, "root_id")
                 for name in ("children", "results"):
                     require(type(observation[name]) is list and len(observation[name]) <= CAP)
                     for row in observation[name]:
                         keys(row, "id projection" if name == "children" else "id task_id agent session_id_sha256 row_digest")
                         if name == "children":
+                            strings(row, "id")
                             TaskReconciliation.projection_shape(row["projection"])
+                        else:
+                            positive_integer(row["id"])
+                            strings(row, "task_id agent")
+                            sha256(row, "session_id_sha256 row_digest")
 
     def operations(self) -> list[tuple[dict, dict]]:
         """Structural inventory FIRST; no edge traversal or recursive readers."""
@@ -474,7 +545,11 @@ class TaskReconciliation:
             require(type(payload["canonical_command"]) is str)
             cmd = strict_json(payload["canonical_command"])
             keys(cmd, "version operation_key org predecessor_id existing_successor_id current_descendant_id thread_id operator_task_id expected_state_digest")
-            request_body(canonical({k: v for k, v in cmd.items() if k not in ("org", "predecessor_id")} | {"session_id": "historical"}))
+            try:
+                request_body(canonical({k: v for k, v in cmd.items() if k not in ("org", "predecessor_id")} | {"session_id": "historical"}))
+            except ReconciliationError as exc:
+                raise ReconciliationError("malformed_evidence") from exc
+            require(type(cmd["org"]) is str and type(cmd["predecessor_id"]) is str)
             exact_scope(cmd["org"], cmd["predecessor_id"], cmd)
             scope = selected_scope(payload["version"])
             require(type(cmd["version"]) is int and payload["version"] == cmd["version"]
@@ -712,9 +787,10 @@ class TaskReconciliation:
     @staticmethod
     def projection_shape(task: dict) -> None:
         keys(task, "id status task_type parent_task_id revisit_of_task_id assigned_agent team dispatched_from_thread_id block_kind cancelled_at revision_count orchestration_step_count current_session_id_sha256 active_chain_sha256 active_fanout_sha256 blocked_on_job_ids_sha256 note_sha256")
-        for name in ("id", "status", "task_type", "assigned_agent", "team"):
-            identifier(task[name])
-        for name in ("parent_task_id", "revisit_of_task_id", "dispatched_from_thread_id", "block_kind", "cancelled_at"):
+        for name in ("id", "status", "task_type", "team"):
+            require(type(task[name]) is str)
+        # Generic observed children may be unassigned; SQL stores this as NULL.
+        for name in ("assigned_agent", "parent_task_id", "revisit_of_task_id", "dispatched_from_thread_id", "block_kind", "cancelled_at"):
             require(task[name] is None or type(task[name]) is str)
         require(type(task["revision_count"]) is int and task["revision_count"] >= 0
                 and type(task["orchestration_step_count"]) is int and task["orchestration_step_count"] >= 0)

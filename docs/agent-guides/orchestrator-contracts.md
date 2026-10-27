@@ -4790,7 +4790,14 @@ registry, topology, controls and digest. Heartbeat/progress/updated_at remain
 excluded. No task/result/child/control/queue row changes occur.
 
 Every bounded global receipt envelope/canonical command is decoded before
-selection. Stored version picks the immutable historical producer; relevant
+selection. Both closed saved shapes receive pure nonrecursive scalar/null/type
+and full lowercase SHA256 validation, including claims, registry/origin, holds,
+dispatch/edge/local records and v2 observations. INTEGER fields exclude bool;
+each duplicated binding is validated independently of Python equality. Optional
+nullable metadata and unassigned observed children retain their producer types.
+Malformed disjoint evidence refuses before a digest, successful historical or
+advisory result, or append; this pass reads no original DB references or current
+liveness. Stored version picks the immutable historical producer; relevant
 receipts receive complete original-reference/frozen validation without recursive
 receipt/edge scans. Disjoint valid v1/v2 operations coexist in either order;
 keys stay globally unique and competing endpoints/producers refuse. Unrelated
