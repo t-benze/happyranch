@@ -1602,9 +1602,9 @@ export interface AuthorRevisionCommand {
   expected_revision: 2; artifact_kind: 'document'; submission_bytes_base64: string; submission_digest: string;
 }
 
-/** THR299 receipt authority is server-bound to the sole ordinary operator. */
+/** Closed THR299 v1 / THR291 v2 authority is server-bound to its literal ordinary operator. */
 export interface FailedContinuationCommand {
-  version: 1;
+  version: 1 | 2;
   operation_key: string;
   existing_successor_id: string;
   current_descendant_id: string;
@@ -1629,7 +1629,7 @@ export interface FailedContinuationReceipt {
   task_id: string;
   agent: string;
   action: 'failed_continuation_reconciled';
-  version: 1;
+  version: 1 | 2;
   operation_key: string;
   canonical_command: string;
   command_sha256: string;
@@ -1649,13 +1649,13 @@ export interface FailedContinuationResponse {
 export type RetryVerificationInput =
   | { mode: 'retry'; target_agent: string; failed_child_id?: string }
   | { mode: 'receipt'; operation_key: string }
-  | { mode: 'preflight'; version: '1'; operation_key: string; existing_successor_id: string;
+  | { mode: 'preflight'; version: '1' | '2'; operation_key: string; existing_successor_id: string;
       current_descendant_id: string; thread_id: string; operator_task_id: string; session_id: string };
 
 export type RetryVerificationResponse =
   | { version: 1; mode: 'retry'; org: string; parent_id: string; target_agent: string;
       failed_child_id: string | null; valid: boolean; path: string[]; reason: string | null; advisory: true }
-  | { version: 1; mode: 'preflight'; org: string; predecessor_id: string; operation_key: string;
+  | { version: 1 | 2; mode: 'preflight'; org: string; predecessor_id: string; operation_key: string;
       eligible: true; target: { team: string; manager: string; existing_successor_id: string;
         current_descendant_id: string; thread_id: string; operator_task_id: string };
       operator_binding: ReconciliationOperatorBinding; expected_state_digest: string; advisory: true }
