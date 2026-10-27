@@ -499,6 +499,14 @@ adapter/profile, change PENDING submission, choose a launcher, run a process,
 or claim Connected. Direct projection, COMMITTED eligibility, Popen fencing,
 and final UI simplification remain later serial slices.
 
+Selected conformance timeout/deadline, bounded-read and arbitrary-error exits make
+one original cleanup attempt. Failed poll/wait/reap retains the original failure
+and traceback, bounded real cleanup secondary, SAME Process and
+maintenance_native_unsettled through projection/sweep to the maintenance barrier.
+Inner timeout cleanup is not repeated by an outer handler. Only positive native
+settlement permits ordinary validation failure isolation; no field/wrapper return
+or a different child proves reap.
+
 **THR-160 direct-connect behavioral conformance.** Trusted commit/projection
 (never receipt-only ``/runtime/custom-cli/connect``) invokes the candidate's
 ordinary v1 stdin/stdout wrapper path once with a unique bounded opaque canary

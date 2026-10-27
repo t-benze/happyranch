@@ -733,12 +733,21 @@ def run_conformance_probe(
             f"Failed to launch adapter executable {executable!r}: {exc}"
         ) from exc
 
-    def retire_probe():
-        _kill_and_reap(proc)
-        if validate_admission is not None and proc.poll() is None:
-            error = RuntimeError("selected conformance process termination/reap remains unproved")
-            error.maintenance_native_unsettled = True
-            raise error
+    def retire_probe(primary: BaseException) -> bool:
+        """One cleanup attempt; failed reap never replaces the original cause."""
+        try:
+            _kill_and_reap(proc)
+            if validate_admission is not None:
+                # Consume positive settlement of THIS Process, not a returncode
+                # field or completion of a wrapper whose cleanup may have failed.
+                proc.wait(timeout=0)
+        except BaseException as secondary:
+            if validate_admission is not None:
+                primary.maintenance_native_unsettled = True
+                primary.maintenance_native_process = proc
+            primary.add_note("conformance native cleanup also failed: " + repr(secondary)[:512])
+            return False
+        return True
 
     # Read stdout and stderr concurrently with byte limits.
     # Do NOT use communicate() — it fully buffers both streams before we can
@@ -766,25 +775,11 @@ def run_conformance_probe(
             time.monotonic() - conformance_start
         )
         if remaining <= 0:
-            retire_probe()
-            if require_prompt_delivery:
-                raise direct_failure("timed out")
-            raise ValueError(
-                f"Conformance probe timed out after "
-                f"{deadline_seconds}s for {executable!r}"
-            )
-        try:
-            proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            retire_probe()
-            if require_prompt_delivery:
-                raise direct_failure("timed out")
-            raise ValueError(
-                f"Conformance probe timed out after "
-                f"{deadline_seconds}s for {executable!r}"
-            )
+            raise subprocess.TimeoutExpired(proc.args, deadline_seconds)
+        proc.wait(timeout=remaining)
     except subprocess.TimeoutExpired as exc:
-        retire_probe()
+        if not retire_probe(exc):
+            raise  # Retain the actual timeout/traceback and cleanup secondary.
         if require_prompt_delivery:
             raise direct_failure("timed out") from exc
         stderr_tail = ""
@@ -794,18 +789,14 @@ def run_conformance_probe(
             f"Conformance probe timed out after "
             f"{deadline_seconds}s for {executable!r}. "
             f"stderr tail: {stderr_tail[:500]}"
-        )
+        ) from exc
     except BoundedReadError as exc:
-        retire_probe()
+        if not retire_probe(exc):
+            raise
         raise ValueError(str(exc)) from exc
-
     except BaseException as primary:
         if validate_admission is not None:
-            try:
-                retire_probe()
-            except BaseException as secondary:
-                primary.maintenance_native_unsettled = True
-                primary.add_note(f"selected conformance native cleanup also failed: {secondary!r}")
+            retire_probe(primary)
         raise
 
     if proc.returncode != 0:

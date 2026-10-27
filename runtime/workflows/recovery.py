@@ -192,8 +192,12 @@ def _publish_cold_document_task(dispatcher: Any, task_id: str, gate: Any,
                 pause.held_uncommitted(task_id)
             dispatcher._eligible(conn, intent, capture, sessions)
     except (DraftOwnershipError, WorkflowActivationError, WorkflowAuthorityError, PauseControlError) as exc:
-        code = str(exc) if isinstance(exc, DraftOwnershipError) else exc.code
-        if code not in HOLDS | {'workflow_activation_author_pending', 'root_paused'}:
+        if isinstance(exc, PauseControlError):
+            detail = exc.detail
+            code = detail.get('code') if isinstance(detail, dict) else None
+        else:
+            code = str(exc) if isinstance(exc, DraftOwnershipError) else exc.code
+        if not isinstance(code, str) or code not in HOLDS | {'workflow_activation_author_pending', 'root_paused'}:
             raise
         return RecoveryOutcome('local_hold', code)
     return gate.publish_workflow_task(org, task_id, sweep_owner=startup_owner)

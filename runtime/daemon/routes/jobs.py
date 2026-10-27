@@ -1489,6 +1489,8 @@ async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
     timeout_override: int | None, trigger: str = 'founder',
     trigger_actor: str | None = None, submit_session_id: str | None = None) -> dict:
     require_job_admission(org)
+    from runtime.orchestrator.producer_move import producer_admission_validation
+    validate_admission = producer_admission_validation(org)
     admission = owner_for(org.db)
     owner = None
     from runtime.orchestrator.producer_move import NativeWriterDisposition
@@ -1499,7 +1501,7 @@ async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
         if admission is not None:
             with admission.move.gate, org.db._lock:
                 require_job_admission(org)
-                owner = admission.reserve('job', job_id)
+                owner = admission.reserve('job', job_id, validate_admission=validate_admission)
         result = await _run_job_core_impl(org, job_id=job_id, cwd_override=cwd_override,
             timeout_override=timeout_override, trigger=trigger, trigger_actor=trigger_actor,
             submit_session_id=submit_session_id, _move_owner=owner,
@@ -1511,7 +1513,9 @@ async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
         return {'id': job_id, 'status': 'pending', 'deferred': True, 'code': exc.code}
     except BaseException as exc:
         primary = exc
-        failed = exc is not disposition.no_effect_error
+        deferred = isinstance(exc, StartupUnavailable)
+        failed = (not deferred and exc is not disposition.no_effect_error) or bool(
+            deferred and owner is not None and owner.attempt_open and not owner.safe_defer)
         raise
     finally:
         if owner is not None and not getattr(owner, 'detached', False):

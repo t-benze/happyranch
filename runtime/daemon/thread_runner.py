@@ -994,6 +994,8 @@ async def run_invocation(
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
     _require_runner_ready(org_state, host_supervisor)
+    from runtime.daemon.startup_recovery import ordinary_admission_validation
+    validate_admission = ordinary_admission_validation(org_state)
     with org_state._runner_lifetime() as admitted:
         if not admitted:
             return
@@ -1004,7 +1006,7 @@ async def run_invocation(
         if move is None:
             move = TeamMoveCoordinator.for_org(TeamMoveStore(org_state.db, org_state.slug))
         admission: ThreadMoveAdmission = move.threads
-        owner = admission.reserve(invocation_token)
+        owner = admission.reserve(invocation_token, validate_admission=validate_admission)
         if owner is None:
             return
         deferred = failed = False
@@ -1464,6 +1466,7 @@ async def _run_invocation_owned(
                             primary.add_note(f"Thread direct terminal settlement failed: {settlement}")
 
         def _invoke_bound(run_prompt: str, resume: str | None) -> _InvokeResult:
+            move_owner.require_admission()
             _require_runner_ready(org_state, host_supervisor)
             launched = False
 
@@ -1486,16 +1489,20 @@ async def _run_invocation_owned(
                 ))
 
             def _pre_launch_validator() -> None:
-                _require_runner_ready(org_state, host_supervisor)
-                with move_owner.preparation_effects():
-                    validate_workspace_skills_integrity(
-                        workspace, expected_specs,
-                        settings=settings,
-                        db=org_state.db,
-                        agent_name=inv.agent_name,
-                        task_id=inv.thread_id,
-                    )
-                _require_runner_ready(org_state, host_supervisor)
+                try:
+                    _require_runner_ready(org_state, host_supervisor)
+                    with move_owner.preparation_effects():
+                        validate_workspace_skills_integrity(
+                            workspace, expected_specs,
+                            settings=settings,
+                            db=org_state.db,
+                            agent_name=inv.agent_name,
+                            task_id=inv.thread_id,
+                        )
+                    _require_runner_ready(org_state, host_supervisor)
+                except StartupUnavailable as exc:
+                    move_owner.admission_refused(exc)
+                    raise
             if host_supervisor is None:
                 # ── Self-launch with C2 final admission and unknown cleanup ──
                 run_kwargs = dict(
@@ -1559,7 +1566,12 @@ async def _run_invocation_owned(
                 # finish/release/sleep/reacquire lifecycle.
                 contained = running.process is not None
                 if not contained:
-                    _require_runner_ready(org_state, host_supervisor)
+                    try:
+                        move_owner.require_admission()
+                        _require_runner_ready(org_state, host_supervisor)
+                    except StartupUnavailable as exc:
+                        move_owner.admission_refused(exc)
+                        raise
                 run_kwargs = dict(
                     workspace=Path(workspace), prompt=run_prompt,
                     session_id=session_id, timeout_seconds=timeout,

@@ -420,7 +420,14 @@ async def _run_schedule(
         # a fresh handle) — mirroring the task producer's passthrough seam.
         contained = running.process is not None
         if not contained:
-            require_producer_admission(org_state)
+            try:
+                if _move_owner is not None:
+                    _move_owner.require_admission()
+                require_producer_admission(org_state)
+            except StartupUnavailable as exc:
+                if _move_owner is not None:
+                    _move_owner.admission_refused(exc)
+                raise
         result = executor.run(
             workspace=workspace,
             prompt=prompt,

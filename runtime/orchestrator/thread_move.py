@@ -52,8 +52,10 @@ def thread_preparation_effects() -> Iterator[None]:
 
 
 class ThreadPreparation:
-    def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle) -> None:
+    def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle,
+                 *, validate_admission: Callable[[], None] | None = None) -> None:
         self.admission, self.inv, self.state = admission, inv, state
+        self.validate_admission = validate_admission
         self.identity = PermanentAgentIdentity(state.org_slug, state.agent_id)
         self.owner_live = True
         self.last_spec: Any = None
@@ -119,24 +121,41 @@ class ThreadPreparation:
                 exc.add_note(f"thread preparation evidence failed: {evidence}")
             raise
 
+    def admission_refused(self, error: BaseException) -> None:
+        error.native_admission_owner = self
+        self.safe_selflaunch_defer = bool(self.attempt_open and not self.state.attempts[-1].launched)
+
+    def require_admission(self) -> None:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        try:
+            if self.validate_admission is not None:
+                self.validate_admission()
+        except StartupUnavailable as exc:
+            self.admission_refused(exc)
+            raise
+
     def before_fifo(self) -> None:
+        self.require_admission()
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
 
     def start_phase(self, phase: str) -> None:
         with self.admission.db._lock:
+            self.require_admission()
             if self.state.retry_initialized is None:
                 raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
-            self.admission.write(self, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
+            self.admission.write(self, validate_admission=self.require_admission, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
         self.before_fifo()
 
     def retry_schedule(self, boundary: str, schedule: tuple[float, ...]) -> tuple[int, tuple[float, ...]]:
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             if self.state.retry_initialized is None:
                 raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
             if self.state.retry_initialized is False:
-                self.admission.write(self, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
+                self.admission.write(self, validate_admission=self.require_admission, retry_initialized=True, boundary=boundary, schedule=tuple(float(x) for x in schedule))
             elif self.state.boundary != boundary:
                 raise DeferredTeamMove("team_move_thread_retry_owner_mismatch")
             return self.state.ordinal, self.state.schedule
@@ -145,16 +164,19 @@ class ThreadPreparation:
         # Persist original retry budget BEFORE sleeping/reacquiring; no gate in
         # the host terminal leaf. Each unknown attempt stays in the audit.
         with self.admission.db._lock:
+            self.require_admission()
             if self.state.retry_initialized is not True or not self.state.ordinal < ordinal <= len(self.state.schedule):
                 raise DeferredTeamMove("team_move_thread_retry_budget")
-            self.admission.write(self, ordinal=ordinal)
+            self.admission.write(self, validate_admission=self.require_admission, ordinal=ordinal)
 
     def commit(self, ctx: Any = None) -> bool:
         with self.admission.move.gate, self.admission.db._lock:
+            self.require_admission()
             self.admission.revalidate_uncommitted(self)
             with ctx._lock if ctx is not None else nullcontext():
                 if ctx is not None and ctx._terminal_reason is not None:
                     return False
+                self.require_admission()
                 if self.attempt_open:
                     raise DeferredTeamMove("team_move_thread_attempt_unsettled")
                 if self.state.retry_initialized is not True:
@@ -162,6 +184,7 @@ class ThreadPreparation:
                 self.admission.db._conn.execute("BEGIN IMMEDIATE")
                 previous = self.state
                 try:
+                    self.require_admission()  # BEGIN may have waited on another writer.
                     # The actual claim owner stamps lifecycle together with the
                     # durable possible-launch audit, under the terminal leaf.
                     if not self.claimed:
@@ -191,10 +214,15 @@ class ThreadPreparation:
                     self.attempt_open = True
                     self.safe_selflaunch_defer = False
                 except BaseException as exc:
-                    self.admission.db._conn.rollback()
                     self.state = previous
                     self.claimed = self.inv.started_at is not None
-                    if isinstance(exc, Exception) and not isinstance(exc, DeferredTeamMove):
+                    try:
+                        self.admission.db._conn.rollback()
+                    except BaseException as secondary:
+                        self.state = previous.model_copy(update={'failed_cleanup': True})
+                        exc.add_note("thread commit rollback also failed: " + repr(secondary)[:512])
+                    from runtime.daemon.startup_recovery import StartupUnavailable
+                    if isinstance(exc, Exception) and not isinstance(exc, (DeferredTeamMove, StartupUnavailable)):
                         raise DeferredTeamMove("team_move_thread_commit_unavailable") from exc
                     raise
         return True
@@ -232,13 +260,15 @@ class ThreadPreparation:
     def before_selflaunch(self) -> None:
         # Real executors call this AFTER throttle and immediately BEFORE
         # Popen. A passthrough host reservation is not a running process.
+        from runtime.daemon.startup_recovery import StartupUnavailable
         try:
             self.before_fifo()
-        except DeferredTeamMove:
+            if not self.attempt_open and not self.commit():
+                raise DeferredTeamMove("team_move_thread_selflaunch_cancelled")
+            self.require_admission()
+        except (DeferredTeamMove, StartupUnavailable):
             self.safe_selflaunch_defer = self.attempt_open
             raise
-        if not self.attempt_open and not self.commit():
-            raise DeferredTeamMove("team_move_thread_selflaunch_cancelled")
 
     def on_started(self) -> None:
         with self.admission.db._lock:
@@ -307,22 +337,35 @@ class ThreadMoveAdmission:
         if row is not None:
             raise DeferredTeamMove("team_move_thread_held", row["operation_id"])
 
-    def write(self, owner: ThreadPreparation, **changes: Any) -> None:
+    def write(self, owner: ThreadPreparation, *, validate_admission: Callable[[], None] | None = None,
+              **changes: Any) -> None:
         # Leaf writer may be called under DB, never obtains the move gate.
         previous = owner.state
         self.db._conn.execute("BEGIN IMMEDIATE")
         try:
+            if validate_admission is not None:
+                validate_admission()
             owner._save(**changes)
             self.db._conn.commit()
         except BaseException as exc:
-            self.db._conn.rollback()
             owner.state = previous
-            if isinstance(exc, Exception) and not isinstance(exc, DeferredTeamMove):
+            try:
+                self.db._conn.rollback()
+            except BaseException as secondary:
+                owner.state = previous.model_copy(update={'failed_cleanup': True})
+                exc.add_note("thread evidence rollback also failed: " + repr(secondary)[:512])
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, Exception) and not isinstance(exc, (DeferredTeamMove, StartupUnavailable)):
                 raise DeferredTeamMove("team_move_thread_evidence_unavailable") from exc
             raise
 
-    def reserve(self, token: str) -> ThreadPreparation | None:
+    def reserve(self, token: str, *, validate_admission: Callable[[], None] | None = None) -> ThreadPreparation | None:
+        if validate_admission is None:
+            from runtime.orchestrator.producer_move import producer_admission_validation
+            validate_admission = producer_admission_validation(db=self.db)
+        validate_admission()
         with self.move.gate, self.db._lock:
+            validate_admission()
             inv = self.db.get_pending_invocation(token)
             if inv is None:
                 return None
@@ -348,8 +391,22 @@ class ThreadMoveAdmission:
                 state = ThreadLifecycle(org_slug=self.move.store.org_slug,
                     invocation_id=inv.id, thread_id=inv.thread_id, agent_id=inv.agent_name,
                     session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex, retry_initialized=False)
-            owner = ThreadPreparation(self, inv, state)
-            self.write(owner, deferred=False, producer_settled=False)
+            owner = ThreadPreparation(self, inv, state, validate_admission=validate_admission)
+            self.write(owner, validate_admission=validate_admission, deferred=False, producer_settled=False)
+            try:
+                owner.require_admission()  # COMMIT may have waited before registry publication.
+            except BaseException as primary:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                try:
+                    # No provider/preparation was exposed. Settle the original
+                    # durable reservation without requiring fresh admission.
+                    owner.finish(deferred=isinstance(primary, StartupUnavailable),
+                        failed=not isinstance(primary, StartupUnavailable))
+                except BaseException as secondary:
+                    owner.state = owner.state.model_copy(update={'failed_cleanup': True})
+                    self.live[inv.id] = owner
+                    primary.add_note("native reservation settlement also failed: " + repr(secondary)[:512])
+                raise
             self.live[inv.id] = owner
             return owner
 

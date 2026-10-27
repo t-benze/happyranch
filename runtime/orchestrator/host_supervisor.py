@@ -1548,7 +1548,11 @@ class HostSessionSupervisor:
                 if request.move_reservation is not None:
                     from runtime.orchestrator.task_pause import DeferredRootPause
                     from runtime.orchestrator.team_move import DeferredTeamMove
-                    if not isinstance(exc, (DeferredRootPause, DeferredTeamMove)):
+                    from runtime.daemon.startup_recovery import StartupUnavailable
+                    native_refusal = (isinstance(exc, StartupUnavailable)
+                        and thread_invocation is request.move_reservation
+                        and getattr(exc, "native_admission_owner", None) is thread_invocation)
+                    if not isinstance(exc, (DeferredRootPause, DeferredTeamMove)) and not native_refusal:
                         request.move_reservation.failed_cleanup()
                 # Unexpected exception: the lease still releases exactly
                 # once; run the caller's terminal hook (best-effort, with
@@ -1646,12 +1650,28 @@ class HostSessionSupervisor:
         any window (grant→registration, registration→prepare, prepare→launch
         commitment, commitment→bind, after bind/body) is durably observed and
         drives idempotent containment before the lease releases."""
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        from runtime.orchestrator.thread_move import ThreadPreparation
+        from runtime.orchestrator.producer_move import ProducerPreparation
+        native_owner = (isinstance(final_prelaunch_validator, (ThreadPreparation, ProducerPreparation))
+            and request.move_reservation is final_prelaunch_validator)
+
+        def require_fresh_startup() -> None:
+            try:
+                if native_owner:
+                    final_prelaunch_validator.require_admission()
+                self._require_startup_ready()
+            except StartupUnavailable as exc:
+                if native_owner:
+                    final_prelaunch_validator.admission_refused(exc)
+                raise
+
         # ── ownership gate (grant→registration) ──
         # A terminal winner (daemon shutdown drained at/after grant) already
         # froze on the ownership record: refuse before any handle exists.
         if ctx.terminal_reason() is not None:
             return self._outcome(request, ctx, attempt)
-        self._require_startup_ready()
+        require_fresh_startup()
         # ── pre-launch integrity validation (per attempt, incl. 429 retries) ──
         # Runs BEFORE ``backend.prepare``/launch so a failing check never
         # creates a containment handle (fail-closed; the supervisor re-runs it
@@ -1665,11 +1685,13 @@ class HostSessionSupervisor:
                 from runtime.orchestrator.team_move import DeferredTeamMove
                 from runtime.daemon.startup_recovery import StartupUnavailable
                 if isinstance(exc, (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                    if isinstance(exc, StartupUnavailable) and native_owner:
+                        final_prelaunch_validator.admission_refused(exc)
                     raise
                 ctx.freeze_terminal(TerminalReason.FAILURE)
                 ctx.set_error(f"pre-launch validation failed: {exc}")
                 return self._outcome(request, ctx, attempt)
-        self._require_startup_ready()
+        require_fresh_startup()
         # ── prepare (never before admission) ──
         try:
             pending = self._backend.prepare(request, self._policy)
@@ -1695,7 +1717,7 @@ class HostSessionSupervisor:
         # window, and immediately before the existing atomic commitment. It
         # is opt-in so ordinary callers do not re-run their validators here.
         try:
-            self._require_startup_ready()
+            require_fresh_startup()
         except BaseException:
             self._safe_abandon(self._backend, pending, request.move_reservation)
             raise
@@ -1742,7 +1764,7 @@ class HostSessionSupervisor:
                 return self._outcome(request, ctx, attempt)
         # ── launch ──
         try:
-            self._require_startup_ready()
+            require_fresh_startup()
         except BaseException:
             self._safe_abandon(self._backend, pending, request.move_reservation)
             raise

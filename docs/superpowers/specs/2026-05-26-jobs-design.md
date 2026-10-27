@@ -13,6 +13,18 @@ and reads back its SAME gate/loop/resolver without I/O. Ready-only dynamic org
 attachment inherits these references before exposure. Explicit standalone
 construction keeps its offline contract; missing production attachment refuses.
 
+Fresh thread and producer reservations retain their original org/DB, daemon gate,
+epoch, reference selection and loop across move/DB/ctx waits. Their selected
+writers renew after BEGIN before the first claim/journal write, and reservation
+publication renews after COMMIT before the live registry. Closure there settles
+the same durable no-launch reservation; failed settlement retains its exact owner.
+Commitment and final passthrough/self-launch renew that SAME selection, including
+an already-open attempt. Original typed admission refusals remain unavailable/
+deferred with pending history, not fabricated execution or cleanup failures.
+Terminal, on_started, failed attribution, finish and native/DB cleanup keep their
+ungated default writers; real failed/unknown cleanup remains sticky. Explicit
+standalone defaults and original Pause/move/authority controls remain.
+
 A final-admitted asynchronous spawn retains its original Task/registration and
 native attempt until actual creation is observed, even if its waiter is cancelled.
 The observed Process immediately enters exception cleanup custody before fallible
