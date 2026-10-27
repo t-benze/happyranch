@@ -560,7 +560,19 @@ remain unchanged. Extra counters participate in original metadata accounting.
 StartupReads reuses actual admission/worker/close/retirement counters, adding
 retired/budget/submission failures, admission/work maxima and actual queue/native
 time totals/maxima. Four retained leases remain the bound; a Future.done or
-cancel is never close/retirement proof. Failed close keeps its incomplete lease.
+wrapper cancellation is never close/retirement proof. Submission may enqueue
+before raising without returning a Future. That SAME lease/slot stays registered
+with its original cancelled budget; the request raises the exact original submit
+error/traceback, independently of retained actual native/close errors. The original
+worker accounts and acknowledges retirement before returning, without relying on
+receiving a Future or installing a callback. Positive original queued-Future
+cancellation supplies the separate no-run retirement path; duplicate/inline
+callbacks cannot double-count or remove twice and run outside the pool mutex.
+An unobservable submission or failed close keeps its incomplete owner. Drain
+does not wait indefinitely for a possibly absent worker acknowledgement: unresolved
+ownership refuses per-org/global idle and executor/DB close, detach and runtime
+replacement. Only later actual worker completion/close plus acknowledgement can
+settle the original uncertain submission; another epoch cannot adopt or clear it.
 StartupPublications retains its original bounded snapshot, handles and native
 acknowledgements unchanged. New observer/counter faults cannot skip native close,
 retirement acknowledgement or invalidation, replace primary exceptions or open
@@ -1032,9 +1044,12 @@ Two workers/four admissions share one2s cooperative deadline including queue del
 and128 attachment checks. Negative early limits refuse; ready legacy limits stay.
 Original state/app/gate/epoch/org/path/read-domain references renew before content
 publication; missing production bindings never fall back to canonical DB/lock.
-Actual native Future/connection/slot and callback-accounting acknowledgement remain
-through cancellation/drain; a completed Future alone is not retirement. Failed
-close retains an incomplete owner/count. Nested read SAVEPOINT cleanup preserves
+Actual connection/slot ownership and worker-side accounting acknowledgement remain
+through cancellation/drain even if submission raises without returning a Future;
+a completed Future alone is not retirement. Positive original queued cancellation
+retires once, while unobservable submission or failed close retains an incomplete
+owner/count and refuses idle/destruction without an endless acknowledgement wait.
+Nested read SAVEPOINT cleanup preserves
 its original error even if exhausted cleanup also refuses; actual close is owed.
 These are finite cooperative work bounds, not hard OS-I/O/RSS timing guarantees.
 

@@ -250,7 +250,13 @@ class _Lease:
     close_proven: bool = False
     primary_error: BaseException | None = None
     close_error: BaseException | None = None
+    submission_error: BaseException | None = None
+    worker_error: BaseException | None = None
+    executor_error: BaseException | None = None
+    retirement_error: BaseException | None = None
     started: bool = False
+    worker_finished: bool = False
+    retirement_started: bool = False
     cancel_recorded: bool = False
     connection: sqlite3.Connection | None = None
     submitted_ns: int | None = field(default_factory=observation_time_ns)
@@ -357,18 +363,29 @@ class StartupReads:
                         or self.recovery._status == "ready"):
                     raise StartupReadUnavailable("startup_reader_unavailable")
             self._leases.append(lease)
-            self._counts["admitted"] += 1
+            self._observe("admitted")
             self._observe("admissions_max", len(self._leases), maximum=True)
             try:
                 lease.future = self._executor.submit(self._read, lease, projection)
-            except BaseException:
+            except BaseException as exc:
+                # submit may enqueue before a worker-start failure, without
+                # returning its Future. Only this SAME worker can settle that
+                # uncertainty; cancellation alone supplies no retirement proof.
+                lease.submission_error = exc
+                lease.budget.cancelled.set()
                 self._observe("submission_failed")
-                self._leases.remove(lease)
+                self._observe("cancelled")
+                lease.cancel_recorded = True
                 raise
-        # Callback owns retirement, outside pool lock (may run synchronously).
+        # Callback also owns positive queued cancellation; it may run inline.
         lease.future.add_done_callback(lambda future: self._retire(lease, future))
         try:
             result = await asyncio.shield(asyncio.wrap_future(lease.future))
+            # The callable attempts retirement before returning. An absent or
+            # failed acknowledgement now means incomplete ownership, not a
+            # promise of a later callback that the request may wait for forever.
+            if not lease.retired.done() or lease.retirement_error is not None:
+                raise StartupReadUnavailable("startup_reader_close_failed") from lease.retirement_error
             await asyncio.shield(asyncio.wrap_future(lease.retired))
             self.validate_publication(lease)
             if not lease.close_proven:
@@ -383,7 +400,7 @@ class StartupReads:
         lease.budget.cancelled.set()
         with self._lock:
             if not lease.cancel_recorded:
-                self._counts["cancelled"] += 1
+                self._observe("cancelled")
                 lease.cancel_recorded = True
 
     def cancel_publication(self, result: _ReadResult) -> None:
@@ -403,11 +420,11 @@ class StartupReads:
     def _read(self, lease: _Lease, projection: Callable[[_ThreadReader, _ReadBudget], Any]) -> bytes:
         conn: sqlite3.Connection | None = None
         result: bytes | None = None
-        with self._lock:
-            lease.started = True
-            lease.started_ns = observation_time_ns()
-            self._counts["started"] += 1
         try:
+            with self._lock:
+                lease.started = True
+                lease.started_ns = observation_time_ns()
+                self._observe("started")
             try:
                 self._validate_references(lease)
                 lease.identity = lease.references[7][3:]
@@ -455,8 +472,19 @@ class StartupReads:
             self._validate(lease)
             assert result is not None
             return result
+        except BaseException as exc:
+            # Retain the actual native outcome even if submit never returned
+            # its Future. The request still raises its original submit error.
+            lease.worker_error = exc
+            raise
         finally:
             lease.ended_ns = observation_time_ns()
+            with self._lock:
+                lease.worker_finished = True
+            # Worker-side retirement is part of the original submitted callable,
+            # independent of receiving a Future or installing its callback. Finish
+            # accounting/retirement before the executor publishes this outcome.
+            self._retire(lease)
 
     def _observe(self, name: str, value: int = 1, *, maximum: bool = False) -> None:
         # Caller owns the original pool mutex; optional telemetry cannot strand
@@ -469,20 +497,30 @@ class StartupReads:
             except Exception:
                 pass
 
-    def _retire(self, lease: _Lease, future: Future[bytes]) -> None:
+    def _retire(self, lease: _Lease, future: Future[bytes] | None = None) -> None:
         # Observe failures even after the HTTP waiter departed. Only native
         # positive close or successful queued cancellation releases admission.
-        error = None if future.cancelled() else future.exception()
+        cancelled = future is not None and future.cancelled()
+        executor_error = None if future is None or cancelled else future.exception()
         with self._lock:
+            if lease.retirement_started:
+                return
+            if not lease.worker_finished and not (cancelled and not lease.started):
+                # An executor failure without actual worker completion is not
+                # no-execution proof. Retain its real error and original slot.
+                lease.executor_error = executor_error
+                return
+            lease.retirement_started = True
+            error = lease.worker_error
             if error is not None:
-                self._counts["failed"] += 1
+                self._observe("failed")
             if isinstance(error, StartupReadUnavailable) and error.code == "startup_reader_deadline":
-                self._counts["deadline"] += 1
+                self._observe("deadline")
             if lease.budget.refusal is not None and lease.budget.refusal.code == "startup_reader_budget_exhausted":
                 self._observe("budget_exhausted")
             for name in ("rows", "raw_bytes", "response_bytes", "opcodes", "attachments", "cleanup_failures"):
                 value = getattr(lease.budget, name)
-                self._counts[name] += value
+                self._observe(name, value)
                 if name != "cleanup_failures":
                     self._observe(name + "_max", value, maximum=True)
             if lease.submitted_ns is not None and lease.started_ns is not None and lease.ended_ns is not None:
@@ -490,21 +528,34 @@ class StartupReads:
                                       ("native", lease.ended_ns - lease.started_ns)):
                     self._observe(name + "_ns_total", elapsed)
                     self._observe(name + "_ns_max", elapsed, maximum=True)
-            self._counts["close_failed"] += int(lease.close_error is not None)
-            if lease.close_proven or (future.cancelled() and not lease.started):
-                self._counts["closed"] += int(lease.close_proven)
-                self._observe("retired")
-                self._leases.remove(lease)
-            # Future.done() precedes callbacks. Acknowledge accounting in the
-            # same critical segment as removal, before assert_idle can pass.
+            self._observe("close_failed", int(lease.close_error is not None))
+            release = lease.close_proven or (cancelled and not lease.started)
+        # set_result can invoke callbacks inline. Keep the lease registered
+        # through acknowledgement, outside the non-reentrant pool mutex. The
+        # worker returns (or queued cancel callback ends) only AFTER removal.
+        try:
             lease.retired.set_result(None)
+        except BaseException as exc:
+            # A failed acknowledgement keeps ownership and its actual cause;
+            # it cannot replace the native error or imply successful retirement.
+            lease.retirement_error = exc
+            return
+        if release:
+            with self._lock:
+                for index, current in enumerate(self._leases):
+                    if current is lease:
+                        self._leases.pop(index)
+                        self._observe("closed", int(lease.close_proven))
+                        self._observe("retired")
+                        break
 
     def snapshot(self) -> dict[str, int]:
         with self._lock:
             return {**self._counts, "active": sum(lease.started for lease in self._leases),
                     "queued": sum(not lease.started for lease in self._leases),
-                    "incomplete": sum(lease.future is not None and lease.future.done()
-                                      and not lease.close_proven for lease in self._leases)}
+                    "incomplete": sum(lease.submission_error is not None or lease.worker_finished
+                                      or (lease.future is not None and lease.future.done())
+                                      for lease in self._leases)}
 
     def revoke(self, org: Any | None = None) -> None:
         with self._lock:
@@ -526,21 +577,28 @@ class StartupReads:
             leases = [lease for lease in self._leases if org is None or lease.org is org]
         cancellation: asyncio.CancelledError | None = None
         for lease in leases:
-            # Both original native completion AND callback retirement matter.
-            for native in (lease.future, lease.retired):
-                if native is None or native.cancelled():
-                    continue
-                wrapped = asyncio.wrap_future(native)
-                while True:
-                    try:
-                        await asyncio.shield(wrapped)
+            # A missing Future cannot authenticate no submission. Never wait
+            # forever for an acknowledgement from a possibly absent worker:
+            # retain this owner and refuse at the final idle barrier instead.
+            # Likewise, an ended executor failure without worker entry cannot
+            # promise a later retirement acknowledgement.
+            native = lease.future
+            if native is None or native.cancelled():
+                continue
+            wrapped = asyncio.wrap_future(native)
+            while True:
+                try:
+                    await asyncio.shield(wrapped)
+                    break
+                except asyncio.CancelledError as exc:
+                    if native.cancelled():
                         break
-                    except asyncio.CancelledError as exc:
-                        if native.cancelled():
-                            break
-                        cancellation = cancellation or exc
-                    except BaseException:
-                        break  # Actual error observed; close proof still required.
+                    cancellation = cancellation or exc
+                except BaseException:
+                    break  # Actual error observed; close proof still required.
+            # The worker retires before its Future completes; queued cancel
+            # callbacks are synchronous. Unknown/failed acknowledgement stays
+            # registered, so assert_idle cannot authorize dependent DB close.
         self.assert_idle(org)
         if org is None:
             self._executor.shutdown(wait=True, cancel_futures=False)

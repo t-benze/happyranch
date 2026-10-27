@@ -25,8 +25,17 @@ JSON and final reference/epoch/stop checks; limits remain2,000,000 opcode allowa
 Early negative limits refuse explicitly; ready legacy behavior remains. Missing
 production bindings cannot select canonical DB fallback. Worker-only open/use/
 close and path identity readback retain actual Future/slot/connection ownership;
-retirement accounting is separately acknowledged. Cancellation or failed close
-never proves retirement. Selected nested read SAVEPOINT cleanup retains the
+retirement accounting is separately acknowledged. A submit exception can follow
+enqueue without returning a Future: the SAME lease/slot remains owned, its
+original budget is cancelled and the exact submit error/traceback stays primary.
+Actual worker outcome and close errors remain separately attributed. Worker-side
+completion accounts and acknowledges retirement before returning, independent
+of receiving a Future; original queued-Future cancellation also retires once
+only with positive no-run evidence. Callbacks run outside the pool mutex. Missing
+Future/worker acknowledgement or failed close retains an incomplete owner;
+drain refuses instead of waiting forever for a possibly absent worker, and
+per-org/global idle, detach, runtime swap and DB close remain fenced. Cancellation
+alone never proves retirement. Selected nested read SAVEPOINT cleanup retains the
 original malformed/deadline/SQLite error, records incomplete cleanup and relies
 on actual worker close; ordinary Database cleanup/defaults are unchanged.
 
