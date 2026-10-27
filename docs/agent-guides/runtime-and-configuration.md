@@ -1,5 +1,51 @@
 # Runtime And Configuration
 
+## Bounded startup driver verification — ROOT13137
+
+`scripts/verify_startup_recovery.py` remains outside automatic CI and requires
+an explicitly allocated invocation. Its `--http-inventory` and
+`--routing-inventory` inputs are explicit paths to the accepted245-declaration
+and22-literal-record JSON files (step8 acceptance); it authenticates their exact
+SHA256 identities before product constructors. Missing inputs remain missing
+obligations. A task-owned ordinary real `--web-dist` with index and built assets
+is required for static observations; the driver creates only the accepted
+`assets/startup-gate-probe.txt`, never a substitute index or build.
+
+Literal requests transmit their original HTTP request-line bytes, without URL
+normalization, second percent decoding or redirect following. Receipts separate
+transport status/headers/body from original ASGI method/raw_path/path/query,
+router candidates, dispatched identity and send observations. HEAD client bodies
+are empty; any app-emitted JSON is labelled an ASGI observation. Known transcript,
+page counts/participants/cursor, original auth controls, exact static bytes/type
+and redirect Location path/query have separate assertions. The original native
+hold stays at most10s, requests2s and concurrency8. Ready HTTP controls follow
+positive original recovery and precede maintenance-switch/stop invalidation.
+
+Independent SQL rows (including sequences/journals), selected workspace/job/temp
+files, actual task reservation/live/native-user sets and original parser/spool/
+subprocess/preparation entries bound the no-effect observations. SQLite sidecar
+metadata and unobserved source-specific/native boundaries are not covered by a
+file snapshot; their obligations remain explicit. Generic `{}` held requests
+supply no meaningful task/thread/workflow/job/session/multipart input credit.
+Failure-phase HX10.04/HX10.11 require a genuine negative-outcome fixture, which
+is still unimplemented. The245 held/early receipts never imply245 ready outcomes.
+
+An independent required-obligation ledger retains each H/HX phase, D001-D089,
+U01-U04/backend state and remaining C contract with source/head/fixture/observer,
+missing prerequisite and root owner. `--case all` returns1 for assertion failure,
+otherwise2 for incomplete mandatory selections, otherwise0 for completed selected
+observations; no subset supplies whole acceptance. `--case C12` selects only the
+existing three counter assertions and returns0 when those pass, without requiring
+unselected cases or claiming full C12 acceptance. Its original SQL/code-entry
+observer and two named sensitivity assertions are unchanged. `--web` includes
+threadErrors.i18n and identity-names alongside the original13 keepers; the latter's
+unseeded mounted-health risk and all historical13 failures retain their actual
+attribution. This source correction is NOT RUN/PROOF NOT RUN: maker3/3 exhausted,
+QA0/3 separate unused. Whole feature incomplete; under10s UNVERIFIED. Root owns
+remaining producer/causal/failure/reader/native/restart/CLI/browser verification,
+full independent final-source review, same-head QA and guarded merge. Required
+lint/static checks grant no behavioral acceptance; no fourth maker run follows.
+
 ## Actual-owner startup observations — ROOT13137
 
 Normal boot retains its original P0 prerequisites and P2–P9 order. The earliest

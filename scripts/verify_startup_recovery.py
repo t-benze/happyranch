@@ -9,6 +9,7 @@ The JSON receipt distinguishes individual observations from complete cases.
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 import asyncio
 import hashlib
 import json
@@ -25,12 +26,15 @@ import tempfile
 import threading
 import time
 import traceback
+from urllib.parse import unquote, urlsplit
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
 MESSAGE = "Owned startup fixture transcript — 恢复期间可读"
 WEB_TESTS = (
     "src/lib/startup.test.ts",
+    "src/lib/threadErrors.i18n.test.ts",
+    "src/test/identity-names.test.tsx",
     "src/design-system/providers/_real-health.test.tsx",
     "src/design-system/providers/_real-threads.test.ts",
     "src/design-system/providers/_real-threads-paging.test.ts",
@@ -46,11 +50,35 @@ WEB_TESTS = (
 )
 
 
+ASSET_BYTES = b"Owned ROOT13137 startup gate asset\n"
+LITERAL_IDS = tuple(f"HX09.{n:02d}" for n in range(1, 10)) + tuple(
+    f"HX10.{n:02d}" for n in range(1, 14))
+EARLY_IDS = ("H001", "H003", "H008", "H011", "H153", "H156", "H157", "HX01")
+# Independent mandatory selections, never inferred from collected PASS rows.
+REMAINING = {
+    "C01": "populated workflow/returned graph and real browser transcript/lock reuse",
+    "C03": "genuine direct producers, final host marker and populated v2 causal controls",
+    "C04": "two-org actual launch/release race and reader saturation",
+    "C05": "genuine negative native outcomes, first cause and unsafe tail fixture",
+    "C06": "populated authenticated chronology/cutover/returned notification",
+    "C07": "original Pause/move producer redelivery and actual harmless job",
+    "C08": "interrupted original native tail/read/partial preparation joins",
+    "C09": "both listener orderings, abort/duplicate/wrong attachment and return binding",
+    "C10": "scoped auth, inode/decoder/busy/close/cancel/budget and ready legacy limits",
+    "C11": "actual retained pending key, uncertain transport and browser no-replay",
+    "C12": "remaining phase/cache invalidation/decoder/cancel/negative outcome counters",
+    "C13": "fresh original restart after partial durable commit/failure/notification",
+    "C14": "real launcher/CLI/setup/Mac and bilingual browser observations",
+    "C15": "excluded: separately operator-authorized launcher to usable API AND UI",
+}
+
+
 class Checks:
     def __init__(self, args):
         self.args = args
         self.started = time.monotonic()
         self.rows = []
+        self.obligations = {}
         self.details = {"case": args.case,
                         "pid": os.getpid(), "python": sys.executable,
                         "python_version": sys.version, "cwd": str(Path.cwd()),
@@ -59,6 +87,104 @@ class Checks:
                         "tree": git("rev-parse", "HEAD^{tree}"),
                         "working_status": git("status", "--porcelain=v1"),
                         "allocation": "one actual top-level process; no reset"}
+        self.expect("C12_counter_selection", "C12", "counter", (
+            "C12_nonzero_independent_SQL_and_original_entries",
+            "C12_history_fetch_count_matches_sql", "C12_fetch_is_not_cache_hit"),
+            "canonical history and independent ORIGINAL-entry/SQL observers")
+        if args.case == "all":
+            for case, reason in REMAINING.items():
+                self.expect(case + "_remaining_contract", case, "remaining", (), reason)
+            for number in range(1, 246):
+                name = f"H{number:03d}"
+                for phase in ("recovering", "ready"):
+                    if name in EARLY_IDS:
+                        assertions = tuple(name + "_" + phase + suffix for suffix in (
+                            "_status", "_content", "_identity", "_auth", "_wire"))
+                    elif phase == "recovering":
+                        # Retain each historical H receipt name verbatim.
+                        assertions = tuple(name + suffix for suffix in (
+                            "_held_status", "_held_code", "_one_observed_request", "_prebody_receive_zero", "_original_parser_spool_native_zero"))
+                    else:
+                        assertions = ()
+                    self.expect(name + "_" + phase, "C02", phase, assertions,
+                                "original per-declaration request/content/auth/handler required")
+            for name in EARLY_IDS[7:]:
+                for phase in ("recovering", "ready"):
+                    self.expect(name + "_" + phase, "C09", phase,
+                        tuple(name + "_" + phase + suffix for suffix in (
+                            "_status", "_content", "_identity", "_auth", "_wire")),
+                        "original readiness state/serving conjunction")
+            for name in LITERAL_IDS:
+                for phase in ("recovering", "ready"):
+                    self.expect(name + "_" + phase, "C02", phase,
+                        tuple(name + "_" + phase + suffix for suffix in (
+                            "_status", "_content", "_identity", "_wire", "_body_boundary")),
+                        "accepted literal inventory, real index/assets and genuine original phase required")
+            for phase in ("recovering", "ready"):
+                self.expect("C02_" + phase + "_effects", "C02", phase,
+                    ("C02_" + phase + "_rows_files_owners_unchanged",
+                     "C02_" + phase + ("_parser_spool_native_zero" if phase == "recovering" else "_spool_native_zero")),
+                    "independent SQL/selected files/owners and original entry observers")
+                self.expect("C02_" + phase + "_unobserved_boundaries", "C02", phase, (),
+                    "all source-specific reservations/journals/native sinks require remaining D producer fixtures")
+            for name in ("HX02", "HX03", "HX04"):
+                for phase in ("recovering", "ready"):
+                    self.expect(name + "_" + phase, "C02", phase,
+                        tuple(name + "_" + phase + suffix for suffix in (
+                            "_status", "_content", "_identity", "_wire", "_body_boundary")),
+                        "actual static/root/SPA handler and genuine original phase")
+            for name in ("HX05", "HX06", "HX07", "HX08"):
+                for phase in ("recovering", "ready"):
+                    self.expect(name + "_" + phase, "C02", phase,
+                                tuple(name + suffix for suffix in ("_held_status", "_held_code", "_one_observed_request", "_prebody_receive_zero", "_original_parser_spool_native_zero")) if phase == "recovering" else (),
+                                "original docs/OpenAPI and other method controls remain root-owned")
+            for name in ("HX10.04", "HX10.11"):
+                self.expect(name + "_recovery_failed", "C05", "recovery_failed", (),
+                            "genuine negative-outcome/failure fixture not implemented; ready-to-failed is not proof")
+            for number in range(1, 90):
+                self.expect(f"D{number:03d}", "C03", "direct", (),
+                            "valid original producer/causal/native fixture and independent effect observer not implemented")
+            for number in range(1, 5):
+                for phase in ("recovering", "recovery_failed", "ready"):
+                    self.expect(f"U{number:02d}_" + phase, "C11", phase, (),
+                                "actual locale/viewport browser against genuine backend outcome not implemented")
+            self.expect("C11_C14_selected_Web_keepers", "C14", "Web", ("Web_selected_component_keeper_command",),
+                        "explicit --web and all current named keepers required; original13 failures remain original-head evidence")
+
+    def expect(self, name, case, phase, assertions, prerequisite):
+        self.obligations[name] = {"case": case, "phase": phase, "assertions": list(assertions),
+            "missing_prerequisite": prerequisite, "owner": "ROOT TASK-13137",
+            "source": str(SOURCE / "scripts/verify_startup_recovery.py"),
+            "head": self.details["head"], "tree": self.details["tree"],
+            "fixture": str(self.args.root), "observer": "named independent assertions only"}
+
+    def disposition(self):
+        results = {}
+        for row in self.rows:
+            results.setdefault(row["assertion"], []).append(row["status"])
+        ledger = {}
+        for name, obligation in self.obligations.items():
+            statuses = [state for assertion in obligation["assertions"]
+                        for state in results.get(assertion, ["NOT RUN"])]
+            status = ("FAIL" if "FAIL" in statuses else "COMPLETE"
+                      if statuses and all(state == "PASS" for state in statuses) else "NOT RUN")
+            ledger[name] = {**obligation, "status": status,
+                "missing_assertions": [a for a in obligation["assertions"] if a not in results]}
+        failed = any(row["status"] == "FAIL" for row in self.rows)
+        incomplete = any(row["status"] != "COMPLETE" for row in ledger.values())
+        self.details["scope"] = "selected C12 counter observations only" if self.args.case == "C12" else "all mandatory selections"
+        self.details["outcome"] = "FAIL" if failed else "INCOMPLETE" if incomplete else "COMPLETE_SELECTED_OBSERVATIONS"
+        self.details["full_acceptance"] = False  # source delivery never grants product acceptance
+        self.details["obligations"] = ledger
+        self.details["cases"] = {case: {
+            "status": "FAIL" if (any(r["status"] == "FAIL" for r in ledger.values() if r["case"] == case)
+                or any(r["status"] == "FAIL" and r["assertion"].startswith(case + "_") for r in self.rows))
+                else "INCOMPLETE" if any(r["status"] != "COMPLETE" for r in ledger.values() if r["case"] == case)
+                else "COMPLETE_SELECTED_OBSERVATIONS",
+            "observations": [r["assertion"] for r in self.rows if r["assertion"].startswith(case + "_")],
+            "missing_obligations": [n for n, r in ledger.items() if r["case"] == case and r["status"] == "NOT RUN"],
+        } for case in sorted({r["case"] for r in ledger.values()})}
+        return 1 if failed else 2 if incomplete else 0
 
     def require(self, name, actual, expected=True):
         passed = actual == expected
@@ -81,6 +207,7 @@ class Checks:
             if p.is_file() and not p.is_symlink())
         if self.details["fixture_file_bytes"] > 512 * 1024 * 1024:
             self.rows.append({"assertion": "fixture_byte_cap", "status": "FAIL"})
+        self.disposition()
         self.args.output.write_text(json.dumps({"details": self.details, "assertions": self.rows},
                                               indent=2, ensure_ascii=False) + "\n")
 
@@ -117,7 +244,8 @@ def isolate(args):
         if key.startswith(("ANTHROPIC_", "OPENAI_", "CODEX_", "CLAUDE_", "PI_", "OPENCODE_", "GEMINI_")):
             os.environ.pop(key)
     if args.web_dist is not None:
-        if not args.web_dist.is_dir() or not args.web_dist.is_relative_to(parent):
+        if (not args.web_dist.is_absolute() or args.web_dist.resolve() != args.web_dist
+                or not args.web_dist.is_dir() or not args.web_dist.is_relative_to(parent)):
             raise ValueError("only the task-owned ordinary Web build is admitted")
         os.environ["HAPPYRANCH_WEB_DIST"] = str(args.web_dist)
 
@@ -308,6 +436,369 @@ def database_observation(runtime):
         finally:
             conn.close()
     return result
+
+
+def load_http_inputs(checks):
+    selected = {}
+    for label, path, digest in (
+        ("declarations", checks.args.http_inventory, "b4f1aa2998c0746eaa8c4f5b089d345633e63bd601e839db6c0c9f65089d72a9"),
+        ("literal22", checks.args.routing_inventory, "b73d9d4e2237680ff9d2743bd5b66165381ee37146ae640957f15fb5386802b0"),
+    ):
+        if path is None:
+            selected[label] = []
+            continue
+        data = path.read_bytes()
+        if len(data) > 256 * 1024 or hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("accepted HTTP inventory identity mismatch: " + label)
+        entries = json.loads(data)["entries"]
+        selected[label] = entries
+        checks.details.setdefault("inputs", {})[label] = {"path": str(path), "sha256": digest}
+    if selected["literal22"] and tuple(e["id"] for e in selected["literal22"]) != LITERAL_IDS:
+        raise ValueError("literal22 membership/order mismatch")
+    for entry in selected["declarations"]:
+        if not re.fullmatch(r"H\d{3}", entry["id"]):
+            continue
+        for phase in ("recovering", "ready"):
+            checks.obligations[entry["id"] + "_" + phase]["request"] = {
+                "method": entry["method"], "path": entry["path"], "owner": entry["owner"]}
+        if entry["method"] not in ("GET", "HEAD"):
+            checks.expect(entry["id"] + "_meaningful_input", "C02", "input", (),
+                "generic {} refusal sweep is not this source-specific authorized body/session/owner or multipart fixture")
+    checks.details["http_selection"] = {key: len(value) for key, value in selected.items()}
+    return selected
+
+
+def prepare_static(checks):
+    dist = checks.args.web_dist
+    if dist is None:
+        checks.missing("C02_real_build", "explicit task-owned ordinary real Web dist/index/assets required; no fake index")
+        return None
+    index, assets = dist / "index.html", dist / "assets"
+    if (index.is_symlink() or assets.is_symlink() or not index.is_file()
+            or not assets.is_dir() or not any(assets.glob("*.js"))):
+        raise ValueError("ordinary real Web build/index/assets unavailable")
+    content = index.read_bytes()
+    if len(content) > 4 * 1024 * 1024:
+        raise ValueError("index observation exceeds original encoded-response cap")
+    probe = assets / "startup-gate-probe.txt"
+    with probe.open("xb") as handle:
+        handle.write(ASSET_BYTES)
+    checks.details["static"] = {"dist": str(dist), "index_sha256": hashlib.sha256(content).hexdigest(),
+                                 "probe_sha256": hashlib.sha256(ASSET_BYTES).hexdigest()}
+    return content
+
+
+async def raw_request(port, method, target, token, case, body=b""):
+    """Literal HTTP/1.1 bytes; no URL parser, percent decode or redirect follow."""
+    line = method.encode("ascii") + b" " + target.encode("ascii") + b" HTTP/1.1\r\n"
+    if any(c in target for c in ("\r", "\n", " ")) or not target.startswith("/"):
+        raise ValueError("invalid literal origin request target")
+    headers = [b"Host: 127.0.0.1:" + str(port).encode(), b"Connection: close",
+               b"X-Startup-Case: " + case.encode("ascii"), b"Content-Type: application/json",
+               b"Content-Length: " + str(len(body)).encode()]
+    if token is not None:
+        headers.append(b"Authorization: Bearer " + token.encode("ascii"))
+
+    async def exchange():
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(line + b"\r\n".join(headers) + b"\r\n\r\n" + body)
+            await writer.drain()
+            head = await reader.readuntil(b"\r\n\r\n")
+            parts = head.split(b"\r\n")
+            status = int(parts[0].split(b" ")[1])
+            response_headers = {}
+            for field in parts[1:-2]:
+                key, value = field.split(b":", 1)
+                response_headers[key.lower().decode("ascii")] = value.strip().decode("latin1")
+            content = bytearray()
+            if method != "HEAD" and status not in (204, 304):
+                if response_headers.get("transfer-encoding") == "chunked":
+                    for _ in range(4096):
+                        size = int((await reader.readline()).split(b";", 1)[0], 16)
+                        if size == 0:
+                            if await reader.readline() != b"\r\n":
+                                raise ValueError("unexpected chunk trailer")
+                            break
+                        if len(content) + size > 4 * 1024 * 1024:
+                            raise ValueError("HTTP response byte budget")
+                        content.extend(await reader.readexactly(size))
+                        if await reader.readexactly(2) != b"\r\n":
+                            raise ValueError("invalid chunk framing")
+                    else:
+                        raise ValueError("HTTP chunk count budget")
+                elif "content-length" in response_headers:
+                    size = int(response_headers["content-length"])
+                    if not 0 <= size <= 4 * 1024 * 1024:
+                        raise ValueError("HTTP response byte budget")
+                    content.extend(await reader.readexactly(size))
+                else:
+                    raise ValueError("unbounded HTTP response framing")
+            return {"status": status, "headers": response_headers, "body": bytes(content),
+                    "request_line_hex": line.hex(), "request_body_sha256": hashlib.sha256(body).hexdigest()}
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    return await asyncio.wait_for(exchange(), 2)
+
+
+def fixture_effects(runtime, state, scratch):
+    """Independent RO SQL + bounded concrete file/native ownership observations."""
+    files, owners = {}, {}
+    roots = [scratch / "temp"]
+    for slug, org in state.orgs.items():
+        roots.extend((org.root / "workspaces", org.root / "jobs"))
+        owners[slug] = {"reservations": sorted(org.orchestrator._team_moves._reservations),
+                       "live": sorted(org.db._task_pause_store._live),
+                       "native_users": sorted(id(x) for x in org._native_task_users)}
+    deadline, size = time.monotonic() + 2, 0
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if len(files) >= 4096 or time.monotonic() >= deadline or path.is_symlink():
+                raise ValueError("independent file observation unavailable/budget")
+            if path.is_file():
+                size += path.stat().st_size
+                if size > 4 * 1024 * 1024:
+                    raise ValueError("independent file byte budget")
+                files[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif path.is_dir():
+                files[str(path)] = "directory"
+            else:
+                raise ValueError("unexpected effect observation file type")
+    return {"rows": database_observation(runtime), "files": files, "owners": owners}
+
+
+class EntryObservation:
+    """Count ORIGINAL parser/spool/launch entries, without replacing any body."""
+    current = ContextVar("startup_http_observer", default=None)
+
+    def __init__(self, app):
+        from starlette.requests import Request
+        from starlette.formparsers import MultiPartParser
+        from runtime.orchestrator.task_pause import TaskInvocation
+        self.codes = {fn.__code__: label for label, fn in (
+            ("parser", Request.json), ("parser", Request._get_form),
+            ("parser", MultiPartParser.parse), ("spool", tempfile.SpooledTemporaryFile.__init__),
+            ("native", subprocess.Popen.__init__), ("native", asyncio.create_subprocess_exec),
+            ("native", asyncio.create_subprocess_shell), ("preparation", TaskInvocation.prepare))}
+        functions = [getattr(route, "endpoint", None) for route in app.routes] + list(app.exception_handlers.values())
+        self.handlers = {fn.__code__: fn.__module__ + "." + fn.__qualname__ for fn in functions if hasattr(fn, "__code__")}
+        self.totals = dict.fromkeys(("parser", "spool", "native", "preparation"), 0)
+        self.active = False
+
+    def profile(self, frame, event, _arg):
+        if not self.active or event != "call":
+            return
+        row = self.current.get()
+        handler = self.handlers.get(frame.f_code)
+        if handler is not None and row is not None:
+            entries = row.setdefault("original_handler_entries", {})
+            entries[handler] = entries.get(handler, 0) + 1
+        label = self.codes.get(frame.f_code)
+        if label is not None:
+            self.totals[label] += 1
+            row = self.current.get()
+            if row is not None:
+                row[label + "_entries"] += 1
+
+    def start(self):
+        if sys.getprofile() is not None or threading.getprofile() is not None:
+            raise RuntimeError("existing profile observer cannot be replaced")
+        threading.setprofile_all_threads(self.profile)
+        self.active = True
+
+    def close(self):
+        self.active = False
+        threading.setprofile_all_threads(None)
+
+
+def response_json(content):
+    try:
+        value = json.loads(content)
+        return value if isinstance(value, dict) else {}
+    except (ValueError, UnicodeDecodeError):
+        return {}
+
+
+def content_contract(name, response, runtime, token, phase):
+    if "application/json" not in response["headers"].get("content-type", ""):
+        return False
+    body = response_json(response["body"])
+    if name in ("H001", "HX01"):
+        startup = body.get("startup", {})
+        return (body.get("status") == ("ok" if name == "H001" else "unavailable" if phase == "recovering" else "ready")
+                and startup.get("state") == ("recovering" if phase == "recovering" else "ready")
+                and startup.get("serving") is True
+                and startup.get("recovery_ready") is (phase == "ready")
+                and startup.get("stopping") is False
+                and startup.get("ready_commits") == (0 if phase == "recovering" else 1)
+                and (name != "H001" or body.get("active_runtime") == str(runtime.root)))
+    if name == "H003":
+        return body == {"token": token}  # Boolean only: never persist credential bytes.
+    if name == "H008":
+        return body == {"runtime": str(runtime.root)}
+    if name == "H011":
+        return body == {"orgs": [{"slug": slug, "root": str(runtime.orgs_dir / slug)}
+                                 for slug in ("fixture-a", "fixture-b")], "broken": []}
+    if name == "H153":
+        rows = body.get("threads", [])
+        return (len(rows) == 1 and rows[0].get("thread_id") == "THR-001"
+                and rows[0].get("subject") == "Owned recovery transcript"
+                and rows[0].get("status") == "open" and rows[0].get("participants") == []
+                and rows[0].get("last_speaker") == "founder"
+                and body.get("totals") == {"open": 1, "archived": 0, "all": 1, "dream_origin": 0}
+                and body.get("has_more") is False and body.get("next_cursor") is None)
+    messages = body.get("messages", [])
+    known = (len(messages) == 1 and messages[0].get("seq") == 1
+             and messages[0].get("speaker") == "founder" and messages[0].get("kind") == "message"
+             and messages[0].get("body_markdown") == MESSAGE and messages[0].get("attachments") == []
+             and messages[0].get("responder_status") == [] and body.get("reply_delivery") == [])
+    if name == "H156":
+        return (known and body.get("thread_id") == "THR-001" and body.get("participants") == []
+                and body.get("subject") == "Owned recovery transcript" and body.get("status") == "open")
+    if name == "H157":
+        return known and body.get("has_more") is False and body.get("next_since_seq") == 1
+    raise ValueError("unselected early content oracle: " + name)
+
+
+def wire_contract(checks, wire, name, phase, method, target, response, expected_route):
+    key = name + "_" + phase
+    matches = [row for row in wire if row["case"] == key]
+    path, _, query = target.partition("?")
+    valid = len(matches) == 1
+    row = matches[0] if valid else {}
+    valid = valid and (row["method"], row["raw_path"], row["path"], row["query"]) == (
+        method, path, unquote(path, encoding="utf-8", errors="replace"), query)
+    valid = valid and row.get("asgi_status") == response["status"]
+    checks.require(key + "_wire", valid)
+    identity = valid and ((expected_route is None and not row["router_candidates"])
+        or any(candidate["path"] == expected_route for candidate in row.get("router_candidates", [])))
+    endpoint_names = {
+        "/api/v1/health": "runtime.daemon.routes.health.health",
+        "/api/v1/health/ready": "runtime.daemon.routes.health.health_ready",
+        "/api/v1/auth/bootstrap": "runtime.daemon.routes.auth.bootstrap",
+        "/api/v1/runtime": "runtime.daemon.routes.runtime.get_runtime",
+        "/api/v1/orgs": "runtime.daemon.routes.orgs.list_orgs",
+        "/api/v1/orgs/{slug}/threads": "runtime.daemon.routes.threads.list_threads_endpoint",
+        "/api/v1/orgs/{slug}/threads/{thread_id}": "runtime.daemon.routes.threads.get_thread_endpoint",
+        "/api/v1/orgs/{slug}/threads/{thread_id}/messages": "runtime.daemon.routes.threads.list_thread_messages_endpoint",
+        "/api/v1/orgs/{slug}/threads/{thread_id}/send": "runtime.daemon.routes.threads.send_thread_endpoint",
+        "/": "runtime.daemon.routes.web_static.register.<locals>._spa_root",
+    }
+    endpoint = endpoint_names.get(expected_route)
+    if endpoint is not None:
+        identity = identity and any(c["endpoint"] == endpoint for c in row.get("router_candidates", []))
+        if method == "GET" and name in EARLY_IDS and response["status"] in (200, 503):
+            identity = identity and row.get("original_handler_entries", {}).get(endpoint, 0) > 0
+    if name in ("HX04", "HX10.12") and response["status"] == 200:
+        identity = identity and row.get("original_handler_entries", {}).get(
+            "runtime.daemon.routes.web_static.register.<locals>._spa_or_404", 0) > 0
+    checks.require(key + "_identity", identity)
+    checks.details.setdefault("http_receipts", []).append({"id": name, "phase": phase,
+        "head": checks.details["head"], "tree": checks.details["tree"],
+        "fixture": str(checks.args.root), "method": method, "request_target": target,
+        "request_line_hex": response["request_line_hex"], "request_body_sha256": response["request_body_sha256"],
+        "transport_status": response["status"], "transport_headers": response["headers"],
+        "transport_body_bytes": len(response["body"]),
+        "transport_body_sha256": None if name == "H003" else hashlib.sha256(response["body"]).hexdigest(),
+        "original_ASGI": row, "observer": "literal loopback bytes + original ASGI/router",
+        "owner": "ROOT TASK-13137"})
+    return row
+
+
+async def early_cases(checks, runtime, port, token, wire, phase):
+    targets = (
+        ("H001", "/api/v1/health", "/api/v1/health"),
+        ("H003", "/api/v1/auth/bootstrap", "/api/v1/auth/bootstrap"),
+        ("H008", "/api/v1/runtime", "/api/v1/runtime"),
+        ("H011", "/api/v1/orgs", "/api/v1/orgs"),
+        ("H153", "/api/v1/orgs/fixture-a/threads?page_size=2", "/api/v1/orgs/{slug}/threads"),
+        ("H156", "/api/v1/orgs/fixture-a/threads/THR-001", "/api/v1/orgs/{slug}/threads/{thread_id}"),
+        ("H157", "/api/v1/orgs/fixture-a/threads/THR-001/messages?limit=10", "/api/v1/orgs/{slug}/threads/{thread_id}/messages"),
+        ("HX01", "/api/v1/health/ready", "/api/v1/health/ready"),
+    )
+    async def observe(name, target, route):
+        key = name + "_" + phase
+        response = await raw_request(port, "GET", target, token, key)
+        checks.require(key + "_status", response["status"], 503 if name == "HX01" and phase == "recovering" else 200)
+        checks.require(key + "_content", content_contract(name, response, runtime, token, phase))
+        wire_contract(checks, wire, name, phase, "GET", target, response, route)
+        public = name in ("H001", "H003", "HX01")
+        statuses = []
+        for suffix, bearer in (("missing", None), ("invalid", "invalid-fixture-token")):
+            denied = await raw_request(port, "GET", target, bearer, key + "_" + suffix)
+            statuses.append(denied["status"])
+            if public:
+                checks.require(key + "_" + suffix + "_original_content",
+                               content_contract(name, denied, runtime, token, phase))
+            else:
+                checks.require(key + "_" + suffix + "_original_refusal",
+                    "application/json" in denied["headers"].get("content-type", "")
+                    and response_json(denied["body"]) == {"detail": "missing bearer token" if bearer is None else "bad token"})
+        expected = 503 if name == "HX01" and phase == "recovering" else 200 if public else 401
+        checks.require(key + "_auth", statuses, [expected, expected])
+    # Each task has one in-flight request, at most eight across auth substeps.
+    await asyncio.gather(*(observe(*row) for row in targets))
+
+
+async def literal_cases(checks, runtime, port, token, wire, phase, entries, index):
+    async def observe(entry):
+        name, method, target = entry["id"], entry["method"], entry["request_target"]
+        key = name + "_" + phase
+        if index is None and (target.startswith("/assets/") or name in ("HX09.06", "HX10.12", "HX02", "HX03", "HX04")):
+            checks.missing(key + "_content", "real isolated ordinary Web build/index/assets missing")
+            return
+        expected = entry["during_recovery" if phase == "recovering" else "after_ready"]
+        body = b"" if entry["request_body"] is None else json.dumps(entry["request_body"], separators=(",", ":")).encode()
+        response = await raw_request(port, method, target, token, key, body)
+        checks.require(key + "_status", response["status"], expected["status"])
+        route = None
+        if name in ("HX09.01", "HX09.02", "HX09.03", "HX10.03", "HX10.05", "HX10.07"):
+            route = "/api/v1/orgs/{slug}/threads"
+        elif name in ("HX10.04", "HX10.06"):
+            route = "/api/v1/orgs/{slug}/threads/{thread_id}/send"
+        elif target.startswith("/assets/"):
+            route = "/assets"
+        elif target == "/":
+            route = "/"
+        row = wire_contract(checks, wire, name, phase, method, target, response, route)
+        media = response["headers"].get("content-type", "")
+        payload = response["body"]
+        if method == "HEAD":
+            # Uvicorn suppresses the body. Only the ORIGINAL send observer can
+            # observe an app-emitted JSON refusal; never parse client b"".
+            emitted = row.get("head_asgi_body", "")
+            content = (payload == b"" and "content-length" in response["headers"]
+                       and response["headers"].get("content-length") == row.get("asgi_headers", {}).get("content-length"))
+            if expected["status"] == 503:
+                content = content and "application/json" in media and response_json(emitted).get("detail", {}).get("code") == "daemon_recovering"
+            elif target.startswith("/assets/"):
+                content = content and "text/plain" in media and int(response["headers"].get("content-length", -1)) == len(ASSET_BYTES)
+            else:
+                content = content and "application/json" in media and response_json(emitted).get("detail") == ("Not Found" if expected["status"] == 404 else "Method Not Allowed")
+        elif expected["status"] == 503:
+            detail = response_json(payload).get("detail", {})
+            content = "application/json" in media and detail.get("code") == "daemon_recovering" and bool(detail.get("required_action"))
+        elif expected["status"] == 307:
+            location = urlsplit(response["headers"].get("location", ""))
+            content = location.path + ("?" + location.query if location.query else "") == expected["location_path_query"]
+        elif expected["status"] in (404, 405):
+            detail = response_json(payload).get("detail")
+            wanted = {"code": "not_found"} if name in ("HX10.04", "HX10.06") else "Not Found" if expected["status"] == 404 else "Method Not Allowed"
+            content = "application/json" in media and detail == wanted and payload != index
+        elif name in ("HX10.03", "HX10.05", "HX10.07"):
+            content = "application/json" in media and content_contract("H153", response, runtime, token, phase)
+        elif target.startswith("/assets/"):
+            content = payload == ASSET_BYTES and "text/plain" in media
+        else:
+            content = payload == index and "text/html" in media
+        checks.require(key + "_content", content)
+        closed = phase == "recovering" and expected["status"] == 503
+        checks.require(key + "_body_boundary", bool(row) and (
+            row.get("dispatched") is None and all(row.get(k, -1) == 0 for k in ("receive_calls", "parser_entries", "spool_entries", "native_entries", "preparation_entries"))
+            if closed else row.get("spool_entries") == 0 and row.get("native_entries") == 0))
+    for offset in range(0, len(entries), 8):
+        await asyncio.gather(*(observe(entry) for entry in entries[offset:offset + 8]))
 
 
 class MaintenanceWaits:
@@ -608,8 +1099,18 @@ async def serving(checks, runtime):
     state = daemon._build_state(Settings(project_root=SOURCE))
     if set(state.orgs) != {"fixture-a", "fixture-b"}:
         raise AssertionError("P0 failed to attach both original fixture orgs")
+    selected = checks.details.pop("_http_inputs")
+    index = prepare_static(checks)
     app = create_app(state)
     wire = []
+    observation = EntryObservation(app)
+    checks.details["wire"] = wire
+    from starlette.routing import Match
+    def identity(route):
+        endpoint = getattr(route, "endpoint", None)
+        return {"path": getattr(route, "path", None),
+                "endpoint": None if endpoint is None else getattr(endpoint, "__module__", "") + "." + getattr(endpoint, "__qualname__", type(endpoint).__name__)}
+
 
     class ObserveReceive:
         def __init__(self, app):
@@ -621,19 +1122,49 @@ async def serving(checks, runtime):
             row = {"method": scope["method"], "raw_path": scope["raw_path"].decode("ascii"),
                    "path": scope["path"], "query": scope["query_string"].decode("ascii"),
                    "case": dict(scope["headers"]).get(b"x-startup-case", b"").decode("ascii"),
-                   "receive_calls": 0}
+                   "receive_calls": 0, "parser_entries": 0, "spool_entries": 0,
+                   "native_entries": 0, "preparation_entries": 0, "asgi_body_bytes": 0,
+                   "router_candidates": []}
+            for route in app.routes:
+                match, _ = route.matches(scope)
+                if match is not Match.NONE:
+                    row["router_candidates"].append({**identity(route), "match": match.name})
             wire.append(row)
             if len(wire) > 1024:
                 raise RuntimeError("wire observation cap")
+            marker = observation.current.set(row)
 
             async def counted_receive():
                 row["receive_calls"] += 1
                 return await receive()
 
-            return await self.app(scope, counted_receive, send)
+            async def counted_send(message):
+                if message["type"] == "http.response.start":
+                    row["asgi_status"] = message["status"]
+                    row["asgi_headers"] = {k.decode("latin1"): v.decode("latin1") for k, v in message["headers"]}
+                elif message["type"] == "http.response.body":
+                    body = message.get("body", b"")
+                    row["asgi_body_bytes"] += len(body)
+                    if row["method"] == "HEAD":
+                        if row["asgi_body_bytes"] > 16384:
+                            raise ValueError("HEAD ASGI observation cap")
+                        row["head_asgi_body"] = row.get("head_asgi_body", "") + body.decode("utf-8", errors="replace")
+                await send(message)
+            try:
+                return await self.app(scope, counted_receive, counted_send)
+            finally:
+                row["dispatched"] = identity(scope["route"]) if "route" in scope else None
+                observation.current.reset(marker)
 
     app.add_middleware(ObserveReceive)
-    before = database_observation(runtime)
+    # Verify the accepted literal absent ID independently, before the native hold.
+    for slug, root in runtime.iter_org_roots():
+        conn = sqlite3.connect((root / "happyranch.db").as_uri() + "?mode=ro", uri=True, timeout=.05)
+        try:
+            checks.require("C02_" + slug + "_absent_literal_thread",
+                conn.execute("SELECT COUNT(*) FROM threads WHERE id=?", ("THR-absent-13137",)).fetchone()[0], 0)
+        finally:
+            conn.close()
     original = daemon._sweep_on_startup
     entered, release = threading.Event(), threading.Event()
     wait_error = []
@@ -642,6 +1173,7 @@ async def serving(checks, runtime):
         if slug == "fixture-a":
             with db._lock:
                 checks.details["native_sweep_thread"] = threading.get_ident()
+                checks.details["hold_started_monotonic"] = time.monotonic()
                 entered.set()
                 if not release.wait(10):
                     wait_error.append("held-window expired")
@@ -670,6 +1202,15 @@ async def serving(checks, runtime):
             await asyncio.sleep(.01)
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
                 headers={"Authorization": "Bearer " + token}, timeout=2, follow_redirects=False) as client:
+            before = fixture_effects(runtime, state, checks.args.root)
+            observation.start()
+            await early_cases(checks, runtime, port, token, wire, "recovering")
+            await literal_cases(checks, runtime, port, token, wire, "recovering", selected["literal22"], index)
+            # Original static selections are separate from the22 variants.
+            static_entries = [{"id": name, "method": "GET", "request_target": target, "request_body": None,
+                "during_recovery": {"status": 200}, "after_ready": {"status": 200}}
+                for name, target in (("HX02", "/assets/startup-gate-probe.txt"), ("HX03", "/"), ("HX04", "/threads"))]
+            await literal_cases(checks, runtime, port, token, wire, "recovering", static_entries, index)
             ready = await client.get("/api/v1/health/ready")
             checks.require("C09_held_ready503", ready.status_code, 503)
             checks.require("C09_held_state", ready.json()["startup"]["state"], "recovering")
@@ -697,8 +1238,8 @@ async def serving(checks, runtime):
                 checks.require("C03_direct_gate_refuses", exc.code, "daemon_recovering")
             else:
                 checks.require("C03_direct_gate_refuses", False)
-            if checks.args.http_inventory:
-                entries = json.loads(checks.args.http_inventory.read_text())["entries"]
+            if selected["declarations"]:
+                entries = selected["declarations"]
                 async def observe_held(entry):
                     # Real loopback request with a bounded body. This observes
                     # status/code only; the separate prebody oracle is not
@@ -707,26 +1248,40 @@ async def serving(checks, runtime):
                                                     content=b"{}", headers={"Content-Type": "application/json",
                                                                              "X-Startup-Case": entry["id"]})
                     checks.require(entry["id"] + "_held_status", response.status_code, 503)
+                    # HEAD transport is empty; retain app-emitted code only from ORIGINAL ASGI send.
+                    matching = [row for row in wire if row["case"] == entry["id"]]
+                    emitted = (response_json(matching[0].get("head_asgi_body", "{}")) if entry["method"] == "HEAD" and len(matching) == 1 else response_json(response.content))
                     checks.require(entry["id"] + "_held_code",
-                                   response.json().get("detail", {}).get("code"), "daemon_recovering")
+                                   emitted.get("detail", {}).get("code"), "daemon_recovering")
                     matching = [row for row in wire if row["case"] == entry["id"]]
                     checks.require(entry["id"] + "_one_observed_request", len(matching), 1)
                     if len(matching) == 1:
                         checks.require(entry["id"] + "_prebody_receive_zero", matching[0]["receive_calls"], 0)
-                    checks.missing(entry["id"] + "_ready_outcome",
-                                   "held refusal does not establish original post-ready handler")
+                        checks.require(entry["id"] + "_original_parser_spool_native_zero",
+                            {k: matching[0][k] for k in ("parser_entries", "spool_entries", "native_entries", "preparation_entries")},
+                            dict.fromkeys(("parser_entries", "spool_entries", "native_entries", "preparation_entries"), 0))
+                    checks.details.setdefault("declaration_receipts", []).append({
+                        "id": entry["id"], "phase": "recovering", "method": entry["method"],
+                        "path": request_path(entry["path"]), "request_body": "generic {} prebody control only",
+                        "head": checks.details["head"], "source_owner": entry["owner"],
+                        "original_ASGI": matching, "transport_status": response.status_code,
+                        "observer": "own case-correlated receive + independent batch SQL/files/owner observation"})
                 held_entries = []
                 for entry in entries:
                     if entry["early"].startswith("held:"):
                         held_entries.append(entry)
-                    else:
-                        checks.missing(entry["id"], "full original-auth/content oracle not selected by this probe")
+
                 # Eight is the ORIGINAL concurrent-request ceiling. Serial
                 # batches avoid extending or replenishing the native hold.
                 for offset in range(0, len(held_entries), 8):
                     await asyncio.gather(*(observe_held(entry) for entry in held_entries[offset:offset + 8]))
-            checks.require("C02_held_all_original_rows_unchanged", database_observation(runtime), before)
-            checks.details["wire"] = wire
+            checks.require("C02_held_all_original_rows_unchanged", database_observation(runtime), before["rows"])
+            checks.require("C02_recovering_rows_files_owners_unchanged", fixture_effects(runtime, state, checks.args.root), before)
+            checks.require("C02_recovering_parser_spool_native_zero", observation.totals,
+                           dict.fromkeys(observation.totals, 0))
+            observation.close()
+            checks.details["hold_before_release_seconds"] = time.monotonic() - checks.details["hold_started_monotonic"]
+            checks.require("C02_original_hold_not_expired", not wait_error and checks.details["hold_before_release_seconds"] < 10)
             release.set()
             deadline = time.monotonic() + 15
             while True:
@@ -747,11 +1302,27 @@ async def serving(checks, runtime):
             checks.require("C01_post_ready_transcript", response.status_code == 200 and MESSAGE in response.text)
             checks.details["completed_startup"] = state._startup_recovery.snapshot()
             checks.require("C10_owned_reader_admissions_retired", state._startup_reads.snapshot()["active"], 0)
+            # All ready HTTP controls precede maintenance switch/stop invalidation.
+            await maintenance_waits.parked(dict.fromkeys(maintenance_waits.names, 1))
+            before_ready = fixture_effects(runtime, state, checks.args.root)
+            observation.totals = dict.fromkeys(observation.totals, 0)
+            observation.start()
+            await early_cases(checks, runtime, port, token, wire, "ready")
+            await literal_cases(checks, runtime, port, token, wire, "ready", selected["literal22"], index)
+            await literal_cases(checks, runtime, port, token, wire, "ready", static_entries, index)
+            checks.require("C02_ready_rows_files_owners_unchanged", fixture_effects(runtime, state, checks.args.root), before_ready)
+            checks.require("C02_ready_spool_native_zero",
+                {k: v for k, v in observation.totals.items() if k != "parser"},
+                {k: 0 for k in observation.totals if k != "parser"})
+            checks.details["ready_original_entry_counts"] = dict(observation.totals)
+            observation.close()
             await maintenance_switch_cases(checks, state, client, maintenance_waits)
             await task_invocation_wait_cases(checks, state)
             response = await client.get("/api/v1/health/ready")
             checks.require("C08_stop_closes_ready", response.status_code, 503)
     finally:
+        if observation.active:
+            observation.close()
         release.set()
         server.should_exit = True
         try:
@@ -781,6 +1352,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--web-dist", type=Path)
     parser.add_argument("--http-inventory", type=Path)
+    parser.add_argument("--routing-inventory", type=Path, help="accepted literal22 JSON, explicit caller-supplied path")
     parser.add_argument("--web", action="store_true")
     args = parser.parse_args()
     isolate(args)  # precedes EVERY product import and constructor
@@ -788,20 +1360,18 @@ def main():
     try:
         if args.case == "all" and args.web:
             web(checks)
+        if args.case == "all":
+            checks.details["_http_inputs"] = load_http_inputs(checks)
         runtime = seed(checks)
         if args.case == "all":
             asyncio.run(serving(checks, runtime))
-        for number in range(1, 16):
-            checks.missing(f"C{number:02d}_complete_acceptance",
-                "only named assertions executed; populated workflow/coding/direct/tail/browser obligations remain separate")
-        checks.missing("C15_under10s", "excluded: operator-authorized launcher/API/real-UI observation required")
     except BaseException as exc:
         checks.rows.append({"assertion": "driver_completion", "status": "FAIL", "exception": type(exc).__name__,
                             "reason": str(exc)[:512]})
         traceback.print_exc()
     finally:
         checks.save()
-    return int(any(row["status"] == "FAIL" for row in checks.rows))
+    return checks.disposition()
 
 
 if __name__ == "__main__":
