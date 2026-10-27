@@ -17,6 +17,7 @@ from runtime.infrastructure.task_pause_controls import validate_pause_schema
 
 ACTION = "failed_continuation_reconciled"
 CAP = 4096
+SQLITE_INTEGER_MAX = 2**63 - 1
 SCOPE = {
     "org": "happyranch", "team": "engineering", "manager": "engineering_manager",
     "owner": "TASK-10725", "owner_origin": "THR-299", "lineage_thread": "THR-293",
@@ -410,7 +411,7 @@ class TaskReconciliation:
 
     @staticmethod
     def inventory_shape(payload: dict) -> None:
-        """Closed saved shapes only; original-row authority is checked later.
+        """Strict saved primitives and consistency; original authority is later.
 
         This pass deliberately performs no DB/edge/receipt calls, so malformed
         unrelated envelopes cannot disappear and full readers cannot recurse.
@@ -428,7 +429,7 @@ class TaskReconciliation:
                         (type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None))
 
         def positive_integer(value: Any) -> None:
-            require(type(value) is int and value > 0)
+            require(type(value) is int and 0 < value <= SQLITE_INTEGER_MAX)
 
         def reference(record: dict, number: str) -> None:
             keys(record, number + " row_digest")
@@ -468,7 +469,7 @@ class TaskReconciliation:
         sha256(claim, "current_session_id_sha256")
         sha256(claim, "active_chain_sha256 active_fanout_sha256 note_sha256 blocked_on_job_ids_sha256", nullable=True)
         for name in ("step", "revision"):
-            require(type(claim[name]) is int and claim[name] >= 0)
+            require(type(claim[name]) is int and 0 <= claim[name] <= SQLITE_INTEGER_MAX)
         require(claim["result_row_id"] is None)
         # Validate each saved copy: dict equality alone equates bool with int.
         binding(payload["operator_binding"])
@@ -534,6 +535,191 @@ class TaskReconciliation:
                             strings(row, "task_id agent")
                             sha256(row, "session_id_sha256 row_digest")
 
+        # Equality never supplies primitive validation (True == 1). All copies
+        # above must pass independently before their saved relationships close.
+        require(canonical(payload["operator_binding"]) == canonical(snapshot["operator_binding"])
+                and canonical(payload["dispatch_bindings"]) == canonical(snapshot["dispatch_bindings"])
+                and canonical(payload["old_edge_bindings"]) == canonical(snapshot["edge_bindings"]))
+        TaskReconciliation.saved_consistency(snapshot, claim, version)
+
+    @staticmethod
+    def saved_consistency(snapshot: dict, claim: dict, version: int) -> None:
+        """Pure producer relationships, after strict shapes; no original reads.
+
+        This closes EVERY scanned envelope, including disjoint history. Original
+        SQL rows, topology and fresh operator eligibility are separate authority.
+        """
+        scope = selected_scope(version)
+        root_seqs = ROOT_SEQS if version == 1 else V2_ROOT_SEQS
+        require(snapshot["registry"] == {"team": scope["team"], "manager_kind": "agent",
+                "manager_principal": scope["manager"], "executable_manager": scope["manager"]})
+        tasks = snapshot["tasks"]
+        ids = [t["id"] for t in tasks]
+        children = {scope["qa_child"]} | ({scope["dev_child"]} if version == 1 else set())
+        require(ids == sorted(set(ids)) and set(root_seqs) | children <= set(ids))
+        if version == 2:
+            require(ids == sorted([*root_seqs, scope["qa_child"]]))
+        frozen = {t["id"]: t for t in tasks}
+        for task in tasks:
+            if task["id"] not in children:
+                require(task["parent_task_id"] is None and task["task_type"] == "task"
+                        and task["revisit_of_task_id"] is None and task["assigned_agent"] == scope["manager"]
+                        and task["team"] == scope["team"] and task["dispatched_from_thread_id"] ==
+                        (scope["owner_origin"] if task["id"] == scope["owner"] else scope["lineage_thread"]))
+        statuses = [("predecessor", "failed"), ("successor", "superseded")]
+        statuses += [("older", "superseded")] if version == 1 else [("current", "failed")]
+        for name, status in statuses:
+            require(frozen[scope[name]]["status"] == status)
+        child_contexts = [(scope["qa_child"], scope["older"], "qa_engineer", None),
+                          (scope["dev_child"], scope["predecessor"], "dev_agent", "TASK-10409")] if version == 1 else [
+                          (scope["qa_child"], scope["predecessor"], "qa_engineer", "TASK-13135")]
+        for task_id, parent, agent, revisit in child_contexts:
+            child = frozen[task_id]
+            require(child["status"] == "failed" and child["parent_task_id"] == parent
+                    and child["assigned_agent"] == agent and child["revisit_of_task_id"] == revisit)
+            if version == 2:
+                require(child["task_type"] == "subtask")
+        owner, binding = frozen[scope["owner"]], snapshot["operator_binding"]
+        require(binding["task_id"] == scope["owner"] and binding["agent"] == scope["manager"]
+                and owner["status"] == "in_progress" and owner["block_kind"] is None and owner["cancelled_at"] is None
+                and owner["current_session_id_sha256"] == binding["session_id_sha256"])
+        expected_claim = {"task_id": owner["id"], "assigned_agent": owner["assigned_agent"], "team": owner["team"],
+                          "current_session_id_sha256": owner["current_session_id_sha256"], "status": owner["status"],
+                          "block_kind": owner["block_kind"], "cancelled_at": owner["cancelled_at"],
+                          "step": owner["orchestration_step_count"], "revision": owner["revision_count"],
+                          **{k + "_sha256": owner[k + "_sha256"] for k in
+                             ("active_chain", "active_fanout", "note", "blocked_on_job_ids")}, "result_row_id": None}
+        require(canonical(claim) == canonical(expected_claim))
+        if version == 1:
+            require(frozen[scope["current"]]["status"] == "in_progress"
+                    and frozen[scope["current"]]["cancelled_at"] is None)
+        for hold, root_id in zip(snapshot["holds"], gated_roots(version)):
+            require(hold["root_task_id"] == root_id and hold["held"] is False
+                    and hold["generation"] % 2 == 0 and (hold["control_present"] or hold["generation"] == 0))
+
+        dispatches = snapshot["dispatch_bindings"]
+        require([d["root_id"] for d in dispatches] == sorted(root_seqs))
+        for dispatch in dispatches:
+            root_id = dispatch["root_id"]
+            require(dispatch["thread_id"] == frozen[root_id]["dispatched_from_thread_id"]
+                    and dispatch["dispatch_messages"][0]["seq"] == root_seqs[root_id]
+                    and dispatch["triggering_seq"] < dispatch["dispatch_messages"][0]["seq"])
+            if version == 2:
+                require(dispatch["triggering_seq"] == V2_DISPATCH_PINS[root_id][0]
+                        and dispatch["dispatch_audits"][0]["id"] == V2_DISPATCH_PINS[root_id][1])
+        require(len({d["invocation_id"] for d in dispatches}) == len(dispatches)
+                and len({d["dispatch_audits"][0]["id"] for d in dispatches}) == len(dispatches))
+        by_root = {d["root_id"]: d for d in dispatches}
+        origin = snapshot["origin"]
+        require(origin["thread_id"] == scope["owner_origin"]
+                and canonical(origin["owner_dispatch"]) == canonical(by_root[scope["owner"]]))
+        if version == 1:
+            require(origin["composed_by"] == scope["manager"] and origin["composed_from_task_id"] == scope["current"])
+        else:
+            for name, root_id in (("source_approval", scope["current"]), ("recovery_trigger", scope["owner"])):
+                require(origin[name] == {"seq": by_root[root_id]["triggering_seq"],
+                                         "row_digest": by_root[root_id]["trigger_message_digest"]})
+
+        edges = snapshot["edge_bindings"]
+        require(edges == sorted(edges, key=lambda e: (e["producer"], e["predecessor_id"], e["successor_id"], e["records"][0]["id"])))
+        require(len({(e["producer"], e["records"][0]["id"]) for e in edges}) == len(edges))
+        audit_ids = {d["dispatch_audits"][0]["id"] for d in dispatches}
+        require(binding["session_start_audit_id"] not in audit_ids)
+        for edge in edges:
+            if edge["producer"] == "escalation_superseded":
+                require(edge["records"][0]["id"] not in audit_ids | {binding["session_start_audit_id"]})
+        if version == 2:
+            edge = edges[0]
+            require(edge["producer"] == "escalation_superseded" and edge["predecessor_id"] == scope["successor"]
+                    and edge["successor_id"] == scope["current"] and edge["records"][0]["id"] == 417748)
+        else:
+            # The v1 producer walks a variable legitimate incoming path. Keep
+            # every such member, closing the proposed gap without DB traversal.
+            incoming = {scope["successor"]: scope["predecessor"]}
+            outgoing = {scope["predecessor"]: scope["successor"]}
+            pairs = set()
+            for edge in edges:
+                pred, succ = edge["predecessor_id"], edge["successor_id"]
+                require(succ not in incoming and pred not in outgoing)
+                incoming[succ], outgoing[pred] = pred, succ
+                pairs.add((pred, succ))
+            require({(scope["older"], scope["predecessor"]), (scope["successor"], scope["current"])} <= pairs)
+            path, cursor = [], scope["current"]
+            while True:
+                require(cursor not in path and len(path) < 20)
+                path.append(cursor)
+                if cursor not in incoming:
+                    break
+                cursor = incoming[cursor]
+            require(set(path) == set(ids) - {scope["owner"], *children}
+                    and set(outgoing) == set(path[1:]) and scope["older"] in path)
+            for edge in edges:
+                require(frozen[edge["predecessor_id"]]["status"] == "superseded")
+
+        local = snapshot["local_retry"]
+        parent = scope["current"] if version == 1 else scope["owner"]
+        require(local["parent_id"] == parent)
+        require(canonical(local["agents"][0]["retries"]) == canonical(local["agents"][1]["retries"]))
+        failed_ids = set()
+        for item, agent in zip(local["agents"], ("dev_agent", "qa_engineer")):
+            require(item["target_agent"] == agent)
+            for name in ("failed_children", "retries"):
+                rows = item[name]
+                require([r["id"] for r in rows] == sorted({r["id"] for r in rows}))
+                for row in rows:
+                    if name == "failed_children":
+                        require(row["assigned_agent"] == agent and row["status"] == "failed"
+                                and row["parent_task_id"] == parent and row["id"] not in failed_ids)
+                        failed_ids.add(row["id"])
+                    if version == 2 and name == "retries":
+                        # Retain the selected v2 reader's identifier bound, now
+                        # before relevance and with saved-evidence attribution.
+                        try:
+                            identifier(row["revisit_of_task_id"])
+                        except ReconciliationError as exc:
+                            raise ReconciliationError("malformed_evidence") from exc
+                    if row["id"] in frozen:
+                        require(frozen[row["id"]]["parent_task_id"] == parent
+                                and all(row[k] == frozen[row["id"]][k] for k in row))
+            retries = {r["id"]: r["revisit_of_task_id"] for r in item["retries"]}
+            for child in item["failed_children"]:
+                require(retries.get(child["id"]) == child["revisit_of_task_id"])
+
+        if version == 2:
+            observations = local["observations"]
+            require([o["root_id"] for o in observations] == sorted(root_seqs))
+            child_ids, result_ids = set(), set()
+            for observation in observations:
+                root_id = observation["root_id"]
+                for name in ("children", "results"):
+                    rows = observation[name]
+                    require([r["id"] for r in rows] == sorted({r["id"] for r in rows}))
+                    for row in rows:
+                        if name == "children":
+                            projection = row["projection"]
+                            require(row["id"] == projection["id"] and projection["parent_task_id"] == root_id
+                                    and row["id"] not in child_ids)
+                            child_ids.add(row["id"])
+                            if row["id"] in frozen:
+                                require(canonical(projection) == canonical(frozen[row["id"]]))
+                        else:
+                            require(row["task_id"] == root_id and row["id"] not in result_ids)
+                            result_ids.add(row["id"])
+                            if root_id == scope["owner"]:
+                                require(row["session_id_sha256"] != binding["session_id_sha256"])
+                # The SQL child census contains the top-level QA projection and
+                # both local queries. They are observations of the SAME capture.
+                require({t["id"] for t in tasks if t["parent_task_id"] == root_id}
+                        <= {r["id"] for r in observation["children"]})
+                if root_id == parent:
+                    projected = [r["projection"] for r in observation["children"]]
+                    for item in local["agents"]:
+                        require(item["failed_children"] == [{k: t[k] for k in
+                                ("id", "assigned_agent", "status", "parent_task_id", "revisit_of_task_id")}
+                                for t in projected if t["status"] == "failed" and t["assigned_agent"] == item["target_agent"]])
+                        require(item["retries"] == [{"id": t["id"], "revisit_of_task_id": t["revisit_of_task_id"]}
+                                for t in projected if t["revisit_of_task_id"] is not None])
+
     def operations(self) -> list[tuple[dict, dict]]:
         """Structural inventory FIRST; no edge traversal or recursive readers."""
         result, operation_keys = [], set()
@@ -556,7 +742,7 @@ class TaskReconciliation:
                     and payload["operation_key"] == cmd["operation_key"]
                     and canonical(cmd) == payload["canonical_command"] and digest(cmd) == payload["command_sha256"]
                     and cmd["expected_state_digest"] == payload["state_digest"]
-                    and type(row["id"]) is int and row["id"] > 0
+                    and type(row["id"]) is int and 0 < row["id"] <= SQLITE_INTEGER_MAX
                     and row["task_id"] == scope["predecessor"] and row["agent"] == scope["manager"])
             aware_timestamp(row["timestamp"])
             keys(payload["snapshot"], "scope registry tasks operator_binding operator_result_present origin holds dispatch_bindings edge_bindings local_retry operation_ownership")
@@ -792,8 +978,8 @@ class TaskReconciliation:
         # Generic observed children may be unassigned; SQL stores this as NULL.
         for name in ("assigned_agent", "parent_task_id", "revisit_of_task_id", "dispatched_from_thread_id", "block_kind", "cancelled_at"):
             require(task[name] is None or type(task[name]) is str)
-        require(type(task["revision_count"]) is int and task["revision_count"] >= 0
-                and type(task["orchestration_step_count"]) is int and task["orchestration_step_count"] >= 0)
+        require(type(task["revision_count"]) is int and 0 <= task["revision_count"] <= SQLITE_INTEGER_MAX
+                and type(task["orchestration_step_count"]) is int and 0 <= task["orchestration_step_count"] <= SQLITE_INTEGER_MAX)
         for name, value in task.items():
             if name.endswith("_sha256"):
                 require(value is None or (type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None))
@@ -806,95 +992,31 @@ class TaskReconciliation:
             require(task[name] == original[name])
 
     def validate_frozen_v2(self, snapshot: dict, claim: dict) -> None:
-        require(snapshot["registry"] == {"team": self.scope["team"], "manager_kind": "agent",
-                "manager_principal": self.scope["manager"], "executable_manager": self.scope["manager"]})
-        tasks = snapshot["tasks"]
-        expected_ids = sorted([*self.root_seqs, self.scope["qa_child"]])
-        require(type(tasks) is list and len(tasks) == 5 and [t.get("id") for t in tasks] == expected_ids)
-        for task in tasks:
+        for task in snapshot["tasks"]:
             self.validate_projection(task)
-        frozen = {t["id"]: t for t in tasks}
-        for name, status in (("predecessor", "failed"), ("successor", "superseded"), ("current", "failed"), ("qa_child", "failed")):
+        frozen = {t["id"]: t for t in snapshot["tasks"]}
+        for name in ("predecessor", "successor", "current", "qa_child"):
             task = frozen[self.scope[name]]
-            require(task["status"] == status == self.task(task["id"])["status"])
-        for root_id in self.root_seqs:
-            task = frozen[root_id]
-            require(task["parent_task_id"] is None and task["task_type"] == "task"
-                    and task["revisit_of_task_id"] is None and task["assigned_agent"] == self.scope["manager"]
-                    and task["team"] == self.scope["team"] and task["dispatched_from_thread_id"] == self.scope["lineage_thread"])
-        child = frozen[self.scope["qa_child"]]
-        require(child["parent_task_id"] == self.scope["predecessor"] and child["assigned_agent"] == "qa_engineer"
-                and child["revisit_of_task_id"] == "TASK-13135" and child["task_type"] == "subtask")
-        owner = frozen[self.scope["owner"]]
-        require(owner["status"] == "in_progress" and owner["block_kind"] is None and owner["cancelled_at"] is None
-                and owner["current_session_id_sha256"] == snapshot["operator_binding"]["session_id_sha256"])
-        expected_claim = {"task_id": owner["id"], "assigned_agent": owner["assigned_agent"], "team": owner["team"],
-                          "current_session_id_sha256": owner["current_session_id_sha256"], "status": owner["status"],
-                          "block_kind": owner["block_kind"], "cancelled_at": owner["cancelled_at"],
-                          "step": owner["orchestration_step_count"], "revision": owner["revision_count"],
-                          **{k + "_sha256": owner[k + "_sha256"] for k in
-                             ("active_chain", "active_fanout", "note", "blocked_on_job_ids")}, "result_row_id": None}
-        require(canonical(claim) == canonical(expected_claim))
-        holds = snapshot["holds"]
-        require(type(holds) is list and len(holds) == 4)
-        for hold, root_id in zip(holds, gated_roots(2)):
-            keys(hold, "root_task_id control_present generation held")
-            require(hold["root_task_id"] == root_id and type(hold["control_present"]) is bool
-                    and type(hold["generation"]) is int and 0 <= hold["generation"] <= 2**63 - 1
-                    and hold["generation"] % 2 == 0 and hold["held"] is False
-                    and (hold["control_present"] or hold["generation"] == 0))
-        edges = snapshot["edge_bindings"]
-        require(type(edges) is list and len(edges) == 1)
-        require(edges[0] == self.old_edge(self.scope["successor"], self.scope["current"])
-                and edges[0]["producer"] == "escalation_superseded" and edges[0]["records"][0]["id"] == 417748)
-        # Exactly current <- successor <- predecessor; owner is not a vertex.
-        require([edges[0]["successor_id"], edges[0]["predecessor_id"], self.scope["predecessor"]]
-                == ["TASK-13217", "TASK-13203", "TASK-13112"])
-        # Fresh snapshot_v2 checks the independent operator's unowned topology.
-        # Its later unrelated outgoing supersession does not alter this frozen
-        # pair or original producer; receipt validation authenticates the saved
-        # dispatch/session separately. The historical endpoint stays closed.
+            require(task["status"] == self.task(task["id"])["status"])
+        edge = snapshot["edge_bindings"][0]
+        require(edge == self.old_edge(self.scope["successor"], self.scope["current"]))
+        # R1: fresh admission checks the independent operator's unowned topology;
+        # a later outgoing owner supersession does not invalidate history.
         require(not self.edge_candidates(outgoing=self.scope["current"])
                 and not self.edge_candidates(incoming=self.scope["owner"]), "competing_successors")
-        local = snapshot["local_retry"]
-        keys(local, "parent_id agents observations")
-        require(local["parent_id"] == self.scope["owner"] and type(local["agents"]) is list and len(local["agents"]) == 2)
-        for item, agent in zip(local["agents"], ("dev_agent", "qa_engineer")):
-            keys(item, "target_agent failed_children retries")
-            require(item["target_agent"] == agent)
+        for item in snapshot["local_retry"]["agents"]:
             for name in ("failed_children", "retries"):
-                rows = item[name]
-                require(type(rows) is list and len(rows) <= CAP and [r["id"] for r in rows] == sorted({r["id"] for r in rows}))
-                for row in rows:
-                    if name == "failed_children":
-                        keys(row, "id assigned_agent status parent_task_id revisit_of_task_id")
-                        require(row["assigned_agent"] == agent and row["status"] == "failed" and row["parent_task_id"] == self.scope["owner"])
-                    else:
-                        keys(row, "id revisit_of_task_id")
-                        identifier(row["revisit_of_task_id"])
+                for row in item[name]:
                     original = self.task(row["id"])
                     require(original["parent_task_id"] == self.scope["owner"])
                     for key in set(row) - {"status"}:
                         require(row[key] == original[key])
-        observations = local["observations"]
-        require(type(observations) is list and len(observations) == 4
-                and [o.get("root_id") for o in observations] == sorted(self.root_seqs))
-        for observation in observations:
-            keys(observation, "root_id children results")
-            root_id = observation["root_id"]
-            for name in ("children", "results"):
-                rows = observation[name]
-                require(type(rows) is list and len(rows) <= CAP and [r["id"] for r in rows] == sorted({r["id"] for r in rows}))
-                for row in rows:
-                    if name == "children":
-                        keys(row, "id projection")
-                        require(row["id"] == row["projection"]["id"] and row["projection"]["parent_task_id"] == root_id)
-                        self.validate_projection(row["projection"])
-                    else:
-                        keys(row, "id task_id agent session_id_sha256 row_digest")
-                        require(type(row["id"]) is int and row["id"] > 0 and row["task_id"] == root_id)
-                        original = self.conn.execute("SELECT * FROM task_results WHERE id=?", (row["id"],)).fetchone()
-                        require(original is not None and row == self.result_reference(dict(original)))
+        for observation in snapshot["local_retry"]["observations"]:
+            for row in observation["children"]:
+                self.validate_projection(row["projection"])
+            for row in observation["results"]:
+                original = self.conn.execute("SELECT * FROM task_results WHERE id=?", (row["id"],)).fetchone()
+                require(original is not None and row == self.result_reference(dict(original)))
 
     @staticmethod
     def claim(owner: dict) -> dict:
@@ -936,6 +1058,7 @@ class TaskReconciliation:
                 and snapshot["dispatch_bindings"] == payload["dispatch_bindings"]
                 and snapshot["edge_bindings"] == payload["old_edge_bindings"]
                 and snapshot["operation_ownership"] == [] and snapshot["operator_result_present"] is False)
+        self.inventory_shape(payload)
         self.historical_session(payload["operator_binding"])
         for task_id in self.root_seqs:
             self.root(task_id, self.scope["owner_origin"] if task_id == self.scope["owner"] else self.scope["lineage_thread"])
@@ -960,95 +1083,25 @@ class TaskReconciliation:
                 "payload_sha256": digest(payload)}
 
     def validate_frozen(self, snapshot: dict, claim: dict) -> None:
-        """Closed historical observations, separate from current lifecycle."""
+        """Close saved consistency first, then selected original authentication."""
+        self.inventory_shape({"version": self.version, "snapshot": snapshot, "operator_claim": claim,
+                              "operator_binding": snapshot["operator_binding"],
+                              "dispatch_bindings": snapshot["dispatch_bindings"],
+                              "old_edge_bindings": snapshot["edge_bindings"]})
         if self.version == 2:
             self.validate_frozen_v2(snapshot, claim)
             return
-        require(snapshot["registry"] == {"team": self.scope["team"], "manager_kind": "agent",
-                "manager_principal": self.scope["manager"], "executable_manager": self.scope["manager"]})
-        tasks = snapshot["tasks"]
-        require(isinstance(tasks, list) and len(tasks) <= 23)
-        ids = [t.get("id") for t in tasks]
-        require(ids == sorted(set(ids)) and set(self.root_seqs) | {self.scope["dev_child"], self.scope["qa_child"]} <= set(ids))
-        names = "id status task_type parent_task_id revisit_of_task_id assigned_agent team dispatched_from_thread_id block_kind cancelled_at revision_count orchestration_step_count current_session_id_sha256 active_chain_sha256 active_fanout_sha256 blocked_on_job_ids_sha256 note_sha256"
-        for task in tasks:
-            keys(task, names)
-            require(type(task["revision_count"]) is int and task["revision_count"] >= 0
-                    and type(task["orchestration_step_count"]) is int and task["orchestration_step_count"] >= 0)
-            for key, value in task.items():
-                if key.endswith("_sha256"):
-                    require(value is None or (type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None))
-            current = self.task(task["id"])
-            for key in ("id", "task_type", "parent_task_id", "revisit_of_task_id", "assigned_agent", "team", "dispatched_from_thread_id"):
-                require(task[key] == current[key])
-            if task["id"] not in (self.scope["dev_child"], self.scope["qa_child"]):
-                require(task["parent_task_id"] is None and task["task_type"] == "task"
-                        and task["assigned_agent"] == self.scope["manager"] and task["team"] == self.scope["team"])
+        for task in snapshot["tasks"]:
+            self.validate_projection(task)
             if task["id"] in (self.scope["predecessor"], self.scope["successor"], self.scope["older"], self.scope["dev_child"], self.scope["qa_child"]):
-                require(task["status"] == current["status"])
-        frozen = {t["id"]: t for t in tasks}
-        require(frozen[self.scope["predecessor"]]["status"] == "failed"
-                and frozen[self.scope["successor"]]["status"] == "superseded"
-                and frozen[self.scope["older"]]["status"] == "superseded")
-        owner = frozen[self.scope["owner"]]
-        require(owner["status"] == "in_progress" and owner["block_kind"] is None and owner["cancelled_at"] is None
-                and owner["current_session_id_sha256"] == snapshot["operator_binding"]["session_id_sha256"])
-        expected_claim = {"task_id": owner["id"], "assigned_agent": owner["assigned_agent"], "team": owner["team"],
-                          "current_session_id_sha256": owner["current_session_id_sha256"], "status": owner["status"],
-                          "block_kind": owner["block_kind"], "cancelled_at": owner["cancelled_at"],
-                          "step": owner["orchestration_step_count"], "revision": owner["revision_count"],
-                          **{k + "_sha256": owner[k + "_sha256"] for k in
-                             ("active_chain", "active_fanout", "note", "blocked_on_job_ids")}, "result_row_id": None}
-        require(canonical(claim) == canonical(expected_claim))
-        require(frozen[self.scope["current"]]["status"] == "in_progress" and frozen[self.scope["current"]]["cancelled_at"] is None)
-        for task_id, parent, agent, revisit in ((self.scope["dev_child"], self.scope["predecessor"], "dev_agent", "TASK-10409"),
-                                              (self.scope["qa_child"], self.scope["older"], "qa_engineer", None)):
-            child = frozen[task_id]
-            require(child["status"] == "failed" and child["parent_task_id"] == parent
-                    and child["assigned_agent"] == agent and child["revisit_of_task_id"] == revisit)
-        require(isinstance(snapshot["holds"], list) and len(snapshot["holds"]) == 2)
-        for hold, root_id in zip(snapshot["holds"], sorted((self.scope["owner"], self.scope["current"]))):
-            keys(hold, "root_task_id control_present generation held")
-            require(hold["root_task_id"] == root_id and type(hold["control_present"]) is bool
-                    and type(hold["generation"]) is int and 0 <= hold["generation"] <= 2**63 - 1
-                    and hold["generation"] % 2 == 0 and hold["held"] is False
-                    and (hold["control_present"] or hold["generation"] == 0))
-        local = snapshot["local_retry"]
-        keys(local, "parent_id agents")
-        require(local["parent_id"] == self.scope["current"] and isinstance(local["agents"], list) and len(local["agents"]) == 2)
-        for item, agent in zip(local["agents"], ("dev_agent", "qa_engineer")):
-            keys(item, "target_agent failed_children retries")
-            require(item["target_agent"] == agent and isinstance(item["failed_children"], list) and isinstance(item["retries"], list))
-            for name in ("failed_children", "retries"):
-                rows = item[name]
-                require(len(rows) <= CAP and [r["id"] for r in rows] == sorted({r["id"] for r in rows}))
+                require(task["status"] == self.task(task["id"])["status"])
+        for item in snapshot["local_retry"]["agents"]:
             for child in item["failed_children"]:
-                keys(child, "id assigned_agent status parent_task_id revisit_of_task_id")
-                require(child["assigned_agent"] == agent and child["status"] == "failed" and child["parent_task_id"] == self.scope["current"])
                 original = self.task(child["id"])
                 require(canonical(child) == canonical({k: original[k] for k in child}))
             for retry in item["retries"]:
-                keys(retry, "id revisit_of_task_id")
-                require(type(retry["id"]) is str and type(retry["revisit_of_task_id"]) is str)
                 original = self.task(retry["id"])
                 require(original["parent_task_id"] == self.scope["current"] and original["revisit_of_task_id"] == retry["revisit_of_task_id"])
-        # Reconstruct the full frozen path, including the new gap, rather than
-        # trusting an array of independently valid but unrelated old edges.
-        incoming = {self.scope["successor"]: self.scope["predecessor"]}
-        outgoing = {self.scope["predecessor"]: self.scope["successor"]}
-        for edge in snapshot["edge_bindings"]:
-            pred, succ = edge["predecessor_id"], edge["successor_id"]
-            require(succ not in incoming and pred not in outgoing)
-            incoming[succ], outgoing[pred] = pred, succ
-        path, cursor = [], self.scope["current"]
-        while True:
-            require(cursor not in path and len(path) < 20, "lineage_cycle" if cursor in path else "lineage_record_limit_20")
-            path.append(cursor)
-            if cursor not in incoming:
-                break
-            cursor = incoming[cursor]
-        require(set(path) == set(ids) - {self.scope["owner"], self.scope["dev_child"], self.scope["qa_child"]}
-                and set(outgoing) == set(path[1:]) and self.scope["older"] in path)
 
     def receipt(self, operation_key: str) -> dict:
         matches = [(r, p) for r, p in self.operations() if p["operation_key"] == operation_key]

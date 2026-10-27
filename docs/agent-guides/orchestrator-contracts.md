@@ -4790,10 +4790,16 @@ registry, topology, controls and digest. Heartbeat/progress/updated_at remain
 excluded. No task/result/child/control/queue row changes occur.
 
 Every bounded global receipt envelope/canonical command is decoded before
-selection. Both closed saved shapes receive pure nonrecursive scalar/null/type
-and full lowercase SHA256 validation, including claims, registry/origin, holds,
-dispatch/edge/local records and v2 observations. INTEGER fields exclude bool;
-each duplicated binding is validated independently of Python equality. Optional
+selection. Both closed saved shapes receive pure nonrecursive primitive and
+producer-consistency validation: claim/frozen owner/session/binding and exact
+registry; sorted context-appropriate roots/children/statuses, dispatch membership
+and sole owner/origin copy; closed pins and the variable legitimate v1 frozen
+path or sole v2 old edge; sorted unheld/even holds (absent implies generation0);
+local parent/agent/failed/retry correspondence and duplicated retry lists; v2
+child/projection/parent and result/enclosing-root identities, including repeated
+QA and local observations from the same capture. SQL-backed positive references
+and nonnegative counters are bounded by SQLite signed64; bool is excluded on
+every duplicated copy before equality. Full lowercase SHA256 syntax, optional
 nullable metadata and unassigned observed children retain their producer types.
 Malformed disjoint evidence refuses before a digest, successful historical or
 advisory result, or append; this pass reads no original DB references or current
