@@ -28,6 +28,13 @@ without blocking listener startup, listener-first waits for recovery, and the on
 ready commit/latch release admits work only while the original listener remains
 current. Listener failure/loss/replacement and stopped/failed epochs remain held.
 
+Daemon-bound thread runners also require the caller's supplied host to be the
+actual bound daemon host. Omitted/None, missing real or replaced/cross-owner hosts
+refuse before reservation or preparation; no host is silently injected. Only
+explicitly unbound standalone owners retain None/self-launch. The real host's
+passthrough backend and initial/fallback/nudge phases keep host admission and
+ownership; readiness closure never gates independently owed terminal/finish cleanup.
+
 Shell start/status preserve their process identity line and append exactly one
 `startup serving=YES recovery=STATE launches=DISPOSITION` line (actual values
 are lowercase). `serving` is `yes|no|unknown`; recovery is

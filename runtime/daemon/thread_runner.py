@@ -128,7 +128,9 @@ _INTERRUPTED_TERMINALS = (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED)
 def _require_runner_ready(org_state: Any, host_supervisor: Any) -> None:
     _require_ordinary_ready(org_state)
     state = org_state._startup_state
-    if state is not None and host_supervisor is not None and host_supervisor is not state.host_supervisor:
+    if state is not None and (
+        host_supervisor is None or host_supervisor is not state.host_supervisor
+    ):
         raise StartupUnavailable("startup_attachment_changed")
 
 
@@ -1072,8 +1074,10 @@ async def _run_invocation_owned(
     ``HostSessionSupervisor`` the invocation runs through it (admission lease,
     atomic ownership at grant, real backend launch into containment, opaque
     cancellation, containment cleanup before exactly-once lease release); when
-    it is ``None`` the self-launch path uses the same final admission hook
-    and retains unknown containment evidence rather than claiming quiescence.
+    the org is explicitly standalone and it is ``None``, the self-launch path
+    uses the same final admission hook and retains unknown containment evidence
+    rather than claiming quiescence. A daemon-bound org requires its actual
+    supplied host, including when that host uses the passthrough backend.
     """
     from runtime.orchestrator.team_move import DeferredTeamMove
     from runtime.orchestrator.thread_move import bind_thread_preparation

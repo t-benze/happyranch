@@ -154,6 +154,13 @@ its actual secondary error, without a reaped/report assertion or retirement.
 Marked projection native uncertainty escapes operation isolation to the retained
 maintenance barrier and stops further ticks; ordinary errors remain isolated.
 
+Daemon-bound thread invocation requires the supplied host to be present and
+identical to the actual bound daemon host, including direct entry with an omitted
+default. Missing/replaced/cross-owner hosts refuse before reservation or preparation;
+no host is silently injected. Explicitly unbound standalone owners retain None
+self-launch; the actual daemon host's passthrough still owns admission and terminal
+settlement. Initial/fallback/nudge retain that same supplied host.
+
 Fresh thread and producer reservations retain their original org/DB, daemon gate,
 epoch, reference selection and loop across move/DB/ctx waits. Their selected
 writers renew after BEGIN before the first claim/journal write, and reservation
