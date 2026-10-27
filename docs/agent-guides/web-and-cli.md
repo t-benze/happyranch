@@ -616,10 +616,12 @@ whole-row family matching covers mappings, original capture audit and all five
 admission columns; orphan/foreign/malformed/unsupported families still refuse.
 Central schema validation, also data=False, reopen/recovery and drain/downgrade
 compose that same reader without recursive schema validation or ID exemptions.
-Mapping-positive central scans, including the complete ordinary audit inventory,
-use singleton rowid keyset pages with explicit overflow refusal. Before Python
-fetch, every selected scalar/variable cell gates its original SQLite storage
-class and each TEXT/BLOB UTF8 byte length (including multibyte/NUL suffixes),
+Central shared-table scans first discriminate ordinary history independently of
+coding-family accounting, including after mapping or queued enrollment. Expected
+coding keys only locate freshly acquired rows; they never authorize acceptance.
+Coding candidates use singleton rowid keyset pages with explicit overflow refusal.
+Before their bounded Python fetch, every selected scalar/variable cell gates its
+original SQLite storage class and each TEXT/BLOB UTF8 byte length (including multibyte/NUL suffixes),
 and the whole row must fit the remaining shared raw-byte and candidate budget.
 Original typeof and a separate refusal sentinel preserve genuine nullable NULL;
 invalid/oversized rows never become coerced, truncated or partial success.
@@ -632,16 +634,21 @@ validated records, indexed only for lookup, then compared in full with exact
 native types. Original capture inventory and required setup histories are cached
 only within this coherent call. No mapping row or supported audit is exempted
 by ID or watermark. Unknown/orphan/malformed/duplicate evidence still refuses.
-The SAME enclosing traversal allowance also covers metadata discrimination:
+The SAME enclosing traversal allowance also covers selected coding metadata discrimination:
 every structured node/member, duplicate pair and classified member string,
 and malformed lexical prefix/member/whitespace/string/escape visits consume it.
 Nested lists/objects and fallback after partial pairs-hook work never reset or
 replace that allowance. Exhaustion refuses before a normal return, positive
-admission or watermark advance; even small wide ordinary metadata may exhaust
-it. JSON-decoder/encoding internals, total SQL/decoded-object/process memory
-and wall-clock work are not bounded by this traversal or raw-byte accounting.
-Ordinary nonmapping scans retain their historical discriminator/watermark
-contract. This R1 source correction is not behavioral/security verification.
+admission or watermark advance. Ordinary shared rows do not spend this coding
+allowance: decision prose mentioning workflow_start and noncoding org_config_write
+sections remain ordinary. Coding settings scope is selected by config:coding OR
+the decoded top-level section, preserving escaped/duplicate/malformed candidates
+and the original1024 coding-publication limit. JSON-decoder/encoding internals,
+total SQL/decoded-object/process memory and wall-clock work are not bounded by
+this traversal or raw-byte accounting. Ordinary scans retain their historical
+insert-only discriminator/watermark contract before and after mapping/start.
+Expected coding rows always revalidate below that ordinary watermark. This source
+correction is not behavioral/security verification.
 Mapping/setup/import have no run/host tail; compatible J reader is always needed.
 F–J SQL/reference bytes and all historical document meanings are unchanged.
 

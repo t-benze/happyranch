@@ -1461,6 +1461,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'tasks.waiting.continuationPending': "等待后续处理",
   'tasks.waiting.childUnavailable': "子任务状态暂不可用",
   'tasks.waiting.jobs': '等待作业',
+  'tasks.waiting.jobsFinishedHeld': '作业已完成 · 根任务暂停中',
+  'tasks.waiting.jobsFinishedResumePending': '作业已完成 · 等待恢复执行',
   'tasks.rollup.pending': '待处理',
   'tasks.rollup.inProgress': '进行中',
   'tasks.rollup.escalated': '已升级',

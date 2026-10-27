@@ -148,8 +148,29 @@ interface ChainTimelineBlockInfo {
 
 type BlockedJobEntry = { job_id: string; status: string };
 
+const TERMINAL_JOB_STATUSES = new Set(['completed', 'failed', 'rejected']);
+
+/**
+ * A job-parked task whose blocking jobs are ALL terminal is no longer waiting on
+ * jobs: it is waiting to be resumed. When an effective root Pause holds it, say
+ * so; otherwise say the resume is pending. Null keeps the ordinary projection.
+ */
+function finishedJobsQualifier(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | null {
+  if (task.status !== 'in_progress' || task.block_kind !== 'blocked_on_job') return null;
+  if (!blockedOnJobs || blockedOnJobs.length === 0
+    || !blockedOnJobs.every(entry => TERMINAL_JOB_STATUSES.has(entry.status))) return null;
+  return t(task.pause?.effective_hold === true ? 'tasks.waiting.jobsFinishedHeld' : 'tasks.waiting.jobsFinishedResumePending');
+}
+
+/** Detail-page waiting qualifier: finished-job state first, then the shared projection. */
+function detailWaitingQualifier(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | null {
+  return finishedJobsQualifier(task, blockedOnJobs, t) ?? resolveTaskWaitingQualifier(task, taskWaitingLabels(t));
+}
+
 /** Timeline uses the same current projection as the header/rail, without count inference. */
 function deriveBlockerName(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | undefined {
+  const finished = finishedJobsQualifier(task, blockedOnJobs, t);
+  if (finished) return finished;
   if (task.block_kind === 'delegated') return resolveTaskWaitingQualifier(task, taskWaitingLabels(t)) ?? t('tasks.waiting.childUnavailable');
   if (blockedOnJobs && blockedOnJobs.length > 0) return t('tasks.detail.blocker.jobs', {ids: blockedOnJobs.map(e => e.job_id).join(', ')});
   if (task.block_kind === 'blocked_on_job') return t('tasks.detail.blocker.blockedOnJob');
@@ -799,11 +820,13 @@ export function TaskStatusCard({
   slug,
   jobs,
   workStatus,
+  blockedOnJobs = null,
 }: {
   task: TaskRecord;
   slug: string | undefined;
   jobs: JobRecord[];
   workStatus: WorkStatusResponse | null;
+  blockedOnJobs?: BlockedJobEntry[] | null;
 }): JSX.Element {
   const { locale, t } = useTranslation();
   const threadId = task.originating_thread_id ?? task.dispatched_from_thread_id;
@@ -821,7 +844,7 @@ export function TaskStatusCard({
               <StatusBadge
                 status={task.status}
                 blockKind={task.block_kind} waitingLabels={{blocked_on_job: t('tasks.waiting.jobs')}}
-                waitingQualifier={resolveTaskWaitingQualifier(task, taskWaitingLabels(t))}
+                waitingQualifier={detailWaitingQualifier(task, blockedOnJobs, t)}
               />
             </span>
           </RailRow>
@@ -1103,7 +1126,7 @@ export function TaskDetailPage(): JSX.Element {
                 <StatusBadge
                   status={task.data.status}
                   blockKind={task.data.block_kind} waitingLabels={{blocked_on_job: t('tasks.waiting.jobs')}}
-                  waitingQualifier={resolveTaskWaitingQualifier(task.data, taskWaitingLabels(t))}
+                  waitingQualifier={detailWaitingQualifier(task.data, chainQuery.data?.blockedOnJobs ?? null, t)}
                 />
               )}
               {escalationFlavor && (
@@ -1283,6 +1306,7 @@ export function TaskDetailPage(): JSX.Element {
                   slug={slug}
                   jobs={jobsQuery.data?.jobs ?? []}
                   workStatus={chainQuery.data?.workStatus ?? null}
+                  blockedOnJobs={chainQuery.data?.blockedOnJobs ?? null}
                 />
               </>
             )}

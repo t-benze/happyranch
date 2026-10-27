@@ -88,13 +88,23 @@ class QueuedStorage:
         return _canonical(encode_row(row)) in self.admitted.get(table, ())
 
 
+def _reserved_rows(conn, table, column, budget, *, where, args=()):
+    from runtime.infrastructure.workflow_coding_schema import _coding_metadata_candidate
+    for rowid, raw in conn.execute(f'SELECT rowid,{column} FROM {table} WHERE ' + where
+                                   + ' ORDER BY rowid', args):
+        if _coding_metadata_candidate(raw, location=f'{table}.{column}'):
+            yield from rows(conn, table, budget, where='rowid=?', args=(rowid,), maximum=1)
+
+
 def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any) -> QueuedStorage:
     from runtime.infrastructure.workflow_schema import _coding_document_exclusions
     optional = _coding_document_exclusions(conn)
     storage = QueuedStorage()
-    # Native callbacks can exist before allocation. Authenticate each full row,
-    # without consuming a claim or treating a command as permission.
-    for row in rows(conn, 'task_results', budget, where='decision_json IS NOT NULL'):
+    # Discriminate ordinary decision prose before native acquisition. The same
+    # lexical/decoded inventory retains escaped, duplicate and malformed reserved
+    # candidates; central closure still refuses unsupported envelopes.
+    for row in _reserved_rows(conn, 'task_results', 'decision_json', budget,
+                              where='decision_json IS NOT NULL'):
         raw = row['decision_json']
         if raw is None:
             continue
@@ -120,7 +130,7 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
         from runtime.orchestrator.orchestrator import completion_report_from_result_row
         task_ids = tuple(sorted({r['task_id'] for r, _ in storage.callbacks.values()}))
         selection = "action='completion_report' AND task_id IN (" + ','.join('?' for _ in task_ids) + ')'
-        for audit in rows(conn, 'audit_log', budget, where=selection, args=task_ids):
+        for audit in _reserved_rows(conn, 'audit_log', 'payload', budget, where=selection, args=task_ids):
             if audit['payload'] is None:
                 continue
             try:
