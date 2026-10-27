@@ -4611,9 +4611,13 @@ cause and traceback stay first; otherwise each original child/root join's raised
 outcome and original traceback select the primary, independently of secondary
 notification order. An already-failed cleanup stays primary over later waiter
 cancellation; genuine cancellation before completion stays primary over later
-cleanup failure. Actual notifications are bounded and identity-deduplicated per
-join, retained after its selected outcome; later real errors remain bounded
-secondaries. Root teardown stays incomplete after a tail failure. No terminal
+cleanup failure. After that selection, the SAME completed worker's actual outcome
+is consumed before bounded cancellation diagnostics, so repeated cancellation
+cannot exhaust custody of an actual cleanup failure. Selected and actual outcome
+identities are deduplicated when folding the bounded notifications. Actual worker
+failures reach the existing bounded secondary/overflow owner even when outer
+notes are full; no unfinished worker is treated as successful. Root teardown
+stays incomplete after a tail failure. No terminal
 replay, rescan or cleanup-success inference follows. Job successful Process custody spans registration validation, scratch,
 accounting, input and partial pump setup, with identity-safe joined process/output
 cleanup on every exception. Unknown cleanup preserves DB-close barriers and cannot

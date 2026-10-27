@@ -475,6 +475,8 @@ async def zombie_reaper_loop(
 
                 async def join_worktree(worker: asyncio.Task) -> None:
                     notifications: list[BaseException] = []
+                    selected = None
+                    worker_failure = None
 
                     def retain_notification(exc: BaseException) -> None:
                         if (len(notifications) < 8
@@ -486,10 +488,25 @@ async def zombie_reaper_loop(
                     except BaseException as exc:
                         # The original join selects cause/traceback order;
                         # secondary callback delivery can put cancellation first.
+                        selected = exc
                         retain_failure(exc)
                     finally:
+                        # Cancellation traffic cannot exhaust custody of the
+                        # SAME original worker's outcome. Observe it only after
+                        # completion, after selecting the helper's primary and
+                        # before folding bounded cancellation diagnostics.
+                        if worker.done():
+                            try:
+                                worker.result()
+                            except BaseException as exc:
+                                worker_failure = exc
+                                if exc is not selected:
+                                    retain_failure(exc)
+                        else:
+                            retain_failure(RuntimeError("zombie_cleanup_outcome_unsettled"))
                         for exc in notifications:
-                            retain_failure(exc)
+                            if exc is not selected and exc is not worker_failure:
+                                retain_failure(exc)
 
                 try:
                     with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
