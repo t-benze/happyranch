@@ -322,10 +322,15 @@ inline hook, including audit failure. Callers without an orchestrator retain
 original audit/error behavior.
 Every captured committed child is joined on success or exceptional unwind,
 including failed v2/legacy parent publication. An ended child error/cancellation
-does not skip later children or the root batch; the original audit/publication
-cause and traceback stay first, actual cleanup errors are bounded secondaries,
-and root teardown stays incomplete after a tail failure. No terminal replay,
-rescan or cleanup-success inference follows.
+does not skip later children or the root batch. An earlier sweep/audit/publication
+cause and traceback stay first; otherwise each original child/root join's raised
+outcome and original traceback select the primary, independently of secondary
+notification order. An already-failed cleanup stays primary over later waiter
+cancellation; genuine cancellation before completion stays primary over later
+cleanup failure. Actual notifications are bounded and identity-deduplicated per
+join, retained after its selected outcome; later real errors remain bounded
+secondaries. Root teardown stays incomplete after a tail failure. No terminal
+replay, rescan or cleanup-success inference follows.
 Thread initial/fallback/nudge each join their actual native executor completion
 through repeated cancellation, including supervisor and direct_terminal tails,
 before preparation.finish, runner retirement and DB close. Uncertain submission

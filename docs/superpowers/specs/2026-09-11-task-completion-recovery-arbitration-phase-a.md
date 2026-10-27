@@ -29,10 +29,15 @@ an orchestrator retain original audit/error behavior. The periodic owner drains
 EVERY captured committed child on success and exceptional unwind, including v2/legacy parent
 publication failure. Each original child cleanup is joined outside writer/capture
 locks independently of other ended errors or cancellation, before the original
-root batch finishes. Original audit/publication cause and traceback stay first,
-actual cleanup errors are bounded secondaries, and root teardown stays incomplete
-after a tail failure. No terminal-child rescan, replay or cleanup-success inference
-follows.
+root batch finishes. An earlier sweep/audit/publication cause and traceback stay
+first; otherwise the original child/root join's raised outcome and original
+traceback select the primary, independently of secondary notification order.
+An already-failed cleanup stays primary over later waiter cancellation; genuine
+cancellation before completion stays primary over later cleanup failure. Actual
+notifications are bounded and identity-deduplicated per join, retained after its
+selected outcome; later real errors remain bounded secondaries. Root teardown
+stays incomplete after a tail failure. No terminal-child rescan, replay or
+cleanup-success inference follows.
 Genuine deferred discovery carries its authenticated original entry through the
 actual adoption COMMIT to prepared. Repeated clean preclaim refusals retain that
 SAME proof, SIDs, attempt and reservation only after current owner/INTEGER callback/

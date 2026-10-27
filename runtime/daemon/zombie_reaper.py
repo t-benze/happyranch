@@ -473,6 +473,24 @@ async def zombie_reaper_loop(
                         primary.add_note("zombie cleanup also failed: " + repr(exc)[:512])
                     state._startup_recovery._retain_secondary(exc)
 
+                async def join_worktree(worker: asyncio.Task) -> None:
+                    notifications: list[BaseException] = []
+
+                    def retain_notification(exc: BaseException) -> None:
+                        if (len(notifications) < 8
+                              and not any(exc is item for item in notifications)):
+                            notifications.append(exc)
+
+                    try:
+                        await _await_startup_owned(worker, retain_notification)
+                    except BaseException as exc:
+                        # The original join selects cause/traceback order;
+                        # secondary callback delivery can put cancellation first.
+                        retain_failure(exc)
+                    finally:
+                        for exc in notifications:
+                            retain_failure(exc)
+
                 try:
                     with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
                         _sweep_org_zombies(
@@ -491,18 +509,12 @@ async def zombie_reaper_loop(
                     for task in child_worktrees:
                         worker = asyncio.create_task(
                             _await_terminal_task_worktree(org.orchestrator, task.id))
-                        try:
-                            await _await_startup_owned(worker, retain_failure)
-                        except BaseException as exc:
-                            retain_failure(exc)
+                        await join_worktree(worker)
                     if root_transitions:
                         worker = asyncio.create_task(_await_root_worktree_batch(
                             org.orchestrator, root_transitions,
                             teardown_incomplete=root_tail_failed or delivery['teardown_incomplete']))
-                        try:
-                            await _await_startup_owned(worker, retain_failure)
-                        except BaseException as exc:
-                            retain_failure(exc)
+                        await join_worktree(worker)
                 if primary is not None:
                     raise primary.with_traceback(primary_traceback)
                 validate_state()
