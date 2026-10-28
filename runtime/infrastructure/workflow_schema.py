@@ -848,15 +848,15 @@ def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory 
                         # Only the internally reconstructed same-snapshot result
                         # reaches here. Preserve original-row equality and JSON
                         # checks without an uncharged per-row history reread.
-                        imported = coding.imported
-                        for _, expected in imported.rows if imported is not None else ():
+                        release = coding.release
+                        for _, expected in release.rows if release is not None else ():
                             for _ in expected:
                                 coding.budget.step()
                     else:
-                        from runtime.workflows._coding_release_history import read_release_import
+                        from runtime.workflows._coding_registered_release import read_registered_release
                         with _schema_snapshot(conn):
-                            imported = read_release_import(conn, expected_org_slug=None)
-                    if imported is None or not imported.matches(table, row):
+                            release = read_registered_release(conn, expected_org_slug=None)
+                    if release is None or not release.matches(table, row):
                         raise ValueError('workflow_source_data_corrupt')
                     continue
                 from runtime.workflows.templates import _validate_definition_pins

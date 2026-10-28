@@ -42,6 +42,7 @@ from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.coding_release_import import CodingReleaseImportStore
+from runtime.workflows.coding_builtin import CodingBuiltinStore
 from runtime.workflows.coding_roles import CodingRoleStore
 from runtime.workflows.coding_start import CodingStartStore
 from runtime.workflows.activation import WorkflowActivationStore
@@ -84,6 +85,7 @@ class OrgState:
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_coding_release_import: CodingReleaseImportStore = field(init=False)
+    workflow_coding_builtin: CodingBuiltinStore = field(init=False)
     workflow_coding_roles: CodingRoleStore = field(init=False)
     workflow_coding_start: CodingStartStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
@@ -247,6 +249,7 @@ class OrgState:
             teams=self.teams,
         )
         self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_coding_builtin = CodingBuiltinStore(self)
         self.workflow_coding_release_import = CodingReleaseImportStore(self)
         self.workflow_coding_roles = CodingRoleStore(self)
         self.workflow_coding_start = CodingStartStore(self)
@@ -483,6 +486,9 @@ class OrgState:
                     "org %r: workflow authority startup publication remains fenced",
                     slug,
                 )
+            # Inert definition only, after the actual recovery/authority tail.
+            # A serving-before-recovery owner must defer this call with that tail.
+            state.workflow_coding_builtin.ensure_registered()
             return state
         except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.

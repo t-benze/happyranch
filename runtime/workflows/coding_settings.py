@@ -53,8 +53,8 @@ def resolve_coding_settings(conn: sqlite3.Connection, org_slug: str, *,
         if type(budget) is not _Budget or type(conn) is not sqlite3.Connection or not conn.in_transaction:
             raise ValueError('caller_owned_settings_read_required')
         history, _ = _read_mapping_storage(conn, expected_org_slug=org_slug, budget=budget)
-        from runtime.workflows._coding_release_history import read_release_import
-        imported = read_release_import(conn, expected_org_slug=org_slug, budget=budget)
+        from runtime.workflows._coding_registered_release import read_registered_release
+        imported = read_registered_release(conn, expected_org_slug=org_slug, budget=budget)
         return _resolve_history(history, imported, budget, pinned=pinned)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
         raise CodingSettingsError('coding_settings_invalid') from None

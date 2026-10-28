@@ -23,7 +23,7 @@ def append(store, conn, principal, capture, command, raw, state, inventory):
         raise CodingSettingsError('coding_settings_generation_stale', current=current)
     if max(current['generation'], current['mapping_generation']) == 9223372036854775807:
         raise CodingSettingsError('coding_settings_generation_stale', current=current)
-    if inventory.imported is None:
+    if inventory.release is None:
         raise CodingSettingsError('coding_settings_release_required', current=current)
     previous_mapping = (None if inventory.mappings is None else
         account(json.loads(inventory.mappings.selected.mapping_bytes)['mapping'], budget))
@@ -35,6 +35,8 @@ def append(store, conn, principal, capture, command, raw, state, inventory):
     # It still needs current human publication authority, but no revoked actor
     # becomes a new executable principal or acquires a repository grant.
     if not (command['admission'] == 'disabled' and mapping == previous_mapping):
+        if not store.org.workflow_coding_builtin.available(inventory.release):
+            raise CodingSettingsError('coding_settings_release_required', current=current)
         pin = dict(namespace=capture.ready.namespace, generation=capture.ready.generation,
                    snapshot_digest=capture.ready.snapshot_digest)
         if mapping['authority'] != pin:

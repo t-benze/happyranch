@@ -1,5 +1,22 @@
 # Orchestrator Contracts
 
+## Built-in coding registration — ROOT13509 / THR320seq304
+
+Definition availability is system registration, not human publication or admission.
+Normal recovery alone appends four exact template rows with closed
+`workflow-coding-builtin-registration@1` provenance, after actual safety/authority
+recovery and outside early serving. Real native writer/publisher/DB/transaction
+ownership, complete target validation and positive-COMMIT watermark apply;
+unknown owners are retained, never adopted. No schema/reference/read initializer
+or retry route exists. Independent saved release and queued/native closure accepts
+authentic bootstrap activations/bindings for both system and retained human origin;
+orphan rows refuse. Human imports keep their six original rows and receipts.
+Fresh package capability gates new options/mapping/settings/start only; replay,
+unchanged Disabled-retain and admitted stages/return/cancellation use saved pins.
+Availability starts nothing and grants no authority. Full contract: AGENTS.md,
+“Current built-in coding definition”. Loaded identity and scratch remain unproved.
+
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -7,7 +24,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete valid J/import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend

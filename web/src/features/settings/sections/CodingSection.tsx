@@ -22,7 +22,8 @@
  *
  * Saving configuration never enables coding execution.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import { useAgentsList } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
@@ -164,6 +165,13 @@ function sameMetadata(draft: Draft, options: { authority: Draft['authority']; re
 }
 
 export function CodingSection(): JSX.Element {
+  const { slug = '' } = useParams<{ slug: string }>();
+  // Each org/pane has its own draft and continuation lifetime. Provider-owned
+  // original send fences deliberately survive this local remount.
+  return <CodingDraft key={slug} orgSlug={slug} />;
+}
+
+function CodingDraft({ orgSlug }: { orgSlug: string }): JSX.Element {
   const { t } = useTranslation();
   const query = useCodingSettings();
   const optionsQuery = useCodingSettingsOptions();
@@ -173,7 +181,12 @@ export function CodingSection(): JSX.Element {
   const teamsQuery = useTeamsList();
   const { label } = useIdentityPresentation();
 
-  const view = query.data;
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
+  const view = query.data?.org_slug === orgSlug ? query.data : undefined;
   const configuration = view?.configuration ?? null;
   const current = view?.current;
   // Errors/refreshes revoke usability of even cached options. They never edit
@@ -187,12 +200,24 @@ export function CodingSection(): JSX.Element {
   const [notice, setNotice] = useState<MessageKey | null>(null);
   const [reconcileState, setReconcileState] = useState<{ key: string; state: Reconcile }>({ key: '', state: { kind: 'none' } });
 
-  // An untouched draft follows the authoritative view; an edited draft never
-  // changes underneath the Founder (stale-conflict retention).
+  // First-use metadata is a local hydration, never a save or operation key.
+  // Once bound, option/view rerenders cannot silently replace that metadata.
   useEffect(() => {
-    if (!current) return;
-    if (!dirty) setDraft(draftFrom(current, configuration));
-  }, [current, configuration, dirty]);
+    if (!current || dirty) return;
+    setDraft((previous) => {
+      if (fence || outcome.kind === 'conflict' || outcome.kind === 'refused') {
+        return previous ?? draftFrom(current, configuration);
+      }
+      if (configuration === null && current.generation === 0 && current.mapping_generation === 0) {
+        if (previous?.release && previous.authority
+          && previous.basis.generation === 0 && previous.basis.mapping_generation === 0) return previous;
+        const initial = draftFrom(current, configuration);
+        return options?.release && options.authority && options.repository_choices.length > 0
+          ? { ...initial, release: options.release, authority: options.authority } : initial;
+      }
+      return draftFrom(current, configuration);
+    });
+  }, [current, configuration, dirty, options, fence, outcome.kind]);
 
   const candidates: Candidate[] = useMemo(
     () => (agentsQuery.data?.agents ?? []).map((a) => ({
@@ -252,6 +277,8 @@ export function CodingSection(): JSX.Element {
     || draft.basis.mapping_generation !== current.mapping_generation;
   const saving = fence?.phase === 'sending';
   const locked = fence !== null;
+  const initialUnbound = configuration === null && (!draft.release || !draft.authority);
+  const fieldsLocked = locked || initialUnbound;
   const reconcileOf: Reconcile = fence && reconcileState.key === fence.command.operation_key
     ? reconcileState.state : { kind: 'none' };
   const selected = ROLE_KEYS.map((r) => draft.roles[r]);
@@ -283,14 +310,14 @@ export function CodingSection(): JSX.Element {
 
   const edit = (next: Partial<Omit<Draft, 'basis'>>) => {
     // Handler-level lock: a disabled appearance is not the only guard.
-    if (actions.fence()) return;
+    if (actions.fence() || initialUnbound) return;
     setDraft((d) => (d ? { ...d, ...next, roles: next.roles ?? d.roles } : d));
     setDirty(true);
     setNotice(null);
   };
 
   const save = async () => {
-    if (actions.fence()) return;
+    if (actions.fence() || initialUnbound) return;
     const problem = validation();
     if (problem) { setNotice(problem); return; }
     // Validation above has established the explicit complete draft. Retaining
@@ -324,6 +351,7 @@ export function CodingSection(): JSX.Element {
     // this pane has since been detached (its React updates are then ignored).
     try {
       const result = await actions.save(command);
+      if (!active.current) return;
       setOutcome({ kind: 'saved', receipt: result.operation, current: result.current });
       setDraft(draftFrom(result.current, result.configuration));
       setDirty(false);
@@ -332,6 +360,7 @@ export function CodingSection(): JSX.Element {
         actions.settle(command.operation_key, errorCode(error) ?? (error instanceof Error ? error.message : String(error)));
       } else {
         actions.settle(command.operation_key, null);
+        if (!active.current) return;
         if (error instanceof ApiError && error.status === 409 && CONFLICT_CODES.has(error.code ?? '')) {
           setOutcome({ kind: 'conflict', code: error.code ?? '', current: conflictCurrent(error) });
           void query.refetch();
@@ -357,7 +386,7 @@ export function CodingSection(): JSX.Element {
         ? { kind: 'absent' }
         : { kind: 'error', detail: errorCode(error) ?? (error instanceof Error ? error.message : String(error)) };
     }
-    setReconcileState({ key, state: next });
+    if (active.current) setReconcileState({ key, state: next });
   };
 
   // Only a reconciled committed receipt for the original key releases the
@@ -380,7 +409,10 @@ export function CodingSection(): JSX.Element {
 
   const discard = () => {
     if (actions.fence()) return;
-    setDraft(draftFrom(current, configuration));
+    const initial = draftFrom(current, configuration);
+    setDraft(configuration === null && current.generation === 0 && current.mapping_generation === 0
+      && options?.release && options.authority && options.repository_choices.length > 0
+      ? { ...initial, release: options.release, authority: options.authority } : initial);
     setDirty(false);
     setNotice(null);
     setOutcome({ kind: 'none' });
@@ -388,14 +420,16 @@ export function CodingSection(): JSX.Element {
 
   const adoptOptions = () => {
     if (actions.fence() || !optionsReady || !options) return;
-    edit({ release: options.release, authority: options.authority });
+    setDraft({ ...draft, release: options.release, authority: options.authority });
+    setDirty(true);
+    setNotice(null);
   };
   const repositoryChoices = [...new Map([
     ...draft.repositories.map((r) => [r.repository_id, r] as const),
     ...(options?.repository_choices ?? []).map((r) => [r.repository_id, r] as const),
   ]).values()];
 
-  const saveBlocked = locked;
+  const saveBlocked = fieldsLocked;
 
   return (
     <section className="min-w-0 space-y-4 break-words" aria-label={t('settings.panel.coding.title')}>
@@ -446,13 +480,13 @@ export function CodingSection(): JSX.Element {
           <Button size="sm" variant="secondary" onClick={() => void optionsQuery.refetch()} disabled={optionsQuery.isFetching}>
             {t('settings.coding.options.refresh')}
           </Button>
-          <Button size="sm" variant="secondary" data-testid="coding-adopt-options" onClick={adoptOptions} disabled={locked || !optionsReady}>
+          {(!sameMetadata(draft, options ?? { release: null, authority: null }) || configuration !== null) && <Button size="sm" variant="secondary" data-testid="coding-adopt-options" onClick={adoptOptions} disabled={locked || !optionsReady}>
             {t('settings.coding.options.adopt')}
-          </Button>
+          </Button>}
         </div>
       </div>
 
-      <fieldset className="space-y-2" disabled={locked}>
+      <fieldset className="space-y-2" disabled={fieldsLocked}>
         <legend className="mb-1 text-sm font-medium">{t('settings.coding.repositories.title')}</legend>
         <p className="text-text-secondary text-xs">{t('settings.coding.repositories.help')}</p>
         {repositoryChoices.map((choice) => {
@@ -489,7 +523,7 @@ export function CodingSection(): JSX.Element {
         {configuration === null && <p className="text-text-secondary text-xs">{t('settings.coding.repositories.emptyReplacements')}</p>}
       </fieldset>
 
-      <fieldset className="space-y-2" disabled={locked}>
+      <fieldset className="space-y-2" disabled={fieldsLocked}>
         <legend className="mb-1 text-sm font-medium">{t('settings.coding.admission.heading')}</legend>
         {(['disabled', 'explicit'] as const).map((value) => (
           <label key={value} className="flex items-start gap-2 text-sm">
@@ -511,7 +545,7 @@ export function CodingSection(): JSX.Element {
         ))}
       </fieldset>
 
-      <fieldset className="space-y-3" disabled={locked}>
+      <fieldset className="space-y-3" disabled={fieldsLocked}>
         <legend className="mb-1 text-sm font-medium">{t('settings.coding.roles.heading')}</legend>
         <p className="text-text-secondary text-xs">{t('settings.coding.roles.help')}</p>
         {agentsQuery.isLoading && <p role="status" className="text-text-secondary text-xs">{t('settings.coding.roster.loading')}</p>}

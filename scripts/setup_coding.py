@@ -2347,81 +2347,68 @@ class Coordinator:
         self.diagnostic.effect('serving', 'accepted-selected-source-assets-human-render')
         self.diagnostic.accepted('serving')
 
-    def import_release(self):
-        from runtime.workflows._coding_release_history import parse_import_command
-        from runtime.workflows.coding_release_import import ImportReceipt
-        self.diagnostic.enter('import-original-readback')
+    def observe_release(self):
+        """Read saved availability; neither publish nor manufacture an import."""
+        from runtime.workflows.release_templates import read_coding_release, CODING_DEFINITION_DIGEST
+        from runtime.workflows._coding_registered_release import BUILTIN_FORMAT
+        from runtime.workflows._coding_release_history import PUBLISHER, PINS, parse_import_command
+        from runtime.workflows.templates import _stable_id
+        self.diagnostic.enter('saved-coding-definition')
         self.revalidate()
-        show = [*self.cli, 'workflows', 'coding', 'release-import-show', '--org', self.args.org, '--json']
-        code, out, err = self.command(show, accept=(0, 1), private=True)
+        code, out, err = self.command([*self.cli, 'teams', 'list', '--org', self.args.org], private=True)
+        teams = json.loads(out)
+        entries = teams.get('teams') if type(teams) is dict else None
+        if (err or type(entries) is not list or not entries
+                or any(type(row) is not dict or type(row.get('name')) is not str
+                       or re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', row['name']) is None for row in entries)):
+            raise Hold('current team observation unavailable; no template publication/import')
+        team = entries[0]['name']
+        self.revalidate_start()
+        code, out, err = self.command([*self.cli, 'workflows', 'templates', 'list', '--org', self.args.org,
+                                      '--team', team, '--json'], private=True)
+        body = json.loads(out)
+        templates = body.get('templates') if type(body) is dict else None
+        if err or type(templates) is not list or any(type(row) is not dict for row in templates):
+            raise Hold('saved coding definition observation unavailable; no import fallback')
+        selected = [row for row in templates if row.get('namespace') == 'release/happyranch']
+        if len(selected) != 1:
+            raise Hold('saved coding definition unavailable or ambiguous; original lifecycle owner must resolve')
+        row = selected[0]
+        definition = read_coding_release()
+        identity = _stable_id('workflow-template', 'release/happyranch', 'coding')
+        version = _stable_id('workflow-template-version', identity, 1, CODING_DEFINITION_DIGEST)
+        system = dict(kind='system', component='coding-builtin', provenance_format=BUILTIN_FORMAT)
+        expected = dict(identity_id=identity, version_id=version, namespace='release/happyranch',
+            template_name='coding', version=1, definition_bytes_base64=base64.b64encode(definition).decode('ascii'),
+            definition_json=definition.decode('utf8'), definition_digest=CODING_DEFINITION_DIGEST,
+            compiler_pin=PINS[0], validator_pin=PINS[1], source_pin=PINS[2],
+            publisher=row.get('publisher'), published_at=row.get('published_at'))
+        if (canonical(row) != canonical(expected) or type(row.get('version')) is not int
+                or row['publisher'] not in (system, PUBLISHER) or type(row['published_at']) is not str):
+            raise Hold('saved coding definition differs from the fixed release; no adoption or repair')
+        # Existing human originals remain owned. Readback alone never creates,
+        # retries or rekeys a human operation; system registration has no receipt.
         candidates = {self.import_file, self.home / f'coding-{self.args.org}-v1-import.json'}
-        existing = [p for p in candidates if p.exists() or p.is_symlink()]
-        if code == 0 and not err:
+        originals = [p for p in candidates if p.exists() or p.is_symlink()
+                     or p.with_name(p.name + '.effect.json').exists()]
+        if row['publisher'] == PUBLISHER or originals:
+            from runtime.workflows.coding_release_import import ImportReceipt
+            code, out, err = self.command([*self.cli, 'workflows', 'coding', 'release-import-show',
+                                          '--org', self.args.org, '--json'], private=True)
             receipt = ImportReceipt.model_validate_json(out)
-            if receipt.replayed or receipt.current.state != 'admitted':
-                raise Hold('saved import receipt is not currently admitted; original authority owner must reconcile')
-            for path in existing:
+            if err or row['publisher'] != PUBLISHER or receipt.identity_id != identity or receipt.version_id != version:
+                raise Hold('original human import requires its owner; preserve all original files/intents')
+            for path in originals:
                 raw = read_file(path, 1024)
                 command = parse_import_command(raw)
                 if command['operation_key'] != receipt.operation_key or digest(raw) != receipt.request_digest:
-                    raise Hold(f'original import file/receipt mismatch: {path}; preserve all originals; readback only')
-            print('7. Existing admitted release import verified; POST skipped')
-            self.diagnostic.effect('import-readback', 'accepted-existing-POST-skipped')
-            self.diagnostic.accepted('import-existing-readback')
-            return
-        if (code, out, err) != (1, '', 'error (404): coding_release_import_not_found\n'):
-            raise Hold('import readback failed; only exact coding_release_import_not_found is absence; no POST')
-        effect = self.import_file.with_name(self.import_file.name + '.effect.json')
-        literal(effect, missing=True)
-        if existing or any(p.with_name(p.name + '.effect.json').exists() for p in candidates):
-            raise Hold(f'original/uncertain import operation retained at {self.import_file}; use {show}; original import owner must reconcile; no POST/replay/new key')
-        self.confirm('No import was found. Confirm you know of NO prior or uncertain import operation/file/send for this org. If unsure, decline.')
+                    raise Hold('original human import file/readback mismatch; preserve originals, never resend')
+        self.revalidate_start()
         self.revalidate()
-        raw = canonical({'format': 'workflow-coding-release-import-command@1',
-                         'operation_key': 'coding-setup-' + secrets.token_hex(16), 'expected_current_version': 0})
-        command = parse_import_command(raw)
-        self.diagnostic.enter('import-original-file')
-        self.diagnostic.effect('import-file', 'exclusive-write-attempted')
-        exclusive(self.import_file, raw)
-        self.diagnostic.references['import_file'] = str(self.import_file)
-        self.diagnostic.effect('import-file', 'accepted-durable-original-bytes')
-        self.diagnostic.accepted('import-original-file')
-        self.diagnostic.enter('import-original-intent')
-        self.diagnostic.effect('import-intent', 'exclusive-write-attempted')
-        exclusive(effect, canonical({'operation_file': str(self.import_file), 'operation_key': command['operation_key'],
-                                     'request_digest': digest(raw), 'send_intent': True,
-                                     'recovery': 'preserve original; release-import-show only; no automatic POST/replay/new key'}))
-        self.diagnostic.references['import_intent'] = str(effect)
-        self.diagnostic.effect('import-intent', 'accepted-durable-intent-not-send-proof')
-        self.diagnostic.accepted('import-original-intent')
-        self.diagnostic.enter('import-presend-revalidation')
-        self.revalidate()
-        if read_file(self.import_file, 1024) != raw:
-            raise Hold('original import bytes changed before send; preserve original owner, no POST')
-        # Exactly one invocation; every exception leaves original file/intent.
-        self.diagnostic.enter('import-original-cli-send')
-        code, out, err = self.command([*self.cli, 'workflows', 'coding', 'release-import', '--org', self.args.org,
-                                      '--from-file', str(self.import_file), '--json'], private=True, effect='import-send')
-        self.diagnostic.enter('import-receipt-validation')
-        receipt = ImportReceipt.model_validate_json(out)
-        if err or receipt.replayed or receipt.operation_key != command['operation_key'] or receipt.request_digest != digest(raw):
-            raise Hold('import receipt mismatch; preserve original file/intent; original owner readback only')
-        self.diagnostic.effect('import-receipt', 'exclusive-write-attempted')
-        exclusive(self.receipts / 'import-post.json', canonical(receipt.model_dump()))
-        self.diagnostic.references['import_post'] = str(self.receipts / 'import-post.json')
-        self.diagnostic.effect('import-receipt', 'accepted-durable-receipt-readback-pending')
-        self.diagnostic.accepted('import-receipt')
-        self.diagnostic.enter('import-post-readback')
-        self.diagnostic.effect('import-readback', 'attempted')
-        code, out, err = self.command(show, private=True)
-        readback = ImportReceipt.model_validate_json(out)
-        if err or readback != receipt or readback.current.state != 'admitted':
-            raise Hold('import readback mismatch/authority unavailable; preserve original owner; never resend')
-        exclusive(self.receipts / 'import-readback.json', canonical(readback.model_dump()))
-        self.diagnostic.references['import_readback'] = str(self.receipts / 'import-readback.json')
-        self.diagnostic.effect('import-send', 'accepted-original-receipt-and-readback')
-        self.diagnostic.effect('import-readback', 'accepted-durable-readback')
-        self.diagnostic.accepted('import')
+        exclusive(self.receipts / 'saved-coding-definition.json', canonical(row))
+        self.diagnostic.references['saved_coding_definition'] = str(self.receipts / 'saved-coding-definition.json')
+        self.diagnostic.accepted('saved-coding-definition')
+        print('7. Saved coding definition available (' + ('system registration' if row['publisher'] == system else 'original human import') + '); no import sent')
 
     def run(self):
         self.diagnostic.enter('initial-maintenance-revalidation')
@@ -2463,16 +2450,16 @@ class Coordinator:
         self.diagnostic.effect('start', 'accepted-original-pair-and-status-serving-pending')
         self.diagnostic.accepted('start-pair-status')
         self.serving()
-        print('7. Checking original human release import')
-        self.import_release()
+        print('7. Observing saved coding definition')
+        self.observe_release()
         self.revalidate()
         self.require_backup()
         self.diagnostic.enter('settings-disabled-handoff')
         port = read_file(self.home / 'daemon.port', 64).decode().strip()
         print(f'8. http://127.0.0.1:{port}/orgs/{self.args.org}/settings/coding')
-        print('Adopt current metadata; select repositories and sha1/sha256 formats; choose four distinct eligible org agents across teams and an eligible final manager. Leave Admission Disabled. Save and reopen; uncertain saves use Check original save.')
-        print(f'Backup: {self.backup}; original import: {self.import_file}')
-        print('Host preparation and release import complete; choose agents in Settings → Coding. Coding remains disabled; workflow and operational acceptance are open.')
+        print('The built-in recipe is available automatically; select repositories and sha1/sha256 formats; choose four distinct eligible org agents across teams and an eligible final manager. Leave Admission Disabled. Save and reopen; uncertain saves use Check original save.')
+        print(f'Backup: {self.backup}; saved definition observation: {self.receipts / "saved-coding-definition.json"}')
+        print('Host preparation and saved definition observation complete; choose agents in Settings → Coding. Coding remains disabled; workflow and operational acceptance are open.')
 
 
 def identity_or_link(path):

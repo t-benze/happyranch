@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from runtime.workflows._coding_release_history import ReleaseImportHistory
+    from runtime.workflows._coding_registered_release import RegisteredCodingRelease
     from runtime.workflows.coding_authority_history import _Budget
     from runtime.workflows.coding_mapping_history import CodingMappingHistory
     from runtime.workflows.coding_start_history import QueuedStorage
@@ -104,6 +105,7 @@ CODING_PREFIXES = {
 }
 CODING_VALUES = {
     'owner': ('coding',),
+    'registrar': ('builtin:coding-v1',),
     'format': ('coding-scope@1', 'coding-replacement-selection@1'),
     'source_pin': ('coding-capability-issuer@1',),
     'kind': ('code-change',),
@@ -177,6 +179,9 @@ def _coding_scalar(key: str, value: object, *, incomplete: bool = False) -> bool
         value = value.decode('utf8', errors='replace')
     if not isinstance(value, str):
         return False
+    if ((key == 'format' and value.casefold().startswith('workflow-coding-builtin-registration'))
+            or (key == 'registrar' and value.casefold().startswith('builtin:coding-v'))):
+        return True
     if key == 'action' and value.lower().startswith('coding_'):
         return True  # Preserve the former scalar audit LIKE discriminator.
     if key in CODING_NAMESPACE_COLUMNS:
@@ -354,6 +359,7 @@ class _CodingInventory:
     """
 
     budget: _Budget
+    release: RegisteredCodingRelease | None
     imported: ReleaseImportHistory | None
     mappings: CodingMappingHistory | None
     queued: QueuedStorage
@@ -463,6 +469,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
     storage = None
+    release = None
     imported = None
     mappings = None
     mapping_rows = {}
@@ -481,8 +488,9 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         budget = _Budget() if budget is None else budget
         setups = _SetupHistoryReader(conn, expected_org_slug, budget)
         storage = _read_setup_storage(conn, expected_org_slug=expected_org_slug, reader=setups)
-        from runtime.workflows._coding_release_history import read_release_import
-        imported = read_release_import(conn, expected_org_slug=expected_org_slug, budget=budget)
+        from runtime.workflows._coding_registered_release import read_registered_release
+        release = read_registered_release(conn, expected_org_slug=expected_org_slug, budget=budget)
+        imported = None if release is None else release.human_import
         from runtime.workflows.coding_mapping_history import _read_mapping_storage
         from runtime.workflows._coding_mapping_admission import _MappingCaptures
         from runtime.workflows._coding_source_admission import source_storage
@@ -497,10 +505,10 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 if key in index and index[key] != value:
                     raise ValueError('workflow_coding_source_row_conflict')
                 index[key] = value
-        if mappings is not None and imported is None:
+        if mappings is not None and release is None:
             raise ValueError('workflow_coding_mapping_release_missing')
         from runtime.workflows.coding_start_history import read_queued
-        queued = read_queued(conn, expected_org_slug, budget, mappings, imported)
+        queued = read_queued(conn, expected_org_slug, budget, mappings, release)
     else:
         # A canonical settings pointer is a coding-family fact even without J
         # mappings/audits. Earlier layouts cannot silently treat it as absent.
@@ -508,6 +516,20 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 "SELECT 1 FROM org_settings WHERE section='coding' LIMIT 1").fetchone() is not None:
             raise ValueError('workflow_coding_settings_requires_complete_reader')
         budget = None  # Preserve the preceding layouts' standalone discriminator.
+    if release is not None:
+        from runtime.workflows.coding_authority_history import _bounded_rows
+        for table in ('workflow_activations', 'workflow_binding_snapshots'):
+            columns = tuple(row[1] for row in conn.execute(f'PRAGMA table_xinfo("{table}")'))
+            where, args = 'template_version_id=?', (release.version_id,)
+            if table == 'workflow_activations':
+                where += ' OR template_identity_id=?'
+                args += (release.identity_id,)
+            for row in _bounded_rows(conn, table, columns,
+                    (('text', 'blob', 'integer', 'real', 'null'),) * len(columns), budget,
+                    where=where, args=args):
+                data = dict(zip(columns, row[:len(columns)], strict=True))
+                if queued is None or not queued.matches(table, data):
+                    raise ValueError('workflow_coding_downstream_row_mismatch')
     # Empty J is still a complete coding read: absence must not replenish or
     # bypass the allowance for the subsequent native typed-row discrimination.
     bounded_coding = budget is not None
@@ -530,7 +552,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
         scalar = [column for column in columns if column in CODING_PREFIXES
                   or column in CODING_VALUES or column in CODING_NAMESPACE_COLUMNS]
         structured = [column for column in columns
-                      if (column.endswith(('_bytes', '_json')) or column == 'payload')
+                      if (column.endswith(('_bytes', '_json')) or column in ('payload', 'author_principal', 'published_by'))
                       and column not in ('submission_bytes', 'candidate_bytes')]
         selected_columns = scalar + structured
         native_setup = table in ('workflow_authorization_revisions', 'workflow_active_authorizations')
@@ -575,8 +597,8 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                 for expected in mapping_rows.get(table, {}).values():
                     budget.step()
                     known.add(locator(expected))
-                if imported is not None:
-                    for name, expected in imported.rows:
+                if release is not None:
+                    for name, expected in release.rows:
                         budget.step()
                         if name == table:
                             known.add(locator(expected))
@@ -626,13 +648,13 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                         continue  # Complete typed row equality, not an ID exemption.
                 if table == 'workflow_coding_mappings':
                     raise ValueError('workflow_coding_mapping_row_mismatch')
-            if imported is not None and native_import:
+            if release is not None and native_import:
                 if table_bounded:
-                    # Fixed six-row import comparison is also charged here.
-                    for _, expected in imported.rows:
+                    # Complete four/six-row release comparison is also charged here.
+                    for _, expected in release.rows:
                         for _ in expected:
                             budget.step()
-                if imported.matches(table, data):
+                if release.matches(table, data):
                     continue  # Complete independently derived typed row, never an ID exemption.
             if native_setup and storage is not None:
                 # A supported family dispatch is an exact whole-row equality,
@@ -674,7 +696,7 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
             else:
                 _advance_audit_log_watermark(conn, file_key, last_id)
     if queued is not None:
-        return _CodingInventory(budget, imported, mappings, queued)
+        return _CodingInventory(budget, release, imported, mappings, queued)
     return None
 
 

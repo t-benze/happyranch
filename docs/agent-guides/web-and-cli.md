@@ -1,5 +1,27 @@
 # Web And CLI
 
+## Built-in coding availability — ROOT13509 / THR320seq304
+
+Normally admitted orgs have the unchanged built-in coding v1 recipe without
+manual import. Pristine zero-basis Settings drafts bind authenticated available
+metadata locally once. Choose repositories, object formats and four distinct
+eligible org agents, then Save; initial Admission remains Disabled. No automatic
+PUT/key or first-use Adopt button is required. Edited/stale metadata requires
+explicit adoption; refresh, org/mount changes and obsolete replies cannot replace
+a draft or release the provider-owned original pending/uncertain save fence.
+
+The existing template list/show serializes genuine human publisher data or
+`{kind:system,component:coding-builtin,provenance_format:workflow-coding-builtin-registration@1}`.
+Human import GET on system state is404 `coding_release_import_not_found`; a fresh
+human POST is409 `coding_release_builtin_registered`, never a fabricated receipt.
+The normal guided setup uses read-only team and template listing for saved
+availability. Only real historical human originals require import readback;
+no new operation file, confirmation of import absence or importer POST occurs.
+Saved history/admitted work remain readable without the current package; new
+configuration/start requires its captured exact bytes. No settings wire change,
+new endpoint or loaded-object attestation follows. Source is not host acceptance.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -50,7 +72,7 @@ health or disk HEAD alone is not loaded acceptance.
 
 This source contract supersedes earlier coding-only J/whole-org-equality and
 mandatory offline-chain instructions below, preserving attributed old evidence.
-Human deployment/restart, Founder original import/settings, independently loaded
+Human deployment/restart, Founder settings, independently loaded
 readiness and one genuine four-role scratch run remain separate root-owned
 acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
@@ -63,7 +85,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -4329,9 +4351,9 @@ uncertain outcomes lock editing and offer only GET(original key), released only
 by a reconciled committed receipt (an absent key never authorizes a new write).
 Unchanged mappings are sent byte-identical (disabled-retain), including when
 current options are unavailable. The dedicated same-Founder-auth read-only
-`/settings/coding/options` supplies genuine imported release/current authority
+`/settings/coding/options` supplies the registered release/current authority
 and configured repository selectors through an independent per-org query.
-E0 requires explicit metadata adoption, four distinct role bindings and1..8
+E0 binds available metadata locally without adoption, then requires four distinct role bindings and1..8
 repositories with explicit sha1/sha256 choices; initial replacements are empty.
 Saved mappings keep repositories/replacements by default; explicit adoption can
 use newer authority for changed roles. Options loading/error/refresh never changes
@@ -4552,22 +4574,17 @@ material. No agent may run host setup effects. Managed/unknown attribution and
 current ownership or unavailable present exclusion refuse before stop/preparation; no environment
 marker stripping, credential copy or new grant is permitted.
 
-The coordinator reuses existing human `workflows coding release-import-show`
-and `release-import --from-file ABS --json`. There is no browser import button or
-startup import, and existing human server checks/CLI-only/browser/native remote
-exclusions remain. Only CLI1 with empty stdout and the exact stderr line
-`error (404): coding_release_import_not_found` means absence. Other404/409/auth/
-transport/history/receipt errors hold. A valid currently admitted saved receipt
-skips POST and is compared with any original default/explicit operation files.
+The coordinator observes saved availability through existing `teams list` and
+`workflows templates list --org ORG --team ACTUAL_TEAM --json`, comparing the
+fixed saved definition/IDs/digest/pins and truthful system or human publisher.
+No normal human-import POST, new operation file or import-absence confirmation
+is needed. A genuine human release or retained human original is reconciled by
+`release-import-show` and exact original-file comparison only. Unknown/partial
+originals retain their owner/key/body/digest; no replay or new key is authorized.
+System registration has no human receipt: import GET is404 and fresh POST409
+`coding_release_builtin_registered`. Existing endpoint exclusions remain.
 
-Fresh absence requires human confirmation of no earlier/uncertain effect,
-exclusive canonical original operation bytes, readback/fsync and the adjacent
-`.effect.json` send intent before one byte-preserving POST. Default original is
-`<daemon-home>/coding-ORG-v1-import.json`, preserving the historical
-`~/.happyranch/coding-happyranch-v1-import.json`. A saved file is not proof of no
-send. Lost output/send, crash, mismatch, existing original or later absence retains
-that original owner/key/body/digest and permits GET readback/original-owner
-reconciliation only, never automatic POST replay/new key. Private command receipts
+Private command receipts
 and backup manifest give exact commands/exits and recovery locations; uncertainty
 is not rewritten as success. After positive maintenance clearance/confirmation/
 revalidation, durable command intent precedes stop; failure/interruption retains
@@ -4580,7 +4597,7 @@ separate authenticated start/executable/source/home/ancestry identities; status
 and serving checks use the actual daemon PID/port with repeated pair validation.
 Missing/reused/moving identity holds, independently of loaded-source coverage.
 
-Import stays held when existing serving observations cannot establish required
+Setup stays held when existing serving observations cannot establish required
 loaded workflow owners or actual UI facts. Selected memory identity now observes
 twelve real already-loaded workflow objects, with OrgState alias and actual org import-store binding agreement, closed
 rows/hashes, unchanged budgets/bookends and recursive nested-code comparison.
@@ -4589,8 +4606,8 @@ finite identity proves neither startup invocation nor transitive workflow behavi
 Disk HEAD/health200/SPA fallback cannot fill an observation gap. No new verifier
 or attestation endpoint is supplied.
 
-After verified host/import preparation, open the actual printed
-`/orgs/ORG/settings/coding` URL, adopt current metadata, select repositories and
+After verified host/definition observation, open the actual printed
+`/orgs/ORG/settings/coding` URL, select repositories and
 sha1/sha256 formats and four distinct eligible org agents across teams, including
 an eligible final manager. Leave Admission Disabled, save and reopen; an uncertain
 save uses Check original save. The command chooses/saves/enables nothing. Real
