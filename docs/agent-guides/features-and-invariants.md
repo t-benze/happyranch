@@ -3052,6 +3052,19 @@ Traps:
 
 ## Thread Composer Attachments
 
+Thread-scoped and task attachment downloads use
+`runtime/daemon/content_disposition.py::attachment_content_disposition` to emit
+`attachment; filename="<safe ASCII fallback>"; filename*=UTF-8''<encoded original>`.
+The fallback replaces non-ASCII, double quotes, backslashes and ASCII controls
+(including DEL) with underscores; safe extension characters remain. The extended
+value uses `urllib.parse.quote(name, safe="")` with UTF-8. Storage, media types,
+thread buffered/task streaming responses, access/error behavior and upload
+validation remain unchanged. Unicode and quotes are valid display-name characters;
+CR/LF and backslashes are rejected by both name validators. Helper safety for
+otherwise inadmissible names does not grant upload admission or MIME support.
+Focused synthetic checks: `uv run python scripts/verify_attachment_downloads.py`;
+these do not run in lint-only merge CI or start a live daemon.
+
 The web thread composer (`web/src/design-system/patterns/Composer.tsx`), the thread detail page
 (`web/src/features/threads/ThreadsPage.tsx`) and the new-thread dialog
 (`web/src/shared/threads/NewThreadDialog.tsx`) upload each selected file to the org-shared

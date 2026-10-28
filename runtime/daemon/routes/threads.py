@@ -12,6 +12,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from runtime.daemon.auth import require_token
+from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.routes._doctrine import SELF_DISPATCH_HINT
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
@@ -2971,7 +2972,7 @@ async def get_thread_attachment(
         content=content,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{row.display_name}"'
+            "Content-Disposition": attachment_content_disposition(row.display_name)
         },
     )
 
