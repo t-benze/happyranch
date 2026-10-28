@@ -4440,8 +4440,16 @@ StartupUnavailable. Postcommit publication refusal identifies the committed task
 it supplies no delivery acknowledgement or synthetic execution failure.
 
 Selected document admission now carries the same authenticated store/org/gate/
-epoch and captured references through the original profile, publisher and short
-DB lease/business writer boundaries. Selected profile transactions preserve the
+epoch and captured references from original operation entry, before authority
+capture or the first binding/async/DB/profile wait. Wrappers, synchronous cores
+and original writers renew that SAME closure without adopting replacement owners.
+Selected draft writers preserve the original body/post-BEGIN/COMMIT BaseException
+and traceback across their once-only owed rollback, retaining actual rollback
+failure as guarded bounded secondary evidence. No-validator terminal/cancel paths
+keep their original precedence; cleanup never rechecks fresh admission. Late
+review-stage StartupUnavailable reaches the existing503 handler with its original
+detail instead of becoming storage-corruption500. These are source obligations;
+behavior and proof remain NOT RUN. Selected profile transactions preserve the
 original body/post-BEGIN or COMMIT exception and traceback while attempting the
 original rollback once. Profile fencing likewise attempts its original publication
 lease release once, keeping a preceding validation/fence/read/cancellation error

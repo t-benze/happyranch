@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
+from runtime.daemon.startup_recovery import document_admission_validation
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
 from runtime.workflows.artifacts import document_from_submission, require_document_subject, review_family
@@ -341,7 +342,7 @@ class WorkflowReviewReceiptStore:
 
     async def admit_human(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
         """Sign only with current server bearer proof in the existing guarded writer."""
-        require_document_admission(self)
+        validate = document_admission_validation(self)
         from runtime.infrastructure.workflow_schema import _handoff_record, require_author_handoff_schema
         from runtime.workflows.review_dispatch import _same_value
         from runtime.workflows.submissions import validate_handoff_graph
@@ -351,21 +352,22 @@ class WorkflowReviewReceiptStore:
         selection = dict(request_id=command['request_id'], task_agent=None, session_id=None,
                          human=True, owner=principal, include_signed=True)
         with self.db._lock:
-            require_document_admission(self)
+            validate()
             self._human_principal(principal)
             store._select_request(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with store._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
                 # Recheck selected scope/grant after await, before private H decode.
-                require_document_admission(self)
+                validate()
                 with self.db._lock:
-                    require_document_admission(self)
+                    validate()
                     self._human_principal(principal)
                     store._select_request(self.db._conn, **selection)
-                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
-                    require_document_admission(self)
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                    validate()
                     self._human_principal(principal)
                     request, row, intent = store._select_request(conn, **selection)
                     historical = not intent['is_current'] and request['status'] != 'pending'
@@ -431,17 +433,20 @@ class WorkflowReviewReceiptStore:
                     self._human_principal(principal)
                     return receipt
 
-    async def admit_completed(self, task_id: str) -> str | None:
+    async def admit_completed(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> str | None:
         """Consume authentic terminal proof under the original async locks."""
-        require_document_admission(self)
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         store = self.org.workflow_submissions
         bridge = self._completed_bridge(task_id)
+        validate()
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with store._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
-                return self._admit_completed_core(task_id, capture, bridge)[0]
+                validate()
+                return self._admit_completed_core(task_id, capture, bridge, validate_admission=validate)[0]
 
     def _completed_bridge(self, task_id: str) -> dict:
         # Native ownership selection precedes authority/schema/proof admission.
@@ -453,12 +458,14 @@ class WorkflowReviewReceiptStore:
             bridge = bridges[0]
         return bridge
 
-    def _admit_completed_core(self, task_id: str, capture: Any, bridge: dict, *, recovery: Any = None
+    def _admit_completed_core(self, task_id: str, capture: Any, bridge: dict, *, recovery: Any = None,
+                              validate_admission: Callable[[], None] | None = None
                               ) -> tuple[str | None, Literal['settled', 'local_hold', 'unknown']]:
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery) if validate_admission is None else validate_admission
+        validate()
         store = self.org.workflow_submissions
-        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
-            require_document_admission(self, recovery=recovery)
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+            validate()
             intent = self.org.workflow_reviews._intent(conn, task_id)
             from runtime.workflows.review_dispatch import _same_value
             if not _same_value(intent['bridge'], bridge) or intent['state'] != 'completed' or intent['cancellation_requested']:
@@ -482,7 +489,7 @@ class WorkflowReviewReceiptStore:
             completed = _completed_proof(conn, request, scope)
             if completed is None:
                 return None, 'local_hold'
-            require_document_admission(self, recovery=recovery)
+            validate()
             rows = _receipt_rows(request, scope, *completed)
             receipt = rows['workflow_review_receipts']
             if request['status'] == 'pending':
@@ -504,35 +511,39 @@ class WorkflowReviewReceiptStore:
                 "JOIN workflow_review_requests q ON q.id=b.request_id WHERE b.state='completed' AND q.status='pending'")]
         return tasks
 
-    async def discover_completed(self) -> None:
-        require_document_admission(self)
+    async def discover_completed(self, *, validate_admission: Callable[[], None] | None = None) -> None:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         tasks = self._completed_review_tasks()
+        validate()
         if tasks is None:
             return
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
         for task_id in tasks:
             try:
-                await self.admit_completed(task_id)
+                await self.admit_completed(task_id, validate_admission=validate)
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise  # Corruption and unexpected failures remain visible.
 
     def discover_completed_native(self, recovery: Any) -> RecoveryOutcome:
         from runtime.daemon.startup_recovery import RecoveryOutcome
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery)
         tasks = self._completed_review_tasks()
+        validate()
         if tasks is None:
             return RecoveryOutcome('unknown', 'startup_receipt_selection_missing')
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
         held = False
         for task_id in tasks:
-            require_document_admission(self, recovery=recovery)
+            validate()
             try:
                 bridge = self._completed_bridge(task_id)
+                validate()
                 _, disposition = self._admit_completed_core(
-                    task_id, self.org.workflow_authority.capture_admission(), bridge, recovery=recovery)
+                    task_id, self.org.workflow_authority.capture_admission(), bridge, recovery=recovery, validate_admission=validate)
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise
@@ -541,22 +552,24 @@ class WorkflowReviewReceiptStore:
             if disposition not in ('settled', 'local_hold'):
                 return RecoveryOutcome('unknown', 'startup_receipt_outcome_unknown')
             held |= disposition == 'local_hold'
-        require_document_admission(self, recovery=recovery)
+        validate()
         return RecoveryOutcome('local_hold' if held else 'settled')
 
-    async def collection_current(self, handoff_id: str) -> dict | None:
+    async def collection_current(self, handoff_id: str, *, validate_admission: Callable[[], None] | None = None) -> dict | None:
         """Internal service view; public signed/owner projection is a following unit."""
-        require_document_admission(self)
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         # Preserve ordinary import-before-capture order; the core shares the
         # same writer for native startup without acquiring persistent locks.
         from runtime.workflows.review_join import collect_in_writer
         store = self.org.workflow_submissions
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with store._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
-                return self._collection_current_core(handoff_id, capture)[0]
+                validate()
+                return self._collection_current_core(handoff_id, capture, validate_admission=validate)[0]
 
     @staticmethod
     def _collection_disposition(collection: dict | None) -> Literal['settled', 'local_hold', 'unknown']:
@@ -570,13 +583,15 @@ class WorkflowReviewReceiptStore:
             return 'settled'
         return 'unknown'
 
-    def _collection_current_core(self, handoff_id: str, capture: Any, *, recovery: Any = None
+    def _collection_current_core(self, handoff_id: str, capture: Any, *, recovery: Any = None,
+                              validate_admission: Callable[[], None] | None = None
                                  ) -> tuple[dict | None, Literal['settled', 'local_hold', 'unknown']]:
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery) if validate_admission is None else validate_admission
+        validate()
         store = self.org.workflow_submissions
         from runtime.workflows.review_join import collect_in_writer
-        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
-            require_document_admission(self, recovery=recovery)
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+            validate()
             collection = collect_in_writer(store, conn, handoff_id, capture)
             return collection, self._collection_disposition(collection)
 
@@ -590,17 +605,19 @@ class WorkflowReviewReceiptStore:
                 handoffs += [r[0] for r in self.db._conn.execute("SELECT v.id FROM workflow_document_revision_operations v JOIN workflow_rounds r ON r.instance_id=v.instance_id WHERE r.current_revision=2 AND r.state='reviewing'")]
         return handoffs
 
-    async def discover_collections(self) -> None:
+    async def discover_collections(self, *, validate_admission: Callable[[], None] | None = None) -> None:
         """Existing reaper recovers a committed last receipt with no service effect."""
-        require_document_admission(self)
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
         handoffs = self._collection_handoffs()
+        validate()
         if handoffs is None:
             return
         for handoff_id in handoffs:
             try:
-                await self.collection_current(handoff_id)
+                await self.collection_current(handoff_id, validate_admission=validate)
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise
@@ -608,18 +625,19 @@ class WorkflowReviewReceiptStore:
     def discover_collections_native(self, recovery: Any) -> RecoveryOutcome:
         """Original collection selection, after native receipt admission."""
         from runtime.daemon.startup_recovery import RecoveryOutcome
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery)
         from runtime.workflows.review_join import HOLDS
         from runtime.workflows.authority import WorkflowAuthorityError
         handoffs = self._collection_handoffs()
+        validate()
         if handoffs is None:
             return RecoveryOutcome('unknown', 'startup_collection_selection_missing')
         held = False
         for handoff_id in handoffs:
-            require_document_admission(self, recovery=recovery)
+            validate()
             try:
                 _, disposition = self._collection_current_core(
-                    handoff_id, self.org.workflow_authority.capture_admission(), recovery=recovery)
+                    handoff_id, self.org.workflow_authority.capture_admission(), recovery=recovery, validate_admission=validate)
             except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise
@@ -628,5 +646,5 @@ class WorkflowReviewReceiptStore:
             if disposition not in ('settled', 'local_hold'):
                 return RecoveryOutcome('unknown', 'startup_collection_outcome_unknown')
             held |= disposition == 'local_hold'
-        require_document_admission(self, recovery=recovery)
+        validate()
         return RecoveryOutcome('local_hold' if held else 'settled')

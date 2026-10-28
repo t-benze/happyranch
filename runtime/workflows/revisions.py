@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Callable
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictBool, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import document_admission_validation, publish_document_tasks, require_document_admission
+from runtime.daemon.startup_recovery import StartupUnavailable, document_admission_validation, publish_document_tasks
 from runtime.infrastructure.workflow_schema import (
     _DRAFT_MUTABLE, _handoff_json, _handoff_record, _records, _stored_json,
     require_document_revision_schema, validate_workflow_schema,
@@ -549,28 +550,29 @@ class WorkflowRevisionStore:
         return old, oldproof, graph, predecessor, feedback, authority
 
     async def start(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
-        require_document_admission(self)
+        validate = document_admission_validation(self)
         command = parse_revision(command)
         store = self.org.workflow_submissions
         with self.db._lock:
-            require_document_admission(self)
+            validate()
             self._owner(principal, self.db._conn, command['instance_id'])
             first = _records(self.db._conn, 'SELECT * FROM workflow_draft_dispatch_intents WHERE instance_id=? AND attempt_sequence=1', (command['instance_id'],))
             if len(first) != 1:
                 raise WorkflowActivationError('workflow_document_revision_not_found')
             store._read_grant(self.db._conn, first[0], {'return-to-author'}, principal)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         notifications = []
         async with store._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
+                validate()
                 with self.db._lock:
-                    require_document_admission(self)
+                    validate()
                     self._owner(principal, self.db._conn, command['instance_id'])
                     store._read_grant(self.db._conn, first[0], {'return-to-author'}, principal)
-                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
-                    require_document_admission(self)
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                    validate()
                     instance = self._owner(principal, conn, command['instance_id'])
                     first = _record(conn, 'workflow_draft_dispatch_intents', first[0]['id'])
                     store._read_grant(conn, first, {'return-to-author'}, principal)
@@ -635,6 +637,11 @@ class WorkflowRevisionStore:
                     notifications.append(task_id)
         queue = getattr(self.org.orchestrator, '_queue', None)
         if queue is not None:
+            try:
+                validate()
+            except StartupUnavailable as exc:
+                exc.detail["committed_task_ids"] = list(notifications)
+                raise
             publish_document_tasks(self, queue, notifications)
         return receipt
 
@@ -661,16 +668,23 @@ class WorkflowRevisionStore:
     async def get(self, *, operation_id: str, principal: WorkflowTemplatePrincipal | None, session_id: str | None) -> dict:
         if (principal is None) == (session_id is None):
             raise WorkflowActivationError('workflow_document_revision_invalid_request')
+        validate = document_admission_validation(self)
         store = self.org.workflow_submissions
         selection = dict(principal=principal, session_id=session_id)
         with self.db._lock:
+            validate()
             self._select(self.db._conn, operation_id, **selection)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with store._lock:
+            validate()
             async with self.org.db_lock:
+                validate()
                 task_agent = store._session(session_id) if session_id else None
                 with self.org.sessions.binding_lease(*task_agent) if task_agent else nullcontext():
-                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
+                    validate()
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                        validate()
                         row, intent = self._select(conn, operation_id, **selection)
                         store._selected_authority(conn, intent, capture, {'return-to-author'})
                         validate_revision_record(conn, row, expected_org_slug=self.org.slug)
@@ -679,22 +693,23 @@ class WorkflowRevisionStore:
                         return result
 
     async def stage(self, *, session_id: str, command: object) -> dict:
-        require_document_admission(self)
+        validate = document_admission_validation(self)
         command = parse_revision(command, author=True)
         store = self.org.workflow_submissions
         with self.db._lock:
-            require_document_admission(self)
+            validate()
             self._select(self.db._conn, command['revision_operation_id'], principal=None, session_id=session_id)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with store._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
+                validate()
                 task, agent = store._session(session_id)
                 with self.org.sessions.binding_lease(task, agent):
-                    require_document_admission(self)
-                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
-                        require_document_admission(self)
+                    validate()
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                        validate()
                         row, intent = self._select(conn, command['revision_operation_id'], principal=None, session_id=session_id)
                         context = self._authority(conn, intent, capture)
                         require_document_revision_schema(conn, expected_org_slug=self.org.slug)
@@ -771,21 +786,25 @@ class WorkflowRevisionStore:
                 submission_id=None if subject is None else subject['submission_id'],
                 submission_digest=None if subject is None else subject['candidate_digest'], graph=graph, collection=collection))
 
-    async def fulfill(self, operation_id: str) -> list[str]:
-        require_document_admission(self)
+    async def fulfill(self, operation_id: str, *, validate_admission: Callable[[], None] | None = None) -> list[str]:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         store = self.org.workflow_submissions
         async with store._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
-                return self._fulfill_core(operation_id, capture)[0]
+                validate()
+                return self._fulfill_core(operation_id, capture, validate_admission=validate)[0]
 
-    def _fulfill_core(self, operation_id: str, capture: Any, *, recovery: Any = None
+    def _fulfill_core(self, operation_id: str, capture: Any, *, recovery: Any = None,
+                              validate_admission: Callable[[], None] | None = None
                       ) -> tuple[list[str], Literal['settled', 'local_hold']]:
-        require_document_admission(self, recovery=recovery)
-        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
-            require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery) if validate_admission is None else validate_admission
+        validate()
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+            validate()
             row = _record(conn, 'workflow_document_revision_operations', operation_id)
             proof = validate_revision_record(conn, row, expected_org_slug=self.org.slug)
             intent = _record(conn, 'workflow_draft_dispatch_intents', row['draft_intent_id'])
@@ -806,7 +825,7 @@ class WorkflowRevisionStore:
             if conn.execute('SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (subject['submission_id'],)).fetchone():
                 validate_handoff_graph(conn, subject, proof)
                 return [], 'settled'
-            require_document_admission(self, recovery=recovery)
+            validate()
             now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
             raw = canonical_bytes(result)
             _insert(conn, 'workflow_submission_result_links', dict(submission_id=subject['submission_id'], task_result_id=result['id'],
@@ -816,13 +835,14 @@ class WorkflowRevisionStore:
                 source_session_id=intent['session_id'], source_result_id=str(result['id']), contribution_kind='author')
             _insert(conn, 'workflow_submission_contributors', dict(submission_id=subject['submission_id'], **contribution))
             _insert(conn, 'workflow_instance_contributors', dict(instance_id=row['instance_id'], **contribution))
-            tasks = self._review_graph(conn, subject, proof, context, intent, now, recovery=recovery)
+            tasks = self._review_graph(conn, subject, proof, context, intent, now, recovery=recovery, validate_admission=validate)
             validate_workflow_schema(conn, expected_org_slug=self.org.slug)
             return tasks, 'settled'
 
     def _review_graph(self, conn: sqlite3.Connection, subject: dict, proof: dict, context: dict, intent: dict, now: str,
-                      *, recovery: Any = None) -> list[str]:
-        require_document_admission(self, recovery=recovery)
+                      *, recovery: Any = None, validate_admission: Callable[[], None] | None = None) -> list[str]:
+        validate = document_admission_validation(self, recovery=recovery) if validate_admission is None else validate_admission
+        validate()
         from runtime.workflows.submissions import review_brief
         contract = context_contract(context)
         self.db._check_team_move_workflow_uncommitted(subject["instance_id"])
@@ -905,39 +925,47 @@ class WorkflowRevisionStore:
             ids = [r[0] for r in self.db._conn.execute('SELECT r.id FROM workflow_document_revision_operations r JOIN workflow_draft_dispatch_intents d ON d.id=r.draft_intent_id WHERE d.state=\'completed\'')]
         return ids
 
-    async def discover(self, queue: Any) -> None:
-        require_document_admission(self)
+    async def discover(self, queue: Any, *, validate_admission: Callable[[], None] | None = None) -> None:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         if queue is not self._startup_state.queue:
             from runtime.daemon.startup_recovery import StartupUnavailable
             raise StartupUnavailable("startup_document_queue_changed")
         ids = self._completed_revision_ids()
+        validate()
         if ids is None:
             return
         from runtime.workflows.authority import WorkflowAuthorityError
         for operation_id in ids:
             try:
-                tasks = await self.fulfill(operation_id)
+                tasks = await self.fulfill(operation_id, validate_admission=validate)
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
                 continue
+            try:
+                validate()
+            except StartupUnavailable as exc:
+                exc.detail["committed_task_ids"] = list(tasks)
+                raise
             publish_document_tasks(self, queue, tasks)
 
     def discover_native(self, queue: Any, recovery: Any) -> RecoveryOutcome:
         from runtime.daemon.startup_recovery import RecoveryOutcome
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery)
         if queue is not recovery.state.queue:
             raise RuntimeError('startup_workflow_queue_owner_unavailable')
         ids = self._completed_revision_ids()
+        validate()
         if ids is None:
             return RecoveryOutcome('settled', 'startup_revision_family_absent')
         from runtime.workflows.authority import WorkflowAuthorityError
         held = False
         for operation_id in ids:
-            require_document_admission(self, recovery=recovery)
+            validate()
             try:
                 tasks, disposition = self._fulfill_core(
-                    operation_id, self.org.workflow_authority.capture_admission(), recovery=recovery)
+                    operation_id, self.org.workflow_authority.capture_admission(), recovery=recovery, validate_admission=validate)
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
@@ -947,20 +975,28 @@ class WorkflowRevisionStore:
                 return RecoveryOutcome('unknown', 'startup_revision_outcome_unknown')
             held |= disposition == 'local_hold'
             for task_id in tasks:
+                validate()
                 recovery.publish_workflow_task(self.org, task_id)
-        require_document_admission(self, recovery=recovery)
+        validate()
         return RecoveryOutcome('local_hold' if held else 'settled')
 
-    def completed(self, task_id: str) -> None:
+    def completed(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
         with self.org.workflow_drafts._completed_followup(task_id):
-            require_document_admission(self)
+            validate = document_admission_validation(self) if validate_admission is None else validate_admission
+            validate()
             with self.db._lock:
+                validate()
                 if not exists(self.db._conn):
                     return
                 ids = [r[0] for r in self.db._conn.execute('SELECT r.id FROM workflow_document_revision_operations r JOIN workflow_draft_dispatch_intents d ON d.id=r.draft_intent_id WHERE d.task_id=?', (task_id,))]
             for operation_id in ids:
-                require_document_admission(self)
-                tasks = self.org.workflow_drafts._on_loop(self.fulfill(operation_id))
+                validate()
+                tasks = self.org.workflow_drafts._on_loop(self.fulfill(operation_id, validate_admission=validate))
                 queue = getattr(self.org.orchestrator, '_queue', None)
                 if queue is not None:
+                    try:
+                        validate()
+                    except StartupUnavailable as exc:
+                        exc.detail["committed_task_ids"] = list(tasks)
+                        raise
                     publish_document_tasks(self, queue, tasks)

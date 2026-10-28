@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Callable
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import Field, StrictBool, StrictInt, ValidationError
 
-from runtime.daemon.startup_recovery import document_admission_validation, publish_document_tasks, require_document_admission
+from runtime.daemon.startup_recovery import StartupUnavailable, document_admission_validation, publish_document_tasks, require_document_admission
 from runtime.infrastructure.workflow_schema import (
     _DRAFT_MUTABLE, _handoff_record, _records, _stored_json,
     require_author_handoff_schema, validate_workflow_schema,
@@ -464,14 +465,15 @@ class WorkflowSubmissionStore:
             raise WorkflowActivationError('workflow_author_handoff_source_not_current')
 
     async def stage_author_handoff(self, *, session_id: str, command: dict) -> dict:
-        require_document_admission(self)
+        validate = document_admission_validation(self)
         command = parse_handoff(command)
         task, agent = self._session(session_id)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         with self.org.sessions.binding_lease(task, agent):
-            require_document_admission(self)
+            validate()
             with self.db._lock:
-                require_document_admission(self)
+                validate()
                 self._session(session_id)
                 selected = self.org.workflow_drafts._intent(self.db._conn, task)
                 self._fresh(self.db._conn, selected, task, agent, session_id)
@@ -488,13 +490,13 @@ class WorkflowSubmissionStore:
         except (ValueError, UnicodeError) as exc:
             raise WorkflowActivationError('workflow_author_handoff_invalid_request') from exc
         async with self._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
+                validate()
                 with self.org.sessions.binding_lease(task, agent):
-                    require_document_admission(self)
-                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
-                        require_document_admission(self)
+                    validate()
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                        validate()
                         self._session(session_id)
                         intent = self.org.workflow_drafts._intent(conn, task)
                         self._fresh(conn, intent, task, agent, session_id)
@@ -634,21 +636,25 @@ class WorkflowSubmissionStore:
                     current=dict(state=state, pending=state in ('pending', 'held'), reconciliation_required=reconcile,
                                  reason=reason, graph=graph if state == 'consumed' or reason == 'noncurrent_successor' else None))
 
-    async def consume_completed_handoff(self, handoff_id: str) -> list[str]:
-        require_document_admission(self)
+    async def consume_completed_handoff(self, handoff_id: str, *, validate_admission: Callable[[], None] | None = None) -> list[str]:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with self._lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
-                return self._consume_completed_handoff_core(handoff_id, capture)[0]
+                validate()
+                return self._consume_completed_handoff_core(handoff_id, capture, validate_admission=validate)[0]
 
-    def _consume_completed_handoff_core(self, handoff_id: str, capture: Any, *, recovery: Any = None
+    def _consume_completed_handoff_core(self, handoff_id: str, capture: Any, *, recovery: Any = None,
+                              validate_admission: Callable[[], None] | None = None
                                         ) -> tuple[list[str], Literal['settled', 'local_hold']]:
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery) if validate_admission is None else validate_admission
+        validate()
         notifications = []
-        with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self, recovery=recovery)) as conn:
-            require_document_admission(self, recovery=recovery)
+        with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+            validate()
             require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
             row = _record(conn, 'workflow_author_handoffs', handoff_id)
             proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
@@ -672,14 +678,15 @@ class WorkflowSubmissionStore:
                 return [], 'local_hold'
             if validate_handoff_graph(conn, row, proof) is not None:
                 return [], 'settled'
-            require_document_admission(self, recovery=recovery)
-            notifications = self._graph(conn, row, proof, context, binding, grant, intent, result, recovery=recovery)
+            validate()
+            notifications = self._graph(conn, row, proof, context, binding, grant, intent, result, recovery=recovery, validate_admission=validate)
             validate_workflow_schema(conn, expected_org_slug=self.org.slug)
         return notifications, 'settled'
 
     def _graph(self, conn: sqlite3.Connection, row: dict, proof: dict, context: dict, binding: dict,
-               grant: dict, intent: dict, result: dict, *, recovery: Any = None) -> list[str]:
-        require_document_admission(self, recovery=recovery)
+               grant: dict, intent: dict, result: dict, *, recovery: Any = None, validate_admission: Callable[[], None] | None = None) -> list[str]:
+        validate = document_admission_validation(self, recovery=recovery) if validate_admission is None else validate_admission
+        validate()
         self.db._check_team_move_workflow_uncommitted(row["instance_id"])
         now = datetime.now(timezone.utc).isoformat()
         if conn.execute('SELECT 1 FROM workflow_submission_operations WHERE '
@@ -753,21 +760,28 @@ class WorkflowSubmissionStore:
         conn.execute("UPDATE workflow_instances SET status='reviewing' WHERE id=?", (row['instance_id'],))
         return task_ids
 
-    def completed(self, task_id: str) -> None:
+    def completed(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
         """Called after draft terminal releases locks, while the native hook retains capacity."""
         with self.org.workflow_drafts._completed_followup(task_id):
-            require_document_admission(self)
-            self.org.workflow_revisions.completed(task_id)
+            validate = document_admission_validation(self) if validate_admission is None else validate_admission
+            validate()
+            self.org.workflow_revisions.completed(task_id, validate_admission=validate)
             with self.db._lock:
+                validate()
                 tables = {r[0] for r in self.db._conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
                 if 'workflow_author_handoffs' not in tables:
                     return
                 ids = [r[0] for r in self.db._conn.execute('SELECT id FROM workflow_author_handoffs WHERE source_task_id=?', (task_id,))]
             for handoff_id in ids:
-                require_document_admission(self)
-                tasks = self.org.workflow_drafts._on_loop(self.consume_completed_handoff(handoff_id))
+                validate()
+                tasks = self.org.workflow_drafts._on_loop(self.consume_completed_handoff(handoff_id, validate_admission=validate))
                 queue = getattr(self.org.orchestrator, '_queue', None)
                 if queue is not None:
+                    try:
+                        validate()
+                    except StartupUnavailable as exc:
+                        exc.detail["committed_task_ids"] = list(tasks)
+                        raise
                     publish_document_tasks(self, queue, tasks)
 
     def author_instruction(self, task_id: str, session_id: str) -> str:
@@ -957,6 +971,7 @@ class WorkflowSubmissionStore:
 
     async def get_handoff(self, *, handoff_id: str, lane: str, session_id: str | None,
                           selector: str | None, owner: WorkflowTemplatePrincipal | None = None) -> dict:
+        validate = document_admission_validation(self)
         task_agent = self._session(session_id) if session_id is not None else None
         if lane == 'owner-human':
             if owner is None:
@@ -969,25 +984,33 @@ class WorkflowSubmissionStore:
         # Discovery is independent of current-authority readiness and H proof
         # decoding. Repeat all selected facts at the actual writer boundary.
         with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+            validate()
             with self.db._lock:
+                validate()
                 if session_id is not None:
                     self._session(session_id)
                 if owner is not None:
                     self.org.workflow_activations._principal(owner)
                 self._select_handoff(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with self._lock:
+            validate()
             async with self.org.db_lock:
+                validate()
                 with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
                     # Locks may have awaited after discovery. Recheck native
                     # identity/scope/grant before writer readiness can refuse.
+                    validate()
                     with self.db._lock:
+                        validate()
                         if owner is not None:
                             self.org.workflow_activations._principal(owner)
                         if session_id is not None:
                             self._session(session_id)
                         self._select_handoff(self.db._conn, **selection)
-                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                        validate()
                         if owner is not None:
                             self.org.workflow_activations._principal(owner)
                         if session_id is not None:
@@ -1014,27 +1037,36 @@ class WorkflowSubmissionStore:
             self.org.workflow_review_receipts._human_principal(principal)
         elif principal is not None or session_id is None:
             raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
+        validate = document_admission_validation(self)
         task_agent = self._session(session_id) if session_id is not None else None
         selection = dict(request_id=request_id, task_agent=task_agent, session_id=session_id,
                          human=human, include_signed=True)
         with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+            validate()
             with self.db._lock:
+                validate()
                 if session_id is not None:
                     self._session(session_id)
                 if principal is not None:
                     self.org.workflow_review_receipts._human_principal(principal)
                 self._select_request(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         async with self._lock:
+            validate()
             async with self.org.db_lock:
+                validate()
                 with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+                    validate()
                     with self.db._lock:
+                        validate()
                         if session_id is not None:
                             self._session(session_id)
                         if principal is not None:
                             self.org.workflow_review_receipts._human_principal(principal)
                         self._select_request(self.db._conn, **selection)
-                    with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
+                    with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                        validate()
                         if session_id is not None:
                             self._session(session_id)
                         if principal is not None:
@@ -1080,47 +1112,55 @@ class WorkflowSubmissionStore:
                 '(SELECT 1 FROM workflow_submission_operations o WHERE o.submission_id=h.submission_id)')]
         return handoffs
 
-    async def discover_completed_handoffs(self, queue: Any) -> None:
-        require_document_admission(self)
+    async def discover_completed_handoffs(self, queue: Any, *, validate_admission: Callable[[], None] | None = None) -> None:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         if queue is not self._startup_state.queue:
             from runtime.daemon.startup_recovery import StartupUnavailable
             raise StartupUnavailable("startup_document_queue_changed")
         handoffs = self._completed_handoff_ids()
+        validate()
         if handoffs is None:
             return
         from runtime.workflows.authority import WorkflowAuthorityError
         for handoff_id in handoffs:
             try:
-                tasks = await self.consume_completed_handoff(handoff_id)
+                tasks = await self.consume_completed_handoff(handoff_id, validate_admission=validate)
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
                 continue
+            try:
+                validate()
+            except StartupUnavailable as exc:
+                exc.detail["committed_task_ids"] = list(tasks)
+                raise
             publish_document_tasks(self, queue, tasks)
         # Reuse lifespan/reaper discovery for result-before-consumption recovery.
         # No new scheduler and no replay of an uncertain host launch.
-        await self.org.workflow_revisions.discover(queue)
-        await self.org.workflow_review_receipts.discover_completed()
-        await self.org.workflow_review_receipts.discover_collections()
+        await self.org.workflow_revisions.discover(queue, validate_admission=validate)
+        await self.org.workflow_review_receipts.discover_completed(validate_admission=validate)
+        await self.org.workflow_review_receipts.discover_collections(validate_admission=validate)
 
     def discover_completed_handoffs_native(self, queue: Any, recovery: Any) -> RecoveryOutcome:
         """Only this discovery; the native coordinator owns the four-step order."""
         from runtime.daemon.startup_recovery import RecoveryOutcome
-        require_document_admission(self, recovery=recovery)
+        validate = document_admission_validation(self, recovery=recovery)
         if queue is not recovery.state.queue:
             raise RuntimeError('startup_workflow_queue_owner_unavailable')
         # P0's complete validated attachment precedes this native phase. Reuse
         # the original presence/selection read; do not add another schema scan.
         handoffs = self._completed_handoff_ids()
+        validate()
         if handoffs is None:
             return RecoveryOutcome('settled', 'startup_handoff_family_absent')
         from runtime.workflows.authority import WorkflowAuthorityError
         held = False
         for handoff_id in handoffs:
-            require_document_admission(self, recovery=recovery)
+            validate()
             try:
                 tasks, disposition = self._consume_completed_handoff_core(
-                    handoff_id, self.org.workflow_authority.capture_admission(), recovery=recovery)
+                    handoff_id, self.org.workflow_authority.capture_admission(), recovery=recovery, validate_admission=validate)
             except WorkflowAuthorityError as exc:
                 if exc.code != 'workflow_activation_authority_stale':
                     raise
@@ -1130,6 +1170,7 @@ class WorkflowSubmissionStore:
                 return RecoveryOutcome('unknown', 'startup_handoff_outcome_unknown')
             held |= disposition == 'local_hold'
             for task_id in tasks:
+                validate()
                 recovery.publish_workflow_task(self.org, task_id)
-        require_document_admission(self, recovery=recovery)
+        validate()
         return RecoveryOutcome('local_hold' if held else 'settled')

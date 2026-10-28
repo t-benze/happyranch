@@ -91,16 +91,38 @@ class WorkflowDraftDispatcher:
         self._live: dict[str, tuple[str, str, object | None]] = {}
 
     @contextmanager
-    def _writer(self) -> Iterator[sqlite3.Connection]:
+    def _writer(self, *, validate_admission: Callable[[], None] | None = None) -> Iterator[sqlite3.Connection]:
         with self.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             conn = self.db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield conn
                 validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                if validate_admission is not None:
+                    validate_admission()
                 conn.commit()
-            except BaseException:
-                conn.rollback()
+            except BaseException as primary:
+                try:
+                    conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    try:
+                        # One actual private secondary survives note/format failure.
+                        BaseException.__setattr__(primary, "_document_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+                    try:
+                        BaseException.add_note(primary,
+                            f"selected document rollback also failed: {secondary!r}"[:1024])
+                    except BaseException:
+                        # Diagnostics cannot mask the original error/traceback.
+                        pass
                 raise
 
     def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
@@ -166,17 +188,19 @@ class WorkflowDraftDispatcher:
         template = self.org.workflow_activations._template(request)
         self.org.workflow_activations._roles(request, json.loads(capture.ready.snapshot_bytes), template)
 
-    async def claim(self, task_id: str) -> str | None:
+    async def claim(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> str | None:
         # Discovery and effective-profile reads precede all durable ownership.
-        require_document_admission(self)
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         active_sessions = tuple(self.org.sessions.iter_active())
         async with self.org.workflow_authority._async_writer_lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
-                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
-                    require_document_admission(self)
+                validate()
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                    validate()
                     from runtime.infrastructure.team_move_store import validate_team_move_schema
                     from runtime.orchestrator.team_move import DeferredTeamMove
                     if validate_team_move_schema(conn, org_slug=self.org.slug):
@@ -202,20 +226,23 @@ class WorkflowDraftDispatcher:
         # The worker owns no lease or SQLite transaction across this wait.
         return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
 
-    def dispatch(self, task_id: str) -> None:
-        require_document_admission(self)
+    def dispatch(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         orch = self.org.orchestrator
         if orch._host_supervisor is None or orch._main_loop is None:
             return
         try:
             if getattr(self.db, "_task_pause_store", None) is not None:
-                return self._dispatch_pause_owned(task_id)
-            claim = self._on_loop(self.claim(task_id))
+                return self._dispatch_pause_owned(task_id, validate_admission=validate)
+            claim = self._on_loop(self.claim(task_id, validate_admission=validate))
             if claim is None:
                 return
+            validate()
             task = self.db.get_task(task_id)
+            validate()
             with self._live_lock:
-                require_document_admission(self)
+                validate()
                 self._live[task_id] = (claim, "", None)
             try:
                 # A bounded author has no generic manager decision consumer.
@@ -242,31 +269,33 @@ class WorkflowDraftDispatcher:
             # Ineligibility is a durable queued intent, not a fabricated run.
             return
 
-    def _dispatch_pause_owned(self, task_id: str) -> None:
+    def _dispatch_pause_owned(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
         """Prepare a queued intent; final host arbitration owns every mutation."""
-        require_document_admission(self)
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         from runtime.orchestrator.task_pause import TaskInvocation, DeferredRootPause, _invocation
         from runtime.orchestrator.team_move import DeferredTeamMove
         from runtime.infrastructure.task_pause_controls import PauseControlError
         with self._live_lock:
-            require_document_admission(self)
+            validate()
             if task_id in self._live:
                 return
         with self.db._lock:
-            require_document_admission(self)
+            validate()
             intent = self._intent(self.db._conn, task_id)
             if intent["state"] != "queued":
                 return
             key = intent["host_execution_key"]
+        validate()
         task = self.db.get_task(task_id)
-        require_document_admission(self)
+        validate()
         invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
                                     self.org.orchestrator._build_session_id(), owner="draft")
         invocation.workflow_dispatcher = self
         invocation.draft_request_key = key
         try:
-            require_document_admission(self)
-            invocation.prepare(validate_admission=document_admission_validation(self))
+            validate()
+            invocation.prepare(validate_admission=validate)
         except PauseControlError as exc:
             if exc.detail["code"] == "root_paused":
                 return
@@ -314,18 +343,19 @@ class WorkflowDraftDispatcher:
         # no synchronous lock/lease crosses an event-loop wait.
         validate = document_admission_validation(self)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         active_sessions = tuple(self.org.sessions.iter_active())
         with self._live_lock:
-            require_document_admission(self)
+            validate()
             if invocation.task.id in self._live:
                 raise DraftOwnershipError("workflow_claim_unavailable")
         async with self.org.workflow_authority._async_writer_lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
+                validate()
                 authority = self.org.workflow_authority
                 with authority._admission_ownership(capture, validate_admission=validate):
-                    require_document_admission(self)
+                    validate()
                     invocation.draft_capture = capture
                     invocation.draft_sessions = active_sessions
                     committed = invocation._commit_local(ctx, validate_admission=validate)
@@ -388,18 +418,19 @@ class WorkflowDraftDispatcher:
             return None
 
         with self._live_lock:
-            require_document_admission(self, publication=publication)
+            validate()
             if task_id in self._live:
                 return held("startup_document_live_owner")
         try:
             with self.db._lock:
-                require_document_admission(self, publication=publication)
+                validate()
                 if self._intent(self.db._conn, task_id)["state"] != "queued":
                     return held("startup_document_not_queued")
             capture = self.org.workflow_authority.capture_admission()
+            validate()
             active_sessions = tuple(self.org.sessions.iter_active())
             with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
-                require_document_admission(self, publication=publication)
+                validate()
                 intent = self._intent(conn, task_id)
                 if (intent["state"] != "queued" or intent["host_launch_started"]
                         or intent["session_id"] is not None
@@ -433,16 +464,16 @@ class WorkflowDraftDispatcher:
         queue.enqueue_if_absent(self.org.slug, task_id)
 
     def bind_session(self, task_id: str, agent: str, session_id: str) -> None:
-        require_document_admission(self)
+        validate = document_admission_validation(self)
         with self._live_lock:
-            require_document_admission(self)
+            validate()
             live = self._live.get(task_id)
             if live is None:
                 raise DraftOwnershipError("workflow_claim_unavailable")
             with self.db._lock:
-                require_document_admission(self)
-                with self._writer() as conn:
-                    require_document_admission(self)
+                validate()
+                with self._writer(validate_admission=validate) as conn:
+                    validate()
                     intent = self._intent(conn, task_id)
                     if (intent["claim_token"] != live[0] or intent["state"] != "claimed"
                             or intent["cancellation_requested"] or intent["assigned_principal"] != agent
@@ -453,20 +484,22 @@ class WorkflowDraftDispatcher:
                     conn.execute("UPDATE tasks SET current_session_id=? WHERE id=?", (session_id, task_id))
             self._live[task_id] = (live[0], session_id, None)
 
-    async def _reserve_launch(self, task_id: str, agent: str, session_id: str) -> None:
-        require_document_admission(self)
+    async def _reserve_launch(self, task_id: str, agent: str, session_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
+        validate = document_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         with self._live_lock:
-            require_document_admission(self)
+            validate()
             live = self._live.get(task_id)
         capture = self.org.workflow_authority.capture_admission()
+        validate()
         active_sessions = tuple(self.org.sessions.iter_active())
         refusal = None
         async with self.org.workflow_authority._async_writer_lock:
-            require_document_admission(self)
+            validate()
             async with self.org.db_lock:
-                require_document_admission(self)
-                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
-                    require_document_admission(self)
+                validate()
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                    validate()
                     intent = self._intent(conn, task_id)
                     if (live is None or live[:2] != (intent["claim_token"], session_id)
                             or intent["assigned_principal"] != agent or intent["state"] != "claimed"
@@ -492,8 +525,8 @@ class WorkflowDraftDispatcher:
             raise refusal
 
     def reserve_launch(self, task_id: str, agent: str, session_id: str) -> None:
-        require_document_admission(self)
-        return self._on_loop(self._reserve_launch(task_id, agent, session_id))
+        validate = document_admission_validation(self)
+        return self._on_loop(self._reserve_launch(task_id, agent, session_id, validate_admission=validate))
 
     def host_request_key(self, task_id: str, agent: str, session_id: str) -> str:
         with self.db._lock:
@@ -726,14 +759,20 @@ class WorkflowDraftDispatcher:
                 task_id, exc.code)
 
     def reconcile(self, task_id: str, *, recovery: Any = None, startup_owner: Any = None) -> None:
-        require_document_admission(self, recovery=recovery, sweep_owner=startup_owner)
-        self._reconcile_core(task_id, recovery=recovery, startup_owner=startup_owner)
+        validate = document_admission_validation(self, recovery=recovery, sweep_owner=startup_owner)
+        self._reconcile_core(task_id, recovery=recovery, startup_owner=startup_owner, validate_admission=validate)
 
     def _reconcile_core(self, task_id: str, *, recovery: Any = None,
-                        startup_owner: Any = None, settlement: Any = None) -> None:
+                        startup_owner: Any = None, settlement: Any = None,
+                        validate_admission: Callable[[], None] | None = None) -> None:
+        validate = None
+        if settlement is None:
+            validate = (document_admission_validation(self, recovery=recovery, sweep_owner=startup_owner)
+                        if validate_admission is None else validate_admission)
+            validate()
         def check() -> None:
             if settlement is None:
-                require_document_admission(self, recovery=recovery, sweep_owner=startup_owner)
+                validate()
             else:
                 if recovery is not None or startup_owner is not None:
                     raise DraftOwnershipError("workflow_native_settlement_owner_changed")
@@ -742,10 +781,11 @@ class WorkflowDraftDispatcher:
         # Blocking locks renew before the original writer; native settlement
         # retains its actual live invocation, never a generic readiness flag.
         with self._live_lock:
+            check()
             with self.db._lock:
                 check()
                 live = settlement is None and task_id in self._live
-                with self._writer() as conn:
+                with self._writer(validate_admission=validate) as conn:
                     check()
                     intent = self._intent(conn, task_id)
                     if intent["state"] not in {"claimed", "running"}:
