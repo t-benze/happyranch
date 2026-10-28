@@ -30,100 +30,119 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None,
     db._lock.acquire(blocking=True)
     try:
         conn = db._conn
+        owned = not conn.in_transaction
+        advances: list[tuple[tuple[int, int], int]] = []
         with _schema_snapshot(conn):
             try:
-                if budget is not None and type(budget) is not _Budget:
-                    raise ValueError('workflow_coding_data_invalid_budget')
-                budget = _Budget() if budget is None else budget
-                # Complete setup/import/mapping originals validate before legacy recovery.
-                # Native coding decisions/authority may be orphaned, with no old
-                # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
-                # either legacy return, under the same lock and exception fence.
-                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
-                          if row[0].startswith('workflow_')}
-                coding_present = has_coding_schema_objects(conn)
-                if coding_present:
-                    if org_slug is None:
-                        return WorkflowTaskOwnership("reconciliation_required")
-                    # Unknown/case-changed tables, views, indexes and triggers must
-                    # reach the complete reader before either legacy return.
-                    _, inventory = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget)
-                else:
-                    # Absent coding storage cannot accept setup metadata, even if native
-                    # coding metadata has no workflow root/draft/F5 alias.
-                    _read_coding_data(conn, layout='recovery', expected_org_slug=org_slug, budget=budget)
-                if coding_present:
-                    if inventory is None:
-                        return WorkflowTaskOwnership("reconciliation_required")
-                    saved = inventory.queued
-                    if task_id in saved.owners:
-                        kind, instance = saved.owners[task_id]
-                        return WorkflowTaskOwnership(kind, instance, saved.runs[instance]["attempt"]["state"])
-                if not tables:
-                    return WorkflowTaskOwnership("legacy")
-                roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
-                bridges = conn.execute("SELECT * FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchall()
-                drafts = (conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (task_id,)).fetchall()
-                          if "workflow_draft_dispatch_intents" in tables else [])
-                if not roots and not bridges and not drafts:
-                    return WorkflowTaskOwnership("legacy")
-                if org_slug is None or (drafts and bridges) or len(drafts) > 1 or len(bridges) > 1:
-                    return WorkflowTaskOwnership("reconciliation_required")
-                if not coding_present:
-                    _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget)
-                # Coding inventory already includes complete document validation
-                # on this unchanged snapshot; do not reconstruct it again.
-                if drafts:
-                    intent = drafts[0]
-                    task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                    if task is None or (intent["state"] == "queued" and (
-                            task["status"] != "pending" or task["current_session_id"] is not None)):
-                        return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-                    if intent['admission_kind'] == 'revision':
-                        operation = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=? AND org_slug=? AND principal=? AND operation_key=? AND request_digest=?',
-                            (intent['id'], org_slug, intent['admission_principal'], intent['operation_key'], intent['request_digest'])).fetchone()
-                    else:
-                        operation = conn.execute(
-                            "SELECT * FROM workflow_activation_operations WHERE org_slug=? AND principal=? "
-                            "AND operation_key=? AND activation_id=? AND request_digest=?",
-                            (org_slug, intent["admission_principal"], intent["operation_key"],
-                             intent["activation_id"], intent["request_digest"]),
-                        ).fetchone()
-                    if operation is None:
-                        return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-                    # The generic E validator checks schema/event integrity. The
-                    # shipping activation owner also proves canonical semantics,
-                    # template/authority/context closure and the original task.
-                    # Never enqueue or dispatch a merely rehashed corrupt graph.
-                    dispatcher = getattr(db, "_workflow_drafts", None)
-                    if dispatcher is None or dispatcher.org.slug != org_slug:
-                        return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-                    dispatcher._intent_from_validated_schema(conn, task_id)
-                    return WorkflowTaskOwnership("draft", intent["id"], intent["state"])
-                if bridges:
-                    bridge = bridges[0]
-                    closure = conn.execute(
-                        "SELECT o.id FROM workflow_dispatch_operations o "
-                        "JOIN workflow_dispatch_outbox x ON x.operation_id=o.id AND x.request_id=o.request_id "
-                        "JOIN workflow_review_requests q ON q.id=o.request_id AND q.round_id=o.round_id "
-                        "JOIN workflow_rounds r ON r.id=o.round_id AND r.instance_id=o.instance_id "
-                        "JOIN workflow_submissions s ON s.id=r.submission_id AND s.instance_id=r.instance_id "
-                        "WHERE o.id=? AND o.org_slug=? AND o.instance_id=? AND o.request_id=? "
-                        "AND q.principal=? AND q.assignment_generation=?",
-                        (bridge["operation_id"], org_slug, bridge["instance_id"], bridge["request_id"],
-                         bridge["assigned_principal"], bridge["assignment_generation"]),
-                    ).fetchall()
-                    if len(closure) == 1:
-                        reviewer = getattr(db, '_workflow_reviews', None)
-                        if reviewer is None or reviewer.org.slug != org_slug:
-                            return WorkflowTaskOwnership('reconciliation_required')
-                        reviewer._intent(conn, task_id)
-                        return WorkflowTaskOwnership("f5", state=bridge["state"])
-                return WorkflowTaskOwnership("reconciliation_required")
+                result = _classify_task_in_snapshot(db, conn, task_id, org_slug=org_slug,
+                                                    budget=budget, advances=advances)
             except (ValueError, TypeError, sqlite3.DatabaseError):
-                return WorkflowTaskOwnership("reconciliation_required")
+                result = WorkflowTaskOwnership("reconciliation_required")
+        # The complete classification, including document semantic closure,
+        # must succeed before the owner's snapshot exit can authorize progress.
+        # Retain the actual Database lock through publication of captured IDs.
+        if owned and result.kind != "reconciliation_required":
+            from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
+            for file_key, last_id in advances:
+                _advance_audit_log_watermark(conn, file_key, last_id)
+        return result
     finally:
         db._lock.release()
+
+
+def _classify_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, *,
+                               org_slug: str | None, budget: _Budget | None,
+                               advances: list[tuple[tuple[int, int], int]],
+                               ) -> WorkflowTaskOwnership:
+    """Classify under the caller's lock/snapshot; collected advances are output."""
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_coding_data_invalid_budget')
+    budget = _Budget() if budget is None else budget
+    # Complete setup/import/mapping originals validate before legacy recovery.
+    # Native coding decisions/authority may be orphaned, with no old
+    # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
+    # either legacy return, under the same lock and exception fence.
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+              if row[0].startswith('workflow_')}
+    coding_present = has_coding_schema_objects(conn)
+    if coding_present:
+        if org_slug is None:
+            return WorkflowTaskOwnership("reconciliation_required")
+        # Unknown/case-changed tables, views, indexes and triggers must
+        # reach the complete reader before either legacy return.
+        _, inventory = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
+    else:
+        # Absent coding storage cannot accept setup metadata, even if native
+        # coding metadata has no workflow root/draft/F5 alias.
+        _read_coding_data(conn, layout='recovery', expected_org_slug=org_slug, budget=budget, advances=advances)
+    if coding_present:
+        if inventory is None:
+            return WorkflowTaskOwnership("reconciliation_required")
+        saved = inventory.queued
+        if task_id in saved.owners:
+            kind, instance = saved.owners[task_id]
+            return WorkflowTaskOwnership(kind, instance, saved.runs[instance]["attempt"]["state"])
+    if not tables:
+        return WorkflowTaskOwnership("legacy")
+    roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
+    bridges = conn.execute("SELECT * FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchall()
+    drafts = (conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (task_id,)).fetchall()
+              if "workflow_draft_dispatch_intents" in tables else [])
+    if not roots and not bridges and not drafts:
+        return WorkflowTaskOwnership("legacy")
+    if org_slug is None or (drafts and bridges) or len(drafts) > 1 or len(bridges) > 1:
+        return WorkflowTaskOwnership("reconciliation_required")
+    if not coding_present:
+        _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
+    # Coding inventory already includes complete document validation
+    # on this unchanged snapshot; do not reconstruct it again.
+    if drafts:
+        intent = drafts[0]
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if task is None or (intent["state"] == "queued" and (
+                task["status"] != "pending" or task["current_session_id"] is not None)):
+            return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
+        if intent['admission_kind'] == 'revision':
+            operation = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=? AND org_slug=? AND principal=? AND operation_key=? AND request_digest=?',
+                (intent['id'], org_slug, intent['admission_principal'], intent['operation_key'], intent['request_digest'])).fetchone()
+        else:
+            operation = conn.execute(
+                "SELECT * FROM workflow_activation_operations WHERE org_slug=? AND principal=? "
+                "AND operation_key=? AND activation_id=? AND request_digest=?",
+                (org_slug, intent["admission_principal"], intent["operation_key"],
+                 intent["activation_id"], intent["request_digest"]),
+            ).fetchone()
+        if operation is None:
+            return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
+        # The generic E validator checks schema/event integrity. The
+        # shipping activation owner also proves canonical semantics,
+        # template/authority/context closure and the original task.
+        # Never enqueue or dispatch a merely rehashed corrupt graph.
+        dispatcher = getattr(db, "_workflow_drafts", None)
+        if dispatcher is None or dispatcher.org.slug != org_slug:
+            return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
+        dispatcher._intent_from_validated_schema(conn, task_id)
+        return WorkflowTaskOwnership("draft", intent["id"], intent["state"])
+    if bridges:
+        bridge = bridges[0]
+        closure = conn.execute(
+            "SELECT o.id FROM workflow_dispatch_operations o "
+            "JOIN workflow_dispatch_outbox x ON x.operation_id=o.id AND x.request_id=o.request_id "
+            "JOIN workflow_review_requests q ON q.id=o.request_id AND q.round_id=o.round_id "
+            "JOIN workflow_rounds r ON r.id=o.round_id AND r.instance_id=o.instance_id "
+            "JOIN workflow_submissions s ON s.id=r.submission_id AND s.instance_id=r.instance_id "
+            "WHERE o.id=? AND o.org_slug=? AND o.instance_id=? AND o.request_id=? "
+            "AND q.principal=? AND q.assignment_generation=?",
+            (bridge["operation_id"], org_slug, bridge["instance_id"], bridge["request_id"],
+             bridge["assigned_principal"], bridge["assignment_generation"]),
+        ).fetchall()
+        if len(closure) == 1:
+            reviewer = getattr(db, '_workflow_reviews', None)
+            if reviewer is None or reviewer.org.slug != org_slug:
+                return WorkflowTaskOwnership('reconciliation_required')
+            reviewer._intent(conn, task_id)
+            return WorkflowTaskOwnership("f5", state=bridge["state"])
+    return WorkflowTaskOwnership("reconciliation_required")
 
 
 def route_owned_task(orch: Any, task_id: str) -> bool:

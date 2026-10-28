@@ -547,15 +547,22 @@ changed bytes under the same key conflict. Missing package I/O can hold a fresh
 import while exact saved replay remains readable. Any partial/foreign/malformed/
 extra/orphan/incorrectly typed relation refuses; failures roll back all new rows.
 
-Only the owned write-free existing-layout install_or_recover branch privately
-collects the validated audit device/inode/last-rowid. An outer Database RLock spans
-transaction exit and publication after successful COMMIT, publishing that exact
-prefix rather than a newer MAX. Validation failure, rollback, uncertain/failed
-COMMIT, interruption or detected identity/MAX regression cannot publish it.
-Caller transactions remain refused; fresh installation and public schema snapshots
-retain their behavior. Complete J/inventory/mapping/queued/source/data=False/FK/
-integrity checks remain; bounded mapping/queued paths do not trust watermarks.
-This assumes cooperative insert-only history, not arbitrary same-UID rewrites.
+Startup install_or_recover privately collects validated audit device/inode/last-rowid
+and publishes only after positive COMMIT under the same Database RLock. Generic
+complete readers and task classification collect privately and publish that exact
+verified prefix only after all validation/classification and successful exit from
+their own read snapshot. Classification retains the Database lock through publication,
+including coding-absent recovery. Joined writer/savepoint/coherent-view readers do
+not publish automatically; private collectors are output for explicit cooperating
+owners, never validation proof. Failure, reconciliation, interruption, unsuccessful
+snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression cannot
+publish. Independent installed/metadata readers retain source/naming/team/document
+checks, including validate_data=False with coding present. The generic wrapper omits
+only duplicate source/team checks proven by its own same-snapshot coding inventory;
+absent/unproven coding retains them. Physical/FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Expected coding rows revalidate
+below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
+same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
 
 Central J validation, including validate_data=False, source-data validation,
 startup/reopen, recovery pre-legacy discrimination and drain/downgrade all consume

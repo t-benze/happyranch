@@ -1085,17 +1085,32 @@ def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str
 
 
 def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
-                          budget: _Budget | None = None
+                          budget: _Budget | None = None,
+                          advances: list[tuple[tuple[int, int], int]] | None = None,
                           ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
-    """Private complete-schema composition; accepts work allowance only."""
+    """Complete composition; advances is output for a cooperating outer owner."""
+    owned = not conn.in_transaction
+    collected: list[tuple[tuple[int, int], int]] = []
     with _schema_snapshot(conn):
-        layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug, budget=budget)
-        _validate_source_data(conn, coding=coding)
-        # Optional org extension: validation only, never install or operational
-        # admission. Complete producer/startup recovery closure belongs to D.
-        from runtime.infrastructure.team_move_store import validate_team_move_schema
-        validate_team_move_schema(conn, org_slug=expected_org_slug)
-        return layout, coding
+        layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug,
+                                         budget=budget, advances=collected)
+        # Only our own reconstructed coding inventory proves the inner reader
+        # performed source/naming/team validation on this unchanged snapshot.
+        # Independent installed/metadata consumers retain those inner checks.
+        if coding is None:
+            _validate_source_data(conn, coding=coding)
+            # Optional org extension: validate, never install or admit it.
+            from runtime.infrastructure.team_move_store import validate_team_move_schema
+            validate_team_move_schema(conn, org_slug=expected_org_slug)
+    # Late validation, interruption and unsuccessful snapshot exit never reach
+    # publication. A joined writer/read view has its own success/exit boundary.
+    if owned:
+        from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
+        for file_key, last_id in collected:
+            _advance_audit_log_watermark(conn, file_key, last_id)
+    elif advances is not None:
+        advances.extend(collected)
+    return layout, coding
 
 
 def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:

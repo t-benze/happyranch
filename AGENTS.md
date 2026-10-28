@@ -252,15 +252,22 @@ complete validation reconstructs fresh state, and caller-owned transactions stay
 open. Public schema readers retain their layout/None returns. Standalone
 role/import/template readers retain their existing defaults and provenance.
 
-Only the owned write-free existing-layout install_or_recover branch privately
-collects the validated audit device/inode/last-rowid. An outer Database RLock spans
-transaction exit and publication after successful COMMIT, publishing that exact
-prefix rather than a newer MAX. Validation failure, rollback, uncertain/failed
-COMMIT, interruption or detected identity/MAX regression cannot publish it.
-Caller transactions remain refused; fresh installation and public schema snapshots
-retain their behavior. Complete J/inventory/mapping/queued/source/data=False/FK/
-integrity checks remain; bounded mapping/queued paths do not trust watermarks.
-This assumes cooperative insert-only history, not arbitrary same-UID rewrites.
+Startup install_or_recover privately collects validated audit device/inode/last-rowid
+and publishes only after positive COMMIT under the same Database RLock. Generic
+complete readers and task classification collect privately and publish that exact
+verified prefix only after all validation/classification and successful exit from
+their own read snapshot. Classification retains the Database lock through publication,
+including coding-absent recovery. Joined writer/savepoint/coherent-view readers do
+not publish automatically; private collectors are output for explicit cooperating
+owners, never validation proof. Failure, reconciliation, interruption, unsuccessful
+snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression cannot
+publish. Independent installed/metadata readers retain source/naming/team/document
+checks, including validate_data=False with coding present. The generic wrapper omits
+only duplicate source/team checks proven by its own same-snapshot coding inventory;
+absent/unproven coding retains them. Physical/FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Expected coding rows revalidate
+below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
+same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
 
 PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
 with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at
