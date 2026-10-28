@@ -528,6 +528,12 @@ def _validate_coding_data(conn: sqlite3.Connection, *, layout: str,
                     (('text', 'blob', 'integer', 'real', 'null'),) * len(columns), budget,
                     where=where, args=args):
                 data = dict(zip(columns, row[:len(columns)], strict=True))
+                # Reserve encode_row/base64/canonical intermediates before
+                # comparing the complete downstream row with queued history.
+                from runtime.workflows._coding_release_history import _copies, _steps
+                _steps(budget, 4 * len(columns))
+                _copies(budget, 12 * sum(len(value) for value in data.values()
+                                        if type(value) in (str, bytes)))
                 if queued is None or not queued.matches(table, data):
                     raise ValueError('workflow_coding_downstream_row_mismatch')
     # Empty J is still a complete coding read: absence must not replenish or
