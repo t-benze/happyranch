@@ -16,6 +16,30 @@ transport remains `@founder`. Metadata failure gives ID-only context.
 
 # start-task
 
+## Fresh work after failure (Founder THR-291 seq557)
+
+After a failed attempt, dispatch a fresh task by default with a complete brief
+and references to prior findings, failures and spent allowances. A new manager
+task can commission independent QA of a saved design when the earlier reviewer
+returned no verdict/output; the design is the assessment subject, not partial
+reviewer work. No cross-root ancestry repair is needed just for that assessment.
+
+Use a linked retry only to continue partial work or account for an attempt that
+may still be running. Inspect relevant effects and ownership in proportion to
+the proposed work to prevent conflicting execution. Preserve partial edits,
+PRs/results, failed history, genuine uncertainty and existing active owners;
+terminal status or a missing PID alone proves no cleanup. Fresh independent
+work has no universal reconciliation or full-census prerequisite.
+
+Fresh numbering preserves existing authorization, holds and consumed/remaining
+attempt/resource budgets; it cannot conceal failures, replenish allowances,
+revive terminal tasks or authorize duplicate execution. Review, QA, hooks and
+guarded merge remain required. This rule supersedes contrary operating advice,
+not runtime checks: installed same-parent/same-agent admission may still require
+a valid retry link. Report an actual refusal without fabricating links, changing
+history or claiming a fresh-task bypass. No deploy/restart or live reconciliation
+is required to adopt this operating rule.
+
 
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
 Its only supported content is a JSON object containing exactly `stop` with a
@@ -494,13 +518,18 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
      follow-up delegate after join, never a fan-out child.
      Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`
      metadata and wakes once when all children are terminal.
-     When retrying a failed child, each retrying child MUST include
+     Apply the fresh-work rule above when choosing independent work versus a
+     linked continuation. For an intentional linked retry, each child includes
      `children[].revisit_of_task_id`: the FAILED child of this parent assigned
      to the same agent, or a FAILED child assigned to the same agent under a
      predecessor root connected to the current root by the runtime's bounded,
-     recorded-supersession verifier. A missing or invalid link rejects the
-     WHOLE fanout before any child is spawned. A retrying `delegate` follows
-     the same rule. The link
+     recorded-supersession verifier. Installed native checks also require a
+     valid link when this parent has a FAILED same-agent child;
+     a missing or invalid required link rejects the WHOLE fanout before any
+     child is spawned. A `delegate` follows the same mechanical rule. Report
+     that constraint if it refuses the selected route; do not invent a link
+     or require cross-root repair just to obtain an independent assessment.
+     The link
      never reparents or rewrites the failed child, and an unresolved local
      failure cannot be bypassed with a remote historical link. A repeated
      failed slice wakes its owning manager for a revised-work or escalation
