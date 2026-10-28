@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import time
+import threading
 from datetime import datetime, timezone
 from contextlib import contextmanager, nullcontext, ExitStack, closing
 from contextvars import ContextVar
@@ -96,9 +97,189 @@ def producer_admission_writer(org: Any, writer: Any) -> Iterator[None]:
         yield
 
 
-async def await_producer_worker(native: Any) -> Any:
+class _ProducerWorkerOwner:
+    """Original submission, callable and preparation custody; never a retry."""
+
+    def __init__(self, org, preparation, loop):
+        self.org, self.preparation, self.loop = org, preparation, loop
+        self.lock = threading.Lock()
+        self.finished = self.handed_off = self.acknowledged = False
+        self.finish_requested = self.finish_started = self.retirement_started = False
+        self.deferred = self.failed = False
+        self.result = self.primary = self.traceback = None
+        self.errors = dict.fromkeys(("submission", "wrapper", "native", "handoff", "settlement", "retirement"))
+        self.error_tracebacks = self.errors.copy()
+        self.error_order = []
+        self.noted = set()
+        self.diagnostic_error = None
+
+    def _annotate_locked(self):
+        if self.primary is None:
+            return
+        try:
+            BaseException.__setattr__(self.primary, "_native_producer_worker_owner", self)
+        except BaseException as error:
+            self.diagnostic_error = self.diagnostic_error or error
+        for kind in self.error_order:
+            error = self.errors[kind]
+            if error is not self.primary and kind not in self.noted:
+                try:
+                    BaseException.add_note(self.primary,
+                        f"native producer {kind} failed: {type(error).__name__[:128]}; "
+                        "actual exception retained by original worker owner")
+                except BaseException as diagnostic:
+                    self.diagnostic_error = self.diagnostic_error or diagnostic
+                self.noted.add(kind)
+
+    def _fail_locked(self, kind, error):
+        if self.errors[kind] is None:
+            self.errors[kind] = error
+            self.error_tracebacks[kind] = error.__traceback__
+            self.error_order.append(kind)  # Six fixed actual-error slots.
+        self._annotate_locked()
+
+    def fail(self, kind, error):
+        with self.lock:
+            self._fail_locked(kind, error)
+
+    def remember_primary(self, error):
+        # Only the original waiter chooses its first cause. Native diagnostics
+        # and loop callbacks cannot win by running before submit returns/raises.
+        with self.lock:
+            if self.primary is None:
+                self.primary, self.traceback = error, error.__traceback__
+            self._annotate_locked()
+
+    def run(self, function):
+        try:
+            self.result = function()
+            return self.result
+        except BaseException as error:
+            self.fail("native", error)
+            raise
+        finally:
+            # Serialize post success with its acknowledgement. Enqueue followed
+            # by a posting exception is not a successful loop handoff.
+            with self.lock:
+                self.finished = True
+                try:
+                    self.loop.call_soon_threadsafe(self.acknowledge)
+                except BaseException as error:
+                    self._fail_locked("handoff", error)
+                else:
+                    self.handed_off = True
+
+    def acknowledge(self):
+        # Original loop only, never called by the native worker directly.
+        with self.lock:
+            if not self.finished or not self.handed_off or self.acknowledged:
+                return
+            self.acknowledged = True
+            finish = self.finish_requested
+        if self.preparation is None:
+            self.retire()
+        elif finish:
+            try:
+                self.preparation.finish(deferred=self.deferred, failed=self.failed)
+            except BaseException as error:
+                self.fail("settlement", error)
+                # Keep actual late errors even when there is no live waiter.
+                try:
+                    logger.exception('Retaining original native producer preparation after late finish failure')
+                except BaseException as diagnostic:
+                    with self.lock:
+                        self.diagnostic_error = self.diagnostic_error or diagnostic
+
+    def request_finish(self, *, deferred, failed):
+        # This request survives outer runner unwind. It is NOT settlement or
+        # native completion, and cannot close repository preparation early.
+        with self.lock:
+            if not self.finish_requested:
+                self.finish_requested = True
+                self.deferred = deferred
+                self.failed = failed or not self.acknowledged
+            if not self.acknowledged or self.finish_started:
+                return False
+            self.finish_started = True
+            return True
+
+    def retire(self):
+        with self.lock:
+            if not self.acknowledged or self.retirement_started:
+                return
+            self.retirement_started = True
+            try:
+                if self.org is not None:
+                    self.org._release_native_task(self)
+            except BaseException as error:
+                self._fail_locked("retirement", error)
+
+    def outcome_error(self):
+        with self.lock:
+            if self.primary is None:
+                for kind in ("native", "handoff", "settlement", "retirement"):
+                    if self.errors[kind] is not None:
+                        self.primary = self.errors[kind]
+                        self.traceback = self.error_tracebacks[kind]
+                        break
+            self._annotate_locked()
+            return self.primary, self.traceback
+
+
+async def _await_original_producer(function, *, org, preparation, loop):
+    import asyncio
+    from runtime.daemon.startup_recovery import StartupUnavailable
+    if loop is not asyncio.get_running_loop():
+        raise StartupUnavailable("startup_producer_loop_changed")
+    if preparation is not None and (org is None or preparation._native_worker_owner is not None):
+        raise StartupUnavailable("startup_producer_worker_owner_changed")
+    owner = _ProducerWorkerOwner(org, preparation, loop)
+    if org is not None and not org._acquire_native_task(owner):
+        raise StartupUnavailable("startup_producer_admission_closed")
+    if preparation is not None:
+        preparation._native_worker_owner = owner
+    try:
+        native = loop.run_in_executor(None, owner.run, function)
+    except BaseException as error:
+        owner.remember_primary(error)
+        owner.fail("submission", error)
+        # A Future was not returned; the callable may still enter later.
+        # Never wait for possibly nonexistent work or manufacture no-run proof.
+        owner.acknowledge()
+        raise
+    while True:
+        try:
+            await asyncio.shield(native)
+            break
+        except asyncio.CancelledError as error:
+            owner.remember_primary(error)
+            if native.done():
+                break
+        except BaseException as error:
+            owner.remember_primary(error)
+            break
+    try:
+        result = native.result()
+    except BaseException as error:
+        owner.remember_primary(error)
+        owner.fail("wrapper", error)
+        result = None
+    owner.acknowledge()
+    error, traceback = owner.outcome_error()
+    if error is None and not owner.acknowledged:
+        owner.remember_primary(StartupUnavailable("startup_producer_native_unsettled"))
+        error, traceback = owner.outcome_error()
+    if error is not None:
+        raise error.with_traceback(traceback)
+    return result
+
+
+async def await_producer_worker(native: Any, *, org=None, preparation=None, loop=None) -> Any:
     """Keep the existing runner/native owner until its original worker ends."""
     import asyncio
+    if callable(native):
+        return await _await_original_producer(native, org=org, preparation=preparation,
+            loop=asyncio.get_running_loop() if loop is None else loop)
     cancellation = None
     while True:
         try:
@@ -273,6 +454,7 @@ class ProducerPreparation:
         self.executor = self.model = None
         self.attempt_open = False
         self.safe_defer = False
+        self._native_worker_owner = None
 
         self._repository_preparations = {}
         self._repository_effect_intervals = []
@@ -474,15 +656,33 @@ class ProducerPreparation:
             _current.reset(token)
 
     def finish(self, *, deferred=False, failed=False):
+        worker = self._native_worker_owner
+        if worker is not None:
+            if not worker.request_finish(deferred=deferred, failed=failed):
+                return
+            deferred, failed = worker.deferred, worker.failed
         failed = failed or any(not v.closed for v in self._repository_preparations.values())
-        with self.admission.db._lock:
-            if self.attempt_open:
-                self.direct_terminal()
-            self.save(producer_settled=True, deferred=deferred,
-                failed_cleanup=self.state.failed_cleanup or failed)
-            self.owner_live = False
-            if all(v.closed for v in self._repository_preparations.values()):
-                self.admission.live.pop((self.state.kind, self.state.source_id), None)
+        try:
+            with self.admission.db._lock:
+                if worker is not None and (not self.owner_live or
+                        self.admission.live.get((self.state.kind, self.state.source_id)) is not self):
+                    raise DeferredTeamMove('team_move_producer_worker_owner_changed')
+                if self.attempt_open:
+                    self.direct_terminal()
+                self.save(producer_settled=True, deferred=deferred,
+                    failed_cleanup=self.state.failed_cleanup or failed)
+                self.owner_live = False
+                if all(v.closed for v in self._repository_preparations.values()):
+                    self.admission.live.pop((self.state.kind, self.state.source_id), None)
+        except BaseException as error:
+            if worker is not None:
+                worker.fail("settlement", error)
+            raise
+        if worker is not None:
+            worker.retire()
+            error, traceback = worker.outcome_error()
+            if error is not None and worker.errors["retirement"] is not None:
+                raise error.with_traceback(traceback)
 
 
 class _DeferredJob:
@@ -914,7 +1114,14 @@ async def run_native_producer(org, kind, source_id, action):
             return
         require_producer_admission(org)
         return await action(owner)
-    except DeferredTeamMove:
+    except DeferredTeamMove as exc:
+        worker = None if owner is None else owner._native_worker_owner
+        if worker is not None and any(worker.errors[kind] is exc
+                for kind in ("submission", "handoff", "settlement", "retirement")):
+            # Submission/handoff/settlement uncertainty is not a genuine
+            # native validation-only move deferral, even with the same type.
+            primary, failed = exc, True
+            raise
         deferred = True  # owner rows remain unchanged; no failure/callback
     except BaseException as exc:
         from runtime.daemon.startup_recovery import StartupUnavailable
@@ -924,13 +1131,24 @@ async def run_native_producer(org, kind, source_id, action):
         raise
     finally:
         if owner is not None:
+            worker = owner._native_worker_owner
+            if worker is not None and primary is not None:
+                worker.remember_primary(primary)
             try:
                 owner.finish(deferred=deferred, failed=failed)
             except BaseException as settlement:
                 if primary is None:
                     raise
-                primary.add_note(f'native producer evidence failed: {settlement}')
-                logger.exception('Retaining native producer ownership after evidence failure')
+                if worker is not None:
+                    worker.fail("settlement", settlement)
+                    try:
+                        logger.exception('Retaining native producer ownership after evidence failure')
+                    except BaseException as diagnostic:
+                        with worker.lock:
+                            worker.diagnostic_error = worker.diagnostic_error or diagnostic
+                else:
+                    primary.add_note(f'native producer evidence failed: {settlement}')
+                    logger.exception('Retaining native producer ownership after evidence failure')
 
 
 class _BoundProducerExecutor:

@@ -449,8 +449,7 @@ async def _run_schedule(
             payload=result,
         )
 
-    outcome = await await_producer_worker(loop.run_in_executor(
-        None,
+    outcome = await await_producer_worker(
         lambda: host_supervisor.run(
             AdmissionRequest(
                 org=org_state.slug,
@@ -467,7 +466,8 @@ async def _run_schedule(
             pre_launch_validator=_pre_launch_validator,
             final_prelaunch_validator=_move_owner,
         ),
-    ))
+        org=org_state, preparation=_move_owner, loop=loop,
+    )
     # ``outcome.payload`` is the launch body's LaunchResult; its own
     # ``payload`` is the executor's ExecutorResult. A pre-launch terminal
     # winner (SHUTDOWN/CANCELLED) leaves ``outcome.payload`` None: nothing

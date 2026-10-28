@@ -169,6 +169,26 @@ retain their original service epoch and skip a saved org only after the original
 close AND removal positively recorded detachment; replacement/unknown/stop/failure
 still refuses before dequeue, without consuming queued intent.
 
+Dream/wake/schedule register their original native-user obligation before each
+of the three supervised and two standalone executor submissions. The helper
+receives the callable, selected org and actual preparation before submit can
+enqueue and then raise without returning a Future. Such a failure returns its
+original exception/traceback promptly; no worker/acknowledgement means unknown
+custody, with no resubmission, endless absent-worker wait or inferred no-run.
+Actual callable exit and successful original-loop handoff/acknowledgement must
+precede preparation finish/direct-terminal and once-only native retirement.
+An outer finish request retains the SAME live preparation/reservation and
+repository ownership until that acknowledgement; late completion can perform
+only its original requested finish, preserving sticky failed-cleanup history.
+Failed handoff, settlement or retirement retains the native close barrier.
+Registry changes stay on the original loop. The first waiter cause/traceback
+and fixed actual submission/wrapper/native/handoff/settlement/retirement errors
+survive late completion and repeated cancellation independently of bounded
+notes; callbacks do not select an earlier primary by notification order.
+Owner-absent real-org and optional offline calls retain their original behavior;
+fresh admission remains separate from independently owed host/cleanup drains.
+These producer custody changes are SOURCE only, NOT RUN / PROOF NOT RUN.
+
 Shutdown joins original maintenance operations and attempts independently owed
 host/consumer/dashboard/queue/job/service drains even after an ended error. Active
 maintenance is not an early reason to skip them. Positive final native/maintenance/

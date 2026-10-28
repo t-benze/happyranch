@@ -870,6 +870,24 @@ through wrapper cancellation; fresh admission is separate from original terminal
 cancellation, signal, cleanup and DB settlement. StartupUnavailable escapes as
 unavailable, without synthetic source failure, successful move deferral or no-op.
 Scheduled enqueue failures report the genuine committed pending/firing source.
+All three supervised dream/wake/schedule submissions and both standalone dream/
+wake submissions pass their original callable, org and actual preparation into
+the helper BEFORE executor submission. One original org-native user is retained
+even when submit enqueues and then raises without returning its Future. Return
+that exact first error/traceback promptly; absent worker/loop acknowledgement
+stays unknown/fenced, without retry, endless wait or fabricated no-run proof.
+Preparation finish/direct-terminal waits for actual callable completion AND
+successful original-loop handoff/acknowledgement. An outer finish request keeps
+the SAME live preparation, reservation and repository ownership; late positive
+acknowledgement may perform only that original finish protocol once, preserving
+sticky failed-cleanup history. Only then may original-loop native retirement
+release its close barrier. Failed handoff/settlement/retirement retains custody.
+Fixed actual submission/wrapper/native/handoff/settlement/retirement exception
+and traceback slots preserve late outcomes through repeated cancellation and
+diagnostic saturation; callbacks never elect primary by notification order.
+Org registration/retirement stays loop-only. Owner-absent real-org and optional
+offline behavior, independent host/cleanup drains and admission controls remain.
+This producer custody correction is SOURCE only, NOT RUN / PROOF NOT RUN.
 The thread breaker owns all three original offloads under the selected org's
 native-user close barrier before submission and joins its original wrapper through
 cancellation. Exceptional wrapper completion after possible enqueue is not native

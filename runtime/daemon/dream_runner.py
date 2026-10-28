@@ -370,7 +370,9 @@ async def _run_dream(
                 org_slug=org_state.slug,
                 model=model_name, reasoning_effort=reasoning_effort,
             )
-        result = await await_producer_worker(loop.run_in_executor(None, _run_uncontained))
+        result = await await_producer_worker(
+            _run_uncontained, org=org_state, preparation=_move_owner, loop=loop,
+        )
     else:
         # ── THR-207 supervised wiring: the dream session runs through the
         # daemon-wide HostSessionSupervisor (admission lease, atomic ownership
@@ -458,8 +460,7 @@ async def _run_dream(
                 payload=res,
             )
 
-        outcome = await await_producer_worker(loop.run_in_executor(
-            None,
+        outcome = await await_producer_worker(
             lambda: host_supervisor.run(
                 AdmissionRequest(
                     org=org_state.slug,
@@ -476,7 +477,8 @@ async def _run_dream(
                 pre_launch_validator=_pre_launch_validator,
                 final_prelaunch_validator=_move_owner,
             ),
-        ))
+            org=org_state, preparation=_move_owner, loop=loop,
+        )
         if outcome.terminal_reason in (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED):
             # Daemon drain / cancellation interrupted the invocation: leave the
             # RUNNING row for daemon-restart recovery
