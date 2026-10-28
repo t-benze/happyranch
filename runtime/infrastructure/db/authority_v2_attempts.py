@@ -2502,6 +2502,7 @@ class AuthorityV2AttemptsMixin:
         if self._conn.in_transaction:
             return None
         conn = self._conn
+        evaluation = None
         try:
             conn.execute("BEGIN")
             code, ctx = self._authenticate_v2_candidate_evidence_uncommitted(
@@ -2510,15 +2511,24 @@ class AuthorityV2AttemptsMixin:
                 origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
                 max_revise_rounds=max_revise_rounds,
             )
-            if code is not None:
-                return None
-            code, ctx = self._authenticate_v2_committed_policy_evidence_uncommitted(
-                root_task_id=root_task_id, manager_agent=manager_agent,
-                manager_session_id=manager_session_id, result_id=result_id,
-            )
-            return ctx["evaluation"] if code is None and ctx is not None else None
-        finally:
-            conn.rollback()
+            if code is None:
+                code, ctx = self._authenticate_v2_committed_policy_evidence_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    manager_session_id=manager_session_id, result_id=result_id,
+                )
+                if code is None and ctx is not None:
+                    evaluation = ctx["evaluation"]
+        except BaseException as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                primary.add_note("authority consumed-proof rollback also failed; custody remains uncertain")
+                raise primary
+            raise
+        # A successful read is not an authenticated selection until cleanup
+        # succeeds on the original connection. Cleanup failure escapes too.
+        conn.rollback()
+        return evaluation
 
     def _audit_authority_policy_v2_candidate_claim_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
@@ -3631,6 +3641,37 @@ class AuthorityV2AttemptsMixin:
             return True, True
         return True, False
 
+    def _classify_v2_refusal_receipt_uncommitted(
+        self, *, root_task_id: str, manager_agent: str,
+        manager_session_id: str, result_id: int,
+    ) -> tuple[bool, sqlite3.Row | None]:
+        """Read exact Q and live conflicts, retaining unrelated settled history."""
+        receipts = self._conn.execute(
+            "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+            (root_task_id, manager_agent),
+        ).fetchall()
+        matching_receipts = [
+            receipt for receipt in receipts
+            if receipt["recovery_session_id"] == manager_session_id
+        ]
+        if len(matching_receipts) > 1:
+            return False, None
+        exact_receipt = matching_receipts[0] if matching_receipts else None
+        if any(
+            receipt["recovery_session_id"] != manager_session_id
+            and receipt["state"] in ("claimed", "callback_accepted")
+            for receipt in receipts
+        ):
+            # A different live recovery obligation is never ordinary absence.
+            return False, None
+        if exact_receipt is not None and (
+            exact_receipt["accepted_result_id"] != result_id
+            or exact_receipt["accepted_result_session_id"] != manager_session_id
+            or exact_receipt["state"] not in ("callback_accepted", "callback_consumed")
+        ):
+            return False, None
+        return True, exact_receipt
+
     def _authenticate_v2_refusal_escalation_uncommitted(
         self, attempt_row: dict, *, refusal_code: str,
     ) -> str | None:
@@ -3932,36 +3973,13 @@ class AuthorityV2AttemptsMixin:
             # identity.  A task may legitimately retain settled receipts from
             # prior generations; those rows are historical evidence, not a
             # claim that the current ordinary result is recovery-owned.
-            receipts = self._conn.execute(
-                "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
-                (root_task_id, manager_agent),
-            ).fetchall()
-            matching_receipts = [
-                receipt for receipt in receipts
-                if receipt["recovery_session_id"] == manager_session_id
-            ]
-            if len(matching_receipts) > 1:
+            receipt_ok, exact_receipt = self._classify_v2_refusal_receipt_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+            )
+            if not receipt_ok:
                 _rollback()
                 return _pending("identity_mismatch")
-            exact_receipt = matching_receipts[0] if matching_receipts else None
-            if any(
-                receipt["recovery_session_id"] != manager_session_id
-                and receipt["state"] in ("claimed", "callback_accepted")
-                for receipt in receipts
-            ):
-                # A different still-live recovery obligation is not ordinary
-                # absence and must never be settled as this attempt's receipt.
-                _rollback()
-                return _pending("identity_mismatch")
-            if exact_receipt is not None:
-                if (
-                    exact_receipt["accepted_result_id"] != result_id
-                    or exact_receipt["accepted_result_session_id"] != manager_session_id
-                    or exact_receipt["state"]
-                    not in ("callback_accepted", "callback_consumed")
-                ):
-                    _rollback()
-                    return _pending("identity_mismatch")
             # Receipt identity comes from a REAL Q.  An explicit recovery
             # assertion with no actual matching receipt fails closed with no
             # task/Q/J change and never manufactures recovery-shaped evidence;

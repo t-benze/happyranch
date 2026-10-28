@@ -2922,9 +2922,12 @@ Binding mismatch/corrupt evidence stays machinery refusal. The writer rechecks
 policy eligibility independently, retains first genuine failure obligations,
 exact Q and cancelled/replaced winners, and commits all terminal effects or
 retains the prior set. Opaque failure/uncertain COMMIT retains original custody;
-rollback failure cannot replace the original exception. Startup can classify a
-fully consumed no-grant with authentic current context, but old-boot continue
-never gains live capability. Startup matches the writer's actual returned code.
+rollback failure cannot replace the original exception. Consumed-proof reads
+preserve that first cause through failed rollback on the same connection; a
+successful read returns V only after successful cleanup.
+Startup can classify a fully consumed no-grant with authentic current context,
+but old-boot continue never gains live capability. Startup matches the writer's
+actual returned code.
 
 Policy-terminal pending is `v2_refused/status=housekeeping_pending` with null
 disposition; it cannot enter ordinary escalation, recovery reconciliation,
@@ -2932,7 +2935,12 @@ dispatch acknowledgement or postcommit tails. Bare machinery `v2_pending`
 retains its existing fallback. Only the fresh committed terminal writer surfaces
 the original parsed human reason/summary. Replay/zombie policy proof requires
 the same immutable consumed prefix without live token/today's selector equality;
-old machinery-refusal reading still tolerates its genuinely missing failed
+ordinary evidence requires no exact Q, while recovery evidence requires one
+matching task/agent/session/result/result-session Q in `callback_consumed`.
+Both deny an unrelated live claimed/callback_accepted Q and retain unrelated
+settled history. The terminal replay and policy zombie proof share the read-only
+receipt classification before any zombie marker/audit write. Old
+machinery-refusal reading still tolerates its genuinely missing failed
 continuation evidence. No replay repairs missing proof or repeats notification.
 Root audit keys/task note remain closed; nonroot escalation retains FAILED to
 parent through its existing pre-hook route, without invented child K/V.

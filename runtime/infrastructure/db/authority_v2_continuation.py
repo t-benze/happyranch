@@ -5695,7 +5695,21 @@ class AuthorityV2ContinuationMixin:
         )
         if not completion_ok:
             return False
-        if recovery_claimed:
+        if attempt.refusal_code == "policy_no_continue":
+            receipt_ok, exact_receipt = self._classify_v2_refusal_receipt_uncommitted(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id, result_id=result_id,
+            )
+            if not receipt_ok:
+                return False
+            if recovery_claimed:
+                if exact_receipt is None or exact_receipt["state"] != "callback_consumed":
+                    return False
+            elif exact_receipt is not None:
+                # Ordinary policy evidence requires ordinary absence, even
+                # when an exact Q would otherwise be a valid consumed receipt.
+                return False
+        elif recovery_claimed:
             receipts = self._conn.execute(
                 """SELECT * FROM task_completion_recoveries
                    WHERE task_id=? AND agent=? AND recovery_session_id=?""",
