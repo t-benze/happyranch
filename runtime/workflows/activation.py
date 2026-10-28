@@ -13,7 +13,7 @@ from typing import Annotated, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
-from runtime.infrastructure.workflow_schema import _schema_snapshot, validate_workflow_schema
+from runtime.infrastructure.workflow_schema import _schema_snapshot
 from runtime.models import TaskRecord
 from runtime.orchestrator._paths import OrgPaths
 from runtime.workflows.draft_dispatch import append_event_uncommitted, canonical_bytes, digest
@@ -551,7 +551,7 @@ class WorkflowActivationStore:
                     principal.revalidate()
                     if isinstance(request, (DocumentActivationRequest3, ArtifactActivationRequest)):
                         from runtime.infrastructure.workflow_schema import require_author_handoff_schema
-                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                     replay = self._replay(conn, actor=actor, request=request, request_digest=request_digest)
                     if replay is not None:
                         receipt = replay
@@ -597,7 +597,10 @@ class WorkflowActivationStore:
                         context_id = _id("workflow-context", instance_id, digest(context_bytes))
                         task = TaskRecord(id=task_id, assigned_agent=bindings[author_role]["principal"],
                                           team=bindings[author_role]["team"], brief=_task_brief(frozen, inputs, template), task_type="subtask")
-                        self.db._insert_task_uncommitted(task)
+                        self.db._check_team_move_task_uncommitted(task)
+                        if not self.db._workflow_effect(conn):
+                            raise WorkflowActivationError('workflow_physical_health_held')
+                        self.db._insert_task_row_uncommitted(task)
                         conn.execute("INSERT INTO workflow_authorization_revisions VALUES (?,?,?,?,?,?,?)",
                             (authorization_id, namespace, 1, authorization_bytes, digest(authorization_bytes),
                              template.source_pin, timestamp))
@@ -634,7 +637,7 @@ class WorkflowActivationStore:
                         conn.execute(f"INSERT INTO workflow_draft_dispatch_intents ({','.join(values)}) "
                                      f"VALUES ({','.join('?' for _ in values)})", tuple(values.values()))
                         append_event_uncommitted(conn, org_slug=self.org.slug, intent_id=intent_id, kind="admitted", before=None)
-                        validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                        self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                         receipt = self._closure(conn, activation_id, actor=actor)
         return self._project(receipt)
 
@@ -647,7 +650,7 @@ class WorkflowActivationStore:
             if operation is None:
                 raise WorkflowActivationError("workflow_activation_not_found")
             try:
-                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                 return self._closure_from_validated_schema(conn, activation_id, actor=actor)
             except (ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError) as exc:
                 raise WorkflowActivationError("workflow_activation_storage_corrupt") from exc
@@ -825,7 +828,7 @@ class WorkflowActivationStore:
         instance, first = self._review_owner(conn, principal, activation_id)
         # Even empty I needs a compatible reader; absence has the existing
         # operator remedy. This validator and every downstream helper only read.
-        require_document_revision_schema(conn, expected_org_slug=self.org.slug)
+        require_document_revision_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
         context, _, _ = store._selected_authority(conn, first, capture, {'collect-review'})
         handoffs = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE intent_id=? AND org_slug=?',
                             (first['id'], self.org.slug))

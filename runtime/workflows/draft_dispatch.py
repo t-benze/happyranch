@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION, validate_workflow_schema
+from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION
 
 if TYPE_CHECKING:
     import sqlite3
@@ -93,7 +93,7 @@ class WorkflowDraftDispatcher:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
-                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -178,12 +178,14 @@ class WorkflowDraftDispatcher:
                         return None
                     self._eligible(conn, intent, capture, active_sessions)
                     claim = uuid.uuid4().hex
+                    if not self.db._workflow_effect(conn):
+                        return None
                     self._event(conn, intent, "claimed", changes={"state": "claimed", "claim_token": claim,
                                                                   "claim_owner": "workflow_dispatcher"})
                     now = datetime.now(timezone.utc).isoformat()
                     conn.execute("UPDATE tasks SET status='in_progress',updated_at=? WHERE id=?",
                                  (now, task_id))
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                    self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                     return claim
 
     def _on_loop(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
@@ -316,6 +318,8 @@ class WorkflowDraftDispatcher:
             raise DraftOwnershipError("workflow_claim_stale")
         self._eligible(conn, intent, capture, invocation.draft_sessions)
         claim = uuid.uuid4().hex
+        if not self.db._workflow_effect(conn):
+            raise DraftOwnershipError('workflow_physical_health_held')
         self._event(conn, intent, "claimed", changes={"state": "claimed", "claim_token": claim,
                                                     "claim_owner": "workflow_dispatcher"})
         intent = self._intent(conn, invocation.task.id)
@@ -323,7 +327,7 @@ class WorkflowDraftDispatcher:
                                                               "session_id": invocation.session_id})
         conn.execute("UPDATE tasks SET status='in_progress',current_session_id=?,updated_at=? WHERE id=?",
                      (invocation.session_id, datetime.now(timezone.utc).isoformat(), invocation.task.id))
-        validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+        self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
         invocation.draft_claim = claim
 
     def notify_queued(self, task_id: str, queue: Any) -> None:
@@ -411,8 +415,10 @@ class WorkflowDraftDispatcher:
                         conn.execute("UPDATE tasks SET status='pending',current_session_id=NULL WHERE id=?", (task_id,))
                         refusal = exc
                     if refusal is None:
+                        if not self.db._workflow_effect(conn):
+                            raise DraftOwnershipError('workflow_physical_health_held')
                         self._event(conn, intent, "launch_reserved", changes={"host_launch_started": 1, "session_id": session_id})
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                    self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
         if refusal is not None:
             raise refusal
 

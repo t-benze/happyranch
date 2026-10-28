@@ -2596,6 +2596,38 @@ and the retry-link validation seam. See also
 `docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
 `docs/agent-guides/orchestrator-contracts.md`.
 
+### Attached workflow physical service (THR330seq19)
+
+After actual FULL startup validation, each current OrgState/Database attachment
+owns a separate3600s scheduler and native physical-check lifetime. Ordinary
+private attached reads alone omit integrity_check; fresh FK and every semantic/
+mutable/source/document/native/coding history check remain under original budgets.
+Public/raw/direct/unknown and startup/maintenance/install/migration/reference/
+compatibility/cutover/builtin readers stay FULL. Explicit coding cancellation
+retains FULL reads and their performance cost; no semantic cache is added.
+
+One original cooperative60s includes admission/queue/open/snapshot/check/cleanup,
+without overlap/catchup/retry. Worker RO/query_only snapshot rollback and close
+plus actual native return are required before loop retirement. Cancellation
+cannot kill a thread; uncertain submission/completion/cleanup retains unsafe-close
+ownership. Shutdown fences before the first await and separately drains periodic
+work outside locks before DB close. Unload keeps C/thread and diagnostic drains
+before DB preflight and renews final preclose checks. Proved no-detach refusal
+retains the same physical service, timestamps and barriers; no unknown/retired
+native owner is reactivated. Replacement needs old closure plus fresh FULL startup.
+
+Corruption immediately holds new workflow reservations. Non-successes alert,
+never refresh last-success; age>=14400s holds at the true final effect boundary,
+including without timer progress. Timely genuine same-incarnation success after
+positive cleanup clears only physical hold. Existing Pause/settings/authority/
+native uncertainty remain independent; original settlement is not blanket held.
+No new settings, control route, environment bypass, health scan or repair exists.
+Inspect existing org listing/CLI fields described in web-and-cli.md. Engineering
+owns any separately authorized diagnosis; do not force close, reset health/journals,
+repair DBs, deploy or restart on source authority. Source/static is not loaded
+identity, activation or measurement. Behavior NOT RUN, proof PROOF NOT RUN and
+full-loop timing OWED; units RETIRED/integration SKIPPED24342/daily19UTC E2E only.
+
 ## Running The Daemon
 
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.

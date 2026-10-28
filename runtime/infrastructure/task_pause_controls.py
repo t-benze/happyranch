@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Any, Iterator
+from collections.abc import Callable
 
 
 PAUSE_SCHEMA_SQL = """CREATE TABLE task_pause_controls (
@@ -364,9 +365,12 @@ class TaskPauseStore:
             row = self.row_uncommitted(root_id)
         return row
 
-    def save_journal_uncommitted(self, row: dict) -> None:
+    def save_journal_uncommitted(self, row: dict, *,
+                                 _final_reservation: Callable[[], None] | None = None) -> None:
         raw = json.dumps(row["journal"], sort_keys=True, separators=(",", ":"), allow_nan=False)
         decode_journal(raw)
+        if _final_reservation is not None:
+            _final_reservation()
         self.db._conn.execute("UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id=?",
                               (raw, row["root_task_id"]))
 

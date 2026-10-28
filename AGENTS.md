@@ -70,6 +70,60 @@ or scratch acceptance. Those and ordinary coding admission remain root-owned.
 
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
+### Attached workflow physical checks — Option B / THR330seq19
+
+Actual FULL startup succeeds before binding a new OrgState/Database incarnation.
+Only private ordinary composition from that exact current attachment omits the
+per-call `integrity_check`; fresh FK, structure/source/digests/pins, names/teams/
+Pause, mutable task/result and complete document/native/coding histories remain
+on the original snapshot/budget. Expected audit rows still revalidate below
+natural successful-owner watermarks. Candidate-only ordinary classification is
+not complete-history proof and may not publish those watermarks. Public/raw/
+direct/unknown, builtin, installation/initializer/migration, compatibility,
+cutover and whole-reference readers remain FULL. Explicit coding cancellation
+also retains FULL reads and their performance cost. Generic Database/runtime-audit
+remain workflow-free. The required org_state FULL-validator alias is preserved.
+
+Each attachment schedules an isolated RO/query_only snapshot every3600s; one
+original cumulative cooperative60s includes admission/queue/open/scan/cleanup.
+There is no overlap, catchup or automatic retry. Corruption latches immediately;
+failed/missed/late/timeout/unavailable checks alert without refreshing success.
+Only a genuine timely same-incarnation successful full check with positive
+rollback/close and actual native return can update last-success and clear the
+physical hold. At each final new-effect reservation, age>=14400s holds even if
+the timer has not advanced;14399s alone does not. Final gates follow the last
+await and all original validation/serialization immediately before the first
+owned effect, including task move prechecks, v2 canonical mutations and Pause
+journal decode. Defaults and original authority/CAS/error/transaction semantics
+remain; no common authority/Pause writer or callback/terminal settlement hold.
+Existing valid pending owners rediscover later graph/attempt allocation without
+callback replay, new results or partial graphs. Other holds remain independent.
+
+Strong native registration is loop-owned BEFORE submit. Workers own only their
+isolated connection/result and short corruption latch; DB/reservation→latch,
+never SQL/I/O/history/await/join under it. Wrapper cancellation is not thread
+death. Ambiguous submission, missing completion or cleanup uncertainty retains
+the original unsafe-close barrier and primary/secondary causes. Scheduling
+lateness is separate. Shutdown fences before its first await and separately
+joins periodic work outside locks before DB close. Unload preserves C/thread and
+diagnostic revoke/drain before DB preflight, then renews final preclose checks.
+A proved no-detach busy refusal retains the same usable physical service; no
+retired/unknown native owner, barrier or last-success is reset. Replacement needs
+old drain/close and fresh FULL startup; old clean/corrupt results never transfer.
+
+Existing GET orgs/CLI status projects healthy/checking/alert/physical-held, age,
+category/hold, last-success, in-flight cleanup, snapshot/completion time, next due
+and separate secondary/scheduling categories. Status is observation, never
+permission or semantic/serving-byte acceptance. No status-triggered DB scan or
+new endpoint exists. Unsafe close/corruption/stale state requires Engineering's
+existing separately authorized diagnosis; do not clear journals, reset health,
+force unload, repair DBs or restart on this source contract's authority.
+Source/static delivery is not loaded activation or measured performance. B01–B28/
+R1–R3 behavior NOT RUN; causal proof PROOF NOT RUN; full-loop timing remains OWED.
+Python units RETIRED; integration SKIPPED24342; E2E scheduled19UTC only. No new
+proof harness, live operation, reaper thread or test/build merge gate follows.
+
+
 Normal `OrgState.load` installs the unchanged four coding tables beside each
 normally admitted org's supported document foundation. Fresh F plus coding is
 one `Database.workflow_schema_transaction`; existing complete storage is
@@ -309,8 +363,10 @@ snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression canno
 publish. Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper omits
 only duplicate source/team checks proven by its own same-snapshot coding inventory;
-absent/unproven coding retains them. Physical/FK, native/mutable and complete history
-checks and the original cumulative allowance remain. Expected coding rows revalidate
+absent/unproven coding retains them. Fresh FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Only ordinary physically bound
+attachment reads select the physical exception described above; independent readers
+stay FULL. Expected coding rows revalidate
 below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
 same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
 

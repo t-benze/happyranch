@@ -401,6 +401,9 @@ async def _lifespan(app: FastAPI):
         )
         _dashboard_tasks.append(task)
 
+    for org in state.orgs.values():
+        if org.workflow_physical_health is not None:
+            org.workflow_physical_health.start_scheduler()
     try:
         yield
     finally:
@@ -408,6 +411,7 @@ async def _lifespan(app: FastAPI):
         # attachment before the first shutdown await. Native owners remain live
         # through worker completion, effects unwind and their final settlement.
         state._stop_runner_admission()
+        await state._drain_workflow_physical_health()
         # C native work/outer retirement must be positively idle before host
         # shutdown. Revoke or drain failure forbids every close fallthrough.
         await state._drain_thread_releases()

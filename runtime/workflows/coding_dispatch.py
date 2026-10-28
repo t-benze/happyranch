@@ -75,7 +75,7 @@ class CodingDispatcher:
     def _entry(self, conn: Any, task_id: str, *, budget: _Budget | None = None) -> dict:
         _check(budget is None or type(budget) is _Budget)
         budget = _Budget() if budget is None else budget
-        saved = queued_storage(conn, self.org.slug, budget=budget)
+        saved = queued_storage(conn, self.org.slug, budget=budget, _database=self.db)
         return self._selected_entry(saved, task_id, budget)
 
     def _selected_entry(self, saved: Any, task_id: str, budget: _Budget) -> dict:
@@ -98,8 +98,7 @@ class CodingDispatcher:
             budget = _Budget()
             try:
                 yield conn, budget
-                from runtime.infrastructure.workflow_schema import _read_workflow_schema
-                _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
+                self.db._workflow_read(conn, expected_org_slug=self.org.slug, budget=budget)
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -409,6 +408,9 @@ class CodingDispatcher:
                 attempt_id=entry['attempt']['id'], revision=entry['attempt']['revision'])
         _check(len(_canonical(result)) <= 4194304)
         _check(conn.in_transaction)
+        if not callback:
+            if not self.db._workflow_effect(conn):
+                raise CodingStartError('workflow_physical_health_held')
         conn.execute('INSERT INTO workflow_admission_records VALUES (?,?,?,?,?)', tuple(result['record'][k]
             for k in ('id', 'namespace', 'generation', 'request_digest', 'admitted_by')))
         return result
@@ -760,7 +762,7 @@ class CodingDispatcher:
         from runtime.orchestrator.run_step import _RootWorktreeTransitions, _capture_root_worktree_transition, _root_worktree_batch
         transitions = _RootWorktreeTransitions()
         with self._writer() as (conn, budget):
-            saved = queued_storage(conn, self.org.slug, budget=budget)
+            saved = queued_storage(conn, self.org.slug, budget=budget, _database=self.db)
             ownership = saved.owners.get(invocation.task.id)
             if ownership is None:
                 return

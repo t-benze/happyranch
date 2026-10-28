@@ -77,7 +77,9 @@ async def list_orgs(request: Request) -> dict:
     _require_runtime(state)
     return {
         "orgs": [
-            {"slug": slug, "root": str(org.root)}
+            {"slug": slug, "root": str(org.root),
+             "workflow_physical_health": (org.workflow_physical_health.status()
+                if org.workflow_physical_health is not None else None)}
             for slug, org in sorted(state.orgs.items())
         ],
         "broken": [

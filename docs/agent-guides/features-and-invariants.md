@@ -205,10 +205,36 @@ snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression canno
 publish. Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper omits
 only duplicate source/team checks proven by its own same-snapshot coding inventory;
-absent/unproven coding retains them. Physical/FK, native/mutable and complete history
-checks and the original cumulative allowance remain. Expected coding rows revalidate
+absent/unproven coding retains them. Fresh FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Only ordinary physically bound
+attachment reads select the physical exception below; independent readers stay FULL.
+Expected coding rows revalidate
 below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
 same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
+
+### Attached-only physical validation (THR330seq19)
+
+Ordinary private Database composition omits only per-call integrity_check when
+bound to the exact current OrgState/connection/boot/file incarnation. Startup
+performs actual FULL validation before binding. Public/raw/direct/unknown,
+builtin, maintenance/install/initializer/migration/compatibility/cutover and
+whole-reference readers remain FULL; coding cancellation retains FULL cost.
+FK and all mutable/source/digest/pin/document/native/coding history checks stay
+fresh under the same snapshots, cumulative budgets and successful-owner-only
+watermarks. Candidate-only classification never certifies complete history.
+
+An isolated RO snapshot runs every3600s with one cooperative60s allowance through
+queue/open/check/rollback/close. No overlap, catchup or auto-retry. Corruption
+holds new effects immediately; other non-successes alert without resetting
+last-success. A final reservation recomputes age:14399s is admissible for staleness
+alone,14400s holds without waiting for a timer. Timely genuine same-incarnation
+success after actual native return and cleanup clears only the physical hold.
+Original staging, INTEGER callbacks, terminal and positive outer settlement keep
+their predicates; later graph/attempt effects wait at existing pending owners.
+Behavior/proof remains NOT RUN/PROOF NOT RUN; static delivery is not loaded
+acceptance, activation or full-loop timing. See AGENTS.md's Option B contract.
+
+
 
 PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
 with independent TASK12436 APPROVE and synthetic executable TASK12438 PASS at

@@ -117,12 +117,20 @@ class DaemonState:
         for current in self.orgs.values() if org is None else (org,):
             current._assert_cleanup_diagnostics_idle()
 
+    async def _drain_workflow_physical_health(self) -> None:
+        # No DB/org/state lock crosses native return or connection cleanup.
+        for org in tuple(self.orgs.values()):
+            if org.workflow_physical_health is not None:
+                await org.workflow_physical_health.drain()
+
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
         self._runner_shutdown = True
         self.queue.close_admission()
         for org in self.orgs.values():
             org._runner_admission_closed = True
+            if org.workflow_physical_health is not None:
+                org.workflow_physical_health.fence()
         # Finite C revoke; incomplete acquisition raises BEFORE host shutdown.
         self._revoke_thread_releases()
 
@@ -276,6 +284,15 @@ class DaemonState:
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(state.host_supervisor)
             state.orgs[slug] = org
+            try:
+                org.workflow_physical_health.attach(state)
+            except BaseException as primary:
+                state.orgs.pop(slug, None)
+                try:
+                    org.close()
+                except BaseException as cleanup:
+                    primary.add_note('unpublished physical attachment close failed: ' + type(cleanup).__name__)
+                raise
         assert state.profile_coordinator is not None
         for org in state.orgs.values():
             # Keep the established route-call signatures intact: org-scoped
@@ -371,9 +388,14 @@ class DaemonState:
                         self.orgs[slug] = org
                 else:
                     self.orgs[slug] = org
-            except Exception:
+                org.workflow_physical_health.attach(self)
+                org.workflow_physical_health.start_scheduler()
+            except BaseException as primary:
                 self.orgs.pop(slug, None)
-                org.close()
+                try:
+                    org.close()
+                except BaseException as cleanup:
+                    primary.add_note('unpublished physical attachment close failed: ' + type(cleanup).__name__)
                 raise
             # New/dynamic attachments never inherit a boot diagnostic pass.
             org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
@@ -432,12 +454,30 @@ class DaemonState:
             self._assert_attachments_unchanged(captured)
             current = self._assert_can_remove_org(slug)
             if current is not None:
+                current.workflow_physical_health.fence()
+        if current is None:
+            return
+        physical = current.workflow_physical_health
+        # A no-detach refusal must keep the SAME positively retained service.
+        # Do not retire its executor before the final synchronous preclose check.
+        await physical.drain(_retire=False)
+        try:
+            async with self.orgs_lock:
+                self._assert_attachments_unchanged(captured)
+                retained = self._assert_can_remove_org(slug)
+                if retained is not current:
+                    raise _OrgBusyError("org_attachment_changed")
                 current.close()
                 self.orgs.pop(slug)
+        except BaseException:
+            if not self._runner_shutdown and self.orgs.get(slug) is current:
+                physical._resume_retained_attachment()
+            raise
 
     async def close_all(self) -> None:
         self._stop_runner_admission()
         captured = self._capture_attachments()
+        await self._drain_workflow_physical_health()
         await self._drain_thread_releases()
         self._assert_attachments_unchanged(captured)
         self._revoke_cleanup_diagnostics()

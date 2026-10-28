@@ -203,6 +203,8 @@ def _admission(dispatcher: Any, conn: Any, entry: dict, capture: Any, sessions: 
         result.update(format='workflow-coding-edge-admission@5' if manager_retry else 'workflow-coding-edge-admission@4', destination=destination, target_revision=target,
             attempt_count=len(entry['attempts']))
     _check(len(_canonical(result)) <= 4194304)
+    if not dispatcher.db._workflow_effect(conn):
+        raise CodingStartError('workflow_physical_health_held')
     conn.execute('INSERT INTO workflow_admission_records VALUES (?,?,?,?,?)', tuple(record.values()))
     return result
 
@@ -349,8 +351,7 @@ def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: i
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
     # New state is independently reread on the SAME cumulative allowance after
     # the first mutation; no pre-write inventory is trusted as target closure.
-    from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    _, target = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
+    _, target = dispatcher.db._workflow_read(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
     _check(target is not None)
     return task_id
 
@@ -481,7 +482,7 @@ def notify_returned(dispatcher: Any, instance: str) -> bool:
     from runtime.models import TaskStatus
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _maybe_post_thread_followup
     with dispatcher.db._lock:
-        entry = queued_storage(dispatcher.db._conn, dispatcher.org.slug).runs[instance]
+        entry = queued_storage(dispatcher.db._conn, dispatcher.org.slug, _database=dispatcher.db).runs[instance]
         if not entry['native'].get('returned'):
             return False
         source_id = entry['source']['task_id']
@@ -517,7 +518,7 @@ async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
     require_ready(dispatcher.org)
     org, db = dispatcher.org, dispatcher.db
     with db._lock:
-        entry = queued_storage(db._conn, org.slug).runs[instance]
+        entry = queued_storage(db._conn, org.slug, _database=db).runs[instance]
     if (entry['attempt']['state'] == 'queued' and entry['run']['state'] == entry['attempt']['stage']
             and entry['native']['source_settled'] and entry['native']['claim'] is None
             and entry['native']['host'] is None and not entry['native'].get('ownership_unknown')):

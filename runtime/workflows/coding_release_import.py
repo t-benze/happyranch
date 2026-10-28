@@ -184,6 +184,8 @@ class CodingReleaseImportStore:
                         # Existing six native relations, one authentic transaction.
                         # All identifiers/columns/values derive from this closed
                         # server-selected family; no caller SQL or definition.
+                        if not self.db._workflow_effect(conn):
+                            raise CodingReleaseImportError('workflow_physical_health_held')
                         for table, row in rows.rows:
                             columns = ','.join(row)
                             placeholders = ','.join('?' for _ in row)

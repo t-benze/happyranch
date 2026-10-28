@@ -13,7 +13,7 @@ from pydantic import Field, StrictBool, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import (
     _DRAFT_MUTABLE, _handoff_record, _records, _stored_json,
-    require_author_handoff_schema, validate_workflow_schema,
+    require_author_handoff_schema,
 )
 from runtime.models import TaskRecord
 from runtime.workflows.activation import (
@@ -492,7 +492,7 @@ class WorkflowSubmissionStore:
                         if (capture.ready.generation != intent['authority_generation']
                                 or capture.ready.snapshot_digest != intent['authority_digest']):
                             raise WorkflowActivationError('workflow_activation_authority_stale')
-                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                         if conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
                             raise WorkflowActivationError('workflow_new_runs_disabled')
                         conflicts = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE '
@@ -513,7 +513,7 @@ class WorkflowSubmissionStore:
                         else:
                             row = self._reservation(conn, intent, command, candidate, capture)
                             _insert(conn, 'workflow_author_handoffs', row)
-                            validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                            self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                             receipt = self._projection(conn, row, capture, replayed=False)
         return receipt
 
@@ -626,7 +626,7 @@ class WorkflowSubmissionStore:
         async with self._lock:
             async with self.org.db_lock:
                 with self.org.workflow_authority.admission_writer(capture) as conn:
-                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                     row = _record(conn, 'workflow_author_handoffs', handoff_id)
                     proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
                     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
@@ -650,7 +650,7 @@ class WorkflowSubmissionStore:
                     if validate_handoff_graph(conn, row, proof) is not None:
                         return []
                     notifications = self._graph(conn, row, proof, context, binding, grant, intent, result)
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                    self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
         return notifications
 
     def _graph(self, conn: sqlite3.Connection, row: dict, proof: dict, context: dict, binding: dict,
@@ -671,6 +671,8 @@ class WorkflowSubmissionStore:
                                              pins=proof['pins'], source_result_id=result['id'])
         if candidate.review_key != projected.review_key:
             raise ValueError('workflow_author_handoff_storage_corrupt')
+        if not self.db._workflow_effect(conn):
+            return []
         _insert(conn, 'workflow_submissions', submission)
         operation = dict(submission_id=row['submission_id'], org_slug=self.org.slug, principal=row['principal'],
                          operation_key=row['operation_key'], request_digest=row['request_digest'], instance_id=row['instance_id'],
@@ -779,7 +781,7 @@ class WorkflowSubmissionStore:
         # Only absent H needs operator guidance here. Present H is fully
         # validated AFTER selected scope/grant/current-authority admission.
         if not conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_author_handoffs'").fetchone():
-            require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+            require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
 
     def _read_grant(self, conn: sqlite3.Connection, intent: dict, actions: set[str],
                     owner: WorkflowTemplatePrincipal | None = None) -> None:
@@ -970,7 +972,7 @@ class WorkflowSubmissionStore:
                             self._selected_authority(conn, intent, capture, actions)
                         else:
                             self._authority(conn, intent, capture, actions)
-                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                         proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
                         if lane == 'request-agent':
                             graph = validate_handoff_graph(conn, row, proof)
@@ -1014,7 +1016,7 @@ class WorkflowSubmissionStore:
                             self.org.workflow_review_receipts._human_principal(principal)
                         request, row, intent = self._select_request(conn, **selection)
                         self._selected_authority(conn, intent, capture, {'collect-review'}) if human else self._authority(conn, intent, capture, {'collect-review'})
-                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                         scope = json.loads(request['request_scope_bytes'])
                         if scope['kind'] != ('human' if human else 'agent'):
                             raise ValueError('workflow_author_handoff_storage_corrupt')

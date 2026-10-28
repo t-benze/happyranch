@@ -416,7 +416,7 @@ class WorkflowTemplateStore:
                 principal.revalidate()
                 if compiler_pin in ("workflow-compiler@3", "workflow-compiler@4"):
                     from runtime.infrastructure.workflow_schema import require_author_handoff_schema
-                    require_author_handoff_schema(conn, expected_org_slug=org_slug)
+                    require_author_handoff_schema(conn, expected_org_slug=org_slug, _database=self._db)
                 prior = conn.execute(
                     "SELECT request_digest,template_identity_id,result_version,template_version_id "
                     "FROM workflow_template_publish_operations "
@@ -443,10 +443,6 @@ class WorkflowTemplateStore:
                 if identity is None:
                     if expected_current_version != 0:
                         raise WorkflowTemplateError("template_version_cas_stale")
-                    conn.execute(
-                        "INSERT INTO workflow_template_identities VALUES (?,?,?,?,?,?)",
-                        (identity_id, namespace, name, 0, "active", published_at),
-                    )
                     current = 0
                 else:
                     if (
@@ -472,6 +468,13 @@ class WorkflowTemplateStore:
                 version_id = _stable_id(
                     "workflow-template-version", identity_id, version, content_digest,
                 )
+                if not self._db._workflow_effect(conn):
+                    raise WorkflowTemplateError('workflow_physical_health_held')
+                if identity is None:
+                    conn.execute(
+                        "INSERT INTO workflow_template_identities VALUES (?,?,?,?,?,?)",
+                        (identity_id, namespace, name, 0, "active", published_at),
+                    )
                 conn.execute(
                     "INSERT INTO workflow_template_drafts VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -535,7 +538,7 @@ class WorkflowTemplateStore:
             if template_name != 'coding' or type(version) is not int or version != 1:
                 raise WorkflowTemplateError('template_version_not_found')
             with self._db._lock:
-                return self._read_release(self._db._conn, org_slug=org_slug)
+                return self._read_release(self._db._conn, org_slug=org_slug, _database=self._db)
         expected_prefix = f"org/{_component(org_slug, code='invalid_template_namespace')}/team/"
         if not isinstance(namespace, str) or not namespace.startswith(expected_prefix):
             raise WorkflowTemplateError("invalid_template_namespace")
@@ -557,7 +560,7 @@ class WorkflowTemplateStore:
     ) -> tuple[WorkflowTemplateVersion, ...]:
         if namespace == 'release/happyranch':
             with self._db._lock:
-                item = self._read_release(self._db._conn, org_slug=org_slug, allow_absent=True)
+                item = self._read_release(self._db._conn, org_slug=org_slug, allow_absent=True, _database=self._db)
                 return () if item is None else (item,)
         prefix = f"org/{_component(org_slug, code='invalid_template_namespace')}/team/"
         if not isinstance(namespace, str) or not namespace.startswith(prefix):
@@ -580,12 +583,12 @@ class WorkflowTemplateStore:
                 )
                 for row in rows
             )
-            imported = self._read_release(self._db._conn, org_slug=org_slug, allow_absent=True)
+            imported = self._read_release(self._db._conn, org_slug=org_slug, allow_absent=True, _database=self._db)
             return result + (() if imported is None else (imported,))
 
     @staticmethod
     def _read_release(conn: sqlite3.Connection, *, org_slug: str | None,
-                      allow_absent: bool = False) -> WorkflowTemplateVersion | None:
+                      allow_absent: bool = False, _database: Database | None = None) -> WorkflowTemplateVersion | None:
         from runtime.workflows._coding_registered_release import read_registered_release
         from runtime.workflows.coding_authority_history import _Budget
         budget = _Budget()
@@ -604,7 +607,8 @@ class WorkflowTemplateStore:
                     raise WorkflowTemplateError('template_version_not_found')
                 org_slug = discovered.org_slug
             from runtime.infrastructure.workflow_schema import _read_workflow_schema
-            _, coding = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget)
+            reader = _read_workflow_schema if _database is None else _database._workflow_read
+            _, coding = reader(conn, expected_org_slug=org_slug, budget=budget)
             if coding is None or coding.release is None:
                 if allow_absent:
                     return None

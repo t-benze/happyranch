@@ -162,7 +162,7 @@ def collect_in_writer(store: Any, conn: sqlite3.Connection, handoff_id: str, cap
                 owner_principal=_record(conn, 'workflow_instances', row['instance_id'])['owner_principal'],
                 required_action='reconcile_source_or_authority')
         raise
-    require_author_handoff_schema(conn, expected_org_slug=store.org.slug)
+    require_author_handoff_schema(conn, expected_org_slug=store.org.slug, _database=store.db)
     from runtime.workflows.submissions import subject_proof
     proof = subject_proof(conn, row)
     graph = validate_handoff_graph(conn, row, proof)
@@ -181,6 +181,8 @@ def collect_in_writer(store: Any, conn: sqlite3.Connection, handoff_id: str, cap
         event = dict(id=_id('workflow-event', row['instance_id'], row['revision'], 'joined'),
             instance_id=row['instance_id'], revision=row['revision'], event_kind='joined',
             event_bytes=raw, event_digest=digest(raw), created_at=now)
+        if not store.db._workflow_effect(conn):
+            return dict(current, validity="held", approved_use=False, reason="workflow_physical_health_held")
         _insert(conn, 'workflow_events', event)
         _insert(conn, 'workflow_operation_replays', _replay(row, graph, event))
         conn.execute("UPDATE workflow_rounds SET state='closed' WHERE id=? AND state='reviewing'", (graph['round_id'],))

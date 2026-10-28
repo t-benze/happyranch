@@ -1935,8 +1935,7 @@ class Database(
                         budget=coding_budget):
                     self._conn.rollback()
                     return False
-                from runtime.infrastructure.workflow_schema import _read_workflow_schema
-                _read_workflow_schema(self._conn, expected_org_slug=coding.org.slug, budget=coding_budget)
+                self._workflow_read(self._conn, expected_org_slug=coding.org.slug, budget=coding_budget)
                 self._conn.commit()
                 return True
             if ownership.kind == 'f5':
@@ -1977,8 +1976,7 @@ class Database(
                         task_id=task_id, agent=agent, session_id=session_id, result_id=result_id,
                         admission=v2_admission, now=_now().isoformat(),
                     )
-                from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                validate_workflow_schema(self._conn, expected_org_slug=drafts.org.slug)
+                self._workflow_validate(self._conn, expected_org_slug=drafts.org.slug)
                 self._conn.commit()
                 if admitted_attempt is not None:
                     self._v2_live_attempt_owners[admitted_attempt.attempt_id] = admitted_attempt.owner_attempt_id
@@ -3011,6 +3009,29 @@ class Database(
 
 
 
+    def _workflow_read(self, conn, *, expected_org_slug, budget=None, advances=None):
+        """Ordinary composition, with FULL fallback for every unbound consumer."""
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema, _ORDINARY_ATTACHED_PHYSICAL
+        attached = getattr(self, '_workflow_physical', None)
+        physical = (_ORDINARY_ATTACHED_PHYSICAL if attached is not None and
+                    attached.matches(self, conn, expected_org_slug) else None)
+        return _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
+                                     budget=budget, advances=advances, _physical=physical)
+
+    def _workflow_validate(self, conn, *, expected_org_slug):
+        return self._workflow_read(conn, expected_org_slug=expected_org_slug)[0]
+
+    def _workflow_effect(self, conn) -> bool:
+        """Consume at the immediate synchronous new-effect owner, never as a ticket."""
+        attached = getattr(self, '_workflow_physical', None)
+        if attached is None:
+            return False
+        return attached.reserve(self, conn)
+
     @_synchronized
     def close(self) -> None:
+        physical = getattr(self, '_workflow_physical', None)
+        if physical is not None:
+            physical.assert_idle()
+            physical.invalidate()
         self._conn.close()

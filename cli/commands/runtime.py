@@ -86,6 +86,15 @@ def cmd_orgs(args: argparse.Namespace) -> None:
     body = r.json()
     for org in body["orgs"]:
         print(f"  {org['slug']:30s}  {org['root']}")
+        physical = org.get("workflow_physical_health")
+        if physical is not None:
+            print(f"    workflow physical: {physical['status']} age={physical['age_seconds']:.0f}s "
+                  f"category={physical['category']} hold={physical['hold'] or 'none'} "
+                  f"last_success={physical['last_success']} "
+                  f"in_flight_cleanup={physical['in_flight_cleanup']} "
+                  f"completed_at={physical['completed_at']} next_due_in={physical['next_due_in_seconds']:.0f}s "
+                  f"secondary={physical['secondary_category'] or 'none'} "
+                  f"scheduling={physical['scheduling_category'] or 'none'}")
     broken = body.get("broken") or []
     if broken:
         print("\nBroken (folder on disk, failed to attach):")

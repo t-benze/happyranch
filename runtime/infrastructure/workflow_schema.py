@@ -592,10 +592,12 @@ def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
     advances: list[tuple[tuple[int, int], int]] | None = None,
+    _physical: object = None, _observations: list | None = None,
 ) -> Literal["F", "E", "G", "H", "I", "J"]:
     with _schema_snapshot(conn):
         return _read_installed(conn, expected_org_slug=expected_org_slug,
-                               validate_data=validate_data, advances=advances)[0]
+                               validate_data=validate_data, advances=advances,
+                               _physical=_physical, _observations=_observations)[0]
 
 
 @contextmanager
@@ -660,6 +662,7 @@ def _read_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
     validate_data: bool = True, budget: _Budget | None = None,
     advances: list[tuple[tuple[int, int], int]] | None = None,
+    _physical: object = None, _observations: list | None = None,
 ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
     layout, coding_extension = _read_structure(conn)
 
@@ -674,7 +677,7 @@ def _read_installed(
     # on cutover's metadata path. The flag never bypasses the new boundary.
     if coding_extension:
         validate_data = True
-        _validate_source_data(conn, coding=coding)
+        _validate_source_data(conn, coding=coding, _physical=_physical, _observations=_observations)
         from runtime.identities.schema import validate_names
         from runtime.infrastructure.team_move_store import validate_team_move_schema
         validate_names(conn, org_slug=expected_org_slug)
@@ -828,10 +831,23 @@ def _stored_json(raw: object, digest: object, *, code: str = "workflow_source_da
         raise ValueError(code) from exc
 
 
-def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory | None = None) -> None:
+# Only the private attached-Database composition may select this physical mode.
+# Public/raw/install/maintenance/reference readers never infer it from a connection.
+_ORDINARY_ATTACHED_PHYSICAL = object()
+
+
+def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory | None = None,
+                          _physical: object = None,
+                          _observations: list | None = None) -> None:
     """DB-resident contracts only; historical eligibility is not re-authorized."""
-    if ([row[0] for row in conn.execute('PRAGMA integrity_check')] != ['ok']
-            or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
+    if _physical is not _ORDINARY_ATTACHED_PHYSICAL:
+        if [row[0] for row in conn.execute('PRAGMA integrity_check')] != ['ok']:
+            raise ValueError('workflow_source_data_corrupt')
+        if _observations is not None:
+            import time
+            from datetime import datetime, timezone
+            _observations.append((time.monotonic(), datetime.now(timezone.utc).isoformat()))
+    if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
         raise ValueError('workflow_source_data_corrupt')
     for table, column, digest in (
         ('workflow_template_drafts', 'definition_bytes', 'definition_digest'),
@@ -1087,18 +1103,20 @@ def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str
 def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
                           budget: _Budget | None = None,
                           advances: list[tuple[tuple[int, int], int]] | None = None,
+                          _physical: object = None, _observations: list | None = None,
                           ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
     """Complete composition; advances is output for a cooperating outer owner."""
     owned = not conn.in_transaction
     collected: list[tuple[tuple[int, int], int]] = []
     with _schema_snapshot(conn):
         layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug,
-                                         budget=budget, advances=collected)
+                                         budget=budget, advances=collected,
+                                         _physical=_physical, _observations=_observations)
         # Only our own reconstructed coding inventory proves the inner reader
         # performed source/naming/team validation on this unchanged snapshot.
         # Independent installed/metadata consumers retain those inner checks.
         if coding is None:
-            _validate_source_data(conn, coding=coding)
+            _validate_source_data(conn, coding=coding, _physical=_physical, _observations=_observations)
             # Optional org extension: validate, never install or admit it.
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             validate_team_move_schema(conn, org_slug=expected_org_slug)
@@ -1111,6 +1129,21 @@ def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | 
     elif advances is not None:
         advances.extend(collected)
     return layout, coding
+
+
+def _capture_startup_physical(database: Database, *, expected_org_slug: str) -> tuple[tuple[float, str], tuple[int, int]]:
+    """Actual FULL read, successful snapshot exit, then expose its scan time."""
+    from runtime.daemon.workflow_physical_health import _file_identity
+    identity = _file_identity(database.db_path)
+    observations: list = []
+    with database._lock:
+        _read_workflow_schema(database._conn, expected_org_slug=expected_org_slug,
+                             _observations=observations)
+    if _file_identity(database.db_path) != identity:
+        raise ValueError("workflow_physical_startup_attachment_changed")
+    if len(observations) != 1:
+        raise ValueError('workflow_physical_startup_observation_missing')
+    return observations[0], identity
 
 
 def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
@@ -1354,9 +1387,11 @@ def author_handoff_migration_guidance() -> str:
             'F/E must use the existing approved migration to G first. Startup/reopen/enable never upgrades.')
 
 
-def require_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
+def require_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
+                                  _database: Database | None = None) -> None:
     """Readiness only; existing-org owners never install the extension."""
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) not in ('H', 'I', 'J'):
+    reader = validate_workflow_schema if _database is None else _database._workflow_validate
+    if reader(conn, expected_org_slug=expected_org_slug) not in ('H', 'I', 'J'):
         from runtime.workflows.activation import WorkflowActivationError
         raise WorkflowActivationError('workflow_author_handoff_schema_required', owner='operator',
                                       required_action=author_handoff_migration_guidance())
@@ -1855,8 +1890,10 @@ def revision_migration_guidance() -> str:
             'H source required; startup/reopen/enable never upgrades; even empty I requires compatible code.')
 
 
-def require_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) not in ('I', 'J'):
+def require_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
+                                  _database: Database | None = None) -> None:
+    reader = validate_workflow_schema if _database is None else _database._workflow_validate
+    if reader(conn, expected_org_slug=expected_org_slug) not in ('I', 'J'):
         from runtime.workflows.activation import WorkflowActivationError
         raise WorkflowActivationError('workflow_document_revision_schema_required', owner='operator',
                                       required_action=revision_migration_guidance())

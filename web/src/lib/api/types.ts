@@ -485,8 +485,23 @@ export interface KBEntry {
 // Orgs / runtime / agents (minimal shapes used by the UI today; expand later)
 // ---------------------------------------------------------------------------
 
+export interface WorkflowPhysicalHealth {
+  status: 'healthy' | 'checking' | 'alert' | 'physical-held';
+  age_seconds: number;
+  category: string;
+  hold: string | null;
+  last_success: string;
+  in_flight_cleanup: boolean;
+  snapshot_started: string | null;
+  completed_at: string | null;
+  next_due_in_seconds: number;
+  secondary_category: string | null;
+  scheduling_category: string | null;
+}
+
 export interface OrgsListResponse {
-  orgs: { slug: string; root: string }[];
+  orgs: { slug: string; root: string; workflow_physical_health?: WorkflowPhysicalHealth | null }[];
+  broken?: { slug: string; error: string }[];
 }
 
 export interface HealthResponse {
