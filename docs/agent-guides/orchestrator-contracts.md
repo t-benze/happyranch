@@ -4508,8 +4508,14 @@ Default document/profile/terminal/compensation writers remain independently owed
 
 Follow-up SYSTEM and cap/mint retain ONE original ordinary or authentic P2/P4/P6
 selection, including org/queue/epoch/phase and native owner. Selected writers
-renew after DB/BEGIN IMMEDIATE waits before fresh effects; cap projection/bump/
-mint share the same transaction. The SYSTEM commit stays separate: a later
+renew after DB/BEGIN IMMEDIATE waits before fresh effects. The concrete
+Database.append_thread_message facade accepts that SAME optional validator;
+its synchronized writer rechecks after lock acquisition, after selected BEGIN
+IMMEDIATE and after original literal-address/mention validation before insert.
+The naming decorator and mention derivation remain authoritative; default
+callers keep original BEGIN/cleanup behavior. Selected rollback failure retains
+the original cause with actual cleanup evidence. Cap projection/bump/mint share
+their original transaction. The SYSTEM commit stays separate: a later
 refusal preserves that committed marker and rolls back uncommitted cap/token
 work. Existing P2 body/tail bookkeeping, P4/P6 registered real-loop handoffs,
 SAME pending acknowledgements and cap32 remain. No coroutine submission alone

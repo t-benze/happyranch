@@ -2284,14 +2284,21 @@ class Database(
         attachments: list[ThreadAttachment] | None = None,
         sent_from_task_id: str | None = None,
         _addresses: MessageAddresses | None = None,
+        validate_admission: Callable[[], None] | None = None,
     ) -> int:
         """Facade admission for public append, before any durable effect."""
+        if validate_admission is not None:
+            validate_admission()
         try:
-            self._conn.execute('BEGIN')
+            self._conn.execute('BEGIN IMMEDIATE' if validate_admission is not None else 'BEGIN')
+            if validate_admission is not None:
+                validate_admission()
             self.validate_thread_message(_addresses)
             mentions = self._derive_conversational_mentions(
                 thread_id, speaker, kind, body_markdown, addresses=_addresses,
             )
+            if validate_admission is not None:
+                validate_admission()
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id, speaker=speaker, kind=kind,
                 body_markdown=body_markdown, decline_reason=decline_reason,
@@ -2299,8 +2306,15 @@ class Database(
                 sent_from_task_id=sent_from_task_id, mentions=mentions,
             )
             self._conn.commit()
-        except Exception:
-            self._conn.rollback()
+        except BaseException as exc:
+            if validate_admission is None and not isinstance(exc, Exception):
+                raise
+            try:
+                self._conn.rollback()
+            except BaseException as secondary:
+                if validate_admission is None:
+                    raise
+                exc.add_note(f"selected SYSTEM rollback also failed: {secondary!r}")
             raise
         return seq
 
