@@ -13,6 +13,23 @@ uncertain COMMIT is not success or proof of absence. Audit-watermark advances
 publish only after positive COMMIT under the same lock. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
 
+Startup install_or_recover privately collects validated audit device/inode/last-rowid
+and publishes only after positive COMMIT under the same Database RLock. Generic
+complete readers and task classification collect privately and publish that exact
+verified prefix only after all validation/classification and successful exit from
+their own read snapshot. Classification retains the Database lock through publication,
+including coding-absent recovery. Joined writer/savepoint/coherent-view readers do
+not publish automatically; private collectors are output for explicit cooperating
+owners, never validation proof. Failure, reconciliation, interruption, unsuccessful
+snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression cannot
+publish. Independent installed/metadata readers retain source/naming/team/document
+checks, including validate_data=False with coding present. The generic wrapper omits
+only duplicate source/team checks proven by its own same-snapshot coding inventory;
+absent/unproven coding retains them. Physical/FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Expected coding rows revalidate
+below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
+same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
+
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
 owner histories, template/authority/native dependencies and Pause/move/naming
 controls. Unrelated native ALTER chronology is not a coding-only whole-org SQL
