@@ -2888,7 +2888,7 @@ Traps:
 - Decline-by-default doctrine is prompt-injected for `REPLY`, not in `runtime/skills/bundled/thread/SKILL.md`.
 - Agent replies no longer enforce a hard `turn_cap` ceiling; turn count is still tracked and displayed but cap enforcement was removed per THR-046.
 - **Coalescing (GH-688 Phase 1).** A burst creates at most one unstarted `REPLY` per pair; new queue tokens are enqueued only after the arrival transaction commits. An arrival while queued or running only advances `required_through_seq`. A successful reply/decline acknowledges **only the claimed coverage** (the immutable `running_through_seq` snapshot at claim); arrivals during the run yield exactly one post-settlement follow-on. Failure/timeout never hot-loop: the range stays unacknowledged, projects `retry_required`, and the next conversational arrival covers the retained plus new range.
-- **Runner claim (GH-688 Phase 1).** A conversational `REPLY` must pass the durable queued→running CAS (`claim_conversational_reply`) before any prompt materialization or provider work; a stale/duplicate queue notification no-ops there. The per-`(thread, agent)` in-memory lock remains for process-local serialization only — it is not the durability mechanism. The prompt explicitly states the claimed inclusive `[running_from_seq, running_through_seq]` range and renders each required message in order.
+- **Runner claim (GH-688 Phase 1).** A conversational `REPLY` first reserves its native INTEGER/SID/preparation owner and exact abort control before materialization; the final launch commitment revalidates its captured range and performs the durable queued→running CAS (`claim_conversational_reply`). Stale/duplicate notifications cannot launch. The per-`(thread, agent)` in-memory lock remains for process-local serialization only — it is not the durability mechanism. The prompt explicitly states the claimed inclusive `[running_from_seq, running_through_seq]` range and renders each required message in order.
 - **Settlement is exactly-once.** Route reply/decline and every runner terminal path (clean-no-callback, provider failure, timeout, materialization failure, runner crash) settle through the store. Abort/archive/participant-removal discard through an explicit boundary (`discard_reply_delivery`); discarded wakes never resurrect and a later message starts after the boundary.
 - **Startup recovery (GH-688 Phase 1).** `_sweep_on_startup` replaces only the conversational `REPLY` portion of the generic reaper: a valid queued wake — a pending, **unstarted** same-pair `REPLY` (the claim CAS enforces the same precondition) — is retained and re-enqueued; an interrupted running `REPLY` is terminalized once as `daemon_restart` and replaced by exactly one queued wake. A malformed queued slot referencing a **started** receipt fails closed: the owned pending `REPLY` receipts for the pair are retired with `invalid_queued_started_on_recovery`, the slot clears, nothing is re-enqueued, and the preserved `required_through_seq` lets the next conversational arrival mint the single covering wake. `BOOTSTRAP` and `TASK_FOLLOWUP` keep the generic `daemon_restart` reaping unchanged.
 - **Wire contract (GH-688 Phase 1).** `GET /threads/{id}` and `GET /threads/{id}/messages` carry a pair-level `reply_delivery` projection (running | queued | held | retry_required, inclusive `from_seq`/`through_seq`, store-computed `coalesced_message_count`, `started_at`, `last_terminal_reason`). Precedence is running > queued > held > retry_required > settled omission. Held requires BOTH an OPEN `thread_reply_exchange` and the participant's matching HELD `thread_exchange_deferrals` row; released/suppressed/closed/missing-half history never masks a genuine retry. Terminal reason is historical metadata, exposed only on a genuine current retry and never classification proof or fault copy for held. The projection is never fabricated from per-message rows and never claims a subprocess exists beyond `started_at`. Historical per-message `responder_status` strips are unchanged in shape and now ALSO carry the authoritative invocation `purpose` (`reply` | `task_followup`; BOOTSTRAP stays excluded from the grouped query) so wire classification never has to infer purpose from the triggering row kind — a coalesced REPLY delivery range can anchor on a SYSTEM row (the follow-on mint keys the first unacknowledged sequence, which may be a system divider).
@@ -4680,3 +4680,24 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+
+Founder thread abort (THR329 seq3/16) atomically terminalizes only actual pending
+REPLY/BOOTSTRAP/TASK_FOLLOWUP rows and retains their exact count/triggering seqs.
+Delivery discard keeps acknowledged=required, clears slots and suppresses exchange
+catchup; state-only obligations invent no invocation/control. The exact original
+native generation is signalled before DB lock release; a delayed dispatch cannot
+signal a successor. All four resume writers hold that same lock across a fresh
+matching-owner/token/status check and save. Aborted nudge completion returns
+before save/breaker/failure classification. Callback winners remain excluded from
+abort and keep ordinary completion behavior; abort winners retain existing409,
+with no reply/ACK/follow-on. The pair guard spans actual preparation/provider/
+control return and native finish. Contained stop uses existing backend controls;
+direct/passthrough waits for original exit/timeout with a could-not-stop audit,
+while unknown cleanup retains a successor veto. C1–C10 behavior/proof NOT RUN;
+integration INCLUDING callback SKIPPED24342, Python units RETIRED.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.

@@ -1,6 +1,7 @@
 """Thread endpoints — email-style multi-agent workchannel."""
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import mimetypes
 from datetime import datetime, timezone
@@ -2809,49 +2810,57 @@ async def set_thread_pin_endpoint(
 async def abort_replies_endpoint(
     slug: str, thread_id: str, org: OrgDep,
 ) -> dict:
-    t = org.db.get_thread(thread_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    if t.status is not ThreadStatus.OPEN:
-        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+    # Route and all started stop workers retain the original OrgState through
+    # request interruption. No teardown/join runs under org/DB/move locks.
+    with org._runner_lifetime() as admitted:
+        if not admitted:
+            raise HTTPException(status_code=503, detail={"code": "org_unavailable"})
+        from runtime.daemon.thread_runner import _publish_invocation_event
 
-    # Collect triggering seqs BEFORE reaping so we know which seqs to publish.
-    from runtime.daemon.thread_runner import _publish_invocation_event
-    pending = org.db.list_thread_invocations(
-        thread_id, status=ThreadInvocationStatus.PENDING,
-    )
-    affected_seqs: set[int] = {
-        inv.triggering_seq for inv in pending
-        if inv.purpose in (
-            ThreadInvocationPurpose.REPLY,
-            ThreadInvocationPurpose.BOOTSTRAP,
-            ThreadInvocationPurpose.TASK_FOLLOWUP,
-        )
-    }
+        def signal(invocations: tuple) -> tuple:
+            move = getattr(org.db, "_team_move_coordinator", None)
+            return move.threads.signal_aborted_uncommitted(invocations) if move is not None else ((), [])
 
-    aborted_count = 0
-    async with org.db_lock:
-        aborted_count = org.db.discard_reply_delivery(
-            thread_id, decline_reason="founder_aborted",
-        )
-        aborted_count += org.db.reap_pending_invocations(
-            thread_id,
-            purposes=[
-                ThreadInvocationPurpose.BOOTSTRAP,
-                ThreadInvocationPurpose.TASK_FOLLOWUP,
-            ],
-            decline_reason="founder_aborted",
-        )
+        async with org.db_lock:
+            try:
+                outcome = org.db.abort_thread_replies(thread_id, signal=signal)
+            except LookupError:
+                raise HTTPException(status_code=404, detail={"code": "not_found"}) from None
+            except ValueError as exc:
+                if str(exc) == "thread_not_open":
+                    raise HTTPException(status_code=400, detail={"code": "thread_not_open"}) from None
+                raise
 
-    # Publish seq-bearing events for each affected triggering seq so the web
-    # client invalidates its responder_status and clears in-flight indicators.
-    for seq in sorted(affected_seqs):
-        await _publish_invocation_event(
-            org, thread_id=thread_id, agent_name="founder",
-            seq=seq, kind="invocation_settled", status="failed",
-        )
-
-    return {"thread_id": thread_id, "aborted_count": aborted_count}
+        # Claim every captured dispatch before the first cancellable await.
+        for control in outcome.controls:
+            if control.token.cancelled:
+                control.dispatch()
+        cancellation = None
+        for control in outcome.controls:
+            try:
+                await control.join_dispatch()
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+            except BaseException as exc:
+                outcome.errors.append(exc)
+        for seq in sorted({inv.triggering_seq for inv in outcome.invocations}):
+            try:
+                await _publish_invocation_event(
+                    org, thread_id=thread_id, agent_name="founder",
+                    seq=seq, kind="invocation_settled", status="failed")
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+            except Exception as exc:
+                outcome.errors.append(exc)
+        if outcome.errors or cancellation is not None:
+            primary = cancellation or outcome.errors[0]
+            primary.add_note(f"abort COMMITTED: thread={thread_id}, count={outcome.aborted_count}, "
+                f"invocations={[inv.id for inv in outcome.invocations]}; no rollback or replay")
+            for exc in outcome.errors:
+                if exc is not primary:
+                    primary.add_note(f"thread abort secondary: {exc!r}")
+            raise primary
+        return {"thread_id": thread_id, "aborted_count": outcome.aborted_count}
 
 
 # ---------------------------------------------------------------------------

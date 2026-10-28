@@ -117,8 +117,8 @@ class CancellationToken:
     A queued or running invocation may register at most one **opaque
     control** — the containment-handle binding that drives backend teardown.
     Cancellation goes through the control (and therefore the backend), never
-    a bare PID signal. Registration is first-wins; later registrations are
-    ignored (one opaque handle per attempt).
+    a bare PID signal. Each retry replaces the current attempt's control;
+    registration replays an already fired logical signal.
     """
 
     def __init__(self) -> None:
@@ -156,24 +156,35 @@ class CancellationToken:
         with self._lock:
             self._waker = waker
 
-    def cancel(self) -> bool:
-        """Request cancellation; returns True when this call wins the race.
+    def signal(self) -> bool:
+        """Latch only: no callbacks, I/O or teardown under the caller's locks."""
+        with self._lock:
+            won = not self._cancelled.is_set()
+            self._cancelled.set()
+        return won
 
-        Invokes the registered opaque control synchronously so backend
-        teardown (tree TERM/KILL + quiescence check) starts promptly, and
-        wakes any blocked admission wait so a queued request is removed
-        without launch. A later slice may decouple the invocation from the
-        cancel route.
+    def cancel(self) -> bool:
+        """Signal and synchronously dispatch, including a prior signal-only stop.
+
+        Wake admission before teardown. Attempt both callbacks independently;
+        retain the first error and attach any secondary failure.
         """
-        won = not self._cancelled.is_set()
-        self._cancelled.set()
+        won = self.signal()
         with self._lock:
             control = self._control
             waker = self._waker
-        if control is not None:
-            control.invoke()
-        if waker is not None:
-            waker()
+        primary = None
+        for callback in (waker, control.invoke if control is not None else None):
+            if callback is not None:
+                try:
+                    callback()
+                except BaseException as exc:
+                    if primary is None:
+                        primary = exc
+                    else:
+                        primary.add_note(f"cancellation secondary: {exc!r}")
+        if primary is not None:
+            raise primary
         return won
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -1581,7 +1592,14 @@ class HostSessionSupervisor:
                                                   budget=retry_limit, backoff=backoff, schedule=retry_schedule)
                 if thread_invocation is not None:
                     thread_invocation.next_attempt(attempt)
-                if backoff > 0:
+                if hasattr(thread_invocation, "abort_control"):
+                    if request.cancellation.wait(max(0.0, backoff)):
+                        # Keep the authentic previous attempt winner. No new
+                        # handle/attempt is minted just to report cancellation.
+                        if on_terminal is not None:
+                            self._invoke_terminal_hook(on_terminal, outcome, request.move_reservation)
+                        return outcome
+                elif backoff > 0:
                     self._sleep(backoff)
                 request = request.with_retry_attempt(attempt)
                 if task_invocation is not None:

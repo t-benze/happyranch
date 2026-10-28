@@ -11,10 +11,11 @@ import re
 import time
 import uuid
 from collections.abc import Callable
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from runtime.config import (
     Settings,
@@ -981,6 +982,49 @@ def _attempts_settled_quiescent(owner: Any) -> bool:
     )
 
 
+_WorkerResult = TypeVar("_WorkerResult")
+
+
+async def _await_invocation_worker(
+    org_state: Any, owner: Any, function: Callable[[], _WorkerResult],
+) -> _WorkerResult:
+    """Join the ORIGINAL callable, including repeated wrapper interruption.
+
+    Native-user custody complements the runner lifetime. Stop dispatch uses an
+    independent thread, so saturated provider pools cannot queue their own stop.
+    """
+    native_owner = object()
+    if not org_state._acquire_native_task(native_owner):
+        raise RuntimeError("thread_native_admission_closed")
+    worker = None
+    cancellation = None
+    try:
+        worker = asyncio.get_running_loop().run_in_executor(None, copy_context().run, function)
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                owner.abort_control.signal()
+                owner.abort_control.dispatch()
+            except BaseException:
+                break
+        if cancellation is not None:
+            try:
+                await owner.abort_control.join_dispatch()
+            except BaseException as exc:
+                cancellation.add_note(f"thread abort dispatch failed: {exc!r}")
+            try:
+                worker.result()
+            except BaseException as exc:
+                cancellation.add_note(f"thread original worker failed: {exc!r}")
+            raise cancellation
+        return worker.result()
+    finally:
+        if worker is None or worker.done() and not worker.cancelled():
+            org_state._release_native_task(native_owner)
+
+
 async def run_invocation(
     *, org_state, invocation_token: str, settings: Settings,
     host_supervisor: HostSessionSupervisor | None = None,
@@ -999,21 +1043,34 @@ async def run_invocation(
         if owner is None:
             return
         deferred = failed = False
+        guard = _invocation_lock(org_state, owner.inv.thread_id, owner.inv.agent_name)
+        cancellation = None
+        # Even a cancelled waiter retains its early native owner and joins the
+        # predecessor before taking its no-effect finish path.
+        while True:
+            try:
+                await guard.acquire()
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                owner.abort_control.signal()
+                owner.abort_control.dispatch()
         try:
-            # SAME native thread identity spans all preparation, including helpers
-            # which catch their own package/refresh errors before provider launch.
+            if cancellation is not None:
+                raise cancellation
             with bind_thread_preparation(owner):
+                owner.before_fifo()
                 await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
                     settings=settings, host_supervisor=host_supervisor, move_owner=owner)
         except DeferredTeamMove:
-            deferred = True
+            deferred = not owner.abort_control.token.cancelled
             raise
         except asyncio.CancelledError:
-            # Shutdown can cancel the runner after its provider attempt already
-            # settled quiescent (e.g. during post-turn bookkeeping). That is not
-            # cleanup uncertainty. Cancellation before any launch, or with an open,
-            # unsettled or non-quiescent attempt, still retains it.
-            failed = not _attempts_settled_quiescent(owner)
+            owner.abort_control.signal()
+            owner.abort_control.dispatch()
+            # A genuinely settled turn is not made uncertain by later bookkeeping
+            # cancellation; a no-effect waiter likewise needs no fake tree proof.
+            failed = bool(owner.state.attempts) and not _attempts_settled_quiescent(owner)
             raise
         except BaseException:
             failed = True
@@ -1021,16 +1078,28 @@ async def run_invocation(
         finally:
             import sys
             primary = sys.exception()
+            settlement_errors = []
             try:
-                owner.finish(deferred=deferred, failed=failed)
-            except BaseException as settlement:
-                owner.owner_live = False
-                # Retain process-local attribution when durable settlement refuses.
-                if primary is not None:
-                    primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
-                    logger.exception("C2 lifecycle settlement failed while preserving primary error")
-                else:
-                    raise
+                try:
+                    await owner.abort_control.join_dispatch()
+                except BaseException as exc:
+                    settlement_errors.append(exc)
+                try:
+                    await _await_invocation_worker(org_state, owner,
+                        lambda: owner.finish(deferred=deferred, failed=failed))
+                except BaseException as exc:
+                    settlement_errors.append(exc)
+                if settlement_errors:
+                    if primary is not None:
+                        for exc in settlement_errors:
+                            primary.add_note(f"thread lifecycle settlement failed: {exc!r}")
+                    else:
+                        first, *rest = settlement_errors
+                        for exc in rest:
+                            first.add_note(f"thread settlement secondary: {exc!r}")
+                        raise first
+            finally:
+                guard.release()
 
 
 async def _run_invocation_owned(
@@ -1210,7 +1279,8 @@ async def _run_invocation_owned(
     session_id = move_owner.session_id
     move_owner.executor, move_owner.model = executor_name, model_name
     move_owner.reasoning_effort = reasoning_effort
-    try:
+    def prepare() -> Any:
+        move_owner.before_fifo()
         with move_owner.preparation_effects():
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
@@ -1234,6 +1304,10 @@ async def _run_invocation_owned(
                 agent_name=inv.agent_name,
                 task_id=inv.thread_id,
             )
+        return expected_specs
+
+    try:
+        expected_specs = await _await_invocation_worker(org_state, move_owner, prepare)
     except DeferredTeamMove:
         raise
     except (SystemContractMaterializationError, Exception) as e:
@@ -1271,8 +1345,8 @@ async def _run_invocation_owned(
     # and manage thread_session state; the lock protects all providers against
     # concurrent runs, not just Claude.
     resume_capable = executor_name in _RESUME_CAPABLE_EXECUTORS
-    invocation_guard = _invocation_lock(org_state, inv.thread_id, inv.agent_name)
-    async with invocation_guard:
+    # The outer runner owns the pair guard through preparation and native finish.
+    with bind_thread_preparation(move_owner):
         stored_sid, last_seq = (
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
             if resume_capable else (None, 0)
@@ -1423,20 +1497,40 @@ async def _run_invocation_owned(
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
         def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
+            control = move_owner.abort_control
+            with control.lock:
+                control.mode, control.launched, control.worker_running = None, False, True
             with bind_thread_preparation(move_owner):
                 try:
                     return _invoke_bound(run_prompt, resume)
                 finally:
+                    # Audit failure must not abandon an already-launched direct
+                    # child before its original executor communicate/timeout.
+                    try:
+                        control.unsupported_stop_audit()
+                    except BaseException:
+                        pass  # Exact failure is latched and raised by join_dispatch.
+                    with control.lock:
+                        control.worker_running = False
                     if host_supervisor is None:
                         move_owner.direct_terminal()
 
         def _invoke_bound(run_prompt: str, resume: str | None) -> _InvokeResult:
+            move_owner.before_fifo()
             launched = False
 
             def _on_started(_pid: int) -> None:
                 nonlocal launched
                 launched = True
                 move_owner.on_started()
+                with move_owner.abort_control.lock:
+                    move_owner.abort_control.launched = True
+                try:
+                    move_owner.abort_control.unsupported_stop_audit()
+                except BaseException:
+                    pass  # Keep waiting for the original process; settlement reports it.
+                if move_owner.abort_control.token.cancelled:
+                    return
                 loop.call_soon_threadsafe(lambda: asyncio.create_task(_publish_invocation_event(
                     org_state, thread_id=inv.thread_id, agent_name=inv.agent_name, seq=inv.triggering_seq,
                     kind="invocation_started", status="working")))
@@ -1461,6 +1555,8 @@ async def _run_invocation_owned(
                         task_id=inv.thread_id,
                     )
             if host_supervisor is None:
+                with move_owner.abort_control.lock:
+                    move_owner.abort_control.mode = "direct"
                 # ── Self-launch with C2 final admission and unknown cleanup ──
                 run_kwargs = dict(
                     workspace=Path(workspace), prompt=run_prompt,
@@ -1520,6 +1616,10 @@ async def _run_invocation_owned(
                 # internal 429 retry disabled so the supervisor owns the
                 # finish/release/sleep/reacquire lifecycle.
                 contained = running.process is not None
+                with move_owner.abort_control.lock:
+                    move_owner.abort_control.mode = None if contained else "passthrough"
+                    if not contained:
+                        move_owner.abort_control.launched = False
                 run_kwargs = dict(
                     workspace=Path(workspace), prompt=run_prompt,
                     session_id=session_id, timeout_seconds=timeout,
@@ -1568,6 +1668,7 @@ async def _run_invocation_owned(
                     logical_id=inv.thread_id,
                     executor_profile=executor_name,
                     enqueued_at=time.monotonic(),
+                    cancellation=move_owner.abort_control.token,
                 ),
                 launch_spec=launch_spec,
                 launch_body=_launch_body,
@@ -1656,7 +1757,7 @@ async def _run_invocation_owned(
             prompt += "\nYou MUST post exactly one genuine terminal reply or decline for this invocation.\n"
         try:
             loop = asyncio.get_event_loop()
-            phase = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
+            phase = await _await_invocation_worker(org_state, move_owner, lambda: _invoke(prompt, resume_sid))
             if phase.terminal_reason in _INTERRUPTED_TERMINALS:
                 await _settle_interrupted(phase)
                 return
@@ -1709,9 +1810,8 @@ async def _run_invocation_owned(
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
                 fallback_executed = True
-                phase = await loop.run_in_executor(
-                    None, lambda: _invoke(full_prompt, None),
-                )
+                phase = await _await_invocation_worker(
+                    org_state, move_owner, lambda: _invoke(full_prompt, None))
                 if phase.terminal_reason in _INTERRUPTED_TERMINALS:
                     await _settle_interrupted(phase)
                     return
@@ -1743,6 +1843,9 @@ async def _run_invocation_owned(
             )
             return
 
+        if move_owner.abort_control.token.cancelled:
+            return
+
         _persist_thread_token_usage(
             org_state,
             inv=inv,
@@ -1770,8 +1873,7 @@ async def _run_invocation_owned(
             if resume_capable and result.success and getattr(result, "agent_session_id", None):
                 new_watermark = max(shown_seqs) if shown_seqs else last_seq
                 new_watermark = max(new_watermark, last_seq)
-                org_state.db.update_thread_session(
-                    inv.thread_id, inv.agent_name,
+                move_owner.save_session(
                     agent_session_id=result.agent_session_id,
                     last_resumed_seq=new_watermark,
                 )
@@ -1807,8 +1909,7 @@ async def _run_invocation_owned(
         if resume_capable and result.success and getattr(result, "agent_session_id", None):
             new_watermark = max(shown_seqs) if shown_seqs else last_seq
             new_watermark = max(new_watermark, last_seq)
-            org_state.db.update_thread_session(
-                inv.thread_id, inv.agent_name,
+            move_owner.save_session(
                 agent_session_id=result.agent_session_id,
                 last_resumed_seq=new_watermark,
             )
@@ -1880,9 +1981,8 @@ async def _run_invocation_owned(
             retry_exc: Exception | None = None
             retry_phase: _InvokeResult | None = None
             try:
-                retry_phase = await loop.run_in_executor(
-                    None, lambda: _invoke(retry_prompt, retry_resume_sid),
-                )
+                retry_phase = await _await_invocation_worker(
+                    org_state, move_owner, lambda: _invoke(retry_prompt, retry_resume_sid))
             except DeferredTeamMove:
                 raise
             except Exception as exc:
@@ -1901,6 +2001,8 @@ async def _run_invocation_owned(
                     await _settle_no_launch(retry_phase)
                     return
 
+            if move_owner.abort_control.token.cancelled:
+                return
             if retry_result is not None:
                 _persist_thread_token_usage(
                     org_state,
@@ -1923,8 +2025,7 @@ async def _run_invocation_owned(
                         and getattr(retry_result, "agent_session_id", None)):
                     new_watermark = max(shown_seqs) if shown_seqs else last_seq
                     new_watermark = max(new_watermark, last_seq)
-                    org_state.db.update_thread_session(
-                        inv.thread_id, inv.agent_name,
+                    move_owner.save_session(
                         agent_session_id=retry_result.agent_session_id,
                         last_resumed_seq=new_watermark,
                     )
@@ -1944,6 +2045,9 @@ async def _run_invocation_owned(
                     )
                 return
 
+            if after.status in {ThreadInvocationStatus.FAILED, ThreadInvocationStatus.TIMEOUT}:
+                return
+
             # Still pending after the nudge → mirror first-pass classification
             # (HIGH-2 REVISE): only tag no_callback_after_reprompt for a CLEAN retry
             # exit (rc==0); exception → runner_crash, timeout → invocation_timeout,
@@ -1953,8 +2057,7 @@ async def _run_invocation_owned(
                 if (resume_capable and getattr(retry_result, "agent_session_id", None)):
                     new_watermark = max(shown_seqs) if shown_seqs else last_seq
                     new_watermark = max(new_watermark, last_seq)
-                    org_state.db.update_thread_session(
-                        inv.thread_id, inv.agent_name,
+                    move_owner.save_session(
                         agent_session_id=retry_result.agent_session_id,
                         last_resumed_seq=new_watermark,
                     )

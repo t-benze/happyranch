@@ -1826,3 +1826,21 @@ E2E/protected/executable-QA/test-authoring proof UNEXECUTED/FOUNDER-WAIVED139429
 Fresh FULL independent review then same-final-head scoped SOURCE QA return to
 ROOT10693; K3 controls/recovery/K4–K6 and operational acceptance remain root-owned.
 <!-- /K3b native service attribution: TASK12034 / ROOT10693 step93 -->
+
+
+Founder thread abort (THR329 seq3/16) changes private thread control plumbing,
+not executor or backend capabilities. Both built-in `_run_command` and independent
+`CustomAdapterExecutor.run` recheck the existing original preparation owner at
+throttle/selflaunch boundaries. Early exact native INTEGER/SID/preparation
+controls survive wrapper interruption and late opaque registration. Contained
+cancellation uses its original backend; direct/passthrough cannot stop an already
+selflaunched process and must wait for original exit/timeout, serialize the pair
+and emit attributable `thread_abort_could_not_stop`. A no-op receipt, process=None
+or PID0 supplies no cleanup proof. Unknown native ownership remains a successor
+veto. No permission/auth/host contract changes. C1–C10 behavior/proof NOT RUN;
+integration INCLUDING callback SKIPPED24342, Python units RETIRED.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.

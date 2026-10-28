@@ -6217,3 +6217,24 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+
+Founder thread abort (THR329 seq3/16) has two ordering points: successful atomic
+abort COMMIT fixes the exact pending transition/count/discard set; signal-only
+handoff fences its captured native generations before the same DB RLock releases.
+No route acquires move gate beneath DB; lock order stays move gate → DB RLock →
+host terminal leaf, after repository custody. Opaque callbacks/actual joins run
+off-loop outside those locks, with independent stop capacity. All started workers
+retain original lifetime ownership through repeated wrapper cancellation. Host
+first-wins reason remains separate from durable founder_aborted. Compare-removal
+requires matching genuinely settled controls; native uncertainty keeps a successor
+veto. Confirmed pre-COMMIT rollback and uncertain COMMIT are distinct; post-COMMIT
+signal/dispatch/audit failure preserves committed identities/count/discard and
+original plus secondary errors, never clean/rollback/replay. Unsupported direct/
+passthrough stop records its actual limitation and waits for original exit/timeout.
+C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.
