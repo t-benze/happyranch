@@ -3630,7 +3630,10 @@ also excludes later same-root work without a new audit/exception category. A
 successful non-inert sibling need not quarantine later legitimate siblings;
 earlier authentic commits/tails are never retroactively rolled back. Only fresh
 committed `refused` owns the existing postcommit tails; replay/owner_lost/pending
-do not surface again. R1 OMIT adds no startup capture_failure/diagnostic writer;
+do not surface again. A deferred refusal cleanup callback captures its original
+task ID and refusal note before transfer. Both its current-refusal predicate and
+parent effect use that same pair after discovery advances to later targets.
+R1 OMIT adds no startup capture_failure/diagnostic writer;
 local sets/logs cannot establish durable fencing or replace existing residue.
 
 Private startup observation records the real refusal writer's BEGIN, COMMIT and

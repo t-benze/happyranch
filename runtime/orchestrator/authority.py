@@ -3721,14 +3721,15 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                                 target.manager_session_id,
                                 target.result_id,
                                 "failed",
-                                after_recovery_cleanup=lambda: (
+                                # Cleanup may finish after discovery selects another target.
+                                after_recovery_cleanup=lambda task_id=target.root_task_id, note=expected_note: (
                                     _enqueue_parent_if_waiting(
                                         orchestrator,
-                                        target.root_task_id,
+                                        task_id,
                                         root_auto_revisit_spawned=False,
                                     )
                                     if _task_matches_authority_v2_refusal_failure(
-                                        orchestrator, target.root_task_id, expected_note,
+                                        orchestrator, task_id, note,
                                     )
                                     else None
                                 ),
