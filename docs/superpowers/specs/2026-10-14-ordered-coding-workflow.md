@@ -13,9 +13,13 @@ latest-only history, trusted cache or census watermark is permitted. Original
 strict types/UTF8/duplicates/bindings/lifecycle/transitions/exclusions remain.
 Native reservation/settlement replay is separate; no SQL/RSS/time guarantee follows.
 
-Only registrar-owned pure predicates and its actual safety admission refusal can
-defer. SQL/cursor, opaque shared history/allowance and complete-reader failures
-propagate. Actual cursor and consumer share lexical explicit-close ownership.
+Only registrar-owned pure predicates and the direct healthy `team_move_native_held`
+refusal can defer. The latter requires exact producer exception type/code,
+canonical producer operation identity, no cause/context/notes and the unchanged
+mounted org owner. Shared class/message alone supplies no origin proof. Wrapped
+move schema/history/bounds/deadline/SQL failures and uncertain origins propagate
+unchanged, as do opaque shared history/allowance and complete-reader failures.
+Actual cursor and consumer share lexical explicit-close ownership.
 The exact body refusal requires positive original rollback, BOTH successful outer
 publisher/DB exits, identical usable connection/no transaction/no notes and no
 COMMIT/publication. Native entry/no-yield is outside preflight safe handling.

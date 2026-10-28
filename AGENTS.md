@@ -54,11 +54,14 @@ Strict storage/UTF8/duplicate/org/task/agent/first-active/immutable/transition
 checks and live/durable exclusions remain. Native reservation/settlement replay
 is separate work; these caps guarantee no SQL-engine, RSS or wall-time bound.
 
-Only registrar-owned pure refusals and the actual safety admission refusal can
-defer optional registration. SQL/cursor and complete-history errors propagate,
-including opaque shared allowance errors. Each native cursor owns its consumer
-loop and explicit close. Safe preflight requires the exact body refusal, positive
-original rollback, BOTH successful publisher/DB exits, identical usable connection,
+Only registrar-owned pure refusals and the direct healthy `team_move_native_held`
+refusal can defer optional registration. The latter requires the producer's
+canonical operation identity, no cause/context/notes and the unchanged mounted
+owner; the exception class or message alone is insufficient. Wrapped move schema,
+complete history, scan-bound/deadline and SQL failures propagate unchanged, as do
+uncertain origins and opaque shared allowance errors. Each native cursor owns
+its consumer loop and explicit close. Safe preflight requires the exact body
+refusal, positive original rollback, BOTH successful publisher/DB exits, identical usable connection,
 no transaction and no secondary notes. Native entry is outside that interval.
 After a durable reservation, those same proofs precede exact writer.validation
 marking INSIDE native_writer; warning follows only its genuine successful exit,

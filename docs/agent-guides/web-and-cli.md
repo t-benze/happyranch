@@ -21,6 +21,10 @@ A safe optional registration refusal logs a bounded reason and resource/original
 safety-owner remedy; it requires no Family coding-role choice or enablement.
 The registrar has separate cumulative native census 8192-row/16MiB/2097152-visit
 and original release/source/target 8192/16MiB/16384 allowances (native cells 16384).
+Admission deferral accepts only direct healthy `team_move_native_held` with a
+canonical producer operation identity, no cause/context/notes and the unchanged
+mounted owner; wrapped move schema/history/bounds/SQL failures and uncertain
+origins propagate unchanged, never as optional warnings.
 Deferral requires proven cursor/rollback/both outer cleanup and, after reservation,
 actual native settlement. SQL/full-history, entry/cleanup and COMMIT/publication
 uncertainty still propagate; a warning proves no registration or readiness.

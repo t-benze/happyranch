@@ -11,9 +11,12 @@ publisher/DB ownership, full source/target closure and positive-COMMIT watermark
 remain mandatory. Complete native history/suffixes/state/live/fixed safety work
 share ONE 8192-row/16MiB/2097152-visit census, with 16384-byte native cells; separate
 release/source/target allowance remains 8192/16MiB/16384 without phase resets.
-Only local pure/admission refusal with successful cursor close, original rollback,
-both outer exits and identical usable connection/no notes may defer. After
-reservation, exact validation marking follows cleanup inside the native interval;
+Only local pure refusal or direct healthy `team_move_native_held` may defer;
+the latter requires canonical producer operation identity, no cause/context/notes
+and the unchanged mounted owner. Wrapped move schema/history/bounds/SQL failures
+and uncertain origins propagate unchanged. Deferral requires successful cursor
+close, original rollback, both outer exits and identical usable connection/no notes.
+After reservation, exact validation marking follows cleanup inside the native interval;
 warning follows actual settlement/exit. SQL/full-history, entry, cleanup, COMMIT
 and later publication uncertainty propagate without no-effect/retry claims.
 Active/unknown owners defer;
