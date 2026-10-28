@@ -293,6 +293,7 @@ def _equal(left, right, *, budget: _Budget | None) -> bool:
 
 def _iter(values, *, budget: _Budget | None):
     """Charge an owned ephemeral traversal before each underlying next()."""
+    _reserve(budget, 64)
     iterator = iter(values)
     primary = None
     try:
@@ -304,8 +305,7 @@ def _iter(values, *, budget: _Budget | None):
                 return
             yield value
     except BaseException as exc:
-        if not isinstance(exc, GeneratorExit):
-            primary = exc
+        primary = exc
         raise
     finally:
         try:
@@ -316,6 +316,8 @@ def _iter(values, *, budget: _Budget | None):
             if primary is None:
                 raise
             primary.add_note('workflow reader traversal close failed: ' + type(exc).__name__)
+            if isinstance(primary, GeneratorExit):
+                raise BaseExceptionGroup('workflow_reader_traversal_close_failed', [primary]) from None
 
 
 def _all_true(values, *, budget: _Budget | None) -> bool:
@@ -536,17 +538,22 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
         raise ValueError('workflow_reader_invalid_factory')
     # Account this actual statement/argument traversal and the cursor/list
     # envelopes before creating either. The semantic caller still owns SQL.
+    if budget is not None:
+        budget.step()
+        if budget.accepted_rows >= 8192:
+            budget.candidate()  # original owner's native resource refusal
+    _reserve(budget, 96)
     _work((sql, args), budget)
     _reserve(budget, 512)
-    descriptor = conn.cursor()
-    if _factory is None:
-        # The native history owners already select raw cursor-local tuples.
-        # Never change the connection or a different caller's row factory.
-        descriptor.row_factory = None
     scalar = payload = None
     primary = None
     collected = []
+    descriptor = conn.cursor()
     try:
+        if _factory is None:
+            # The native history owners already select raw cursor-local tuples.
+            # Never change the connection or a different caller's row factory.
+            descriptor.row_factory = None
         if budget is None:
             descriptor.execute(sql, args)
             if names_out is not None:
@@ -558,19 +565,26 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
         # Existing private schema readers also use these read-only PRAGMAs.
         # Table-valued forms preserve the selected column order while allowing
         # the same scalar/cell gates; arbitrary PRAGMA/write text is rejected.
+        # lstrip/Unicode uppercase can create two separate representations.
+        _reserve(budget, 128 + 16 * len(sql))
         if sql.lstrip().upper().startswith('PRAGMA'):
+            _reserve(budget, 256 + 8 * len(sql))  # match/group/strip envelopes
             bare = re.fullmatch(r'\s*PRAGMA\s+(database_list|foreign_key_check|integrity_check)\s*', sql, re.I)
             if bare is not None and not args:
+                _reserve(budget, 192 + 8 * (len('SELECT * FROM pragma_') + len(bare[1])))
                 sql = 'SELECT * FROM pragma_' + bare[1].lower()
             else:
+                _reserve(budget, 256 + 8 * len(sql))
                 pragma = re.fullmatch(r'\s*PRAGMA\s+(table_info|table_xinfo|foreign_key_list|index_list|index_xinfo|foreign_key_check)\s*\((.+)\)\s*', sql, re.I)
                 if pragma is None or args:
                     raise ValueError('workflow_reader_unsupported_pragma')
                 table = pragma[2].strip()
                 if table.startswith('"') and table.endswith('"'):
+                    _reserve(budget, 128 + 8 * len(table))
                     table = table[1:-1].replace('""', '"')
                 elif not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', table):
                     raise ValueError('workflow_reader_unsupported_pragma')
+                _reserve(budget, 352 + 12 * (len('SELECT * FROM pragma_(?)') + len(pragma[1])))
                 sql, args = 'SELECT * FROM pragma_' + pragma[1].lower() + '(?)', (table,)
         budget.step()
         # execute prepares/steps SQLite, but no Python payload row is fetched.
@@ -596,6 +610,7 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
         columns = tuple('c' + str(index) for index in range(len(original_names)))
         _reserve(budget, 128 + 8 * (len(sql) + count * (name_width + 1) + 48))
         source = f"WITH _reader_source({','.join(columns)}) AS ({sql})"
+        _reserve(budget, 256)
         scalar = conn.cursor()
         scalar.row_factory = None
         _reserve(budget, 64 + count * (128 + 8 * (40 + 4 * name_width)))
@@ -609,7 +624,7 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
         while True:
             budget.step()
             if budget.accepted_rows >= 8192:
-                raise _ReaderBudgetExhausted('workflow_reader_budget_exhausted')
+                budget.candidate()
             _reserve(budget, 128 * len(names))
             shape = scalar.fetchone()
             if shape is None:
@@ -642,6 +657,7 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
         _reserve(budget, 64 + count * (128 + 8 * (80 + 2 * name_width)))
         body = ','.join(f'CASE WHEN _reader_valid THEN {name} ELSE NULL END'
                         for name in columns)
+        _reserve(budget, 256)
         payload = conn.cursor()
         payload.row_factory = None
         budget.step()
@@ -652,7 +668,7 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
         while True:
             budget.step()
             if budget.accepted_rows >= 8192:
-                raise _ReaderBudgetExhausted('workflow_reader_budget_exhausted')
+                budget.candidate()
             # UTF8->str and the raw tuple, reconstructed tuple, Row/dict and
             # their containers are all reserved before fetching/copying.
             _reserve(budget, maximum * 4 + 256 * len(names))
@@ -671,17 +687,18 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
             _reserve(budget, 16)
             collected.append(values if factory is None else factory(descriptor, values))
     except BaseException as exc:
-        if not isinstance(exc, GeneratorExit):
-            primary = exc
+        primary = exc
         raise
     finally:
         cleanup = None
+        close_failed = False
         for cursor in (payload, scalar, descriptor):
             if cursor is None:
                 continue
             try:
                 cursor.close()
             except BaseException as exc:
+                close_failed = True
                 if primary is not None:
                     primary.add_note('workflow reader cursor close failed: ' + type(exc).__name__)
                 elif cleanup is None:
@@ -690,6 +707,10 @@ def _rows(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
                     cleanup.add_note('workflow reader cursor close also failed: ' + type(exc).__name__)
         if cleanup is not None:
             raise cleanup
+        if close_failed and isinstance(primary, GeneratorExit):
+            # Do not let generator.close() suppress secondary cleanup failure.
+            # Retain the actual pending primary, with only safe type notes.
+            raise BaseExceptionGroup('workflow_reader_cursor_close_failed', [primary]) from None
     # No cursor remains open while a semantic consumer traverses these rows.
     # This collection grants no proof; every payload/container was charged above.
     yield from collected

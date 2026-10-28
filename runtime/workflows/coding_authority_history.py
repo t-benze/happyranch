@@ -21,6 +21,12 @@ from runtime.infrastructure._workflow_reader import (
     _add as _reader_add,
     _append as _reader_append,
     _extend as _reader_extend,
+    _put as _reader_put,
+    _setdefault as _reader_setdefault,
+    _iter as _reader_iter,
+    _equal as _reader_equal,
+    _any_true as _reader_any_true,
+    _sorted as _reader_sorted,
 )
 
 from runtime.infrastructure._workflow_reader import (
@@ -214,33 +220,79 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
     projection from genuine nullable NULL. No raw oversize/invalid cell reaches
     Python. SQL-engine work/memory and decoded object memory are not bounded.
     """
+    _reader_reserve(budget, 256)  # local SQL builders, before their creation
+
     def quote(name: str) -> str:
+        _reader_work(name, budget)  # scan before counting escaped quotes
+        length = len(name) + name.count('"') + 2
+        # replace, leading quote and final string are separate allocations.
+        _reader_reserve(budget, 192 + 12 * length)
         return '"' + name.replace('"', '""') + '"'
+
+    def joined(parts: list[str] | tuple[str, ...], separator: str) -> str:
+        _reader_reserve(budget, 128)
+        length = max(0, len(parts) - 1) * len(separator)
+        for part in _reader_iter(parts, budget=budget):
+            length += len(part)
+        _reader_reserve(budget, 64 + 4 * length)
+        return separator.join(parts)
+
     _check(type(value_limit) is int and 0 < value_limit <= 16777216)
     _reader_work((_reader_reserve(budget, 144) or (table, columns, allowed, where, args)), budget)
+    _reader_reserve(budget, 128)  # map iterator, before quote is invoked
     names = _reader_tuple(map(quote, columns), budget=budget)
     _check(len(names) == len(allowed) and bool(names))
-    size = '+'.join(f"CASE WHEN typeof({name}) IN ('text','blob') "
-                    f"THEN length(CAST({name} AS BLOB)) ELSE 0 END" for name in names)
+    sizes = (_reader_reserve(budget, 64) or [])
     gates = (_reader_reserve(budget, 64) or [])
+    bodies = (_reader_reserve(budget, 64) or [])
+    types = (_reader_reserve(budget, 64) or [])
+    _reader_reserve(budget, 96 + 4 * value_limit.bit_length())
+    limit = str(value_limit)
+    size_template = ("CASE WHEN typeof({0}) IN ('text','blob') "
+                     "THEN length(CAST({0} AS BLOB)) ELSE 0 END")
+    gate_template = ("(typeof({0}) IN ({1}) AND (typeof({0}) NOT IN ('text','blob') "
+                     "OR length(CAST({0} AS BLOB))<={2}))")
+    body_template = 'CASE WHEN _scan_valid THEN {0} ELSE NULL END'
+    type_template = 'typeof({0})'
+    _reader_reserve(budget, 128)  # zip/iterator references
     for name, choices in zip(names, allowed, strict=True):
-        kinds = ','.join("'" + kind + "'" for kind in choices)
-        _reader_append(gates, f"(typeof({name}) IN ({kinds}) AND (typeof({name}) NOT IN ('text','blob') "
-                     f"OR length(CAST({name} AS BLOB))<={value_limit}))", budget=budget)
-    valid = ' AND '.join(gates) + ' AND ? > 0 AND (' + size + ')<=?'
-    query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
-             + ' FROM ' + quote(table) + ' WHERE (' + where
-             + ') AND rowid>=? ORDER BY rowid LIMIT 1), '
-             + 'gated AS (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
-             + 'SELECT _scan_rowid,_scan_valid,'
-             + ','.join(f'CASE WHEN _scan_valid THEN {name} ELSE NULL END' for name in names)
-             + ',' + ','.join(f'typeof({name})' for name in names) + ' FROM gated')
+        budget.step()
+        _reader_reserve(budget, 128 + 4 * (len(size_template) - 6 + 2 * len(name)))
+        _reader_append(sizes, size_template.format(name), budget=budget)
+        kinds = (_reader_reserve(budget, 64) or [])
+        for kind in _reader_iter(choices, budget=budget):
+            _reader_reserve(budget, 64 + 4 * (len(kind) + 2))
+            _reader_append(kinds, f"'{kind}'", budget=budget)
+        kind_sql = joined(kinds, ',')
+        _reader_reserve(budget, 128 + 4 * (len(gate_template) - 15
+            + 3 * len(name) + len(kind_sql) + len(limit)))
+        _reader_append(gates, gate_template.format(name, kind_sql, limit), budget=budget)
+        _reader_reserve(budget, 128 + 4 * (len(body_template) - 3 + len(name)))
+        _reader_append(bodies, body_template.format(name), budget=budget)
+        _reader_reserve(budget, 128 + 4 * (len(type_template) - 3 + len(name)))
+        _reader_append(types, type_template.format(name), budget=budget)
+    size = joined(sizes, '+')
+    gate = joined(gates, ' AND ')
+    _reader_reserve(budget, 64 + 4 * (len(gate) + len(size) + len(' AND ? > 0 AND ()<=?')))
+    valid = f'{gate} AND ? > 0 AND ({size})<=?'
+    selected = joined(names, ',')
+    table_sql = quote(table)
+    body = joined(bodies, ',')
+    storage = joined(types, ',')
+    query_template = ('WITH candidate AS (SELECT rowid AS _scan_rowid,{0}'
+        ' FROM {1} WHERE ({2}) AND rowid>=? ORDER BY rowid LIMIT 1), '
+        'gated AS (SELECT *,({3}) AS _scan_valid FROM candidate) '
+        'SELECT _scan_rowid,_scan_valid,{4},{5} FROM gated')
+    _reader_reserve(budget, 192 + 4 * (len(query_template) - 18 + len(selected)
+        + len(table_sql) + len(where) + len(valid) + len(body) + len(storage)))
+    query = query_template.format(selected, table_sql, where, valid, body, storage)
     after = -9223372036854775808
     count = 0
     try:
         _reader_reserve(budget, 112)
         while True:
             budget.step()  # includes terminal/overflow page traversal
+            _reader_reserve(budget, 64 + 16 * (len(args) + 3))
             row = _reader_raw_one(conn, query, args + (_reader_reserve(budget, 112) or (after, min(maximum - count,
                 _CALL_ROW_LIMIT - budget.accepted_rows), budget.remaining_bytes)), budget=budget)
             if row is None:
@@ -277,10 +329,12 @@ def _decoded(value: object, budget: _Budget) -> object:
     _reader_work(value, budget)
     pending = (_reader_reserve(budget, 192) or [value])
     while pending:
-        item = pending.pop()
         budget.step()
+        item = pending.pop()
         if type(item) is dict:
+            _reader_reserve(budget, 64)
             _reader_extend(pending, item.keys(), budget=budget)
+            _reader_reserve(budget, 64)
             _reader_extend(pending, item.values(), budget=budget)
         elif type(item) is list:
             _reader_extend(pending, item, budget=budget)
@@ -289,34 +343,58 @@ def _decoded(value: object, budget: _Budget) -> object:
 
 def _rows(conn: sqlite3.Connection, sql: str, args: tuple,
           maximum: int, budget: _Budget | None = None) -> Iterator[tuple]:
-    # All SQL call sites below are fixed-table literal parameterized SELECTs.
-    # Cursor-local factory preserves caller configuration, never normalizes
-    # native NULL/BLOB/TEXT/INTEGER or materializes an unbounded result set.
-    # Every projected value has an exact native storage-class gate. TEXT
-    # uses BLOB length (including multibyte/NUL suffixes); BLOB uses byte
-    # length; INTEGER returns only a native scalar. Invalid/oversize values
-    # become NULL, retaining original typeof evidence for refusal. Genuine
-    # nullable owner NULL stays NULL; no bytes are coerced or truncated.
-    # These gates bound each value before fetch, not SQLite engine memory.
-    # _Budget accounts aggregate accepted raw bytes after each bounded fetch;
-    # a refused row and decoded/copied structures are not retained-byte totals.
+    # Internal parameterized absence/length SELECTs return only fixed-width
+    # native INTEGER projections. Semantic callers retain their exact type
+    # checks. The raw cursor-local factory leaves connection policy unchanged;
+    # maximum still rejects overflow without truncation or scalar coercion.
+    # Charge the original remainder before cursor acquisition and EVERY fetch,
+    # including empty/terminal/overflow attempts; None stays standalone.
+    if budget is not None:
+        budget.step()
+        if budget.accepted_rows >= _CALL_ROW_LIMIT:
+            budget.candidate()  # retain the original native resource category
+    _reader_reserve(budget, 96)
+    _reader_work((sql, args), budget)
+    _reader_reserve(budget, 512)
     cursor = conn.cursor()
-    cursor.row_factory = None
+    primary = None
     try:
+        cursor.row_factory = None
+        _reader_reserve(budget, 0)  # statement execution, separately charged
         cursor.execute(sql, args)
         count = 0
-        while (row := cursor.fetchone()) is not None:
+        while True:
+            if budget is not None:
+                budget.step()
+                if budget.accepted_rows >= _CALL_ROW_LIMIT:
+                    budget.candidate()
+            _reader_reserve(budget, 128 + 128 * len(cursor.description))
+            row = cursor.fetchone()
+            if row is None:
+                return
             if budget is not None:
                 budget.candidate()
             count += 1
             _check(count <= maximum)
             yield row
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        cursor.close()
+        try:
+            cursor.close()
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note('coding history cursor close failed: ' + type(exc).__name__)
+            if isinstance(primary, GeneratorExit):
+                # generator.close() suppresses a bare GeneratorExit. Keep its
+                # identity and safe secondary evidence visible on early close.
+                raise BaseExceptionGroup(_REFUSAL, [primary]) from None
 
 
 def _admission(conn: sqlite3.Connection, issuance: dict, budget: _Budget) -> None:
-    _reader_work(issuance, budget)
+    _reader_reserve(budget, 0)  # delegation visit; acquisition/reconstruction below
     expected = issuance['admission']['record']
     _capture_admission(conn, expected, issuance['admission']['capture'], budget)
 
@@ -380,35 +458,47 @@ def _setup_configuration(scope: dict, snapshot: dict, *, budget=None) -> None:
     Used at original issuance and independently at current use. This proves
     configured eligibility only, never adoption, task or executor permission.
     """
-    _reader_work((_reader_reserve(budget, 96) or (scope, snapshot)), budget)
-    agents = _reader_dict_pairs(((_reader_reserve(budget, 96) or (agent['name'],  agent )) for agent in snapshot['agents'] if agent['status'] == 'active'), budget=budget)
+    _reader_reserve(budget, 128)  # generator/iteration, no full input recopy
+    agents = _reader_dict_pairs(((_reader_reserve(budget, 96) or (agent['name'], agent))
+        for agent in _reader_iter(snapshot['agents'], budget=budget)
+        if _reader_equal(agent['status'], 'active', budget=budget)), budget=budget)
     selector = scope['manager_selector']
+    _reader_work(selector['principal'], budget)
     manager = agents.get(selector['principal'])
-    teams = _reader_list((team for team in snapshot['teams'] if team['name'] == selector['team']), budget=budget)
-    if (manager is None or manager['role'] != 'manager' or manager['team'] != selector['team']
+    _reader_reserve(budget, 128)
+    teams = _reader_list((team for team in _reader_iter(snapshot['teams'], budget=budget)
+        if _reader_equal(team['name'], selector['team'], budget=budget)), budget=budget)
+    if (manager is None or not _reader_equal(manager['role'], 'manager', budget=budget)
+            or not _reader_equal(manager['team'], selector['team'], budget=budget)
             or not manager['executor'] or len(teams) != 1):
         raise CodingAuthorityHistoryError(_REFUSAL)
     lead = teams[0]['manager']
-    if lead != (selector['principal'] if snapshot['schema_version'] == 1 else
-                (_reader_reserve(budget, 320) or dict(kind='agent', principal=selector['principal']))):
+    if not _reader_equal(lead, (selector['principal'] if snapshot['schema_version'] == 1 else
+                (_reader_reserve(budget, 320) or dict(kind='agent', principal=selector['principal']))), budget=budget):
         raise CodingAuthorityHistoryError(_REFUSAL)
     repositories = (_reader_reserve(budget, 64) or [])
-    for key, origin in manager['repos'].items():
-        identity = 'workflow-repository:' + _digest(_canonical(
+    _reader_reserve(budget, 64)  # items view
+    for key, origin in _reader_iter(manager['repos'].items(), budget=budget):
+        digest = _digest(_canonical(
             (_reader_reserve(budget, 448) or [snapshot['org_slug'], key, _digest(_reader_encode(origin, 'utf8', budget=budget), budget=budget)]), budget=budget), budget=budget)
-        if identity == scope['repository_id']:
+        _reader_reserve(budget, 64 + 4 * (len('workflow-repository:') + len(digest)))
+        identity = 'workflow-repository:' + digest
+        if _reader_equal(identity, scope['repository_id'], budget=budget):
             _reader_append(repositories, (_reader_reserve(budget, 96) or (key, origin)), budget=budget)
     if len(repositories) != 1:
         raise CodingAuthorityHistoryError(_REFUSAL)
     key, origin = repositories[0]
-    for owner_id in scope['scope']['store_owners']:
+    for owner_id in _reader_iter(scope['scope']['store_owners'], budget=budget):
+        _reader_work(owner_id, budget)
         owner = agents.get(owner_id)
-        if owner is None or owner['repos'].get(key) != origin or not owner['executor']:
+        _reader_work(key, budget)
+        if owner is None or not _reader_equal(owner['repos'].get(key), origin, budget=budget) or not owner['executor']:
             raise CodingAuthorityHistoryError(_REFUSAL)
 
 
 def _inventory(conn: sqlite3.Connection, org_slug: str,
                budget: _Budget) -> list[tuple[HistoricalSetupIssuance, dict, dict]]:
+    _reader_reserve(budget, 64 + 4 * (len('org//coding-setup/') + len(org_slug)))
     prefix = f'org/{org_slug}/coding-setup/'
     inventory: list[tuple[HistoricalSetupIssuance, dict, dict]] = (_reader_reserve(budget, 64) or [])
     operations: set[str] = _reader_set(budget=budget)
@@ -428,6 +518,7 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
             row, ('text', 'text', 'integer', 'blob', 'text', 'text', 'text'), counted=True, charged=True)
         _token(identity, budget=budget)
         _integer(revision, 1)
+        _reader_work(identity, budget)
         _check(source == _SOURCE_PIN and digest == _digest(raw, budget=budget)
                and identity not in identities and (_reader_reserve(budget, 96) or (namespace, revision)) not in revisions)
         _reader_add(identities, identity, budget=budget)
@@ -436,7 +527,10 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
         _check(saved.command_bytes is not None)
         record = _decoded(_reader_json(raw, budget), budget)
         command = _decoded(_reader_json(saved.command_bytes, budget), budget)
-        _check(namespace == prefix + command['setup_key']
+        _reader_reserve(budget, 64 + 4 * (len(prefix) + len(command['setup_key'])))
+        expected_namespace = prefix + command['setup_key']
+        _reader_work(command['operation_key'], budget)
+        _check(_reader_equal(namespace, expected_namespace, budget=budget)
                and command['expected_authorization_revision'] == revision - 1
                and created_at == record['created_at']
                and command['operation_key'] not in operations)
@@ -446,14 +540,17 @@ def _inventory(conn: sqlite3.Connection, org_slug: str,
             setup_bytes = _canonical(record['setup'], budget=budget)
             read_saved_setup(setup_bytes, expected_org_slug=org_slug, budget=budget)
             setup_id = record['setup']['id']
+            _reader_work(setup_id, budget)
             _check(setup_id not in setups)
             _reader_add(setups, setup_id, budget=budget)
-        _reader_work((_reader_reserve(budget, 160) or (identity, namespace, raw, record, command, setup_bytes)), budget)
+        _reader_reserve(budget, 128 + 64 * 7)  # issuance fields/object, before construction
         _reader_append(inventory, (_reader_reserve(budget, 112) or (HistoricalSetupIssuance(
             identity, namespace, revision, raw, digest, created_at, setup_bytes), record, command)), budget=budget)
-    _reader_work(inventory, budget)
-    inventory.sort(key=lambda item: (_reader_reserve(budget, 112) or (item[0].namespace, item[0].revision, item[0].authorization_id)))
-    return inventory
+    # This shallow output plus key/comparison envelope precedes the sort;
+    # traversing every retained command again would not account its sorting.
+    _reader_reserve(budget, 128)  # key callable
+    return _reader_sorted(inventory, budget=budget, key=lambda item:
+        (_reader_reserve(budget, 112) or (item[0].namespace, item[0].revision, item[0].authorization_id)))
 
 
 def _verify_prefix(conn: sqlite3.Connection,
@@ -466,10 +563,12 @@ def _verify_prefix(conn: sqlite3.Connection,
     previous_time: datetime | None = None
     admission_ids: set[str] = _reader_set(budget=budget)
     result: list[HistoricalSetupIssuance] = (_reader_reserve(budget, 64) or [])
-    for expected_revision, (entry, record, command) in enumerate(required, 1):
-        budget.step()
+    _reader_reserve(budget, 128)  # enumerate/iteration references
+    for expected_revision, (entry, record, command) in enumerate(_reader_iter(required, budget=budget), 1):
         _check(entry.revision == expected_revision
                and command['expected_authorization_revision'] == expected_revision - 1)
+        _reader_work(entry.created_at, budget)
+        _reader_reserve(budget, 192 + 4 * (len(entry.created_at) + 5))
         timestamp = datetime.fromisoformat(entry.created_at.replace('Z', '+00:00'))
         _check(previous_time is None or previous_time <= timestamp)
         previous_time = timestamp
@@ -478,13 +577,15 @@ def _verify_prefix(conn: sqlite3.Connection,
         else:
             prior_issue = True
         admission_id = record['admission']['record']['id']
+        _reader_work(admission_id, budget)
         _check(admission_id not in admission_ids)
         _reader_add(admission_ids, admission_id, budget=budget)
+        _reader_work(entry.authorization_id, budget)
         if entry.authorization_id not in verified:
             _admission(conn, record, budget)
             _reader_add(verified, entry.authorization_id, budget=budget)
         _reader_append(result, entry, budget=budget)
-    _reader_work(result, budget)
+    _reader_reserve(budget, 192)  # history result/object, not a deep payload copy
     return SetupIssuanceHistory(_reader_tuple(result, budget=budget))
 
 
@@ -509,40 +610,43 @@ class _SetupHistoryReader:
         self.verified: set[str] = _reader_set(budget=budget)
 
     def _load(self) -> None:
+        self.budget.step()  # loaded reuse still consumes this same remainder
         if self.loaded:
             return
-        for entry, record, command in _inventory(self.conn, self.org_slug, self.budget):
-            self.budget.step()
-            _reader_work((entry, record, command), self.budget)
-            self.identities[entry.authorization_id] = entry
-            self.namespaces.setdefault(entry.namespace, (_reader_reserve(self.budget, 64) or [])).append((entry, record, command))
+        for entry, record, command in _reader_iter(_inventory(self.conn, self.org_slug, self.budget), budget=self.budget):
+            _reader_put(entry, self.identities, entry.authorization_id, budget=self.budget)
+            entries = _reader_setdefault(self.namespaces, entry.namespace,
+                (_reader_reserve(self.budget, 64) or []), budget=self.budget)
+            _reader_reserve(self.budget, 112)
+            _reader_append(entries, (entry, record, command), budget=self.budget)
             if entry.setup_bytes is not None:
-                self.setups[record['setup']['id']] = entry
+                _reader_put(entry, self.setups, record['setup']['id'], budget=self.budget)
         self.loaded = True
 
     def history(self, authorization_id: str) -> SetupIssuanceHistory:
         self.budget.step()
         self._load()
+        _reader_work(authorization_id, self.budget, copies=3)  # identity/cache hashes and lookup
         _check(authorization_id in self.identities)
         if authorization_id not in self.histories:
             target = self.identities[authorization_id]
             required = (_reader_reserve(self.budget, 64) or [])
-            for entry in self.namespaces[target.namespace]:
-                self.budget.step()
+            _reader_work(target.namespace, self.budget)
+            for entry in _reader_iter(self.namespaces[target.namespace], budget=self.budget):
                 if entry[0].revision <= target.revision:
-                    required.append(entry)
-            self.histories[authorization_id] = _verify_prefix(
-                self.conn, required, target, self.budget, self.verified)
+                    _reader_append(required, entry, budget=self.budget)
+            _reader_put(_verify_prefix(self.conn, required, target, self.budget, self.verified),
+                self.histories, authorization_id, budget=self.budget)
         _reader_reserve(self.budget, 128)
         return self.histories[authorization_id]
 
     def setup(self, setup_id: str, setup_bytes: bytes) -> SetupIssuanceHistory:
         self.budget.step()
         self._load()
+        _reader_work(setup_id, self.budget, copies=2)
         _check(setup_id in self.setups)
         target = self.setups[setup_id]
-        _reader_work((target.setup_bytes, setup_bytes), self.budget)
-        _check(target.setup_bytes == setup_bytes)
+        _check(_reader_equal(target.setup_bytes, setup_bytes, budget=self.budget))
         return self.history(target.authorization_id)
 
 
@@ -597,46 +701,62 @@ def _read_setup_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
     Revocation/current configuration never changes historical validity.
     """
     try:
+        budget = reader.budget
+        _reader_reserve(budget, 192)
         _check(type(conn) is sqlite3.Connection and conn.in_transaction)
+        _reader_work(expected_org_slug, budget)
         _check(type(expected_org_slug) is str
                and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
         reader._load()
-        admissions: set[str] = set()
-        for entries in reader.namespaces.values():
+        admissions: set[str] = _reader_set(budget=budget)
+        _reader_reserve(budget, 64)  # values view
+        for entries in _reader_iter(reader.namespaces.values(), budget=budget):
             reader.history(entries[-1][0].authorization_id)
-            for _, record, _ in entries:
+            for _, record, _ in _reader_iter(entries, budget=budget):
                 if record['mode'] == 'issue':
                     _setup_configuration(record['setup'], _decoded(_reader_json(_reader_b64decode(
                         record['admission']['capture']['snapshot_bytes_base64'], validate=True, budget=reader.budget), reader.budget), reader.budget), budget=reader.budget)
                 identity = record['admission']['record']['id']
+                _reader_work(identity, budget)
                 _check(identity not in admissions)
-                admissions.add(identity)
+                _reader_add(admissions, identity, budget=budget)
+        _reader_reserve(budget, 64 + 4 * (len('org//coding-setup/') + len(expected_org_slug)))
         prefix = f'org/{expected_org_slug}/coding-setup/'
-        pointers = []
+        pointers = (_reader_reserve(budget, 64) or [])
+        _reader_reserve(budget, 352)  # pointer generator and argument tuple
         for row in _bounded_rows(conn, 'workflow_active_authorizations',
             ('namespace', 'authorization_revision_id'), (('text',), ('text',)), reader.budget,
             where='substr(namespace,1,?)=?', args=(len(prefix), prefix), maximum=_ROW_LIMIT):
             namespace, identity = reader.budget.row(row, ('text', 'text'), counted=True, charged=True)
+            _reader_work(namespace, budget, copies=2)
             _check(namespace in reader.namespaces
-                   and identity == reader.namespaces[namespace][-1][0].authorization_id)
-            pointers.append((namespace, identity))
+                   and _reader_equal(identity, reader.namespaces[namespace][-1][0].authorization_id, budget=budget))
+            _reader_reserve(budget, 96)
+            _reader_append(pointers, (namespace, identity), budget=budget)
+        _reader_reserve(budget, 128)  # uniqueness generator, before traversal/hash
         _check(len(pointers) == len(reader.namespaces)
-               and len({namespace for namespace, _ in pointers}) == len(pointers))
-        for identity in reader.identities:
-            aliases = list(_bounded_rows(conn, 'workflow_active_authorizations',
+               and len(_reader_set((namespace for namespace, _ in pointers), budget=budget)) == len(pointers))
+        for identity in _reader_iter(reader.identities, budget=budget):
+            _reader_reserve(budget, 336)  # alias generator and argument tuple
+            aliases = _reader_list(_bounded_rows(conn, 'workflow_active_authorizations',
                 ('namespace', 'authorization_revision_id'), (('text',), ('text',)), reader.budget,
-                where='authorization_revision_id=?', args=(identity,), maximum=1))
+                where='authorization_revision_id=?', args=(identity,), maximum=1), budget=budget)
             if aliases:
                 alias = reader.budget.row(aliases[0], ('text', 'text'), counted=True, charged=True)
-                _check(alias in pointers)
+                _reader_reserve(budget, 128)
+                _check(_reader_any_true((_reader_equal(alias, pointer, budget=budget)
+                    for pointer in pointers), budget=budget))
             reader.budget.step()
+            _reader_reserve(budget, 80)
             bound = _reader_raw_one(conn, 'SELECT 1 FROM workflow_binding_snapshots '
                                  'WHERE authorization_revision_id=? LIMIT 1', (identity,), budget=reader.budget)
             if bound is not None:
                 _check(False)
-        _reader_work(reader.identities, reader.budget)
-        _reader_work(pointers, reader.budget)
-        return SetupStorage(tuple(reader.identities.values()), tuple(pointers))
+        _reader_reserve(budget, 256)  # storage result and values view
+        return SetupStorage(_reader_tuple(reader.identities.values(), budget=budget),
+            _reader_tuple(pointers, budget=budget))
+    except _ReaderBudgetExhausted:
+        raise
     except (sqlite3.Error, CodingSavedRecordError, ValueError, TypeError,
             KeyError, UnicodeError, RecursionError, OverflowError):
         raise CodingAuthorityHistoryError(_REFUSAL) from None
