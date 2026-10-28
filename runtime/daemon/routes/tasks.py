@@ -23,6 +23,7 @@ from sse_starlette.sse import EventSourceResponse
 from fastapi.responses import JSONResponse
 
 from runtime.daemon.auth import _require_human, require_token
+from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
@@ -2781,8 +2782,7 @@ def get_task_attachment(
         iter([content]),
         media_type=media_type,
         headers={
-            "Content-Disposition":
-                f'attachment; filename="{record.display_name}"',
+            "Content-Disposition": attachment_content_disposition(record.display_name),
         },
     )
 
