@@ -4496,9 +4496,18 @@ callers forward that SAME callable through loop scheduling, policy/discovery,
 binding/profile/read waits and authority/Pause writers; they never recapture a
 replacement tuple, even over the same org/DB and equal durable snapshot. Coding
 preparation binds the exact invocation, original dispatcher and callable before
-its first preparation; dispatch, host FIFO, final launch writer and existing
-native launch boundaries refuse a missing/foreign selection. Draft selection and
-ordinary/v2/recovery owners remain separate. Role access yields its validator to
+its first preparation; dispatch, host FIFO and the final launch writer retain
+that selection. Contained backends renew it before their actual provider launch;
+the executor only communicates/parses that existing process. Passthrough creates
+no provider process at backend launch: BOTH builtin and custom executor selflaunch
+branches renew the SAME invocation-bound validator after throttle, integrity,
+environment, prompt and other before-selflaunch work, immediately before the
+actual provider call on every genuine attempt, including an already-committed
+attempt. Missing/foreign selection refuses without recapture or a second COMMIT,
+spend, preparation or session. Later refusal retains the successful original
+claim/session/reservation prefix, possible-launch/unknown custody and all owed
+host/native/outer tails; it supplies no cleanup or no-effect proof. Draft selection
+and ordinary/v2/recovery owners remain separate. Role access yields its validator to
 continuing readers/publishers. Reconciliation carries it through the graph writer
 and postcommit queue publication; late refusal holds the actual committed prefix.
 Shared complete schema/source-readiness helpers remain available to P0.
