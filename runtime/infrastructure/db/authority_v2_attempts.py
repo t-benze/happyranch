@@ -1397,10 +1397,10 @@ class AuthorityV2AttemptsMixin:
             )
             relevant = {}
             for key, state in history.items():
-                if state.kind != "job":
-                    continue
                 if state.task_id != task["id"] and state.source_id not in jobs:
                     continue
+                if state.kind != "job":
+                    return False  # a foreign kind cannot hide a related source
                 job = jobs.get(state.source_id)
                 if job is None or (
                     key != ("job", job["id"], job["id"])
@@ -1412,9 +1412,11 @@ class AuthorityV2AttemptsMixin:
                 relevant[job["id"]] = state
             entries = {}
             for entry in control["journal"]["entries"]:
-                if entry["owner"] != "job":
-                    continue  # the authentic manager result-processing entry is expected
                 jid = entry["owner_identity"].get("job_id")
+                if entry["owner"] != "job":
+                    if jid is not None and (jid in jobs or entry["task_id"] == task["id"]):
+                        return False  # another owner cannot substitute for this job
+                    continue  # the authentic manager result-processing entry is expected
                 if entry["task_id"] != task["id"] and jid not in jobs:
                     continue
                 if jid not in jobs or jid in entries:
