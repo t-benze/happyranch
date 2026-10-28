@@ -8,6 +8,48 @@ document layouts. Generic Database/runtime-audit construction stays workflow-fre
 """
 from __future__ import annotations
 
+from runtime.infrastructure._workflow_reader import (
+    _b64decode as _reader_b64decode,
+    _b64encode as _reader_b64encode,
+    _decode as _reader_decode,
+    _dump as _reader_dump,
+    _encode as _reader_encode,
+    _hex as _reader_hex,
+    _json_dumps as _reader_json_dumps,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _add as _reader_add,
+    _append as _reader_append,
+    _extend as _reader_extend,
+    _put as _reader_put,
+    _setdefault as _reader_setdefault,
+    _update as _reader_update,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _all_true as _reader_all_true,
+    _any_true as _reader_any_true,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _dict as _reader_dict,
+    _dict_pairs as _reader_dict_pairs,
+    _list as _reader_list,
+    _set as _reader_set,
+    _sorted as _reader_sorted,
+    _tuple as _reader_tuple,
+)
+
+from runtime.infrastructure._workflow_reader import _ReaderBudgetExhausted
+
+from runtime.infrastructure._workflow_reader import (
+    _equal as _reader_equal,
+    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
+    _json as _reader_json, _reserve as _reader_reserve, _work as _reader_work,
+    _sha256 as _reader_sha256, _fromhex as _reader_fromhex,
+)
+
 import base64
 import hashlib
 import json
@@ -369,9 +411,11 @@ _INSTALL_EVENT_DIGEST = hashlib.sha256(
 ).hexdigest()
 
 
-def _execute_ddl(conn: sqlite3.Connection, ddl: str) -> None:
+def _execute_ddl(conn: sqlite3.Connection, ddl: str, *, budget: _Budget | None = None) -> None:
+    _reader_work(ddl, budget)
     statement = ""
     for line in ddl.splitlines(keepends=True):
+        _reader_work((_reader_reserve(budget, 96) or (statement, line)), budget)
         statement += line
         if sqlite3.complete_statement(statement):
             if statement.strip():
@@ -435,34 +479,278 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=12)
-def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *, coding_extension: bool = False) -> tuple[object, ...]:
+def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, ...],
+                     keys: tuple[str, ...], budget: _Budget, args: tuple = ()) -> list[tuple]:
+    """Gate complete native metadata before fetching any text/SQL into Python.
+
+    Every selected metadata row has at most eight cells and two key cells.
+    Reserve that fixed row's slices, checks, decode/copy containers and later
+    SQL normalization together BEFORE their work. Repeated acquisition still
+    consumes the original allowance; no row, reference or validator is trusted.
+    SQLite preparation/internal allocation is not hard-RSS/time bounded.
+    """
+    from runtime.workflows.coding_authority_history import _check, _VALUE_LIMIT
+    _check(0 < len(columns) <= 8 and 0 < len(keys) <= 2)
+    budget.reserve(4096)  # Fixed query/cursor/argument container envelope.
+    _reader_work((source, columns, keys, args), budget, copies=2)
+    quote = lambda name: '"' + name.replace('"', '""') + '"'
+    scalar = ','.join((*map(quote, keys), *(f'typeof({quote(c)}),length(CAST({quote(c)} AS BLOB))' for c in columns)))
+    projection = ','.join(f'CASE WHEN typeof({quote(c)})=\'text\' THEN CAST({quote(c)} AS BLOB) ELSE {quote(c)} END' for c in columns)
+    predicate = ' AND '.join(f'{quote(k)}=?' for k in keys)
+    payload_sql = f'SELECT {projection} FROM ({source}) WHERE {predicate}'
+    result = []
+    cursor = conn.cursor()
+    cursor.row_factory = None
+    primary = None
+    try:
+        cursor.execute(f'SELECT {scalar} FROM ({source})', args)
+        while True:
+            # reserve() includes this acquisition/row traversal step. The
+            # fixed <=8-cell body below is covered by its single row envelope.
+            if budget.accepted_rows >= 8192:
+                raise _ReaderBudgetExhausted('workflow_reader_budget_exhausted')
+            budget.reserve(128 * (len(keys) + 2 * len(columns)) + 64)
+            row = cursor.fetchone()
+            if row is None:
+                break
+            budget.candidate()
+            identity, cells = row[:len(keys)], row[len(keys):]
+            _check(all(type(value) is int for value in identity))
+            types, sizes = cells[::2], cells[1::2]
+            _check(all(t in ('text', 'integer', 'null') for t in types))
+            _check(all(s is None or type(s) is int and 0 <= s <= _VALUE_LIMIT for s in sizes))
+            size = sum(s or 0 for s in sizes)
+            # Raw BLOBs, strict decoded strings, argument concatenation, row
+            # tuples, list growth and later whitespace split/join copies are
+            # reserved before this payload fetch. Cell loops have fixed width.
+            if budget.accepted_rows >= 8192:
+                raise _ReaderBudgetExhausted('workflow_reader_budget_exhausted')
+            budget.reserve(size * 24 + 256 * len(columns) + 512)
+            payload = conn.execute(payload_sql, args + identity)
+            payload_failure = None
+            try:
+                value = payload.fetchone()
+                _check(value is not None)
+                budget.candidate()
+                if budget.accepted_rows >= 8192:
+                    raise _ReaderBudgetExhausted('workflow_reader_budget_exhausted')
+                budget.reserve(128 * len(columns) + 64)
+                extra = payload.fetchone()
+                if extra is not None:
+                    budget.candidate()
+                    _check(False)
+                decoded = []
+                for cell, storage, length in zip(value, types, sizes, strict=True):
+                    if storage == 'text':
+                        _check(type(cell) is bytes and len(cell) == length)
+                        decoded.append(cell.decode('utf8'))
+                    else:
+                        _check(type(cell) is (int if storage == 'integer' else type(None)))
+                        decoded.append(cell)
+                result.append(tuple(decoded))
+            except BaseException as exc:
+                payload_failure = exc
+                raise
+            finally:
+                try:
+                    payload.close()
+                except BaseException as exc:
+                    if payload_failure is None:
+                        raise
+                    payload_failure.add_note('workflow structure payload close failed: ' + type(exc).__name__)
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            cursor.close()
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note('workflow structure cursor close failed: ' + type(exc).__name__)
+    return result
+
+
+def _candidate_structure(conn: sqlite3.Connection, budget: _Budget) -> tuple[tuple, dict, tuple]:
+    """Complete bounded observation, including unrelated examined object kinds.
+
+    No DATA, physical integrity, FK data or complete-owner reader is entered.
+    The independent old/new canonical comparator remains exact.
+    """
+    objects = _structure_cells(conn, 'SELECT rowid,type,name,tbl_name,sql FROM sqlite_schema',
+                               ('type', 'name', 'tbl_name', 'sql'), ('rowid',), budget)
+    # The sort and retained reference containers are part of this original
+    # allowance too. SQLite's own PRAGMA preparation is not hard-RSS bounded.
+    from runtime.workflows.coding_authority_history import _check
+    _reader_reserve(budget, 64 * len(objects))
+    for _ in range(len(objects) * max(1, len(objects).bit_length())):
+        budget.step()
+    objects.sort(key=lambda row: row[:3])
+    selected = _reader_list((row for row in objects if _reader_any_true((name.casefold().startswith('workflow_')
+                                            for name in row[1:3]), budget=budget)), budget=budget)
+    # Membership in this local set selects metadata to acquire; it certifies
+    # nothing. Complete independent comparison below remains mandatory.
+    selected_names = _reader_set((row[1] for row in selected), budget=budget)
+    normalized = _reader_tuple(((_reader_reserve(budget, 128) or (kind, name, table, None if sql is None else ' '.join(sql.split())))
+                       for kind, name, table, sql in selected), budget=budget)
+    native_names = _reader_set((_reader_reserve(budget, 160) or ('tasks', 'task_results', 'audit_log', 'task_pause_controls', 'org_settings', 'work_hours')), budget=budget)
+    tables, indexes, native = (_reader_reserve(budget, 112) or (_reader_reserve(budget, 64) or [], _reader_reserve(budget, 64) or [], _reader_reserve(budget, 64) or {}))
+    for kind, name, _, _ in objects:
+        if kind != 'table' or not (name in native_names or name in selected_names):
+            continue
+        columns = _reader_tuple(_structure_cells(conn, 'SELECT * FROM pragma_table_xinfo(?)',
+            ('cid', 'name', 'type', 'notnull', 'dflt_value', 'pk', 'hidden'), ('cid',), budget, (_reader_reserve(budget, 80) or (name,))), budget=budget)
+        foreign = _reader_tuple(_structure_cells(conn, 'SELECT * FROM pragma_foreign_key_list(?)',
+            ('id', 'seq', 'table', 'from', 'to', 'on_update', 'on_delete', 'match'), ('id', 'seq'), budget, (_reader_reserve(budget, 80) or (name,))), budget=budget)
+        table_indexes = (_reader_reserve(budget, 64) or [])
+        for index in _structure_cells(conn, 'SELECT * FROM pragma_index_list(?)',
+                ('seq', 'name', 'unique', 'origin', 'partial'), ('seq',), budget, (_reader_reserve(budget, 80) or (name,))):
+            detail = _reader_tuple(_structure_cells(conn, 'SELECT * FROM pragma_index_xinfo(?)',
+                ('seqno', 'cid', 'name', 'desc', 'coll', 'key'), ('seqno',), budget, (_reader_reserve(budget, 80) or (index[1],))), budget=budget)
+            _reader_append(table_indexes, (_reader_reserve(budget, 112) or (name, index, detail)), budget=budget)
+        if name in native_names:
+            _reader_put((_reader_reserve(budget, 112) or (columns, foreign, _reader_tuple(table_indexes, budget=budget))), native, name, budget=budget)
+        else:
+            _reader_append(tables, (_reader_reserve(budget, 112) or (name, columns, foreign)), budget=budget)
+            _reader_extend(indexes, table_indexes, budget=budget)
+    return (_reader_reserve(budget, 112) or (_reader_reserve(budget, 112) or (normalized, _reader_tuple(tables, budget=budget), _reader_tuple(indexes, budget=budget)), native, _reader_tuple(objects, budget=budget)))
+
+
+# Ordered X01--X40. The installer and independent references use this same
+# literal release definition; no inspected object supplies a reference key.
+_OWNER_INDEX_COLUMNS = (
+    ('workflow_contexts', 'source_id'),
+    ('workflow_instance_tasks', 'task_id'),
+    ('workflow_task_results', 'task_id'),
+    ('workflow_current_assignments', 'task_id'),
+    ('workflow_receipt_evidence', 'task_id'),
+    ('workflow_submissions', 'source_task_id'),
+    ('workflow_submission_contributors', 'source_task_id'),
+    ('workflow_instance_contributors', 'source_task_id'),
+    ('workflow_dispatch_callbacks', 'task_id'),
+    ('workflow_dispatch_effects', 'task_id'),
+    ('workflow_request_task_bridges', 'result_id'),
+    ('workflow_submissions', 'source_result_id'),
+    ('workflow_submission_contributors', 'source_result_id'),
+    ('workflow_instance_contributors', 'source_result_id'),
+    ('workflow_receipt_evidence', 'result_id'),
+    ('workflow_receipt_evidence', 'context_id'),
+    ('workflow_receipt_evidence', 'binding_snapshot_id'),
+    ('workflow_contexts', 'binding_snapshot_id'),
+    ('workflow_instances', 'binding_snapshot_id'),
+    ('workflow_instances', 'context_id'),
+    ('workflow_activation_operations', 'activation_id'),
+    ('workflow_operation_replays', 'instance_id'),
+    ('workflow_dispatch_operations', 'instance_id'),
+    ('workflow_request_task_bridges', 'instance_id'),
+    ('workflow_dispatch_effects', 'outbox_id'),
+    ('workflow_rounds', 'submission_id'),
+    ('workflow_operation_replays', 'effect_id'),
+    ('workflow_review_requests', 'supersedes_request_id'),
+    ('workflow_review_receipts', 'supersedes_receipt_id'),
+    ('workflow_draft_dispatch_intents', 'context_id'),
+    ('workflow_draft_dispatch_intents', 'binding_snapshot_id'),
+    ('workflow_draft_dispatch_intents', 'final_result_id'),
+    ('workflow_submission_operations', 'source_task_id'),
+    ('workflow_submission_result_links', 'source_task_id'),
+    ('workflow_author_handoffs', 'source_task_id'),
+    ('workflow_document_revision_operations', 'binding_snapshot_id'),
+    ('workflow_document_revision_operations', 'activation_id'),
+    ('workflow_coding_attempts', 'submission_id'),
+    ('workflow_review_receipts', 'submission_id'),
+    ('workflow_current_assignments', 'result_id'),
+)
+
+
+def _owner_index_statements(layout: str, *, coding_extension: bool, budget: _Budget | None = None) -> tuple[str, ...]:
+    _reader_work((_reader_reserve(budget, 112) or (layout, coding_extension, _OWNER_INDEX_COLUMNS)), budget)
+    absent = _reader_set(budget=budget)
+    if layout == 'F':
+        _reader_add(absent, 'workflow_draft_dispatch_intents', budget=budget)
+    if layout in ('F', 'E'):
+        _reader_update(absent, ('workflow_submission_operations', 'workflow_submission_result_links'), budget=budget)
+    if layout in ('F', 'E', 'G'):
+        _reader_add(absent, 'workflow_author_handoffs', budget=budget)
+    if layout not in ('I', 'J'):
+        _reader_add(absent, 'workflow_document_revision_operations', budget=budget)
+    if not coding_extension and layout != 'J':
+        _reader_add(absent, 'workflow_coding_attempts', budget=budget)
+    return _reader_tuple((f'CREATE INDEX workflow_owner_{table.removeprefix("workflow_")}_{column}_idx '
+                 f'ON {table}({column});'
+                 for table, column in _OWNER_INDEX_COLUMNS if table not in absent), budget=budget)
+
+
+def _install_owner_indexes(conn: sqlite3.Connection, layout: str, *, coding_extension: bool,
+                           existing: frozenset[str] = frozenset(), budget: _Budget | None = None) -> None:
+    """DDL only for a previously fully validated source in its owning writer."""
+    _reader_work(existing, budget)
+    for statement in _owner_index_statements(layout, coding_extension=coding_extension, budget=budget):
+        _reader_work(statement, budget)
+        name = statement.split()[2]
+        if name not in existing:
+            conn.execute(statement)
+
+
+@contextmanager
+def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed: bool, budget: _Budget | None = None):
+    """Independent literal schema; callers choose complete or bounded metadata."""
+    # Derived literal DDL copies are reserved before their construction.
+    _reader_work((_reader_reserve(budget, 112) or (CANONICAL_WORKFLOW_DDL, CANONICAL_WORKFLOW_SUBMISSION_DDL,
+                  CANONICAL_WORKFLOW_DRAFT_DDL)), budget, copies=2)
     expected = sqlite3.connect(":memory:")
+    primary = None
     try:
         expected.execute("PRAGMA foreign_keys=ON")
-        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H", "I", "J") else CANONICAL_WORKFLOW_DDL)
+        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H", "I", "J") else CANONICAL_WORKFLOW_DDL, budget=budget)
         if layout in ("E", "G", "H", "I", "J"):
-            _execute_ddl(expected, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL)
+            _execute_ddl(expected, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL, budget=budget)
         elif layout != "F":
             raise ValueError("unsupported_workflow_layout")
         if layout in ("G", "H", "I", "J"):
-            _execute_ddl(expected, _g_additions_ddl())
+            _execute_ddl(expected, _g_additions_ddl(), budget=budget)
         if layout in ("H", "I", "J"):
-            _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
+            _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL, budget=budget)
         if layout in ("I", "J"):
-            _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+            _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL, budget=budget)
         if layout == "J" or coding_extension:
             from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
-            _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
-        return _layout(expected)
+            _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL, budget=budget)
+        if owner_indexed:
+            _install_owner_indexes(expected, layout, coding_extension=coding_extension, budget=budget)
+        yield expected
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        expected.close()
+        try:
+            expected.close()
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note('workflow reference close failed: ' + type(exc).__name__)
 
 
-def _object_keys(layout: tuple[object, ...]) -> set[tuple[object, ...]]:
+@lru_cache(maxsize=24)
+def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *, coding_extension: bool = False,
+                      owner_indexed: bool = False) -> tuple[object, ...]:
+    with _canonical_connection(layout, coding_extension=coding_extension,
+                               owner_indexed=owner_indexed) as expected:
+        return _layout(expected)
+
+
+def _candidate_reference(layout: str, *, coding_extension: bool,
+                         owner_indexed: bool, budget: _Budget) -> tuple:
+    # Never populate the eager complete-reader cache as a candidate shortcut:
+    # acquire reference cells under the SAME budget before their materialization.
+    with _canonical_connection(layout, coding_extension=coding_extension,
+                               owner_indexed=owner_indexed, budget=budget) as expected:
+        return _candidate_structure(expected, budget)[0]
+
+
+def _object_keys(layout: tuple[object, ...], *, budget: _Budget | None = None) -> set[tuple[object, ...]]:
     objects = layout[0]
     assert isinstance(objects, tuple)
-    return {(row[0], row[1], row[2]) for row in objects}
+    return _reader_set(((_reader_reserve(budget, 112) or (row[0], row[1], row[2])) for row in objects), budget=budget)
 
 
 def _g_definitions() -> tuple[str, str, str]:
@@ -499,34 +787,36 @@ _CUTOVER_POLICY = "workflow-cutover-verifier@1"
 
 def _cutover_event_digest(
     event: dict, *, org_slug: str, previous_digest: str,
-) -> str:
+budget=None) -> str:
     """Reconstructible v1 UTF-8 preimage; no extra persisted receipt fields."""
+    _reader_work((_reader_reserve(budget, 112) or (event,org_slug,previous_digest)), budget, copies=2)
     disabling = event["event_seq"] >= 5
-    preimage = {
+    preimage = (_reader_reserve(budget, 960) or {
         "schema_version": 1,
         "recovery_owner": _CUTOVER_OWNER,
         "policy": _CUTOVER_POLICY,
         "org_slug": org_slug,
-        "event": {k: event[k] for k in (
+        "event": _reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  event[k] )) for k in (
             "id", "event_seq", "state_before", "state_after",
             "operation_key", "created_at",
-        )},
-        "request": {
+        )), budget=budget),
+        "request": (_reader_reserve(budget, 576) or {
             "action": "disable" if disabling else "enable",
             "expected_generation": 4 if disabling else 1,
             "principal_id": "founder",
             "proof_kind": "founder_bearer",
-        },
+        }),
         "previous_digest": previous_digest,
-    }
-    raw = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    })
+    raw = _reader_json_dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False, budget=budget)
+    return _reader_sha256(_reader_encode(raw, "utf-8", budget=budget), budget=budget).hexdigest()
 
 
 def _validate_cutover_data(
     conn: sqlite3.Connection, *, expected_org_slug: str | None,
-) -> tuple[dict, list[dict]]:
+budget=None) -> tuple[dict, list[dict]]:
     """Validate the whole one-way lifecycle, never just legal state names."""
+    _reader_reserve(budget, 0)
     import re
 
     def refuse() -> None:
@@ -536,26 +826,27 @@ def _validate_cutover_data(
         if not isinstance(value, str) or not value:
             return False
         try:
+            _reader_reserve(budget, 96)
             parsed = datetime.fromisoformat(value)
             return parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
-        except (ValueError, AttributeError):
+        except ((ValueError, AttributeError)):
             return False
 
     keys = ("schema_version", "state", "recovery_owner", "generation",
             "operation_key", "disable_reason", "updated_at")
-    rows = conn.execute("SELECT " + ",".join(keys) + " FROM workflow_cutover_state").fetchall()
+    rows = _reader_all(conn, "SELECT " + ",".join(keys) + " FROM workflow_cutover_state", budget=budget)
     if len(rows) != 1:
         refuse()
-    marker = dict(zip(keys, tuple(rows[0]), strict=True))
+    marker = _reader_dict(zip(keys, _reader_tuple(rows[0], budget=budget), strict=True), budget=budget)
     generation = marker["generation"]
     if (marker["schema_version"] != 1 or marker["recovery_owner"] != _CUTOVER_OWNER
             or type(generation) is not int or not 1 <= generation <= len(_CUTOVER_STATES)):
         refuse()
     event_keys = ("id", "event_seq", "state_before", "state_after", "operation_key",
                   "event_digest", "created_at")
-    events = [dict(zip(event_keys, tuple(row), strict=True)) for row in conn.execute(
-        "SELECT " + ",".join(event_keys) + " FROM workflow_cutover_events ORDER BY event_seq"
-    )]
+    events = _reader_list((_reader_dict(zip(event_keys, _reader_tuple(row, budget=budget), strict=True), budget=budget) for row in _reader_rows(
+        conn, "SELECT " + ",".join(event_keys) + " FROM workflow_cutover_events ORDER BY event_seq"
+    , budget=budget)), budget=budget)
     if len(events) != generation or (generation > 1 and not expected_org_slug):
         refuse()
     for seq, event in enumerate(events, 1):
@@ -578,24 +869,24 @@ def _validate_cutover_data(
                 refuse()
             if event["event_digest"] != _cutover_event_digest(
                 event, org_slug=expected_org_slug, previous_digest=events[seq - 2]["event_digest"],
-            ):
+            budget=budget):
                 refuse()
     last = events[-1]
     if (marker["state"] != last["state_after"] or marker["operation_key"] != last["operation_key"]
             or marker["updated_at"] != last["created_at"]
             or marker["disable_reason"] != ("founder_disable_requested" if generation >= 5 else None)):
         refuse()
-    return marker, events
+    return (_reader_reserve(budget, 96) or (marker, events))
 
 
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
-    validate_data: bool = True,
+    validate_data: bool = True, budget: _Budget | None = None,
     advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> Literal["F", "E", "G", "H", "I", "J"]:
     with _schema_snapshot(conn):
         return _read_installed(conn, expected_org_slug=expected_org_slug,
-                               validate_data=validate_data, advances=advances)[0]
+                               validate_data=validate_data, budget=budget, advances=advances)[0]
 
 
 @contextmanager
@@ -604,14 +895,23 @@ def _schema_snapshot(conn: sqlite3.Connection):
     owned = not conn.in_transaction
     if owned:
         conn.execute('BEGIN')
+    primary = None
     try:
         yield
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         if owned:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except BaseException as exc:
+                if primary is None:
+                    raise
+                primary.add_note('workflow snapshot rollback failed: ' + type(exc).__name__)
 
 
-def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], bool]:
+def _read_structure(conn: sqlite3.Connection, *, budget: _Budget | None = None) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], bool]:
     """Independently recognize document layout plus the unchanged coding family.
 
     Complete workflow objects/metadata are compared, including reserved aliases,
@@ -619,9 +919,15 @@ def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H
     the reference, and this structural helper never enters history readers.
     """
     from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
-    actual = _layout(conn)
-    names = {row[1] for row in actual[0]}
-    coding = has_coding_schema_objects(conn)
+    if budget is None:
+        actual = _layout(conn)
+        coding = has_coding_schema_objects(conn, budget=budget)
+    else:
+        actual, _, objects = _candidate_structure(conn, budget)
+        coding = _reader_any_true((name.casefold().startswith('workflow_coding_')
+                     or name.casefold() == 'workflow_coding'
+                     for row in objects for name in row[1:3]), budget=budget)
+    names = _reader_set((row[1] for row in actual[0]), budget=budget)
     layout = ('I' if 'workflow_document_revision_operations' in names else
               'H' if 'workflow_author_handoffs' in names else
               'G' if 'workflow_submission_schema_versions' in names else
@@ -629,15 +935,26 @@ def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H
     # I plus the canonical extension IS the original J object set/identity.
     if coding and layout == 'I':
         layout = 'J'
-    expected = _canonical_layout(layout, coding_extension=coding)
-    if _object_keys(actual) != _object_keys(expected):
+    indexed = _reader_any_true((name.startswith('workflow_owner_') for name in names), budget=budget)
+    expected = (_canonical_layout(layout, coding_extension=coding, owner_indexed=indexed)
+                if budget is None else _candidate_reference(layout,
+                    coding_extension=coding, owner_indexed=indexed, budget=budget))
+    if not _reader_equal(_object_keys(actual, budget=budget), _object_keys(expected, budget=budget), budget=budget):
         raise ValueError('workflow_schema_object_set_mismatch')
-    if actual != expected:
+    if not _reader_equal(actual, expected, budget=budget):
         raise ValueError('workflow_schema_layout_mismatch')
-    return layout, coding
+    return (_reader_reserve(budget, 96) or (layout, coding))
 
 
-def _coding_document_exclusions(conn: sqlite3.Connection) -> frozenset[str]:
+def _owner_indexes_present(conn: sqlite3.Connection, *, budget: _Budget | None = None) -> frozenset[str]:
+    """Only after full source validation, for the existing DDL owner."""
+    names = _reader_set((row[0] for row in _reader_rows(conn, "SELECT name FROM sqlite_schema WHERE type='index' AND name GLOB 'workflow_owner_*'", budget=budget)), budget=budget)
+    _reader_reserve(budget, 64 + 64 * len(names))
+    _reader_work(names, budget)
+    return frozenset(names)
+
+
+def _coding_document_exclusions(conn: sqlite3.Connection, *, budget: _Budget | None = None) -> frozenset[str]:
     """Positively absent optional families only; present ones stay canonical.
 
     Caller owns the snapshot and complete data reader. This repeats only the
@@ -645,14 +962,27 @@ def _coding_document_exclusions(conn: sqlite3.Connection) -> frozenset[str]:
     """
     if not conn.in_transaction:
         raise ValueError('workflow_coding_exclusion_requires_snapshot')
-    layout, _ = _read_structure(conn)
-    present = set()
+    layout, _ = _read_structure(conn, budget=budget)
+    return _coding_document_tables(layout, budget=budget)
+
+
+def _coding_document_tables(layout: str, *, budget: _Budget | None = None) -> frozenset[str]:
+    """Project the document families of the actual enclosing layout.
+
+    This literal projection validates no connection, data or history. Complete
+    readers call it only below their own structural comparison in the same
+    snapshot; independently entered exclusion reads retain that comparison.
+    """
+    if layout not in ('F', 'E', 'G', 'H', 'I', 'J'):
+        raise ValueError('workflow_schema_layout_mismatch')
+    present = _reader_set(budget=budget)
     if layout in ('E', 'G', 'H', 'I', 'J'):
-        present.add('workflow_draft_dispatch_intents')
+        _reader_add(present, 'workflow_draft_dispatch_intents', budget=budget)
     if layout in ('H', 'I', 'J'):
-        present.add('workflow_author_handoffs')
+        _reader_add(present, 'workflow_author_handoffs', budget=budget)
     if layout in ('I', 'J'):
-        present.add('workflow_document_revision_operations')
+        _reader_add(present, 'workflow_document_revision_operations', budget=budget)
+    _reader_work(present, budget)
     return frozenset(present)
 
 
@@ -661,55 +991,78 @@ def _read_installed(
     validate_data: bool = True, budget: _Budget | None = None,
     advances: list[tuple[tuple[int, int], int]] | None = None,
 ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
-    layout, coding_extension = _read_structure(conn)
+    _reader_reserve(budget, 0)
+    layout, coding_extension = _read_structure(conn, budget=budget)
+    return _read_installed_data(conn, layout=layout, coding_extension=coding_extension,
+        expected_org_slug=expected_org_slug, validate_data=validate_data,
+        budget=budget, advances=advances)
 
-    from runtime.infrastructure.workflow_coding_schema import _read_coding_data
-    coding = _read_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
-                               budget=budget, advances=advances)
+
+def _read_installed_data(
+    conn: sqlite3.Connection, *, layout: Literal['F', 'E', 'G', 'H', 'I', 'J'],
+    coding_extension: bool, expected_org_slug: str | None,
+    validate_data: bool = True, budget: _Budget | None = None,
+    advances: list[tuple[tuple[int, int], int]] | None = None,
+) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
+    """Original installed-data owner below the enclosing structural comparison.
+
+    This private layer neither validates structure nor accepts evidence of data
+    validity. Its two lexical compositions always compare complete independent
+    structure first and run every selected original semantic validator here.
+    No observed row, candidate inventory or full-reader result is an input.
+    """
+    _reader_reserve(budget, 0)
+    # We own the complete structural comparison above and the enclosing
+    # snapshot. Enter the original data validator directly, not a second
+    # standalone snapshot/structure boundary. No caller-supplied proof or
+    # validation flag is accepted, and every data/history check still runs.
+    from runtime.infrastructure.workflow_coding_schema import _validate_coding_data
+    coding = _validate_coding_data(conn, layout=layout, expected_org_slug=expected_org_slug,
+                                 budget=budget, advances=advances)
     # Unknown native admission owners (including unsupported coding families)
     # never become a legacy observation on an earlier workflow layout.
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
-    validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True)
+    validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True, budget=budget)
     # J with complete setup closure still requires all retained I/document/native readers even
     # on cutover's metadata path. The flag never bypasses the new boundary.
     if coding_extension:
         validate_data = True
-        _validate_source_data(conn, coding=coding)
+        _validate_source_data(conn, coding=coding, budget=budget)
         from runtime.identities.schema import validate_names
         from runtime.infrastructure.team_move_store import validate_team_move_schema
-        validate_names(conn, org_slug=expected_org_slug)
-        validate_team_move_schema(conn, org_slug=expected_org_slug)
+        validate_names(conn, org_slug=expected_org_slug, budget=budget)
+        validate_team_move_schema(conn, org_slug=expected_org_slug, reader_budget=budget)
 
-    versions = [
-        tuple(row)
-        for row in conn.execute("SELECT version FROM workflow_adapter_versions")
-    ]
+    versions = _reader_list((
+        _reader_tuple(row, budget=budget)
+        for row in _reader_rows(conn, "SELECT version FROM workflow_adapter_versions", budget=budget)
+    ), budget=budget)
     if len(versions) == 1 and versions[0][0] != 1:
         raise ValueError("unsupported_workflow_adapter_version")
-    if versions != [(1,)]:
+    if versions != (_reader_reserve(budget, 192) or [(1,)]):
         raise ValueError("workflow_schema_marker_mismatch")
-    if layout not in ('H', 'I', 'J') and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin IN ('workflow-compiler@3','workflow-compiler@4') LIMIT 1").fetchone()
-                             for table in ('workflow_template_drafts', 'workflow_template_versions')):
+    if layout not in ('H', 'I', 'J') and _reader_any_true((_reader_one(conn, f"SELECT 1 FROM {table} WHERE compiler_pin IN ('workflow-compiler@3','workflow-compiler@4') LIMIT 1", budget=budget)
+                             for table in ('workflow_template_drafts', 'workflow_template_versions')), budget=budget):
         raise ValueError('workflow_author_handoff_schema_required')
 
-    _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
+    _validate_cutover_data(conn, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ("E", "G", "H", "I", "J"):
-        draft_versions = [tuple(row) for row in conn.execute("SELECT version FROM workflow_draft_adapter_versions")]
-        if draft_versions != [(1,)]:
+        draft_versions = _reader_list((_reader_tuple(row, budget=budget) for row in _reader_rows(conn, "SELECT version FROM workflow_draft_adapter_versions", budget=budget)), budget=budget)
+        if draft_versions != (_reader_reserve(budget, 192) or [(1,)]):
             raise ValueError("workflow_draft_schema_marker_mismatch")
         if validate_data:
-            _validate_draft_data(conn, expected_org_slug=expected_org_slug)
+            _validate_draft_data(conn, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ("G", "H", "I", "J"):
-        if [tuple(row) for row in conn.execute("SELECT version FROM workflow_submission_schema_versions")] != [(1,)]:
+        if _reader_list((_reader_tuple(row, budget=budget) for row in _reader_rows(conn, "SELECT version FROM workflow_submission_schema_versions", budget=budget)), budget=budget) != (_reader_reserve(budget, 192) or [(1,)]):
             raise ValueError("workflow_submission_schema_marker_mismatch")
         if validate_data:
-            _validate_submission_data(conn, expected_org_slug=expected_org_slug)
+            _validate_submission_data(conn, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ("H", "I", "J") and validate_data:
-        _validate_author_handoff_data(conn, expected_org_slug=expected_org_slug)
+        _validate_author_handoff_data(conn, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ("I", "J") and validate_data:
         from runtime.workflows.revisions import validate_revision_storage
-        validate_revision_storage(conn, expected_org_slug=expected_org_slug)
-    return layout, coding
+        validate_revision_storage(conn, expected_org_slug=expected_org_slug, budget=budget)
+    return (_reader_reserve(budget, 96) or (layout, coding))
 
 
 class WorkflowCompatibilityStore:
@@ -727,6 +1080,8 @@ class WorkflowCompatibilityStore:
         # Keep the connection exclusively owned through transaction exit AND
         # publication. Only this existing-layout branch is write-free.
         with self._database._lock:
+            from runtime.workflows.coding_authority_history import _Budget
+            budget = _Budget()
             advances: list[tuple[tuple[int, int], int]] = []
             with self._database.workflow_schema_transaction() as conn:
                 from runtime.infrastructure.workflow_coding_schema import (
@@ -734,24 +1089,52 @@ class WorkflowCompatibilityStore:
                     _validate_coding_dependencies,
                 )
                 # Observe ALL reserved names/owners/kinds before even F DDL.
-                coding_present = has_coding_schema_objects(conn)
-                actual = _layout(conn)
-                if actual[0] or coding_present:
-                    _validate_installed(conn, expected_org_slug=expected_org_slug,
-                                        advances=advances)
+                coding_present = has_coding_schema_objects(conn, budget=budget)
+                objects = _structure_cells(conn,
+                    'SELECT rowid,type,name,tbl_name,sql FROM sqlite_schema',
+                    ('type', 'name', 'tbl_name', 'sql'), ('rowid',), budget)
+                workflow_present = _reader_any_true((name.casefold().startswith('workflow_')
+                    for row in objects for name in row[1:3]), budget=budget)
+                if workflow_present or coding_present:
+                    layout = _validate_installed(conn, expected_org_slug=expected_org_slug,
+                                                 budget=budget, advances=advances)
                     result = "reopened"
                 else:
-                    _validate_coding_dependencies(conn)
+                    _validate_coding_dependencies(conn, budget=budget)
                     _install_foundation(conn, expected_org_slug=expected_org_slug,
-                                        advances=advances)
+                                        budget=budget, advances=advances)
+                    layout = 'F'
                     result = "installed_legacy_only"
                 if not coding_present:
-                    _validate_coding_dependencies(conn)
-                    _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+                    source_indexes = _owner_indexes_present(conn, budget=budget)
+                    _validate_coding_dependencies(conn, budget=budget)
+                    # The first write invalidates source observations/advances;
+                    # complete target validation below reconstructs afresh on
+                    # this SAME remainder, before the original owning COMMIT.
+                    advances.clear()
+                    _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL, budget=budget)
+                    if source_indexes:
+                        _install_owner_indexes(conn, layout, coding_extension=True,
+                                               existing=source_indexes, budget=budget)
+                    layout = _validate_installed(conn, expected_org_slug=expected_org_slug,
+                                                 budget=budget, advances=advances)
+                if not _owner_indexes_present(conn, budget=budget):
+                    advances.clear()
+                    # Coding was either present in the complete source or
+                    # installed and completely validated just above.
+                    _install_owner_indexes(conn, layout, coding_extension=True, budget=budget)
                     _validate_installed(conn, expected_org_slug=expected_org_slug,
-                                        advances=advances)
+                                        budget=budget, advances=advances)
                 if before_commit is not None and result == "installed_legacy_only":
                     before_commit()
+                    # The original hook may write or change schema. Discard
+                    # every pre-hook projection/advance and reconstruct on the
+                    # original remainder before this owner's COMMIT.
+                    if not conn.in_transaction:
+                        raise ValueError('workflow_install_transaction_lost')
+                    advances.clear()
+                    _validate_installed(conn, expected_org_slug=expected_org_slug,
+                                        budget=budget, advances=advances)
             # No exception/interruption/failed COMMIT reaches publication.
             from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
             for file_key, last_id in advances:
@@ -772,19 +1155,19 @@ def install_or_recover(
 
 
 def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | None,
-                        advances: list[tuple[tuple[int, int], int]] | None = None) -> None:
-    _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
+                        budget: _Budget | None = None, advances: list[tuple[tuple[int, int], int]] | None = None) -> None:
+    _execute_ddl(conn, CANONICAL_WORKFLOW_DDL, budget=budget)
     timestamp = datetime.now(timezone.utc).isoformat()
     conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
     conn.execute(
         "INSERT INTO workflow_cutover_state VALUES "
         "(1,1,\'installed_legacy_only\',\'workflow_cutover_reconciler\',"
         "1,NULL,NULL,?)",
-        (timestamp,),
+        (_reader_reserve(budget, 80) or (timestamp,)),
     )
     conn.execute(
         "INSERT INTO workflow_cutover_events VALUES (?,?,?,?,?,?,?)",
-        (
+        (_reader_reserve(budget, 176) or (
             "cutover-event-1",
             1,
             None,
@@ -792,9 +1175,9 @@ def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | No
             None,
             _INSTALL_EVENT_DIGEST,
             timestamp,
-        ),
+        )),
     )
-    _validate_installed(conn, expected_org_slug=expected_org_slug, advances=advances)
+    _validate_installed(conn, expected_org_slug=expected_org_slug, budget=budget, advances=advances)
 
 
 def draft_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:
@@ -805,33 +1188,49 @@ def draft_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-ro
             f'--org {shlex.quote(org_slug)}; retain a compatible reader for every E database')
 
 
-def _records(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list[dict]:
-    cursor = conn.execute(sql, args)
-    names = [column[0] for column in cursor.description]
-    return [dict(zip(names, tuple(row), strict=True)) for row in cursor]
+def _records(conn: sqlite3.Connection, sql: str, args: tuple = (), *,
+             budget: _Budget | None = None) -> list[dict]:
+    from runtime.infrastructure._workflow_reader import _rows, _reserve
+    names: list[str] = (_reader_reserve(budget, 64) or [])
+    cursor = _rows(conn, sql, args, budget=budget, names_out=names)
+    try:
+        records = (_reader_reserve(budget, 64) or [])
+        for row in cursor:
+            _reserve(budget, 128 * len(names) + 16)
+            _reader_append(records, _reader_dict(zip(names, _reader_tuple(row, budget=budget), strict=True), budget=budget), budget=budget)
+        return records
+    finally:
+        cursor.close()
 
 
-def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
-                      allow_nan=False).encode('utf-8')
+def _canonical_bytes(value: object, *, budget: _Budget | None = None) -> bytes:
+    from runtime.infrastructure._workflow_reader import _work
+    _work(value, budget, copies=2)
+    return _reader_encode(_reader_json_dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False, budget=budget), 'utf-8', budget=budget)
 
 
-def _stored_json(raw: object, digest: object, *, code: str = "workflow_source_data_corrupt") -> object:
+def _stored_json(raw: object, digest: object, *, code: str = "workflow_source_data_corrupt",
+                 budget: _Budget | None = None) -> object:
     if not isinstance(raw, bytes) or not raw:
         raise ValueError(code)
     try:
-        value = json.loads(raw)
-        if _canonical_bytes(value) != raw or hashlib.sha256(raw).hexdigest() != digest:
+        _reader_reserve(budget, 112)
+        from runtime.infrastructure._workflow_reader import _json, _reserve
+        value = _json(raw, budget)
+        _reserve(budget, len(raw) + 64)
+        if _canonical_bytes(value, budget=budget) != raw or _reader_sha256(raw, budget=budget).hexdigest() != digest:
             raise ValueError(code)
         return value
-    except (ValueError, TypeError, UnicodeError) as exc:
+    except ((ValueError, TypeError, UnicodeError)) as exc:
         raise ValueError(code) from exc
 
 
-def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory | None = None) -> None:
+def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory | None = None, budget=None) -> None:
     """DB-resident contracts only; historical eligibility is not re-authorized."""
-    if ([row[0] for row in conn.execute('PRAGMA integrity_check')] != ['ok']
-            or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
+    if budget is not None:
+        budget.step()
+    if (_reader_list((row[0] for row in _reader_rows(conn, 'PRAGMA integrity_check', budget=budget)), budget=budget) != (_reader_reserve(budget, 192) or ['ok'])
+            or _reader_one(conn, 'PRAGMA foreign_key_check', budget=budget) is not None):
         raise ValueError('workflow_source_data_corrupt')
     for table, column, digest in (
         ('workflow_template_drafts', 'definition_bytes', 'definition_digest'),
@@ -840,8 +1239,8 @@ def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory 
         ('workflow_binding_snapshots', 'binding_bytes', 'binding_digest'),
         ('workflow_contexts', 'context_bytes', 'context_digest'),
     ):
-        for row in _records(conn, f'SELECT * FROM {table}'):
-            value = _stored_json(row[column], row[digest])
+        for row in _records(conn, f'SELECT * FROM {table}', budget=budget):
+            value = _stored_json(row[column], row[digest], budget=budget)
             if table.startswith('workflow_template_'):
                 if row['namespace'] == 'release/happyranch':
                     if coding is not None:
@@ -855,31 +1254,31 @@ def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory 
                     else:
                         from runtime.workflows._coding_registered_release import read_registered_release
                         with _schema_snapshot(conn):
-                            release = read_registered_release(conn, expected_org_slug=None)
+                            release = read_registered_release(conn, expected_org_slug=None, budget=budget)
                     if release is None or not release.matches(table, row):
                         raise ValueError('workflow_source_data_corrupt')
                     continue
                 from runtime.workflows.templates import _validate_definition_pins
                 if _validate_definition_pins(value, compiler_pin=row['compiler_pin'],
-                        validator_pin=row['validator_pin'], source_pin=row['source_pin']) != row[column]:
+                        validator_pin=row['validator_pin'], source_pin=row['source_pin'], budget=budget) != row[column]:
                     raise ValueError('workflow_source_data_corrupt')
-    for version in _records(conn, 'SELECT * FROM workflow_template_versions'):
-        draft = _records(conn, 'SELECT * FROM workflow_template_drafts WHERE id=?', (version['draft_id'],))[0]
+    for version in _records(conn, 'SELECT * FROM workflow_template_versions', budget=budget):
+        draft = _records(conn, 'SELECT * FROM workflow_template_drafts WHERE id=?', (_reader_reserve(budget, 80) or (version['draft_id'],)), budget=budget)[0]
         for key in ('namespace', 'template_name', 'definition_bytes', 'definition_digest',
                     'compiler_pin', 'validator_pin', 'source_pin'):
             if version[key] != draft[key]:
                 raise ValueError('workflow_source_data_corrupt')
-    for activation in _records(conn, 'SELECT * FROM workflow_activations'):
+    for activation in _records(conn, 'SELECT * FROM workflow_activations', budget=budget):
         row = _records(conn, 'SELECT i.id AS instance_id,t.namespace,t.id AS version_id,m.template_identity_id '
                        'FROM workflow_instances i JOIN workflow_template_versions t ON t.id=? '
                        'JOIN workflow_template_identity_versions m ON m.template_version_id=t.id WHERE i.id=?',
-                       (activation['template_version_id'], activation['instance_id']))
+                       (_reader_reserve(budget, 96) or (activation['template_version_id'], activation['instance_id'])), budget=budget)
         if (len(row) != 1 or row[0]['version_id'] != activation['template_version_id']
                 or row[0]['namespace'] != activation['authority_namespace']
                 or row[0]['template_identity_id'] != activation['template_identity_id']):
             raise ValueError('workflow_source_data_corrupt')
-    for pointer in _records(conn, 'SELECT * FROM workflow_active_activations'):
-        row = _records(conn, 'SELECT * FROM workflow_activations WHERE id=?', (pointer['activation_id'],))[0]
+    for pointer in _records(conn, 'SELECT * FROM workflow_active_activations', budget=budget):
+        row = _records(conn, 'SELECT * FROM workflow_activations WHERE id=?', (_reader_reserve(budget, 80) or (pointer['activation_id'],)), budget=budget)[0]
         if (row['instance_id'] != pointer['instance_id'] or row['activation_revision'] != pointer['activation_revision']
                 or row['state'] != 'active'):
             raise ValueError('workflow_source_data_corrupt')
@@ -900,37 +1299,38 @@ _DRAFT_EDGES = {
 }
 
 
-def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
+def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | None, budget=None) -> None:
     """Validate every retained SQL-seeded or future-produced attempt and event.
 
     No writer, dispatcher, settlement or host-evidence producer lives here.
     Event bytes use the accepted workflow-draft-event@1 immutable tuple and
     before/after projection, plus terminal evidence and normalized result.
     """
+    _reader_reserve(budget, 0)
     def refuse() -> None:
         raise ValueError('workflow_draft_data_corrupt')
 
-    intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents ORDER BY instance_id,attempt_sequence')
+    intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents ORDER BY instance_id,attempt_sequence', budget=budget)
     if intents and not expected_org_slug:
         refuse()
-    previous_by_instance: dict[str, dict] = {}
-    accepted_results: dict[str, dict] = {}
+    previous_by_instance: dict[str, dict] = (_reader_reserve(budget, 64) or {})
+    accepted_results: dict[str, dict] = (_reader_reserve(budget, 64) or {})
     for intent in intents:
         for key, value in intent.items():
             if isinstance(value, str) and (not value or value.strip() != value):
                 refuse()
-        request = _stored_json(intent['request_bytes'], intent['request_digest'], code='workflow_draft_data_corrupt')
-        scope = _stored_json(intent['task_scope_bytes'], intent['task_scope_digest'], code='workflow_draft_data_corrupt')
+        request = _stored_json(intent['request_bytes'], intent['request_digest'], code='workflow_draft_data_corrupt', budget=budget)
+        scope = _stored_json(intent['task_scope_bytes'], intent['task_scope_digest'], code='workflow_draft_data_corrupt', budget=budget)
         if not isinstance(request, dict) or not isinstance(scope, dict):
             refuse()
-        instance = _records(conn, 'SELECT * FROM workflow_instances WHERE id=?', (intent['instance_id'],))
-        activation = _records(conn, 'SELECT * FROM workflow_activations WHERE id=?', (intent['activation_id'],))
-        task = _records(conn, 'SELECT * FROM tasks WHERE id=?', (intent['task_id'],))
-        context = _records(conn, 'SELECT * FROM workflow_contexts WHERE id=?', (intent['context_id'],))
-        binding = _records(conn, 'SELECT * FROM workflow_binding_snapshots WHERE id=?', (intent['binding_snapshot_id'],))
-        if not all(len(rows) == 1 for rows in (instance, activation, task, context, binding)):
+        instance = _records(conn, 'SELECT * FROM workflow_instances WHERE id=?', (_reader_reserve(budget, 80) or (intent['instance_id'],)), budget=budget)
+        activation = _records(conn, 'SELECT * FROM workflow_activations WHERE id=?', (_reader_reserve(budget, 80) or (intent['activation_id'],)), budget=budget)
+        task = _records(conn, 'SELECT * FROM tasks WHERE id=?', (_reader_reserve(budget, 80) or (intent['task_id'],)), budget=budget)
+        context = _records(conn, 'SELECT * FROM workflow_contexts WHERE id=?', (_reader_reserve(budget, 80) or (intent['context_id'],)), budget=budget)
+        binding = _records(conn, 'SELECT * FROM workflow_binding_snapshots WHERE id=?', (_reader_reserve(budget, 80) or (intent['binding_snapshot_id'],)), budget=budget)
+        if not _reader_all_true((len(rows) == 1 for rows in (_reader_reserve(budget, 144) or (instance, activation, task, context, binding))), budget=budget):
             refuse()
-        instance, activation, task, context, binding = instance[0], activation[0], task[0], context[0], binding[0]
+        instance, activation, task, context, binding = (_reader_reserve(budget, 144) or (instance[0], activation[0], task[0], context[0], binding[0]))
         if (activation['instance_id'] != intent['instance_id'] or activation['activation_revision'] != intent['activation_revision']
                 or activation['authority_namespace'] != intent['authority_namespace']
                 or activation['authority_generation'] != intent['authority_generation']
@@ -938,14 +1338,14 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
                 or binding['template_version_id'] != activation['template_version_id']
                 or context['binding_snapshot_id'] != intent['binding_snapshot_id']
                 or task['assigned_agent'] != intent['assigned_principal']
-                or scope != {'assigned_agent': task['assigned_agent'], 'team': task['team'], 'brief': task['brief']}
+                or scope != (_reader_reserve(budget, 448) or {'assigned_agent': task['assigned_agent'], 'team': task['team'], 'brief': task['brief']})
                 or intent['effect_key'] != f"workflow-initial-draft:{intent['instance_id']}:{intent['attempt_sequence']}"
                 or intent['host_execution_key'] != f"workflow-draft-host:{intent['id']}"):
             refuse()
-        admission = {key: intent[key] for key in ('instance_id', 'activation_id', 'activation_revision', 'attempt_sequence',
-                                                 'predecessor_intent_id', 'admission_principal', 'operation_key', 'request_digest')}
-        admission['org_slug'] = expected_org_slug
-        if intent['id'] != hashlib.sha256(_canonical_bytes(admission)).hexdigest():
+        admission = _reader_dict_pairs(((_reader_reserve(budget, 96) or (key,  intent[key] )) for key in ('instance_id', 'activation_id', 'activation_revision', 'attempt_sequence',
+                                                 'predecessor_intent_id', 'admission_principal', 'operation_key', 'request_digest')), budget=budget)
+        _reader_put(expected_org_slug, admission, 'org_slug', budget=budget)
+        if intent['id'] != _reader_sha256(_canonical_bytes(admission, budget=budget), budget=budget).hexdigest():
             refuse()
         previous = previous_by_instance.get(intent['instance_id'])
         if previous is None:
@@ -959,34 +1359,35 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
               or previous['state'] not in ('cancelled', 'failed', 'completed')
               or (intent['admission_kind'] == 'retry' and previous['state'] != 'failed')):
             refuse()
-        previous_by_instance[intent['instance_id']] = intent
-        events = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq', (intent['id'],))
+        _reader_put(intent, previous_by_instance, intent['instance_id'], budget=budget)
+        events = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq', (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
         if not events or events[0]['created_at'] != intent['created_at']:
             refuse()
         projection = None
         digest = None
-        immutable = {key: (value.hex() if isinstance(value, bytes) else value)
-                     for key, value in intent.items() if key not in _DRAFT_MUTABLE}
+        immutable = _reader_dict_pairs(((_reader_reserve(budget, 96) or (key,  (_reader_hex(value, budget=budget) if isinstance(value, bytes) else value)
+                     )) for key, value in intent.items() if key not in _DRAFT_MUTABLE), budget=budget)
         for seq, event in enumerate(events, 1):
-            payload = _stored_json(event['event_bytes'], event['event_digest'], code='workflow_draft_data_corrupt')
-            if not isinstance(payload, dict) or set(payload) != {'format', 'org_slug', 'event', 'previous_digest', 'intent', 'before', 'after', 'terminal_evidence', 'result'}:
+            payload = _stored_json(event['event_bytes'], event['event_digest'], code='workflow_draft_data_corrupt', budget=budget)
+            if not isinstance(payload, dict) or _reader_set(payload, budget=budget) != _reader_set((_reader_reserve(budget, 208) or ('format', 'org_slug', 'event', 'previous_digest', 'intent', 'before', 'after', 'terminal_evidence', 'result')), budget=budget):
                 refuse()
-            event_identity = {key: event[key] for key in ('id', 'event_seq', 'event_kind', 'created_at')}
-            before, after = payload['before'], payload['after']
+            event_identity = _reader_dict_pairs(((_reader_reserve(budget, 96) or (key,  event[key] )) for key in ('id', 'event_seq', 'event_kind', 'created_at')), budget=budget)
+            before, after = (_reader_reserve(budget, 96) or (payload['before'], payload['after']))
             if (payload['format'] != 'workflow-draft-event@1' or payload['org_slug'] != expected_org_slug
                     or event['event_seq'] != seq or event['id'] != f"{intent['id']}:{seq}"
                     or payload['event'] != event_identity or payload['previous_digest'] != digest
                     or payload['intent'] != immutable or before != projection
-                    or not isinstance(after, dict) or set(after) != set(_DRAFT_PROJECTION)
+                    or not isinstance(after, dict) or _reader_set(after, budget=budget) != _reader_set(_DRAFT_PROJECTION, budget=budget)
                     or event['state_before'] != (None if before is None else before['state'])
                     or event['state_after'] != after['state']):
                 refuse()
             kind = event['event_kind']
             try:
+                _reader_reserve(budget, 112)
                 timestamp = datetime.fromisoformat(event['created_at'])
                 if timestamp.tzinfo is None or timestamp.utcoffset().total_seconds() != 0:
                     refuse()
-            except (ValueError, TypeError, AttributeError):
+            except ((ValueError, TypeError, AttributeError)):
                 refuse()
             for key in ('is_current', 'cancellation_requested', 'host_launch_started'):
                 if type(after[key]) is not int or after[key] not in (0, 1):
@@ -998,14 +1399,14 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
                     or (after['state'] in ('running', 'completed') and not (after['host_launch_started'] and after['host_execution_id'] and after['session_id']))
                     or (after['final_result_id'] is not None and (type(after['final_result_id']) is not int or not after['session_id']))):
                 refuse()
-            edge = (event['state_before'], event['state_after'])
+            edge = (_reader_reserve(budget, 96) or (event['state_before'], event['state_after']))
             if kind in ('cancel_requested', 'callback_recorded', 'callback_rejected', 'retired'):
                 if before is None or edge[0] != edge[1]:
                     refuse()
-            elif edge not in _DRAFT_EDGES.get(kind, set()):
+            elif edge not in _DRAFT_EDGES.get(kind, _reader_set(budget=budget)):
                 refuse()
-            if seq == 1 and after != dict(state='queued', is_current=1, cancellation_requested=0, claim_token=None,
-                                         claim_owner=None, host_launch_started=0, host_execution_id=None, session_id=None, final_result_id=None):
+            if seq == 1 and after != (_reader_reserve(budget, 1216) or dict(state='queued', is_current=1, cancellation_requested=0, claim_token=None,
+                                         claim_owner=None, host_launch_started=0, host_execution_id=None, session_id=None, final_result_id=None)):
                 refuse()
             if before is not None:
                 if ((before['host_launch_started'] and not after['host_launch_started'])
@@ -1019,9 +1420,9 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
             if before is not None and before['final_result_id'] != after['final_result_id'] and kind != 'callback_recorded':
                 refuse()
             if kind in ('cancel_requested', 'retired', 'callback_rejected', 'callback_recorded'):
-                permitted = {'cancel_requested': {'cancellation_requested'}, 'retired': {'is_current'},
-                             'callback_rejected': set(), 'callback_recorded': {'final_result_id', 'session_id'}}[kind]
-                if any(before[key] != after[key] for key in _DRAFT_PROJECTION if key not in permitted):
+                permitted = (_reader_reserve(budget, 576) or {'cancel_requested': _reader_set((_reader_reserve(budget, 80) or ('cancellation_requested',)), budget=budget), 'retired': _reader_set((_reader_reserve(budget, 80) or ('is_current',)), budget=budget),
+                             'callback_rejected': _reader_set(budget=budget), 'callback_recorded': _reader_set((_reader_reserve(budget, 96) or ('final_result_id', 'session_id')), budget=budget)})[kind]
+                if _reader_any_true((before[key] != after[key] for key in _DRAFT_PROJECTION if key not in permitted), budget=budget):
                     refuse()
             if kind == 'retired' and (edge[0] not in ('cancelled', 'failed', 'completed') or after['is_current'] != 0):
                 refuse()
@@ -1037,7 +1438,7 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
                 # Prelaunch queued cancellation needs no invented host proof.
                 if after['host_launch_started']:
                     witness = payload['terminal_evidence']
-                    if (not isinstance(witness, dict) or set(witness) != {'host_quiescent'}
+                    if (not isinstance(witness, dict) or _reader_set(witness, budget=budget) != _reader_set((_reader_reserve(budget, 80) or ('host_quiescent',)), budget=budget)
                             or witness['host_quiescent'] is not True):
                         refuse()
                 if edge[1] in ('failed', 'cancelled') and task['status'] != edge[1]:
@@ -1047,22 +1448,22 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
             if kind == 'callback_rejected' and event['callback_accepted'] != 0:
                 refuse()
             if event['result_id'] is not None:
-                results = _records(conn, 'SELECT * FROM task_results WHERE id=?', (event['result_id'],))
+                results = _records(conn, 'SELECT * FROM task_results WHERE id=?', (_reader_reserve(budget, 80) or (event['result_id'],)), budget=budget)
                 if len(results) != 1:
                     refuse()
                 result = results[0]
-                result_closure = {'record': result, 'id': event['result_id'], 'digest': event['result_digest'],
-                                  'disposition': event['disposition'], 'accepted': event['callback_accepted']}
-                if (_canonical_bytes(payload['result']) != _canonical_bytes(result_closure) or hashlib.sha256(_canonical_bytes(result)).hexdigest() != event['result_digest']
+                result_closure = (_reader_reserve(budget, 704) or {'record': result, 'id': event['result_id'], 'digest': event['result_digest'],
+                                  'disposition': event['disposition'], 'accepted': event['callback_accepted']})
+                if (_canonical_bytes(payload['result'], budget=budget) != _canonical_bytes(result_closure, budget=budget) or _reader_sha256(_canonical_bytes(result, budget=budget), budget=budget).hexdigest() != event['result_digest']
                         or result['task_id'] != intent['task_id'] or result['agent'] != intent['assigned_principal']
                         or result['session_id'] != event['session_id'] or event['session_id'] != after['session_id']
-                        or conn.execute('SELECT 1 FROM workflow_dispatch_callbacks WHERE result_id=?', (str(event['result_id']),)).fetchone()):
+                        or _reader_one(conn, 'SELECT 1 FROM workflow_dispatch_callbacks WHERE result_id=?', (_reader_reserve(budget, 80) or ((_reader_reserve(budget, 128) or str(event['result_id'])),)), budget=budget)):
                     refuse()
                 if kind == 'callback_recorded':
                     if (event['callback_accepted'] != 1 or after['final_result_id'] != result['id']
                             or intent['id'] in accepted_results or after['cancellation_requested']):
                         refuse()
-                    accepted_results[intent['id']] = result_closure
+                    _reader_put(result_closure, accepted_results, intent['id'], budget=budget)
             elif kind not in ('completed', 'host_reconciled', 'retired') and payload['result'] is not None:
                 refuse()
             if after['state'] == 'completed':
@@ -1070,18 +1471,46 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
                 if (after['cancellation_requested'] or result is None or result['record']['status'] != 'completed' or result['id'] != after['final_result_id']
                         or payload['result'] != result or task['status'] != 'completed'):
                     refuse()
-            projection, digest = after, event['event_digest']
-        if projection != {key: intent[key] for key in _DRAFT_PROJECTION} or events[-1]['created_at'] != intent['updated_at']:
+            projection, digest = (_reader_reserve(budget, 96) or (after, event['event_digest']))
+        if projection != _reader_dict_pairs(((_reader_reserve(budget, 96) or (key,  intent[key] )) for key in _DRAFT_PROJECTION), budget=budget) or events[-1]['created_at'] != intent['updated_at']:
             refuse()
-    if any(not intent['is_current'] for intent in previous_by_instance.values()):
+    if _reader_any_true((not intent['is_current'] for intent in previous_by_instance.values()), budget=budget):
         refuse()
-    if conn.execute('SELECT 1 FROM workflow_draft_dispatch_events e LEFT JOIN workflow_draft_dispatch_intents i ON i.id=e.intent_id WHERE i.id IS NULL').fetchone():
+    if _reader_one(conn, 'SELECT 1 FROM workflow_draft_dispatch_events e LEFT JOIN workflow_draft_dispatch_intents i ON i.id=e.intent_id WHERE i.id IS NULL', budget=budget):
         refuse()
 
 
-def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G', 'H', 'I', 'J']:
+def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
+                             budget: _Budget | None = None) -> Literal['F', 'E', 'G', 'H', 'I', 'J']:
     """Complete layout/discriminator/history and stored source/data validation."""
-    return _read_workflow_schema(conn, expected_org_slug=expected_org_slug)[0]
+    return _read_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)[0]
+
+
+def _read_workflow_data(
+    conn: sqlite3.Connection, *, layout: Literal['F', 'E', 'G', 'H', 'I', 'J'],
+    coding_extension: bool, expected_org_slug: str | None, budget: _Budget | None,
+    advances: list[tuple[tuple[int, int], int]],
+) -> _CodingInventory | None:
+    """Whole-connection semantics in the structural owner's unchanged snapshot.
+
+    The complete schema reader and task classifier each perform their own full
+    canonical structural comparison before this internal composition. This is
+    never a subset reader, inventory certificate, standalone validation boundary
+    or publication owner. Every actual acquisition and reconstruction below
+    spends the same original remainder, including BOTH global replay domains.
+    """
+    _reader_reserve(budget, 0)
+    if not conn.in_transaction:
+        raise ValueError('workflow_reader_snapshot_required')
+    _, coding = _read_installed_data(conn, layout=layout, coding_extension=coding_extension,
+        expected_org_slug=expected_org_slug, budget=budget, advances=advances)
+    # Only this call's reconstructed coding inventory selects the original
+    # duplicate-free source/naming/team composition, never a caller's mark.
+    if coding is None:
+        _validate_source_data(conn, coding=coding, budget=budget)
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        validate_team_move_schema(conn, org_slug=expected_org_slug, reader_budget=budget)
+    return coding
 
 
 def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None,
@@ -1089,19 +1518,16 @@ def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | 
                           advances: list[tuple[tuple[int, int], int]] | None = None,
                           ) -> tuple[Literal['F', 'E', 'G', 'H', 'I', 'J'], _CodingInventory | None]:
     """Complete composition; advances is output for a cooperating outer owner."""
+    _reader_reserve(budget, 0)
     owned = not conn.in_transaction
-    collected: list[tuple[tuple[int, int], int]] = []
+    collected: list[tuple[tuple[int, int], int]] = (_reader_reserve(budget, 64) or [])
     with _schema_snapshot(conn):
-        layout, coding = _read_installed(conn, expected_org_slug=expected_org_slug,
-                                         budget=budget, advances=collected)
-        # Only our own reconstructed coding inventory proves the inner reader
-        # performed source/naming/team validation on this unchanged snapshot.
-        # Independent installed/metadata consumers retain those inner checks.
-        if coding is None:
-            _validate_source_data(conn, coding=coding)
-            # Optional org extension: validate, never install or admit it.
-            from runtime.infrastructure.team_move_store import validate_team_move_schema
-            validate_team_move_schema(conn, org_slug=expected_org_slug)
+        layout, coding_extension = _read_structure(conn, budget=budget)
+        coding = _read_workflow_data(conn, layout=layout, coding_extension=coding_extension,
+            expected_org_slug=expected_org_slug, budget=budget, advances=collected)
+        # Construct the actual return value before successful snapshot exit or
+        # publication: a final allowance refusal cannot follow an advance.
+        result = (_reader_reserve(budget, 96) or (layout, coding))
     # Late validation, interruption and unsuccessful snapshot exit never reach
     # publication. A joined writer/read view has its own success/exit boundary.
     if owned:
@@ -1109,34 +1535,68 @@ def _read_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | 
         for file_key, last_id in collected:
             _advance_audit_log_watermark(conn, file_key, last_id)
     elif advances is not None:
-        advances.extend(collected)
-    return layout, coding
+        _reader_extend(advances, collected, budget=budget)
+    return result
 
 
-def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+def _foreign_key_policy(conn: sqlite3.Connection, *, budget: _Budget | None) -> int:
+    """Original one-scalar policy observation; no transaction or write."""
+    _reader_reserve(budget, 128)
+    if budget is not None:
+        budget.step()
+        budget.candidate()
+    cursor = conn.execute('PRAGMA foreign_keys')
+    primary = None
+    try:
+        return cursor.fetchone()[0]
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            cursor.close()
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note('foreign-key policy cursor close failed: ' + type(exc).__name__)
+
+
+def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str, budget: _Budget | None = None) -> Literal['migrated', 'ready']:
     """Explicit operator/fresh-owner primitive; never opens or commits a DB."""
-    if not conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+    from runtime.workflows.coding_authority_history import _Budget
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_reader_invalid_budget')
+    budget = _Budget() if budget is None else budget
+    if not conn.in_transaction or _foreign_key_policy(conn, budget=budget) != 1:
         raise ValueError('workflow_draft_migration_requires_writer_and_foreign_keys')
-    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
     from runtime.identities.schema import validate_names
-    validate_names(conn, org_slug=expected_org_slug)
-    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+    validate_names(conn, org_slug=expected_org_slug, budget=budget)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ('E', 'G', 'H', 'I', 'J'):
         return 'ready'
-    _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+    owner_indexes = _owner_indexes_present(conn, budget=budget)
+    _, coding = _read_structure(conn, budget=budget)
+    _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL, budget=budget)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
-    validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    _validate_release_database(conn, 'E', expected_org_slug=expected_org_slug)
+    if owner_indexes:
+        _install_owner_indexes(conn, 'E', coding_extension=coding, existing=owner_indexes, budget=budget)
+    validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+    _validate_release_database(conn, 'E', expected_org_slug=expected_org_slug, budget=budget)
     return 'migrated'
 
 
 def initialize_complete_org_schema(database: Database, *, expected_org_slug: str,
-                                   layout: Literal["G", "H", "I", "J"] = "G") -> None:
+                                   layout: Literal["G", "H", "I", "J"] = "G",
+                                   owner_indexed: bool = True, budget: _Budget | None = None) -> None:
     """Deliberate creation only; the POST owner proves the skeleton is fresh."""
+    from runtime.workflows.coding_authority_history import _Budget
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_reader_invalid_budget')
     if layout not in ("G", "H", "I", "J"):
         raise ValueError("unsupported_workflow_layout")
     with database.workflow_schema_transaction() as conn:
-        if _layout(conn)[0]:
+        if (_layout(conn) if budget is None else _candidate_structure(conn, budget)[0])[0]:
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
         if layout == "J":
             # Independent reference/fresh primitive only; the real create-org
@@ -1147,38 +1607,40 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
                 COMPLETE_STAGE, IDENTITY_MIGRATION_NAME, MIGRATION_NAME,
                 validate_identity_enrollment_schema_preflight, validate_remote_job_schema_preflight,
             )
-            validate_identity_enrollment_schema_preflight(conn)
-            validate_remote_job_schema_preflight(conn)
-            for table, in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
+            validate_identity_enrollment_schema_preflight(conn, budget=budget)
+            validate_remote_job_schema_preflight(conn, budget=budget)
+            for table, in _reader_rows(conn, "SELECT name FROM sqlite_schema WHERE type='table'", budget=budget):
                 quoted = str(table).replace('"', '""')
                 if table == 'remote_runner_schema_migrations':
-                    markers = [tuple(row) for row in conn.execute(f'SELECT * FROM "{quoted}" ORDER BY name')]
-                    if (len(markers) != 2 or {(row[0], row[1]) for row in markers} !=
-                            {(IDENTITY_MIGRATION_NAME, COMPLETE_STAGE), (MIGRATION_NAME, COMPLETE_STAGE)}):
+                    markers = _reader_list((_reader_tuple(row, budget=budget) for row in _reader_rows(conn, f'SELECT * FROM "{quoted}" ORDER BY name', budget=budget)), budget=budget)
+                    if (len(markers) != 2 or _reader_set(((_reader_reserve(budget, 96) or (row[0], row[1])) for row in markers), budget=budget) !=
+                            _reader_set((_reader_reserve(budget, 96) or (_reader_reserve(budget, 96) or ((IDENTITY_MIGRATION_NAME, COMPLETE_STAGE), _reader_reserve(budget, 96) or (MIGRATION_NAME, COMPLETE_STAGE)))), budget=budget)):
                         raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
                     for row in markers:
                         timestamp = datetime.fromisoformat(row[2])
                         if timestamp.tzinfo is None or timestamp.utcoffset().total_seconds() != 0:
                             raise ValueError('workflow_coding_fresh_creation_native_marker_mismatch')
-                elif conn.execute(f'SELECT 1 FROM "{quoted}" LIMIT 1').fetchone() is not None:
+                elif _reader_one(conn, f'SELECT 1 FROM "{quoted}" LIMIT 1', budget=budget) is not None:
                     raise ValueError('workflow_coding_fresh_creation_requires_empty_native_database')
-        _install_foundation(conn, expected_org_slug=expected_org_slug)
-        _execute_ddl(conn, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL)
+        _install_foundation(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _execute_ddl(conn, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL, budget=budget)
         conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
         # Proven empty creation: no inbound work exists and FK enforcement stays on.
         conn.execute("DROP TABLE workflow_events")
         conn.execute("DROP TABLE workflow_submissions")
-        _execute_ddl(conn, CANONICAL_WORKFLOW_SUBMISSION_DDL)
+        _execute_ddl(conn, CANONICAL_WORKFLOW_SUBMISSION_DDL, budget=budget)
         conn.execute("CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)")
         conn.execute("INSERT INTO workflow_submission_schema_versions VALUES (1)")
         if layout in ("H", "I", "J"):
-            _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
+            _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL, budget=budget)
         if layout in ("I", "J"):
-            _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+            _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL, budget=budget)
         if layout == "J":
             from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
-            _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
-        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+            _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL, budget=budget)
+        if owner_indexed:
+            _install_owner_indexes(conn, layout, coding_extension=layout == 'J', budget=budget)
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
 
 
 def submission_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:
@@ -1190,7 +1652,7 @@ def submission_migration_guidance(*, org_slug: str, runtime_root: str = '<absolu
             'every G database requires a compatible reader')
 
 
-def _event_revision(conn: sqlite3.Connection, event: dict) -> int:
+def _event_revision(conn: sqlite3.Connection, event: dict, *, budget=None) -> int:
     """Authenticate an original event without choosing a current/newest round.
 
     The historical isolated F2 joined preimage is b'joined' + body. Its raw
@@ -1198,6 +1660,7 @@ def _event_revision(conn: sqlite3.Connection, event: dict) -> int:
     closure can map that form. A canonical explicit subject is checked against
     every retained relation. Unsupported or ambiguous archival input refuses.
     """
+    _reader_work((_reader_reserve(budget, 80) or (event,)), budget, copies=2)
     raw = event['event_bytes']
     kind = event['event_kind']
     code = (f"workflow_legacy_event_unmappable: event={event['id']} "
@@ -1205,25 +1668,28 @@ def _event_revision(conn: sqlite3.Connection, event: dict) -> int:
             'submission/round/event/replay archival closure')
     if not isinstance(raw, bytes) or not raw:
         raise ValueError(code)
-    ordinary = hashlib.sha256(raw).hexdigest()
-    historical_join = kind == 'joined' and hashlib.sha256(b'joined' + raw).hexdigest() == event['event_digest']
+    ordinary = _reader_sha256(raw, budget=budget).hexdigest()
+    historical_join = kind == 'joined' and _reader_sha256(b'joined' + raw, budget=budget).hexdigest() == event['event_digest']
     if event['event_digest'] != ordinary and not historical_join:
         raise ValueError(code)
-    replays = _records(conn, 'SELECT * FROM workflow_operation_replays WHERE effect_id=?', (event['id'],))
-    if any(r['instance_id'] != event['instance_id'] or r['request_digest'] != ordinary for r in replays):
+    replays = _records(conn, 'SELECT * FROM workflow_operation_replays WHERE effect_id=?', (_reader_reserve(budget, 80) or (event['id'],)), budget=budget)
+    if _reader_any_true((r['instance_id'] != event['instance_id'] or r['request_digest'] != ordinary for r in replays), budget=budget):
         raise ValueError(code)
     subject = None
     try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict) and _canonical_bytes(parsed) == raw:
+        _reader_reserve(budget, 96)
+        parsed = _reader_json(raw, budget=budget)
+        if isinstance(parsed, dict) and _canonical_bytes(parsed, budget=budget) == raw:
             subject = parsed
-    except (ValueError, UnicodeError):
+    except _ReaderBudgetExhausted:
+        raise
+    except ((ValueError, UnicodeError)):
         pass
     if subject is not None and 'event_kind' in subject and subject['event_kind'] != kind:
         raise ValueError(code)
-    candidates = []
-    for round_ in _records(conn, 'SELECT * FROM workflow_rounds WHERE instance_id=?', (event['instance_id'],)):
-        submissions = _records(conn, 'SELECT * FROM workflow_submissions WHERE id=?', (round_['submission_id'],))
+    candidates = (_reader_reserve(budget, 64) or [])
+    for round_ in _records(conn, 'SELECT * FROM workflow_rounds WHERE instance_id=?', (_reader_reserve(budget, 80) or (event['instance_id'],)), budget=budget):
+        submissions = _records(conn, 'SELECT * FROM workflow_submissions WHERE id=?', (_reader_reserve(budget, 80) or (round_['submission_id'],)), budget=budget)
         if len(submissions) != 1:
             continue
         submission = submissions[0]
@@ -1231,34 +1697,34 @@ def _event_revision(conn: sqlite3.Connection, event: dict) -> int:
         if (submission['instance_id'] != event['instance_id'] or type(revision) is not int
                 or revision <= 0 or round_['current_revision'] != revision
                 or not isinstance(submission['submission_bytes'], bytes)
-                or hashlib.sha256(submission['submission_bytes']).hexdigest() != submission['submission_digest']):
+                or _reader_sha256(submission['submission_bytes'], budget=budget).hexdigest() != submission['submission_digest']):
             continue
         if subject is not None:
-            identities = {'instance_id': event['instance_id'], 'round_id': round_['id'],
+            identities = (_reader_reserve(budget, 704) or {'instance_id': event['instance_id'], 'round_id': round_['id'],
                           'submission_id': submission['id'], 'revision': revision,
-                          'submission_digest': submission['submission_digest']}
-            if (not any(k in subject for k in ('round_id', 'submission_id'))
-                    or any(subject[k] != v or (k == 'revision' and type(subject[k]) is not int)
-                           for k, v in identities.items() if k in subject)):
+                          'submission_digest': submission['submission_digest']})
+            if (not _reader_any_true((k in subject for k in ('round_id', 'submission_id')), budget=budget)
+                    or _reader_any_true((subject[k] != v or (k == 'revision' and type(subject[k]) is not int)
+                           for k, v in identities.items() if k in subject), budget=budget)):
                 continue
         elif not historical_join:
             continue
         receipts = _records(conn, 'SELECT r.* FROM workflow_review_receipts r JOIN workflow_review_requests q '
-                            'ON q.id=r.request_id WHERE q.round_id=?', (round_['id'],))
-        if any(r['submission_id'] != submission['id'] or r['submission_digest'] != submission['submission_digest']
-               for r in receipts):
+                            'ON q.id=r.request_id WHERE q.round_id=?', (_reader_reserve(budget, 80) or (round_['id'],)), budget=budget)
+        if _reader_any_true((r['submission_id'] != submission['id'] or r['submission_digest'] != submission['submission_digest']
+               for r in receipts), budget=budget):
             continue
         receipt_valid = True
         for receipt in receipts:
-            requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE id=?', (receipt['request_id'],))
+            requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE id=?', (_reader_reserve(budget, 80) or (receipt['request_id'],)), budget=budget)
             if len(requests) != 1:
                 receipt_valid = False
                 break
             request = requests[0]
             if (not isinstance(receipt['proof_bytes'], bytes)
-                    or hashlib.sha256(receipt['proof_bytes']).hexdigest() != receipt['proof_digest']
+                    or _reader_sha256(receipt['proof_bytes'], budget=budget).hexdigest() != receipt['proof_digest']
                     or not isinstance(request['request_scope_bytes'], bytes)
-                    or hashlib.sha256(request['request_scope_bytes']).hexdigest() != request['request_scope_digest']
+                    or _reader_sha256(request['request_scope_bytes'], budget=budget).hexdigest() != request['request_scope_digest']
                     or request['request_scope_digest'] != receipt['request_scope_digest']
                     or request['assignment_generation'] != receipt['assignment_generation']
                     or (historical_join and (receipt['outcome'] != 'approved' or request['status'] != 'approved'))):
@@ -1268,20 +1734,21 @@ def _event_revision(conn: sqlite3.Connection, event: dict) -> int:
             continue
         if historical_join and (not replays or len(receipts) != 3):
             continue
-        candidates.append((round_['id'], submission['id'], revision))
+        _reader_append(candidates, (_reader_reserve(budget, 112) or (round_['id'], submission['id'], revision)), budget=budget)
     if len(candidates) != 1:
         raise ValueError(code + f'; candidates={candidates}')
     return candidates[0][2]
 
 
-def _validate_submission_data(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
+def _validate_submission_data(conn: sqlite3.Connection, *, expected_org_slug: str | None, budget=None) -> None:
     """G storage validation only; no submission, linking, or finalizer producer."""
+    _reader_reserve(budget, 0)
     code = 'workflow_submission_data_corrupt'
-    operations = {r['submission_id']: r for r in _records(conn, 'SELECT * FROM workflow_submission_operations')}
-    for submission in _records(conn, 'SELECT * FROM workflow_submissions'):
+    operations = _reader_dict_pairs(((_reader_reserve(budget, 96) or (r['submission_id'],  r )) for r in _records(conn, 'SELECT * FROM workflow_submission_operations', budget=budget)), budget=budget)
+    for submission in _records(conn, 'SELECT * FROM workflow_submissions', budget=budget):
         if (type(submission['revision']) is not int or submission['revision'] <= 0
                 or not isinstance(submission['submission_bytes'], bytes)
-                or hashlib.sha256(submission['submission_bytes']).hexdigest() != submission['submission_digest']):
+                or _reader_sha256(submission['submission_bytes'], budget=budget).hexdigest() != submission['submission_digest']):
             raise ValueError(code)
         op = operations.get(submission['id'])
         if op is None:
@@ -1293,53 +1760,54 @@ def _validate_submission_data(conn: sqlite3.Connection, *, expected_org_slug: st
                 or op['principal'] != submission['author_principal']
                 or op['source_task_id'] != submission['source_task_id']
                 or op['source_session_id'] != submission['source_session_id']
-                or any(not isinstance(op[k], str) or not op[k] or op[k].strip() != op[k]
-                       for k in ('operation_key', 'principal', 'source_task_id', 'source_session_id', 'created_at'))):
+                or _reader_any_true((not isinstance(op[k], str) or not op[k] or op[k].strip() != op[k]
+                       for k in ('operation_key', 'principal', 'source_task_id', 'source_session_id', 'created_at')), budget=budget)):
             raise ValueError(code)
-        proof = _stored_json(op['provenance_bytes'], op['provenance_digest'], code=code)
+        proof = _stored_json(op['provenance_bytes'], op['provenance_digest'], code=code, budget=budget)
         intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents WHERE instance_id=? '
                            'AND task_id=? AND session_id=?',
-                           (op['instance_id'], op['source_task_id'], op['source_session_id']))
+                           (_reader_reserve(budget, 112) or (op['instance_id'], op['source_task_id'], op['source_session_id'])), budget=budget)
         if (len(intents) != 1 or not isinstance(proof, dict)
-                or set(proof) != {'format', 'operation', 'submission', 'source_intent', 'request_bytes'}
+                or _reader_set(proof, budget=budget) != _reader_set((_reader_reserve(budget, 144) or ('format', 'operation', 'submission', 'source_intent', 'request_bytes')), budget=budget)
                 or proof['format'] != 'workflow-submission-operation@1'
-                or _canonical_bytes(proof['operation']) != _canonical_bytes({k: v for k, v in op.items() if k not in ('provenance_bytes', 'provenance_digest')})
-                or _canonical_bytes(proof['submission']) != _canonical_bytes({k: (v.hex() if isinstance(v, bytes) else v) for k, v in submission.items()})
-                or _canonical_bytes(proof['source_intent']) != _canonical_bytes({k: (v.hex() if isinstance(v, bytes) else v)
-                                              for k, v in intents[0].items() if k not in _DRAFT_MUTABLE})
+                or _canonical_bytes(proof['operation'], budget=budget) != _canonical_bytes(_reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  v )) for k, v in op.items() if k not in ('provenance_bytes', 'provenance_digest')), budget=budget), budget=budget)
+                or _canonical_bytes(proof['submission'], budget=budget) != _canonical_bytes(_reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  (_reader_hex(v, budget=budget) if isinstance(v, bytes) else v) )) for k, v in submission.items()), budget=budget), budget=budget)
+                or _canonical_bytes(proof['source_intent'], budget=budget) != _canonical_bytes(_reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  (_reader_hex(v, budget=budget) if isinstance(v, bytes) else v)
+                                              )) for k, v in intents[0].items() if k not in _DRAFT_MUTABLE), budget=budget), budget=budget)
                 or intents[0]['assigned_principal'] != op['principal']):
             raise ValueError(code)
         try:
-            request = bytes.fromhex(proof['request_bytes'])
-        except (TypeError, ValueError):
+            _reader_reserve(budget, 96)
+            request = _reader_fromhex(proof['request_bytes'], budget=budget)
+        except ((TypeError, ValueError)):
             raise ValueError(code) from None
-        payload = _stored_json(request, op['request_digest'], code=code)
+        payload = _stored_json(request, op['request_digest'], code=code, budget=budget)
         if (not isinstance(payload, dict) or payload.get('submission_id') != submission['id']
                 or payload.get('submission_digest') != submission['submission_digest']
                 or payload.get('instance_id') != submission['instance_id']
                 or type(payload.get('revision')) is not int or payload['revision'] != submission['revision']):
             raise ValueError(code)
     for round_ in _records(conn, 'SELECT r.*,s.instance_id AS subject_instance,s.revision AS subject_revision '
-                          'FROM workflow_rounds r JOIN workflow_submissions s ON s.id=r.submission_id'):
+                          'FROM workflow_rounds r JOIN workflow_submissions s ON s.id=r.submission_id', budget=budget):
         if round_['instance_id'] != round_['subject_instance'] or round_['current_revision'] != round_['subject_revision']:
             raise ValueError(code)
-    for event in _records(conn, 'SELECT * FROM workflow_events'):
-        if type(event['revision']) is not int or event['revision'] != _event_revision(conn, event):
+    for event in _records(conn, 'SELECT * FROM workflow_events', budget=budget):
+        if type(event['revision']) is not int or event['revision'] != _event_revision(conn, event, budget=budget):
             raise ValueError(code)
-    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):
+    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links', budget=budget):
         op = operations.get(link['submission_id'])
         if op is None or type(link['task_result_id']) is not int:
             raise ValueError(code)
-        results = _records(conn, 'SELECT * FROM task_results WHERE id=?', (link['task_result_id'],))
+        results = _records(conn, 'SELECT * FROM task_results WHERE id=?', (_reader_reserve(budget, 80) or (link['task_result_id'],)), budget=budget)
         intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=? AND session_id=?',
-                           (link['source_task_id'], link['source_session_id']))
+                           (_reader_reserve(budget, 96) or (link['source_task_id'], link['source_session_id'])), budget=budget)
         if len(results) != 1 or len(intents) != 1:
             raise ValueError(code)
-        result, intent = results[0], intents[0]
-        payload = _stored_json(link['result_bytes'], link['result_digest'], code=code)
+        result, intent = (_reader_reserve(budget, 96) or (results[0], intents[0]))
+        payload = _stored_json(link['result_bytes'], link['result_digest'], code=code, budget=budget)
         callbacks = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? "
-                             "AND event_kind='callback_recorded' AND result_id=?", (intent['id'], result['id']))
-        if (_canonical_bytes(payload) != _canonical_bytes(result) or result['task_id'] != link['source_task_id']
+                             "AND event_kind='callback_recorded' AND result_id=?", (_reader_reserve(budget, 96) or (intent['id'], result['id'])), budget=budget)
+        if (_canonical_bytes(payload, budget=budget) != _canonical_bytes(result, budget=budget) or result['task_id'] != link['source_task_id']
                 or result['session_id'] != link['source_session_id'] or result['agent'] != op['principal']
                 or link['source_task_id'] != op['source_task_id'] or link['source_session_id'] != op['source_session_id']
                 or intent['final_result_id'] != result['id'] or len(callbacks) != 1
@@ -1362,40 +1830,43 @@ def require_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
                                       required_action=author_handoff_migration_guidance())
 
 
-def _handoff_json(raw: bytes, expected_digest: str | None = None) -> dict:
+def _handoff_json(raw: bytes, expected_digest: str | None = None, *, budget=None) -> dict:
     """Closed new-family canonical decoding; no coercion or alternate encoding."""
+    _reader_work((_reader_reserve(budget, 96) or (raw,expected_digest)), budget, copies=2)
     code = 'workflow_author_handoff_storage_corrupt'
 
     def pairs(items: list[tuple[str, object]]) -> dict:
-        value: dict = {}
+        value: dict = (_reader_reserve(budget, 64) or {})
         for key, item in items:
             if key in value:
                 raise ValueError(code)
-            value[key] = item
+            _reader_put(item, value, key, budget=budget)
         return value
 
     def number(value: str) -> None:
         raise ValueError(code)
 
     try:
+        _reader_reserve(budget, 112)
         if not isinstance(raw, bytes) or not raw or raw.startswith(b'\xef\xbb\xbf'):
             raise ValueError(code)
-        value = json.loads(raw.decode('utf8'), object_pairs_hook=pairs,
-                           parse_float=number, parse_constant=number)
-        if (not isinstance(value, dict) or _canonical_bytes(value) != raw
-                or (expected_digest is not None and hashlib.sha256(raw).hexdigest() != expected_digest)):
+        value = _reader_json(_reader_decode(raw, 'utf8', budget=budget), object_pairs_hook=pairs,
+                           parse_float=number, parse_constant=number, budget=budget)
+        if (not isinstance(value, dict) or _canonical_bytes(value, budget=budget) != raw
+                or (expected_digest is not None and _reader_sha256(raw, budget=budget).hexdigest() != expected_digest)):
             raise ValueError(code)
         return value
-    except (ValueError, TypeError, UnicodeError) as exc:
+    except ((ValueError, TypeError, UnicodeError)) as exc:
         raise ValueError(code) from exc
 
 
-def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: str | None) -> dict:
+def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: str | None, budget=None) -> dict:
     """Authenticate immutable H history against the retained original source.
 
     Mutable current authority is deliberately checked by the service, separately
     from this historical reader. No H update, deletion or repair is admitted.
     """
+    _reader_work((_reader_reserve(budget, 96) or (row,expected_org_slug)), budget, copies=2)
     code = 'workflow_author_handoff_storage_corrupt'
 
     def check(condition: bool) -> None:
@@ -1405,24 +1876,25 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
     def same(value: object, expected: object) -> bool:
         # New H witnesses retain JSON types recursively: bool is not int.
         # Authentic embedded snapshot booleans remain booleans.
-        return _canonical_bytes(value) == _canonical_bytes(expected)
+        return _canonical_bytes(value, budget=budget) == _canonical_bytes(expected, budget=budget)
 
     def closed(value: object, keys: str) -> dict:
-        check(isinstance(value, dict) and set(value) == set(keys.split()))
+        check(isinstance(value, dict) and _reader_set(value, budget=budget) == _reader_set(keys.split(), budget=budget))
         return value
 
     def one(table: str, identity: str) -> dict:
-        rows = _records(conn, f'SELECT * FROM {table} WHERE id=?', (identity,))
+        rows = _records(conn, f'SELECT * FROM {table} WHERE id=?', (_reader_reserve(budget, 80) or (identity,)), budget=budget)
         check(len(rows) == 1)
         return rows[0]
 
     def hex_bytes(value: object, limit: int) -> bytes:
         check(isinstance(value, str) and re.fullmatch(r'(?:[0-9a-f]{2})+', value) is not None)
-        raw = bytes.fromhex(value)
+        raw = _reader_fromhex(value, budget=budget)
         check(1 <= len(raw) <= limit)
         return raw
 
     try:
+        _reader_reserve(budget, 160)
         check(row['org_slug'] == expected_org_slug and re.fullmatch(r'[a-z0-9-]{1,40}', row['org_slug']) is not None)
         for key in ('id', 'intent_id', 'instance_id', 'principal', 'source_task_id', 'source_session_id',
                     'operation_key', 'submission_id'):
@@ -1433,20 +1905,20 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             check(isinstance(raw, bytes) and 1 <= len(raw) <= limit)
             digest_value = row[key.replace('_bytes', '_digest')]
             check(isinstance(digest_value, str) and re.fullmatch(r'[0-9a-f]{64}', digest_value) is not None
-                  and hashlib.sha256(raw).hexdigest() == digest_value)
-        row['candidate_bytes'].decode('utf8')
+                  and _reader_sha256(raw, budget=budget).hexdigest() == digest_value)
+        _reader_decode(row['candidate_bytes'], 'utf8', budget=budget)
         check(re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z', row['created_at']) is not None)
         datetime.strptime(row['created_at'], '%Y-%m-%dT%H:%M:%S.%fZ')
-        proof = _handoff_json(row['admission_bytes'], row['admission_digest'])
-        family = {'workflow-author-handoff@1': 1, 'workflow-author-handoff@2': 2}.get(proof.get('format'))
+        proof = _handoff_json(row['admission_bytes'], row['admission_digest'], budget=budget)
+        family = (_reader_reserve(budget, 320) or {'workflow-author-handoff@1': 1, 'workflow-author-handoff@2': 2}).get(proof.get('format'))
         check(family is not None)
         closed(proof, 'format handoff client_request source_intent source_generation pins admission_authority'
                + (' repository_resolution' if family == 2 else ''))
         if family == 2:
             check(proof['repository_resolution'] is None)
         template_family = 4 if family == 2 else 3
-        expected_row = {k: v.hex() if isinstance(v, bytes) else v for k, v in row.items()
-                        if k not in ('admission_bytes', 'admission_digest')}
+        expected_row = _reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  _reader_hex(v, budget=budget) if isinstance(v, bytes) else v )) for k, v in row.items()
+                        if k not in ('admission_bytes', 'admission_digest')), budget=budget)
         check(same(proof['handoff'], expected_row))
         command = closed(proof['client_request'], 'format operation_key activation_id expected_revision submission_bytes_base64 submission_digest'
                          + (' artifact_kind' if family == 2 else ''))
@@ -1454,19 +1926,19 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             check(command['artifact_kind'] == 'document')
         check(command['format'] == f'workflow-author-handoff-command@{family}' and type(command['expected_revision']) is int
               and command['expected_revision'] == 1 and command['operation_key'] == row['operation_key'])
-        candidate = base64.b64decode(command['submission_bytes_base64'], validate=True)
+        candidate = _reader_b64decode(command['submission_bytes_base64'], validate=True, budget=budget)
         check(candidate == row['candidate_bytes'] and command['submission_digest'] == row['candidate_digest']
-              and base64.b64encode(candidate).decode('ascii') == command['submission_bytes_base64'])
+              and _reader_decode(_reader_b64encode(candidate, budget=budget), 'ascii', budget=budget) == command['submission_bytes_base64'])
         request = {**command, 'format': f'workflow-author-handoff-request@{family}', 'handoff_id': row['id'],
                    'submission_id': row['submission_id'], 'instance_id': row['instance_id'], 'revision': 1}
-        check(_canonical_bytes(request) == row['request_bytes'])
-        check(row['id'] == 'workflow-author-handoff:' + hashlib.sha256(_canonical_bytes(
-            [row['org_slug'], row['principal'], row['operation_key']])).hexdigest())
-        check(row['submission_id'] == 'workflow-submission:' + hashlib.sha256(_canonical_bytes(
-            [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], f'workflow-author-handoff@{family}'])).hexdigest())
+        check(_canonical_bytes(request, budget=budget) == row['request_bytes'])
+        check(row['id'] == 'workflow-author-handoff:' + _reader_sha256(_canonical_bytes(
+            (_reader_reserve(budget, 448) or [row['org_slug'], row['principal'], row['operation_key']]), budget=budget), budget=budget).hexdigest())
+        check(row['submission_id'] == 'workflow-submission:' + _reader_sha256(_canonical_bytes(
+            (_reader_reserve(budget, 832) or [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], f'workflow-author-handoff@{family}']), budget=budget), budget=budget).hexdigest())
         intent = one('workflow_draft_dispatch_intents', row['intent_id'])
-        check(same(proof['source_intent'], {k: v.hex() if isinstance(v, bytes) else v
-                                          for k, v in intent.items() if k not in _DRAFT_MUTABLE}))
+        check(same(proof['source_intent'], _reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  _reader_hex(v, budget=budget) if isinstance(v, bytes) else v
+                                          )) for k, v in intent.items() if k not in _DRAFT_MUTABLE), budget=budget)))
         check(len(proof['source_intent']) == 25 and intent['admission_kind'] == 'initial'
               and intent['predecessor_intent_id'] is None and intent['activation_revision'] == 1
               and intent['attempt_sequence'] == 1 and intent['assignment_generation'] == 1
@@ -1488,47 +1960,47 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             check(isinstance(generation[key], str) and re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', generation[key]) is not None)
         check(generation['host_execution_id'] is None or (isinstance(generation['host_execution_id'], str)
               and re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', generation['host_execution_id']) is not None))
-        events = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq', (intent['id'],))
+        events = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq', (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
         witnessed = False
         for event in events:
             # S2 callback records retain native historical numeric types. Only
             # the newly introduced H family uses the stricter numeric grammar.
-            payload = _stored_json(event['event_bytes'], event['event_digest'], code=code)
-            if payload['after'] == {k: generation[k] for k in _DRAFT_PROJECTION if k != 'session_id'} | {'session_id': generation['session_id']}:
+            payload = _stored_json(event['event_bytes'], event['event_digest'], code=code, budget=budget)
+            if payload['after'] == _reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  generation[k] )) for k in _DRAFT_PROJECTION if k != 'session_id'), budget=budget) | (_reader_reserve(budget, 192) or {'session_id': generation['session_id']}):
                 check(datetime.fromisoformat(event['created_at']) <= datetime.strptime(row['created_at'], '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=timezone.utc))
                 witnessed = True
         check(witnessed)
         pins = closed(proof['pins'], 'template activation authorization binding context scope contract')
         activation = one('workflow_activations', intent['activation_id'])
         instance = one('workflow_instances', row['instance_id'])
-        check(same(pins['activation'], dict(id=intent['activation_id'], revision=1, request_digest=activation['request_digest'])))
+        check(same(pins['activation'], (_reader_reserve(budget, 448) or dict(id=intent['activation_id'], revision=1, request_digest=activation['request_digest']))))
         from runtime.workflows.templates import WorkflowTemplateStore, _review_contract
-        mapping = _records(conn, 'SELECT * FROM workflow_template_identity_versions WHERE template_version_id=?', (activation['template_version_id'],))
+        mapping = _records(conn, 'SELECT * FROM workflow_template_identity_versions WHERE template_version_id=?', (_reader_reserve(budget, 80) or (activation['template_version_id'],)), budget=budget)
         check(len(mapping) == 1)
         template = WorkflowTemplateStore._read_version(conn, identity_id=activation['template_identity_id'],
-            version=mapping[0]['version'], expected_version_id=activation['template_version_id'])
-        check(same(pins['template'], dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
+            version=mapping[0]['version'], expected_version_id=activation['template_version_id'], budget=budget)
+        check(same(pins['template'], (_reader_reserve(budget, 960) or dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
               definition_digest=template.definition_digest, compiler_pin=f'workflow-compiler@{template_family}',
-              validator_pin=f'workflow-validator@{template_family}', source_pin=f'operator-input@{template_family}'))
-              and (template.compiler_pin, template.validator_pin, template.source_pin) ==
-              (f'workflow-compiler@{template_family}', f'workflow-validator@{template_family}', f'operator-input@{template_family}'))
-        contract = _review_contract(template)
+              validator_pin=f'workflow-validator@{template_family}', source_pin=f'operator-input@{template_family}')))
+              and (_reader_reserve(budget, 112) or (template.compiler_pin, template.validator_pin, template.source_pin)) ==
+              (_reader_reserve(budget, 112) or (f'workflow-compiler@{template_family}', f'workflow-validator@{template_family}', f'operator-input@{template_family}')))
+        contract = _review_contract(template, budget=budget)
         context = one('workflow_contexts', intent['context_id'])
         binding = one('workflow_binding_snapshots', intent['binding_snapshot_id'])
         authorization = one('workflow_authorization_revisions', binding['authorization_revision_id'])
-        for kind, identity, raw, dg in (
-                ('authorization', authorization['id'], authorization['authority_bytes'], authorization['authority_digest']),
-                ('binding', binding['id'], binding['binding_bytes'], binding['binding_digest']),
-                ('context', context['id'], context['context_bytes'], context['context_digest']),
-                ('scope', intent['task_id'], intent['task_scope_bytes'], intent['task_scope_digest']),
-                ('contract', template.version_id, _canonical_bytes(contract), hashlib.sha256(_canonical_bytes(contract)).hexdigest())):
+        for kind, identity, raw, dg in (_reader_reserve(budget, 144) or (
+                (_reader_reserve(budget, 128) or ('authorization', authorization['id'], authorization['authority_bytes'], authorization['authority_digest'])),
+                (_reader_reserve(budget, 128) or ('binding', binding['id'], binding['binding_bytes'], binding['binding_digest'])),
+                (_reader_reserve(budget, 128) or ('context', context['id'], context['context_bytes'], context['context_digest'])),
+                (_reader_reserve(budget, 128) or ('scope', intent['task_id'], intent['task_scope_bytes'], intent['task_scope_digest'])),
+                (_reader_reserve(budget, 128) or ('contract', template.version_id, _canonical_bytes(contract, budget=budget), _reader_sha256(_canonical_bytes(contract, budget=budget), budget=budget).hexdigest())))):
             pin = closed(pins[kind], 'id bytes_hex digest')
-            check(same(pin, dict(id=identity, bytes_hex=raw.hex(), digest=dg))
+            check(same(pin, (_reader_reserve(budget, 448) or dict(id=identity, bytes_hex=_reader_hex(raw, budget=budget), digest=dg)))
                   and len(identity) <= 256 and 1 <= len(raw) <= 1048576)
-            _handoff_json(hex_bytes(pin['bytes_hex'], 1048576), pin['digest'])
-        grant = _handoff_json(authorization['authority_bytes'], authorization['authority_digest'])
-        bound = _handoff_json(binding['binding_bytes'], binding['binding_digest'])
-        ctx = _handoff_json(context['context_bytes'], context['context_digest'])
+            _handoff_json(hex_bytes(pin['bytes_hex'], 1048576), pin['digest'], budget=budget)
+        grant = _handoff_json(authorization['authority_bytes'], authorization['authority_digest'], budget=budget)
+        bound = _handoff_json(binding['binding_bytes'], binding['binding_digest'], budget=budget)
+        ctx = _handoff_json(context['context_bytes'], context['context_digest'], budget=budget)
         check(grant['format'] == f'workflow-authorization@{template_family}' and bound['format'] == f'workflow-binding@{template_family}'
               and ctx['format'] == f'workflow-initial-draft-context@{template_family}' and contract['format'] ==
                   ('workflow-artifact-contract@4' if family == 2 else 'workflow-document-contract@3')
@@ -1542,38 +2014,38 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             closed(bound, 'format instance_id activation_id activation_revision template_version_id authorization_revision_id bindings eligible_replacements scope authority repository_binding')
             closed(ctx, 'format org_slug request authority_snapshot template inputs authorization authorization_revision_id binding binding_snapshot_id intent_id attempt_sequence assignment_generation artifact_contract repository_binding')
             from runtime.workflows.activation import parse_request, _authorization, _binding, _context
-            frozen = parse_request(ctx['request']).model_dump(by_alias=True)
+            frozen = _reader_dump(parse_request(ctx['request'], budget=budget), by_alias=True, budget=budget)
             check(same(frozen, ctx['request']) and same(frozen, grant['original_request']))
             expected_grant = _authorization(org_slug=row['org_slug'], instance_id=row['instance_id'],
                 activation_id=intent['activation_id'], task_id=intent['task_id'], request=frozen,
-                request_digest=intent['request_digest'], template=template, timestamp=activation['created_at'])
+                request_digest=intent['request_digest'], template=template, timestamp=activation['created_at'], budget=budget)
             expected_bound = _binding(instance_id=row['instance_id'], activation_id=intent['activation_id'],
-                authorization_id=authorization['id'], template=template, request=frozen)
+                authorization_id=authorization['id'], template=template, request=frozen, budget=budget)
             expected_context = _context(org_slug=row['org_slug'], request=frozen, snapshot=ctx['authority_snapshot'],
                 template=template, inputs=ctx['inputs'], authorization=expected_grant,
-                authorization_id=authorization['id'], binding=expected_bound, binding_id=binding['id'], intent_id=intent['id'])
+                authorization_id=authorization['id'], binding=expected_bound, binding_id=binding['id'], intent_id=intent['id'], budget=budget)
             check(same(grant, expected_grant) and same(bound, expected_bound) and same(ctx, expected_context))
-            check(contract['output']['accepted_kinds'] == ['document']
+            check(contract['output']['accepted_kinds'] == (_reader_reserve(budget, 192) or ['document'])
                   and grant['repository_binding'] is None and bound['repository_binding'] is None
                   and ctx['repository_binding'] is None and grant['original_request']['repository_access'] is None)
-        handoff_actions = (['stage-immutable-artifact', 'submit-immutable-artifact'] if family == 2
-                           else ['stage-immutable-document', 'submit-immutable-document'])
+        handoff_actions = ((_reader_reserve(budget, 320) or ['stage-immutable-artifact', 'submit-immutable-artifact']) if family == 2
+                           else (_reader_reserve(budget, 320) or ['stage-immutable-document', 'submit-immutable-document']))
         captured = closed(proof['admission_authority'], 'ready pointer profiles mirror cutover actions')
         ready = closed(captured['ready'], 'namespace generation snapshot_bytes_hex snapshot_digest')
-        snapshot = _handoff_json(hex_bytes(ready['snapshot_bytes_hex'], 1048576), ready['snapshot_digest'])
+        snapshot = _handoff_json(hex_bytes(ready['snapshot_bytes_hex'], 1048576), ready['snapshot_digest'], budget=budget)
         journal = _records(conn, 'SELECT * FROM workflow_publication_journals WHERE namespace=? AND generation=? AND snapshot_digest=?',
-                           (ready['namespace'], ready['generation'], ready['snapshot_digest']))
-        check(len(journal) == 1 and journal[0]['snapshot_bytes'].hex() == ready['snapshot_bytes_hex']
+                           (_reader_reserve(budget, 112) or (ready['namespace'], ready['generation'], ready['snapshot_digest'])), budget=budget)
+        check(len(journal) == 1 and _reader_hex(journal[0]['snapshot_bytes'], budget=budget) == ready['snapshot_bytes_hex']
               and journal[0]['state'] == 'cache_installed' and same(snapshot, ctx['authority_snapshot'])
               and ready['namespace'] == f'org/{expected_org_slug}' and type(ready['generation']) is int
               and ready['generation'] == intent['authority_generation'] and ready['snapshot_digest'] == intent['authority_digest'])
-        check(same(captured['pointer'], dict(current_generation=ready['generation'], journal_id=journal[0]['id'],
-              snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence'])))
+        check(same(captured['pointer'], (_reader_reserve(budget, 704) or dict(current_generation=ready['generation'], journal_id=journal[0]['id'],
+              snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence']))))
         check(captured['cutover'] == 'enabled' and same(captured['actions'], handoff_actions)
-              and set(captured['actions']) <= set(grant['original_request']['allowed_actions']))
+              and _reader_set(captured['actions'], budget=budget) <= _reader_set(grant['original_request']['allowed_actions'], budget=budget))
         def namespace(value: object) -> None:
             check(type(value) is str and bool(value.strip()) and '\x00' not in value
-                  and 1 <= len(value.encode('utf8')) <= 256)
+                  and 1 <= len(_reader_encode(value, 'utf8', budget=budget)) <= 256)
 
         def profile_name(value: object) -> None:
             # SourceProfileName is the complete authentic producer string,
@@ -1588,7 +2060,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
 
         snapshot_profiles = snapshot['machine_global_profiles']
         check(isinstance(snapshot_profiles, list) and len(snapshot_profiles) <= 1024)
-        names: list[str] = []
+        names: list[str] = (_reader_reserve(budget, 64) or [])
         for profile in snapshot_profiles:
             closed(profile, 'consumers generation profile_digest profile_name')
             profile_name(profile['profile_name'])
@@ -1597,26 +2069,26 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             check(isinstance(profile['consumers'], list))
             for consumer in profile['consumers']:
                 namespace(consumer)
-            check(profile['consumers'] == sorted(set(profile['consumers'])))
-            names.append(profile['profile_name'])
-        check(names == sorted(set(names)))
+            check(profile['consumers'] == _reader_sorted(_reader_set(profile['consumers'], budget=budget), budget=budget))
+            _reader_append(names, profile['profile_name'], budget=budget)
+        check(names == _reader_sorted(_reader_set(names, budget=budget), budget=budget))
         check(isinstance(captured['profiles'], list) and len(captured['profiles']) <= 1024)
         for profile in captured['profiles']:
             closed(profile, 'name digest')
             profile_name(profile['name'])
             digest_value(profile['digest'])
-        check(same(captured['profiles'], [dict(name=p['profile_name'], digest=p['profile_digest'])
-                                        for p in snapshot_profiles]))
+        check(same(captured['profiles'], _reader_list(((_reader_reserve(budget, 320) or dict(name=p['profile_name'], digest=p['profile_digest']))
+                                        for p in snapshot_profiles), budget=budget)))
         check(isinstance(captured['mirror'], list) and len(captured['mirror']) <= 16384)
-        grouped: list[tuple] = []
-        dependencies: list[dict] = []
-        stores: dict[str, dict] = {}
-        registry: dict[str, dict] = {}
+        grouped: list[tuple] = (_reader_reserve(budget, 64) or [])
+        dependencies: list[dict] = (_reader_reserve(budget, 64) or [])
+        stores: dict[str, dict] = (_reader_reserve(budget, 64) or {})
+        registry: dict[str, dict] = (_reader_reserve(budget, 64) or {})
         for item in captured['mirror']:
             kind = item.get('kind') if isinstance(item, dict) else None
-            fields = {'dependency': 'kind org_namespace profile_name consumer_identity bound_generation state',
+            fields = (_reader_reserve(budget, 448) or {'dependency': 'kind org_namespace profile_name consumer_identity bound_generation state',
                       'store': 'kind profile_name generation profile_digest state',
-                      'registry': 'kind profile_name published_generation'}
+                      'registry': 'kind profile_name published_generation'})
             check(type(kind) is str and kind in fields)
             closed(item, fields[kind])
             profile_name(item['profile_name'])
@@ -1625,22 +2097,22 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
                 namespace(item['consumer_identity'])
                 i0(item['bound_generation'])
                 check(type(item['state']) is str and item['state'] in ('active', 'unbound', 'removed'))
-                grouped.append((0, item['org_namespace'], item['profile_name'], item['consumer_identity']))
-                dependencies.append(item)
+                _reader_append(grouped, (_reader_reserve(budget, 128) or (0, item['org_namespace'], item['profile_name'], item['consumer_identity'])), budget=budget)
+                _reader_append(dependencies, item, budget=budget)
             elif kind == 'store':
                 i0(item['generation'])
                 digest_value(item['profile_digest'])
                 check(type(item['state']) is str and item['state'] in ('active', 'removed'))
-                grouped.append((1, item['profile_name']))
-                stores[item['profile_name']] = item
+                _reader_append(grouped, (_reader_reserve(budget, 96) or (1, item['profile_name'])), budget=budget)
+                _reader_put(item, stores, item['profile_name'], budget=budget)
             else:
                 i0(item['published_generation'])
-                grouped.append((2, item['profile_name']))
-                registry[item['profile_name']] = item
-        check(grouped == sorted(set(grouped)))
+                _reader_append(grouped, (_reader_reserve(budget, 96) or (2, item['profile_name'])), budget=budget)
+                _reader_put(item, registry, item['profile_name'], budget=budget)
+        check(grouped == _reader_sorted(_reader_set(grouped, budget=budget), budget=budget))
         # Reconstruct authority::_profile_projection from the saved full mirror.
         # Current mutable tables/files are not witnesses to historical readiness.
-        required: dict[str, dict] = {}
+        required: dict[str, dict] = (_reader_reserve(budget, 64) or {})
         for dependency in dependencies:
             if dependency['org_namespace'] != ready['namespace'] or dependency['state'] == 'removed':
                 continue
@@ -1651,38 +2123,38 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             bound_generation = dependency['bound_generation']
             check(store['state'] == 'active' and store['generation'] == bound_generation
                   and published['published_generation'] == bound_generation)
-            profile = required.setdefault(name, dict(consumers=[], generation=bound_generation,
-                                                    profile_digest=store['profile_digest'], profile_name=name))
+            profile = _reader_setdefault(required, name, _reader_reserve(budget, 576) or dict(consumers=(_reader_reserve(budget, 64) or []), generation=bound_generation,
+                                                    profile_digest=store['profile_digest'], profile_name=name), budget=budget)
             check(profile['generation'] == bound_generation and profile['profile_digest'] == store['profile_digest'])
-            profile['consumers'].append(dependency['consumer_identity'])
-        check(same([required[name] for name in sorted(required)], snapshot_profiles))
+            _reader_append(profile['consumers'], dependency['consumer_identity'], budget=budget)
+        check(same(_reader_list((required[name] for name in _reader_sorted(required, budget=budget)), budget=budget), snapshot_profiles))
         return proof
-    except (ValueError, KeyError, TypeError, AttributeError, UnicodeError, sqlite3.DatabaseError) as exc:
+    except ((ValueError, KeyError, TypeError, AttributeError, UnicodeError, sqlite3.DatabaseError)) as exc:
         raise ValueError(code) from exc
 
 
-def _validate_author_handoff_data(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
-    for row in _records(conn, 'SELECT * FROM workflow_author_handoffs'):
-        proof = _handoff_record(conn, row, expected_org_slug=expected_org_slug)
+def _validate_author_handoff_data(conn: sqlite3.Connection, *, expected_org_slug: str | None, budget=None) -> None:
+    _reader_reserve(budget, 0)
+    for row in _records(conn, 'SELECT * FROM workflow_author_handoffs', budget=budget):
+        proof = _handoff_record(conn, row, expected_org_slug=expected_org_slug, budget=budget)
         operations = _records(conn, 'SELECT * FROM workflow_submission_operations WHERE '
                               '(org_slug=? AND principal=? AND operation_key=?) OR submission_id IN '
                               '(SELECT id FROM workflow_submissions WHERE instance_id=? AND revision=1)',
-                              (row['org_slug'], row['principal'], row['operation_key'], row['instance_id']))
+                              (_reader_reserve(budget, 128) or (row['org_slug'], row['principal'], row['operation_key'], row['instance_id'])), budget=budget)
         if operations:
             # G's unchanged complete five-key operation/result reader runs first.
             if (len(operations) != 1 or operations[0]['submission_id'] != row['submission_id']
                     or operations[0]['request_digest'] != row['request_digest']):
                 raise ValueError('workflow_author_handoff_storage_corrupt')
-            original = _handoff_json(operations[0]['provenance_bytes'], operations[0]['provenance_digest'])
-            if original['request_bytes'] != row['request_bytes'].hex() or original['source_intent'] != proof['source_intent']:
+            original = _handoff_json(operations[0]['provenance_bytes'], operations[0]['provenance_digest'], budget=budget)
+            if original['request_bytes'] != _reader_hex(row['request_bytes'], budget=budget) or original['source_intent'] != proof['source_intent']:
                 raise ValueError('workflow_author_handoff_storage_corrupt')
             submission = original['submission']
-            if (submission['submission_bytes'] != row['candidate_bytes'].hex()
+            if (submission['submission_bytes'] != _reader_hex(row['candidate_bytes'], budget=budget)
                     or submission['submission_digest'] != row['candidate_digest']
                     or submission['source_result_id'] is not None):
                 raise ValueError('workflow_author_handoff_storage_corrupt')
-        elif conn.execute('SELECT 1 FROM workflow_submissions WHERE id=? OR (instance_id=? AND revision=1)',
-                          (row['submission_id'], row['instance_id'])).fetchone():
+        elif _reader_one(conn, 'SELECT 1 FROM workflow_submissions WHERE id=? OR (instance_id=? AND revision=1)', (_reader_reserve(budget, 96) or (row['submission_id'], row['instance_id'])), budget=budget):
             raise ValueError('workflow_author_handoff_storage_corrupt')
         # The U3a(b) reader authenticates all declared requests and their actual
         # owned task/event closure. Missing producer dependencies still refuse.
@@ -1690,66 +2162,81 @@ def _validate_author_handoff_data(conn: sqlite3.Connection, *, expected_org_slug
             from runtime.workflows.submissions import validate_handoff_graph
         except ImportError as exc:
             raise ValueError('workflow_author_handoff_graph_validator_unavailable') from exc
-        validate_handoff_graph(conn, row, proof)
+        validate_handoff_graph(conn, row, proof, budget=budget)
 
 
-def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug: str, budget: _Budget | None = None) -> Literal['migrated', 'ready']:
     """Explicit offline G-to-H only; preserve all retained relations atomically."""
-    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+    from runtime.workflows.coding_authority_history import _Budget
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_reader_invalid_budget')
+    budget = _Budget() if budget is None else budget
+    if conn.in_transaction or _foreign_key_policy(conn, budget=budget) != 1:
         raise ValueError('workflow_author_handoff_migration_requires_idle_foreign_keys')
-    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ('H', 'I', 'J'):
         return 'ready'
     if layout != 'G':
         raise ValueError('workflow_author_handoff_requires_g: ' + submission_migration_guidance(org_slug=expected_org_slug))
-    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
+    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout, budget=budget)
     try:
         conn.execute('BEGIN IMMEDIATE')
-        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
         if layout in ('H', 'I', 'J'):
             conn.rollback()
             return 'ready'
         if layout != 'G':
             raise ValueError('workflow_author_handoff_requires_g')
-        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
-        retained = _retained_rows(conn)
-        _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
-        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
-        after = _retained_rows(conn)
-        if any(after[table] != rows for table, rows in retained.items()):
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout, budget=budget)
+        retained = _retained_rows(conn, budget=budget)
+        indexed = bool(_owner_indexes_present(conn, budget=budget))
+        _, coding = _read_structure(conn, budget=budget)
+        _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL, budget=budget)
+        if indexed:
+            _install_owner_indexes(conn, 'H', coding_extension=coding,
+                                   existing=_owner_indexes_present(conn, budget=budget), budget=budget)
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug, budget=budget)
+        after = _retained_rows(conn, budget=budget)
+        if _reader_any_true((after[table] != rows for table, rows in retained.items()), budget=budget):
             raise ValueError('workflow_author_handoff_retained_relation_mismatch')
         conn.commit()
         return 'migrated'
-    except BaseException:
-        conn.rollback()
+    except BaseException as primary:
+        try:
+            conn.rollback()
+        except BaseException as cleanup:
+            primary.add_note('workflow migration rollback failed: ' + type(cleanup).__name__)
         raise
 
 
-def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expected_org_slug: str) -> None:
+def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expected_org_slug: str, budget: _Budget | None = None) -> None:
     """Bind naming ownership and compare whole SQL to an independent release DB."""
-    from runtime.orchestrator.authority import _workflow_release_schema_digest, _WORKFLOW_RELEASE_REFERENCE_HISTORIES
-    rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name').fetchall()
-    actual = hashlib.sha256('\n'.join(str(r[0]) for r in rows).encode()).hexdigest()
-    from runtime.infrastructure.task_pause_controls import validate_pause_schema
-    from runtime.identities.schema import validate_names
-    pause_layout = validate_pause_schema(conn, allow_absent=True)
-    names = validate_names(conn, org_slug=expected_org_slug)
-    from runtime.infrastructure.team_move_store import validate_team_move_schema
-    team_move_layout = validate_team_move_schema(conn, org_slug=expected_org_slug)
-    observed_layout, coding = _read_structure(conn)
-    if observed_layout != layout:
-        raise ValueError('workflow_release_layout_mismatch')
-    expected = tuple(_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout,
-                                                     coding_extension=coding)
-                     for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
-    if 'unavailable' in expected or actual not in expected:
-        raise ValueError('workflow_submission_whole_database_mismatch')
+    with _schema_snapshot(conn):
+        from runtime.orchestrator.authority import _workflow_release_schema_digest, _WORKFLOW_RELEASE_REFERENCE_HISTORIES
+        rows = _reader_all(conn, 'SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name', budget=budget)
+        _reader_work(rows, budget, copies=2)
+        actual = _reader_sha256(_reader_encode('\n'.join(str(r[0]) for r in rows), budget=budget), budget=budget).hexdigest()
+        from runtime.infrastructure.task_pause_controls import validate_pause_schema
+        from runtime.identities.schema import validate_names
+        pause_layout = validate_pause_schema(conn, allow_absent=True, budget=budget)
+        names = validate_names(conn, org_slug=expected_org_slug, budget=budget)
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        team_move_layout = validate_team_move_schema(conn, org_slug=expected_org_slug, reader_budget=budget)
+        observed_layout, coding = _read_structure(conn, budget=budget)
+        if observed_layout != layout:
+            raise ValueError('workflow_release_layout_mismatch')
+        indexed = bool(_owner_indexes_present(conn, budget=budget))
+        expected = _reader_tuple((_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout,
+                                                         coding_extension=coding, owner_indexed=indexed, budget=budget)
+                         for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES), budget=budget)
+        if 'unavailable' in expected or actual not in expected:
+            raise ValueError('workflow_submission_whole_database_mismatch')
 
 
-def _validate_submission_source_ownership(conn: sqlite3.Connection, layout: str) -> None:
+def _validate_submission_source_ownership(conn: sqlite3.Connection, layout: str, *, budget: _Budget | None = None) -> None:
     """An absent PID never discharges durable possible-launch/recovery work."""
     queries = (
         ('workflow_publication_leases', '1'), ('workflow_profile_leases', '1'),
@@ -1764,88 +2251,119 @@ def _validate_submission_source_ownership(conn: sqlite3.Connection, layout: str)
                      "(cancellation_requested=1 AND state NOT IN ('cancelled','failed','completed')) OR "
                      "(host_launch_started=1 AND state NOT IN ('cancelled','failed','completed'))"),)
     for table, predicate in queries:
-        if conn.execute(f'SELECT 1 FROM {table} WHERE {predicate} LIMIT 1').fetchone():
+        if _reader_one(conn, f'SELECT 1 FROM {table} WHERE {predicate} LIMIT 1', budget=budget):
             raise ValueError(f'workflow_submission_source_owner_active: {table}; reconcile its durable owner and host closure')
 
 
-def _retained_rows(conn: sqlite3.Connection) -> dict[str, tuple]:
+def _retained_rows(conn: sqlite3.Connection, *, budget: _Budget | None = None) -> dict[str, tuple]:
     """Exact rowid, original column types/bytes and transitive inbound rows."""
-    result = {}
-    for (table,) in conn.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name"):
-        quoted = str(table).replace('"', '""')
-        result[table] = tuple(tuple(row) for row in conn.execute(f'SELECT rowid,* FROM "{quoted}" ORDER BY rowid'))
-    return result
+    with _schema_snapshot(conn):
+        result = (_reader_reserve(budget, 64) or {})
+        for (table,) in _reader_rows(conn, "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name", budget=budget):
+            quoted = str(table).replace('"', '""')
+            copied = (_reader_reserve(budget, 64) or [])
+            for row in _reader_rows(conn, f'SELECT rowid,* FROM "{quoted}" ORDER BY rowid', budget=budget):
+                _reader_work(row, budget)
+                _reader_append(copied, _reader_tuple(row, budget=budget), budget=budget)
+            _reader_reserve(budget, 16 * len(copied) + 64)
+            _reader_put(_reader_tuple(copied, budget=budget), result, table, budget=budget)
+        return result
 
 
-def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: str, budget: _Budget | None = None) -> Literal['migrated', 'ready']:
     """Own one raw, idle, FK-enabled connection transaction; never a daemon DB.
 
     Offline daemon observation belongs to the operator script. This primitive
     independently fences persisted owners and rechecks after writer acquisition.
     """
-    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+    from runtime.workflows.coding_authority_history import _Budget
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_reader_invalid_budget')
+    budget = _Budget() if budget is None else budget
+    if conn.in_transaction or _foreign_key_policy(conn, budget=budget) != 1:
         raise ValueError('workflow_submission_migration_requires_idle_foreign_keys')
-    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    from runtime.identities.schema import validate_names
-    validate_names(conn, org_slug=expected_org_slug)
-    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
-    if layout in ('G', 'H', 'I', 'J'):
-        return 'ready'
-    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
-    for event in _records(conn, 'SELECT * FROM workflow_events'):
-        _event_revision(conn, event)
+    with _schema_snapshot(conn):
+        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        from runtime.identities.schema import validate_names
+        validate_names(conn, org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
+        if layout in ('G', 'H', 'I', 'J'):
+            return 'ready'
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout, budget=budget)
+        for event in _records(conn, 'SELECT * FROM workflow_events', budget=budget):
+            _event_revision(conn, event, budget=budget)
+    # Pre-reserve the mandatory one-scalar cleanup read before any effect.
+    _reader_reserve(budget, 128)
+    budget.step()
+    budget.candidate()
     conn.execute('PRAGMA foreign_keys=OFF')
+    primary_failure = None
     try:
-        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 0:
+        if _foreign_key_policy(conn, budget=budget) != 0:
             raise ValueError('workflow_submission_fk_policy_unavailable')
         conn.execute('BEGIN IMMEDIATE')
-        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
         if layout in ('G', 'H', 'I', 'J'):
             conn.rollback()
             return 'ready'
-        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
-        revisions = {e['id']: _event_revision(conn, e) for e in _records(conn, 'SELECT * FROM workflow_events')}
-        retained = _retained_rows(conn)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout, budget=budget)
+        revisions = _reader_dict_pairs(((_reader_reserve(budget, 96) or (e['id'],  _event_revision(conn, e, budget=budget) )) for e in _records(conn, 'SELECT * FROM workflow_events', budget=budget)), budget=budget)
+        retained = _retained_rows(conn, budget=budget)
+        indexed = bool(_owner_indexes_present(conn, budget=budget))
+        _, coding = _read_structure(conn, budget=budget)
         conn.execute('CREATE TEMP TABLE submission_stage AS SELECT rowid AS original_rowid,* FROM workflow_submissions')
         conn.execute('CREATE TEMP TABLE event_stage AS SELECT rowid AS original_rowid,* FROM workflow_events')
         conn.execute('DROP TABLE workflow_events')
         conn.execute('DROP TABLE workflow_submissions')
         submissions, events, additions = _g_definitions()
-        _execute_ddl(conn, submissions)
-        _execute_ddl(conn, events)
+        _execute_ddl(conn, submissions, budget=budget)
+        _execute_ddl(conn, events, budget=budget)
         conn.execute('INSERT INTO workflow_submissions(rowid,id,instance_id,revision,submission_bytes,submission_digest,'
                      'storage_ref,source_task_id,source_session_id,source_result_id,author_principal) SELECT * FROM submission_stage')
-        for row in conn.execute('SELECT * FROM event_stage ORDER BY original_rowid').fetchall():
-            values = tuple(row)
+        for row in _reader_all(conn, 'SELECT * FROM event_stage ORDER BY original_rowid', budget=budget):
+            values = _reader_tuple(row, budget=budget)
             conn.execute('INSERT INTO workflow_events(rowid,id,instance_id,revision,event_kind,event_bytes,event_digest,created_at) '
-                         'VALUES (?,?,?,?,?,?,?,?)', values[:3] + (revisions[values[1]],) + values[3:])
+                         'VALUES (?,?,?,?,?,?,?,?)', values[:3] + (_reader_reserve(budget, 80) or (revisions[values[1]],)) + values[3:])
         conn.execute('CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)')
         if layout == 'F':
-            _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+            _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL, budget=budget)
             conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
-        _execute_ddl(conn, additions)
+        _execute_ddl(conn, additions, budget=budget)
         conn.execute('INSERT INTO workflow_submission_schema_versions VALUES (1)')
-        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, 'G', expected_org_slug=expected_org_slug)
-        after = _retained_rows(conn)
+        if indexed:
+            _install_owner_indexes(conn, 'G', coding_extension=coding,
+                                   existing=_owner_indexes_present(conn, budget=budget), budget=budget)
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, 'G', expected_org_slug=expected_org_slug, budget=budget)
+        after = _retained_rows(conn, budget=budget)
         for table, rows in retained.items():
             observed = after[table]
             if table == 'workflow_events':
-                observed = tuple(row[:3] + row[4:] for row in observed)
+                observed = _reader_tuple((row[:3] + row[4:] for row in observed), budget=budget)
             if observed != rows:
                 raise ValueError(f'workflow_submission_retained_relation_mismatch: {table}')
         conn.execute('DROP TABLE temp.submission_stage')
         conn.execute('DROP TABLE temp.event_stage')
         conn.commit()
         return 'migrated'
-    except BaseException:
-        conn.rollback()
+    except BaseException as primary:
+        primary_failure = primary
+        try:
+            conn.rollback()
+        except BaseException as cleanup:
+            primary.add_note('workflow migration rollback failed: ' + type(cleanup).__name__)
         raise
     finally:
-        conn.execute('PRAGMA foreign_keys=ON')
-        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
-            raise ValueError('workflow_submission_fk_policy_restore_failed')
+        try:
+            conn.execute('PRAGMA foreign_keys=ON')
+            # This fixed cleanup read was reserved on the original allowance.
+            if _foreign_key_policy(conn, budget=None) != 1:
+                raise ValueError('workflow_submission_fk_policy_restore_failed')
+        except BaseException as cleanup:
+            if primary_failure is None:
+                raise
+            primary_failure.add_note('workflow FK policy restoration failed: ' + type(cleanup).__name__)
 
 
 def revision_migration_guidance() -> str:
@@ -1862,53 +2380,77 @@ def require_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
                                       required_action=revision_migration_guidance())
 
 
-def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str, budget: _Budget | None = None) -> Literal['migrated', 'ready']:
     """Explicit idle H-to-I, preserving every retained row and old H definition."""
-    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+    from runtime.workflows.coding_authority_history import _Budget
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_reader_invalid_budget')
+    budget = _Budget() if budget is None else budget
+    if conn.in_transaction or _foreign_key_policy(conn, budget=budget) != 1:
         raise ValueError('workflow_document_revision_requires_idle_foreign_keys')
-    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
     if layout in ('I', 'J'):
         return 'ready'
     if layout != 'H':
         raise ValueError('workflow_document_revision_requires_h: ' + revision_migration_guidance())
-    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
+    _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout, budget=budget)
+    # Pre-reserve the mandatory one-scalar cleanup read before any effect.
+    _reader_reserve(budget, 128)
+    budget.step()
+    budget.candidate()
     conn.execute('PRAGMA foreign_keys=OFF')
+    primary_failure = None
     try:
-        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 0:
+        if _foreign_key_policy(conn, budget=budget) != 0:
             raise ValueError('workflow_document_revision_fk_policy_unavailable')
         conn.execute('BEGIN IMMEDIATE')
-        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'H':
+        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget) != 'H':
             raise ValueError('workflow_document_revision_source_changed')
-        _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
-        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout='H')
-        retained = _retained_rows(conn)
+        _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug, budget=budget)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout='H', budget=budget)
+        retained = _retained_rows(conn, budget=budget)
+        indexed = bool(_owner_indexes_present(conn, budget=budget))
+        _, coding = _read_structure(conn, budget=budget)
         conn.execute('CREATE TEMP TABLE revision_intents AS SELECT rowid AS original_rowid,* FROM workflow_draft_dispatch_intents')
         conn.execute('DROP TABLE workflow_draft_dispatch_intents')
         ddl = _revision_draft_ddl()
         start = ddl.index('CREATE TABLE workflow_draft_dispatch_intents')
         end = ddl.index('CREATE TABLE workflow_draft_dispatch_events')
-        _execute_ddl(conn, ddl[start:end])
+        _execute_ddl(conn, ddl[start:end], budget=budget)
         conn.execute('CREATE INDEX workflow_draft_activation_idx '
                      'ON workflow_draft_dispatch_intents(activation_id,attempt_sequence)')
-        columns = ','.join(r[1] for r in conn.execute('PRAGMA table_info(workflow_draft_dispatch_intents)'))
+        columns = ','.join(r[1] for r in _reader_rows(conn, 'PRAGMA table_info(workflow_draft_dispatch_intents)', budget=budget))
         conn.execute(f'INSERT INTO workflow_draft_dispatch_intents(rowid,{columns}) SELECT * FROM revision_intents')
-        _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
-        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug)
-        after = _retained_rows(conn)
-        if any(after[table] != rows for table, rows in retained.items()):
+        _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL, budget=budget)
+        if indexed:
+            _install_owner_indexes(conn, 'I', coding_extension=coding,
+                                   existing=_owner_indexes_present(conn, budget=budget), budget=budget)
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug, budget=budget)
+        after = _retained_rows(conn, budget=budget)
+        if _reader_any_true((after[table] != rows for table, rows in retained.items()), budget=budget):
             raise ValueError('workflow_document_revision_retained_relation_mismatch')
         conn.execute('DROP TABLE temp.revision_intents')
         conn.commit()
         return 'migrated'
-    except BaseException:
-        conn.rollback()
+    except BaseException as primary:
+        primary_failure = primary
+        try:
+            conn.rollback()
+        except BaseException as cleanup:
+            primary.add_note('workflow migration rollback failed: ' + type(cleanup).__name__)
         raise
     finally:
-        conn.execute('PRAGMA foreign_keys=ON')
-        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
-            raise ValueError('workflow_document_revision_fk_restore_failed')
+        try:
+            conn.execute('PRAGMA foreign_keys=ON')
+            # This fixed cleanup read was reserved on the original allowance.
+            if _foreign_key_policy(conn, budget=None) != 1:
+                raise ValueError('workflow_document_revision_fk_restore_failed')
+        except BaseException as cleanup:
+            if primary_failure is None:
+                raise
+            primary_failure.add_note('workflow FK policy restoration failed: ' + type(cleanup).__name__)
 
 
 def coding_migration_guidance() -> str:
@@ -1926,7 +2468,7 @@ def coding_migration_guidance() -> str:
 
 
 def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug: str,
-                                 layout: str = 'I') -> None:
+                                 layout: str = 'I', budget: _Budget | None = None) -> None:
     """Migration-only current ownership, for complete F/E/G/H/I/J readers.
 
     This SELECT-only classification is not clearance by terminal label or PID.
@@ -1934,145 +2476,143 @@ def _validate_coding_source_idle(conn: sqlite3.Connection, *, expected_org_slug:
     and cooperative exclusion, including other hosts, through the operation.
     Retained uncertainty is preserved, not certified closed or replayed here.
     """
-    def refuse(owner: str) -> None:
-        raise ValueError(f'workflow_coding_source_owner_unresolved: {owner}; '
-                         'Engineering/operator must establish complete present exclusion; preserve historical evidence')
+    with _schema_snapshot(conn):
+        def refuse(owner: str) -> None:
+            raise ValueError(f'workflow_coding_source_owner_unresolved: {owner}; '
+                             'Engineering/operator must establish complete present exclusion; preserve historical evidence')
 
-    _validate_submission_source_ownership(conn, layout)
-    # Queued/admitted operations and source result-action processing also own
-    # work, even before a PID/host reservation exists.
-    for table, predicate in (
-        ('workflow_authority_pointers', "state!='ready'"),
-        ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
-        ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
-        ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
-        ('tasks', "status NOT IN ('completed','failed','cancelled','superseded')"),
-        # Claimed recovery and accepted-but-unconsumed callbacks can still act,
-        # including on a terminal task. Ended recovery history is not activity.
-        ('task_completion_recoveries', "state NOT IN ('callback_consumed','expired','restart_settled','superseded')"),
-        ('jobs', "status NOT IN ('pending','completed','failed','rejected','cancelled')"),
-        ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
-        ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
-        ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
-        # schedule_store.list_due consumes armed rows. Terminal occurrences
-        # retain their runtime SID; current native execution is separately
-        # excluded by the complete preparation/process/cooperative window.
-        ('schedules', "active=1 OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
-        ('remote_job_attempts', "state!='terminal'"),
-        ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
-    ):
-        rows = _records(conn, f'SELECT * FROM {table} WHERE {predicate} LIMIT 1')
-        if rows:
-            row = rows[0]
-            reference = next((row[key] for key in ('id', 'task_id', 'namespace', 'agent_name')
-                              if key in row and row[key] is not None), None)
-            refuse(table + (':' + str(reference) if reference is not None else ''))
-    # Authenticate terminal F5 projections and their own actual callbacks and
-    # host terminal evidence; missing or orphan edges are never an idle label.
-    from runtime.workflows.review_dispatch import validate_review_dispatch_storage
-    requests = {r[0] for r in conn.execute('SELECT request_id FROM workflow_dispatch_operations')}
-    if (requests != {r[0] for r in conn.execute('SELECT request_id FROM workflow_dispatch_outbox')}
-            or requests != {r[0] for r in conn.execute('SELECT request_id FROM workflow_request_task_bridges')}):
-        refuse('workflow_dispatch_graph')
-    for request_id in requests:
-        validate_review_dispatch_storage(conn, request_id=request_id)
-    if layout != 'F' and conn.execute("SELECT 1 FROM workflow_draft_dispatch_intents "
-            "WHERE state NOT IN ('cancelled','failed','completed') LIMIT 1").fetchone():
-        refuse('workflow_draft_dispatch_intents')
-    # jobs.py::_run_job_core_impl requires a current pending/in_progress,
-    # noncancelled task. A retained pending job on an ended owner cannot auto
-    # launch. Missing/mismatched attribution is never classified historical.
-    for job in _records(conn, "SELECT * FROM jobs WHERE status='pending'"):
-        task = conn.execute('SELECT status,assigned_agent,cancelled_at FROM tasks WHERE id=?',
-                            (job['task_id'],)).fetchone()
-        if (task is None or task[1] != job['agent_name']
-                or task[0] not in ('completed','failed','cancelled','superseded')):
-            refuse('jobs:' + str(job['id']))
-    # The source callback/result action claim has no separate lease table:
-    # native current task + recovery + Pause attribution owns it. It cannot
-    # be released by a result label while processing still owns the source.
-    from runtime.infrastructure.task_pause_controls import validate_pause_schema, decode_journal
-    from runtime.infrastructure.team_move_store import validate_team_move_schema
-    if validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True):
-        for row in _records(conn, 'SELECT * FROM task_pause_controls'):
-            # Validate the whole original journal, including owner ancestry,
-            # without requiring historical native settlement. Current result
-            # processing still holds even after a task's terminal transition.
-            for entry in decode_journal(row['admission_journal_json'])['entries']:
-                task = conn.execute('SELECT status,assigned_agent FROM tasks WHERE id=?',
-                                    (entry['task_id'],)).fetchone()
-                if (task is None or task[1] != entry['agent']
-                        or task[0] not in ('completed','failed','cancelled','superseded')
-                        or entry['phase'] in ('action_started','result_processing')):
-                    refuse('task_pause_controls:' + row['root_task_id'])
-            # A held bit or release generation on an ended root cannot consume
-            # work alone; all nonterminal tasks were excluded above. Native
-            # preparations/processes remain independently observed by caller.
-    if validate_team_move_schema(conn, org_slug=expected_org_slug):
-        if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot IS NOT NULL LIMIT 1').fetchone():
-            refuse('team_move_operations')
-    # Validate all retained publication snapshots, plus pointer ownership.
-    # Historical file_phase_owner remains historical after cache installation;
-    # the lease and cooperative stopped-host boundary discharge current use.
-    from runtime.workflows.authority import validate_authority_snapshot
-    journals = {r['id']: r for r in _records(conn, 'SELECT * FROM workflow_publication_journals')}
-    for journal in journals.values():
-        validate_authority_snapshot(_stored_json(journal['snapshot_bytes'], journal['snapshot_digest']))
-        if (type(journal['generation']) is not int or type(journal['expected_generation']) is not int
-                or journal['generation'] != journal['expected_generation'] + 1
-                or not all(isinstance(journal[k], str) and journal[k] for k in
-                           ('namespace', 'publisher', 'publisher_invocation', 'recovery_owner'))):
-            refuse('workflow_publication_journals:' + journal['id'])
-    for pointer in _records(conn, 'SELECT * FROM workflow_authority_pointers'):
-        if pointer['current_generation'] == 0:
-            continue
-        journal = journals.get(pointer['journal_id'])
-        if (journal is None or journal['state'] != 'cache_installed'
-                or journal['namespace'] != pointer['namespace']
-                or journal['generation'] != pointer['current_generation']
-                or journal['snapshot_digest'] != pointer['snapshot_digest']
-                or journal['profile_fence'] != pointer['profile_fence']):
-            refuse('workflow_authority_pointers:' + pointer['namespace'])
-    for operation in _records(conn, 'SELECT * FROM workflow_profile_operations'):
-        members = json.loads(operation['captured_members'])
-        if (not isinstance(members, list) or not members
-                or any(not isinstance(member, str) or not member for member in members)
-                or len(members) != len(set(members))
-                or expected_org_slug not in members
-                or not isinstance(operation['coordinator_invocation'], str) or not operation['coordinator_invocation']
-                or re.fullmatch(r'[0-9a-f]{64}', operation['profile_digest']) is None):
-            refuse('workflow_profile_operations:' + operation['id'])
-    for episode in _records(conn, 'SELECT * FROM task_completion_recoveries'):
-        result = conn.execute('SELECT task_id,agent,session_id FROM task_results WHERE id=?',
-                              (episode['accepted_result_id'],)).fetchone()
-        if ((episode['state'] == 'callback_consumed' or episode['accepted_result_id'] is not None)
-                and (type(episode['accepted_result_id']) is not int or result is None
-                     or tuple(result) != (episode['task_id'], episode['agent'], episode['accepted_result_session_id']))):
-            refuse('task_completion_recoveries:' + str(episode['id']))
-    for recovery in _records(conn, 'SELECT * FROM workflow_recovery_claims'):
-        # Preserve actual task/result attribution as validity, without adding
-        # a historical host-closure requirement for effect-recorded legacy rows.
-        task = conn.execute('SELECT 1 FROM tasks WHERE id=?', (recovery['record_id'],)).fetchone()
-        if task is None:
-            refuse('workflow_recovery_claims:' + recovery['record_id'])
-        if recovery['record_class'] == 'legacy_task':
-            continue
-        drafts = [] if layout == 'F' else conn.execute(
-            'SELECT id FROM workflow_draft_dispatch_intents WHERE task_id=?', (recovery['record_id'],)).fetchall()
-        bridges = conn.execute('SELECT request_id FROM workflow_request_task_bridges WHERE task_id=?',
-                               (recovery['record_id'],)).fetchall()
-        if len(drafts) + len(bridges) != 1:
-            refuse('workflow_recovery_claims:' + recovery['record_id'])
+        _validate_submission_source_ownership(conn, layout, budget=budget)
+        # Queued/admitted operations and source result-action processing also own
+        # work, even before a PID/host reservation exists.
+        for table, predicate in (
+            ('workflow_authority_pointers', "state!='ready'"),
+            ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
+            ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
+            ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
+            ('tasks', "status NOT IN ('completed','failed','cancelled','superseded')"),
+            # Claimed recovery and accepted-but-unconsumed callbacks can still act,
+            # including on a terminal task. Ended recovery history is not activity.
+            ('task_completion_recoveries', "state NOT IN ('callback_consumed','expired','restart_settled','superseded')"),
+            ('jobs', "status NOT IN ('pending','completed','failed','rejected','cancelled')"),
+            ('thread_invocations', "status NOT IN ('consumed','declined','timeout','failed')"),
+            ('dreams', "status NOT IN ('completed','failed','timeout','skipped')"),
+            ('work_hours', "status NOT IN ('completed','failed','timeout','skipped')"),
+            # schedule_store.list_due consumes armed rows. Terminal occurrences
+            # retain their runtime SID; current native execution is separately
+            # excluded by the complete preparation/process/cooperative window.
+            ('schedules', "active=1 OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')"),
+            ('remote_job_attempts', "state!='terminal'"),
+            ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
+        ):
+            rows = _records(conn, f'SELECT * FROM {table} WHERE {predicate} LIMIT 1', budget=budget)
+            if rows:
+                row = rows[0]
+                reference = next((row[key] for key in ('id', 'task_id', 'namespace', 'agent_name')
+                                  if key in row and row[key] is not None), None)
+                refuse(table + (':' + str(reference) if reference is not None else ''))
+        # Authenticate terminal F5 projections and their own actual callbacks and
+        # host terminal evidence; missing or orphan edges are never an idle label.
+        from runtime.workflows.review_dispatch import validate_review_dispatch_storage
+        requests = _reader_set((r[0] for r in _reader_rows(conn, 'SELECT request_id FROM workflow_dispatch_operations', budget=budget)), budget=budget)
+        if (requests != _reader_set((r[0] for r in _reader_rows(conn, 'SELECT request_id FROM workflow_dispatch_outbox', budget=budget)), budget=budget)
+                or requests != _reader_set((r[0] for r in _reader_rows(conn, 'SELECT request_id FROM workflow_request_task_bridges', budget=budget)), budget=budget)):
+            refuse('workflow_dispatch_graph')
+        for request_id in requests:
+            validate_review_dispatch_storage(conn, request_id=request_id, budget=budget)
+        if layout != 'F' and _reader_one(conn, "SELECT 1 FROM workflow_draft_dispatch_intents "
+                "WHERE state NOT IN ('cancelled','failed','completed') LIMIT 1", budget=budget):
+            refuse('workflow_draft_dispatch_intents')
+        # jobs.py::_run_job_core_impl requires a current pending/in_progress,
+        # noncancelled task. A retained pending job on an ended owner cannot auto
+        # launch. Missing/mismatched attribution is never classified historical.
+        for job in _records(conn, "SELECT * FROM jobs WHERE status='pending'", budget=budget):
+            task = _reader_one(conn, 'SELECT status,assigned_agent,cancelled_at FROM tasks WHERE id=?', (_reader_reserve(budget, 80) or (job['task_id'],)), budget=budget)
+            if (task is None or task[1] != job['agent_name']
+                    or task[0] not in ('completed','failed','cancelled','superseded')):
+                refuse('jobs:' + str(job['id']))
+        # The source callback/result action claim has no separate lease table:
+        # native current task + recovery + Pause attribution owns it. It cannot
+        # be released by a result label while processing still owns the source.
+        from runtime.infrastructure.task_pause_controls import validate_pause_schema, decode_journal
+        from runtime.infrastructure.team_move_store import validate_team_move_schema
+        if validate_pause_schema(conn, org_slug=expected_org_slug, allow_absent=True, budget=budget):
+            for row in _records(conn, 'SELECT * FROM task_pause_controls', budget=budget):
+                # Validate the whole original journal, including owner ancestry,
+                # without requiring historical native settlement. Current result
+                # processing still holds even after a task's terminal transition.
+                for entry in decode_journal(row['admission_journal_json'], budget=budget)['entries']:
+                    task = _reader_one(conn, 'SELECT status,assigned_agent FROM tasks WHERE id=?', (_reader_reserve(budget, 80) or (entry['task_id'],)), budget=budget)
+                    if (task is None or task[1] != entry['agent']
+                            or task[0] not in ('completed','failed','cancelled','superseded')
+                            or entry['phase'] in ('action_started','result_processing')):
+                        refuse('task_pause_controls:' + row['root_task_id'])
+                # A held bit or release generation on an ended root cannot consume
+                # work alone; all nonterminal tasks were excluded above. Native
+                # preparations/processes remain independently observed by caller.
+        if validate_team_move_schema(conn, org_slug=expected_org_slug, reader_budget=budget):
+            if _reader_one(conn, 'SELECT 1 FROM team_move_operations WHERE active_slot IS NOT NULL LIMIT 1', budget=budget):
+                refuse('team_move_operations')
+        # Validate all retained publication snapshots, plus pointer ownership.
+        # Historical file_phase_owner remains historical after cache installation;
+        # the lease and cooperative stopped-host boundary discharge current use.
+        from runtime.workflows.authority import validate_authority_snapshot
+        journals = _reader_dict_pairs(((_reader_reserve(budget, 96) or (r['id'],  r )) for r in _records(conn, 'SELECT * FROM workflow_publication_journals', budget=budget)), budget=budget)
+        for journal in journals.values():
+            validate_authority_snapshot(_stored_json(journal['snapshot_bytes'], journal['snapshot_digest'], budget=budget), budget=budget)
+            if (type(journal['generation']) is not int or type(journal['expected_generation']) is not int
+                    or journal['generation'] != journal['expected_generation'] + 1
+                    or not _reader_all_true((isinstance(journal[k], str) and journal[k] for k in
+                               ('namespace', 'publisher', 'publisher_invocation', 'recovery_owner')), budget=budget)):
+                refuse('workflow_publication_journals:' + journal['id'])
+        for pointer in _records(conn, 'SELECT * FROM workflow_authority_pointers', budget=budget):
+            if pointer['current_generation'] == 0:
+                continue
+            journal = journals.get(pointer['journal_id'])
+            if (journal is None or journal['state'] != 'cache_installed'
+                    or journal['namespace'] != pointer['namespace']
+                    or journal['generation'] != pointer['current_generation']
+                    or journal['snapshot_digest'] != pointer['snapshot_digest']
+                    or journal['profile_fence'] != pointer['profile_fence']):
+                refuse('workflow_authority_pointers:' + pointer['namespace'])
+        for operation in _records(conn, 'SELECT * FROM workflow_profile_operations', budget=budget):
+            members = _reader_json(operation['captured_members'], budget)
+            if (not isinstance(members, list) or not members
+                    or _reader_any_true((not isinstance(member, str) or not member for member in members), budget=budget)
+                    or len(members) != len(_reader_set(members, budget=budget))
+                    or expected_org_slug not in members
+                    or not isinstance(operation['coordinator_invocation'], str) or not operation['coordinator_invocation']
+                    or re.fullmatch(r'[0-9a-f]{64}', operation['profile_digest']) is None):
+                refuse('workflow_profile_operations:' + operation['id'])
+        for episode in _records(conn, 'SELECT * FROM task_completion_recoveries', budget=budget):
+            result = _reader_one(conn, 'SELECT task_id,agent,session_id FROM task_results WHERE id=?', (_reader_reserve(budget, 80) or (episode['accepted_result_id'],)), budget=budget)
+            if ((episode['state'] == 'callback_consumed' or episode['accepted_result_id'] is not None)
+                    and (type(episode['accepted_result_id']) is not int or result is None
+                         or _reader_tuple(result, budget=budget) != (_reader_reserve(budget, 112) or (episode['task_id'], episode['agent'], episode['accepted_result_session_id'])))):
+                refuse('task_completion_recoveries:' + str(episode['id']))
+        for recovery in _records(conn, 'SELECT * FROM workflow_recovery_claims', budget=budget):
+            # Preserve actual task/result attribution as validity, without adding
+            # a historical host-closure requirement for effect-recorded legacy rows.
+            task = _reader_one(conn, 'SELECT 1 FROM tasks WHERE id=?', (_reader_reserve(budget, 80) or (recovery['record_id'],)), budget=budget)
+            if task is None:
+                refuse('workflow_recovery_claims:' + recovery['record_id'])
+            if recovery['record_class'] == 'legacy_task':
+                continue
+            drafts = (_reader_reserve(budget, 64) or []) if layout == 'F' else _reader_all(conn, 'SELECT id FROM workflow_draft_dispatch_intents WHERE task_id=?', (_reader_reserve(budget, 80) or (recovery['record_id'],)), budget=budget)
+            bridges = _reader_all(conn, 'SELECT request_id FROM workflow_request_task_bridges WHERE task_id=?', (_reader_reserve(budget, 80) or (recovery['record_id'],)), budget=budget)
+            if len(drafts) + len(bridges) != 1:
+                refuse('workflow_recovery_claims:' + recovery['record_id'])
 
 
-def _coding_retained_rows(conn: sqlite3.Connection) -> dict[str, tuple]:
+def _coding_retained_rows(conn: sqlite3.Connection, *, budget: _Budget | None = None) -> dict[str, tuple]:
     """Preserve whole native/document rows, rowids and exact SQL storage types."""
-    return {table: tuple(tuple((type(value).__name__, value) for value in row) for row in rows)
-            for table, rows in _retained_rows(conn).items()}
+    retained = _retained_rows(conn, budget=budget)
+    _reader_work(retained, budget, copies=2)
+    return _reader_dict_pairs(((_reader_reserve(budget, 96) or (table,  _reader_tuple((_reader_tuple(((_reader_reserve(budget, 96) or (type(value).__name__, value)) for value in row), budget=budget) for row in rows), budget=budget)
+            )) for table, rows in retained.items()), budget=budget)
 
 
 def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str,
-                         expected_path: str) -> tuple:
+                         expected_path: str, budget: _Budget | None = None) -> tuple:
     """Cooperative G-pattern pathname/file observation, not native FD proof.
 
     Compare SQLite's exact main path to the caller's independently resolved
@@ -2091,23 +2631,24 @@ def _coding_org_identity(conn: sqlite3.Connection, *, expected_org_slug: str,
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
         raise ValueError('workflow_coding_migration_org_identity_invalid')
-    identity = (str(path), info.st_dev, info.st_ino, info.st_mode)
-    databases = [tuple(row) for row in conn.execute('PRAGMA database_list')]
-    main = [row for row in databases if row[1] == 'main']
-    if len(main) != 1 or main[0][2] != str(path) or any(row[1] not in ('main', 'temp') or
-            (row[1] == 'temp' and row[2]) for row in databases):
+    identity = (_reader_reserve(budget, 128) or (str(path), info.st_dev, info.st_ino, info.st_mode))
+    with _schema_snapshot(conn):
+        databases = _reader_list((_reader_tuple(row, budget=budget) for row in _reader_rows(conn, 'PRAGMA database_list', budget=budget)), budget=budget)
+    main = _reader_list((row for row in databases if row[1] == 'main'), budget=budget)
+    if len(main) != 1 or main[0][2] != str(path) or _reader_any_true((row[1] not in ('main', 'temp') or
+            (row[1] == 'temp' and row[2]) for row in databases), budget=budget):
         raise ValueError('workflow_coding_migration_requires_owned_org_database')
     after = path.lstat()
     if (path.resolve(strict=True) != path or not stat.S_ISREG(after.st_mode)
             or after.st_nlink != 1 or after.st_uid != os.getuid()
-            or (str(path), after.st_dev, after.st_ino, after.st_mode) != identity):
+            or (_reader_reserve(budget, 128) or (str(path), after.st_dev, after.st_ino, after.st_mode)) != identity):
         raise ValueError('workflow_coding_migration_org_identity_changed')
     return identity
 
 
 def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
                           expected_path: str, source_identity: tuple,
-                          offline_check: Callable[[], None]) -> Literal['migrated', 'ready']:
+                          offline_check: Callable[[], None], budget: _Budget | None = None) -> Literal['migrated', 'ready']:
     """Explicit org-owned I-to-J only; FK ON throughout, no live Database owner.
 
     The script's ORIGINAL pre-open/RO baseline remains authoritative across RW
@@ -2115,55 +2656,65 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
     baseline. Offline observations augment explicit operator no-restart control.
     No runtime calls this primitive; same-user direct mutation is not excluded.
     """
-    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+    from runtime.workflows.coding_authority_history import _Budget
+    if budget is not None and type(budget) is not _Budget:
+        raise ValueError('workflow_reader_invalid_budget')
+    budget = _Budget() if budget is None else budget
+    if conn.in_transaction or _foreign_key_policy(conn, budget=budget) != 1:
         raise ValueError('workflow_coding_migration_requires_idle_foreign_keys')
-    identity = _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path)
+    identity = _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path, budget=budget)
     if identity != source_identity:
         raise ValueError('workflow_coding_migration_org_identity_changed')
     try:
         conn.execute('BEGIN')
-        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
+        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug, budget=budget)
         if layout == 'J':
             offline_check()
-            if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+            if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path, budget=budget) != source_identity:
                 raise ValueError('workflow_coding_migration_org_identity_changed')
             conn.rollback()
             return 'ready'
         if layout != 'I':
             raise ValueError('workflow_coding_migration_requires_i: ' + coding_migration_guidance())
         offline_check()
-        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
-        retained = _coding_retained_rows(conn)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, budget=budget)
+        retained = _coding_retained_rows(conn, budget=budget)
         conn.rollback()
         conn.execute('BEGIN EXCLUSIVE')
         offline_check()
-        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path, budget=budget) != source_identity:
             raise ValueError('workflow_coding_migration_org_identity_changed')
-        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'I':
+        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget) != 'I':
             raise ValueError('workflow_coding_migration_source_changed')
-        _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug)
-        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
-        if _coding_retained_rows(conn) != retained:
+        _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug, budget=budget)
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, budget=budget)
+        if _coding_retained_rows(conn, budget=budget) != retained:
             raise ValueError('workflow_coding_migration_source_changed')
         from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL, CODING_TABLES
-        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
-        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'J':
+        source_indexes = _owner_indexes_present(conn, budget=budget)
+        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL, budget=budget)
+        if source_indexes:
+            _install_owner_indexes(conn, 'J', coding_extension=True, existing=source_indexes, budget=budget)
+        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug, budget=budget) != 'J':
             raise ValueError('workflow_coding_migration_target_mismatch')
-        _validate_release_database(conn, 'J', expected_org_slug=expected_org_slug)
-        after = _coding_retained_rows(conn)
-        if (set(after) != set(retained) | set(CODING_TABLES)
-                or any(after[table] != rows for table, rows in retained.items())
-                or any(after[table] for table in CODING_TABLES)):
+        _validate_release_database(conn, 'J', expected_org_slug=expected_org_slug, budget=budget)
+        after = _coding_retained_rows(conn, budget=budget)
+        if (_reader_set(after, budget=budget) != _reader_set(retained, budget=budget) | _reader_set(CODING_TABLES, budget=budget)
+                or _reader_any_true((after[table] != rows for table, rows in retained.items()), budget=budget)
+                or _reader_any_true((after[table] for table in CODING_TABLES), budget=budget)):
             raise ValueError('workflow_coding_migration_retained_relation_mismatch')
-        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug)
-        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1 or conn.execute('PRAGMA foreign_key_check').fetchone():
+        _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, budget=budget)
+        if _foreign_key_policy(conn, budget=budget) != 1 or _reader_one(conn, 'PRAGMA foreign_key_check', budget=budget):
             raise ValueError('workflow_coding_migration_foreign_key_mismatch')
         offline_check()
-        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path) != source_identity:
+        if _coding_org_identity(conn, expected_org_slug=expected_org_slug, expected_path=expected_path, budget=budget) != source_identity:
             raise ValueError('workflow_coding_migration_org_identity_changed')
         conn.commit()
         return 'migrated'
-    except BaseException:
-        conn.rollback()
+    except BaseException as primary:
+        try:
+            conn.rollback()
+        except BaseException as cleanup:
+            primary.add_note('workflow migration rollback failed: ' + type(cleanup).__name__)
         raise

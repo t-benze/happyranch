@@ -1,5 +1,113 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+## Candidate-directed task ownership — THR320 / TASK-13610
+
+The classifier source contract distinguishes candidate eligibility from complete
+workflow validation. Persisted task ancestry/root, actual task/source-task columns,
+native INTEGER results, locators and document/coding bridges select the directed
+closure. A foreign payload-only claim stays at its own complete boundary. Every
+reached alias, scalar reverse range, local parent and retained historical meaning
+still validates; completed/cancelled/current-pointer changes do not erase owners.
+Ordinary classification acquires complete canonical structure and the selected
+closure, without unrelated DATA/integrity/FK/queued-history scans or an empty-run
+shortcut. Generic clean workflow-free Database/no-org use remains supported;
+missing required org, malformed/partial structure, storage and lock errors refuse.
+
+ONE original `_Budget` remainder, 8192 rows/16MiB/16384 steps, spans structure,
+actual reacquisition, type/size gates before payload fetch/copy, parsers, canonical
+bytes, hashes, equalities and reconstruction. Complete coding discrimination,
+selected draft/F5/current/r1/r2/predecessor/collection and source/target validation
+receive that same remainder explicitly. Dependent readers never allocate a new
+allowance or use a counter check in place of charging. Private accounting grants
+no proof or authority; standalone boundaries retain their original behavior.
+Budget refusal is not semantic invalid-output fallback.
+
+Dynamic container copies, sorts and generator traversals reserve before their
+work. Fixed list/mapping literals and keyword-built mappings reserve their output
+slots before construction. Dynamic tuples, expanded local sequences, immutable-set reconstruction and
+list/dict/set growth also reserve before allocation or key hashing. JSON decoding,
+canonical serialization/key sorting, model dumps, encoding, hex/base64 and hashes
+charge before their own work. Integer domain byte limits remain distinct from
+the actual shared reader allowance. Exception envelopes reserve within the
+protected try body; selecting an error handler never spends the allowance. Structural comparison and object-key reconstruction
+consume the same remainder; local metadata names and invariant SQL are built once
+per acquisition without certifying an inventory or skipping validation. Metadata scalar/payload/terminal fetches share the same allowance. Fixed-width
+metadata rows reserve their bounded check/decode/copy/normalization envelope
+before work; structural equality charges its real scalar-row comparisons while
+retaining original Python equality. Re-entering an inspected routine does not
+itself copy its entire input. Delegating reader entries charge their visit;
+actual acquisition and reconstruction charge where they occur. Serializer/hash
+wrappers do not invent another deep input copy before their charged operation.
+Shallow projections reserve actual output slots and selected scalar work; they
+retain referenced payloads without copying them. Generated SQL
+reserves its positional names, expressions and final strings before allocation,
+including empty results, using their current lengths. Per-node traversal is
+charged once by its reservation. Complete-owner ordinary-prefix discrimination
+also gates and charges payload acquisition on that original remainder.
+
+The installed reader and selected-owner classifier each own one complete
+independent structural comparison, then enter the original whole-connection
+semantic owners in that unchanged snapshot. The classifier does not reacquire
+another standalone structural boundary. No candidate row inventory or validity
+mark enters those readers; layout only selects literal optional families and
+certifies no data or history. Standalone complete, coding and queued boundaries
+retain their own structural comparison and original allocation. The full-reader
+return value is charged and constructed before snapshot exit or watermark
+publication; the classifier's original allowance precedes its first output
+allocation. Strict F5 dictionary-key comparisons, selected contributor-set merges,
+pending absence traversals and native INTEGER-to-TEXT reconstruction charge their
+actual operation before the original equality, insertion, traversal or conversion.
+Compatibility installation observes complete object absence before foundation
+DDL, retains the original full source and fresh target validation, and discards
+source advances at its first write. An inner data validator only collects
+advances; a joined reader without an outer collector publishes none. Native
+row, byte and traversal exhaustion retains its resource refusal through semantic
+fallbacks. Rows acquired by later selected reconstruction return through directed
+parent/reverse closure and all selected semantic checks on the same remainder;
+closure convergence supplies no global validity mark. A successful install hook
+invalidates captured advances and precedes fresh complete validation before the
+original owning COMMIT. Primary and cursor-close failures are retained together.
+ These cooperative limits
+provide no hard SQLite-I/O, RSS or wall-time guarantee.
+
+Other-participant U3 omits ONLY two absence acquisitions in UNASSOCIATED foreign
+DATA: agent stage-command K under its original org/principal domain and human
+review-command L under org/human:founder. Domains remain distinct. All reached
+collisions, canonical/proof/subject/independence checks, human signed/pending and
+no-task/result/assignment/evidence/dispatch/bridge invariants, agent native
+INTEGER task/agent/SID/strict Boolean quiescence and retained/reverse/collection
+checks remain. A valid F5 never downgrades to inert F2. Actual owner T retains
+COMPLETE semantic/history/FK/current-physical validation and BOTH global K/L
+assertions. Candidate success certifies no receipt and publishes ZERO complete-
+reader watermark. No trusted mark, cache, membership producer or public trust API
+is introduced.
+
+All five final ordinary writers classify inside their coherent owned writer or
+legitimate caller composition: task update/heartbeat, chain, fanout, claim and PID.
+Reconciliation precedes UPDATE/evidence/clock/claim effects. PID keeps exact
+agent/SID/in-progress/cancel CAS and updates only executor_pid; source/carrier PID
+refuses, while coding-attempt record_pid keeps its separate independent full writer.
+First write/await/exit/rollback invalidates proof; fresh reconstruction consumes the
+original remainder. Cursor/rollback/COMMIT/publication uncertainty remains visible.
+Only complete success plus actual successful owning snapshot exit or positive
+original owning COMMIT permits complete-reader advances under the original lock;
+joined read/writer/savepoint RELEASE supplies no COMMIT. Positive COMMIT remains a
+real effect if subsequent publication fails. `_on_started` supplies no launch or
+process cleanup proof.
+
+Exact X01–X40 and canonical partial UNIQUE `workflow_draft_predecessor_idx` with
+`IS NOT NULL` remain. Additions: F31/F+coding32/E34/E+coding35/G36/G+coding37/
+H37/H+coding38/I39/J40; J without coding is I39. Independent old/new references,
+old→old/indexed→indexed preservation and org-owned compatibility installation
+retain full source/target validation and original transaction ownership. Reads
+never install; old candidate storage refuses index readiness before effects.
+Registration1250, other owners and historical waivers stay unchanged. This is
+source work, not loaded identity, deployment, behavior, performance or scratch
+acceptance: behavior/scale NOT RUN; fault/native/concurrency/persistence/cleanup
+PROOF NOT RUN; plans/performance EXPECTED-UNMEASURED. Units RETIRED, general
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/211270–271;
+daily19UTC/nonblocking E2E stays separate. Ordinary coding remains HELD.
+
 ## Fresh work after failure (Founder THR-291 seq557)
 
 After failure, dispatch a fresh task by default with a complete brief and prior
@@ -3791,6 +3899,10 @@ including orphan rows and current authority pointers. Typed scalar/native
 `business_purpose=coding-replacement-selection@1` participates in the same
 valid/malformed/duplicate/escaped/incomplete metadata rules. Ordinary
 worker_execution/session purpose and free document prose remain noncoding.
+Historical K2a2 classifier checkpoint: the following empty/reserved full-scan
+routing predates the candidate-directed classifier contract above and is retained
+only as original source history. Current ordinary eligibility uses authoritative
+candidate-local closure; selected actual owners retain the complete reader.
 Recovery.classify_task runs the empty/reserved boundary under its existing lock/error fence before
 no-workflow and no-root/draft/F5 legacy returns; any coding-family schema
 object, including unknown/case-changed names or wrong types, also requires the

@@ -1,12 +1,18 @@
-"""Exclusive draft/F5/ordinary task ownership before legacy recovery effects."""
+"""Task-directed ordinary ownership and complete execution-owner boundaries."""
 from __future__ import annotations
+
+from runtime.infrastructure._workflow_reader import _reserve as _reader_reserve
+
+from runtime.infrastructure._workflow_reader import (
+    _all as _reader_all, _one as _reader_one,
+)
+from runtime.infrastructure.task_pause_controls import PauseControlError
 
 import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Any
 
-from runtime.infrastructure.workflow_schema import _read_workflow_schema, _schema_snapshot
-from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, _read_coding_data
+from runtime.infrastructure.workflow_schema import _schema_snapshot
 from runtime.workflows.coding_authority_history import _Budget
 
 
@@ -24,19 +30,24 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None,
     Direct/generic Database construction is still workflow-free. Missing,
     malformed or dual workflow closure remains owned and cannot fall through.
     This reader changes no task, event, claim, schema or legacy audit row.
-    One original allowance spans this snapshot; document semantics compose
-    immediately after complete validation without starting another history read.
+    One original allowance spans structure, directed history and any selected
+    complete boundary. Candidate-only success publishes no full-reader prefix.
     """
     db._lock.acquire(blocking=True)
     try:
         conn = db._conn
         owned = not conn.in_transaction
-        advances: list[tuple[tuple[int, int], int]] = []
         with _schema_snapshot(conn):
             try:
+                if budget is not None and type(budget) is not _Budget:
+                    raise ValueError('workflow_coding_data_invalid_budget')
+                budget = _Budget() if budget is None else budget
+                advances: list[tuple[tuple[int, int], int]] = (_reader_reserve(budget, 64) or [])
+                _reader_reserve(budget, 192)
                 result = _classify_task_in_snapshot(db, conn, task_id, org_slug=org_slug,
                                                     budget=budget, advances=advances)
-            except (ValueError, TypeError, sqlite3.DatabaseError):
+            except ((ValueError, TypeError, KeyError, AttributeError, UnicodeError,
+                    RecursionError, PauseControlError, sqlite3.DatabaseError)):
                 result = WorkflowTaskOwnership("reconciliation_required")
         # The complete classification, including document semantic closure,
         # must succeed before the owner's snapshot exit can authorize progress.
@@ -54,64 +65,62 @@ def _classify_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, 
                                org_slug: str | None, budget: _Budget | None,
                                advances: list[tuple[tuple[int, int], int]],
                                ) -> WorkflowTaskOwnership:
-    """Classify under the caller's lock/snapshot; collected advances are output."""
+    """Private directed observation in the actual caller snapshot.
+
+    Ordinary proof certifies only this candidate and emits no complete-reader
+    advances. Positive execution bindings retain the original complete boundary.
+    """
     if budget is not None and type(budget) is not _Budget:
         raise ValueError('workflow_coding_data_invalid_budget')
     budget = _Budget() if budget is None else budget
-    # Complete setup/import/mapping originals validate before legacy recovery.
-    # Native coding decisions/authority may be orphaned, with no old
-    # root/draft/F5 alias or even any workflow tables. Refuse BEFORE
-    # either legacy return, under the same lock and exception fence.
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
-              if row[0].startswith('workflow_')}
-    coding_present = has_coding_schema_objects(conn)
-    if coding_present:
-        if org_slug is None:
-            return WorkflowTaskOwnership("reconciliation_required")
-        # Unknown/case-changed tables, views, indexes and triggers must
-        # reach the complete reader before either legacy return.
-        _, inventory = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
-    else:
-        # Absent coding storage cannot accept setup metadata, even if native
-        # coding metadata has no workflow root/draft/F5 alias.
-        _read_coding_data(conn, layout='recovery', expected_org_slug=org_slug, budget=budget, advances=advances)
-    if coding_present:
+    from runtime.workflows._candidate_history import _Candidate
+    from runtime.workflows._candidate_history import _OwnerIndexesRequired
+    try:
+        candidate = _Candidate(conn, task_id, org_slug, budget)
+    except _OwnerIndexesRequired:
+        return WorkflowTaskOwnership('reconciliation_required',
+            state='workflow_owner_indexes_required: normal org recovery with compatible source is required')
+    owned, instances = candidate.entry()
+    if not owned:
+        candidate.historical(instances)
+        return WorkflowTaskOwnership('legacy')
+    # This call owns the exact structural comparison already completed by
+    # _Candidate.__init__, on this SAME connection/snapshot/remainder. Continue
+    # into the original WHOLE-connection semantic owners, not a second standalone
+    # structure/read boundary. No acquired candidate rows or validity mark enter
+    # those readers; all full history/FK/physical and global K/L checks still run.
+    from runtime.infrastructure.workflow_schema import _read_workflow_data
+    inventory = _read_workflow_data(conn, layout=candidate.layout,
+        coding_extension=candidate.coding, expected_org_slug=org_slug,
+        budget=budget, advances=advances)
+    if candidate.coding:
         if inventory is None:
             return WorkflowTaskOwnership("reconciliation_required")
         saved = inventory.queued
         if task_id in saved.owners:
             kind, instance = saved.owners[task_id]
             return WorkflowTaskOwnership(kind, instance, saved.runs[instance]["attempt"]["state"])
-    if not tables:
-        return WorkflowTaskOwnership("legacy")
-    roots = conn.execute("SELECT id FROM workflow_instances WHERE root_task_id=?", (task_id,)).fetchall()
-    bridges = conn.execute("SELECT * FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchall()
-    drafts = (conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (task_id,)).fetchall()
-              if "workflow_draft_dispatch_intents" in tables else [])
+    roots = _reader_all(conn, "SELECT id FROM workflow_instances WHERE root_task_id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
+    bridges = _reader_all(conn, "SELECT * FROM workflow_request_task_bridges WHERE task_id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
+    drafts = (_reader_all(conn, "SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
+              if candidate.layout != 'F' else (_reader_reserve(budget, 64) or []))
+    # A retained relation cannot be erased by a missing complete projection.
     if not roots and not bridges and not drafts:
-        return WorkflowTaskOwnership("legacy")
+        return WorkflowTaskOwnership("reconciliation_required")
     if org_slug is None or (drafts and bridges) or len(drafts) > 1 or len(bridges) > 1:
         return WorkflowTaskOwnership("reconciliation_required")
-    if not coding_present:
-        _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
-    # Coding inventory already includes complete document validation
-    # on this unchanged snapshot; do not reconstruct it again.
     if drafts:
         intent = drafts[0]
-        task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        task = _reader_one(conn, "SELECT * FROM tasks WHERE id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
         if task is None or (intent["state"] == "queued" and (
                 task["status"] != "pending" or task["current_session_id"] is not None)):
             return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
         if intent['admission_kind'] == 'revision':
-            operation = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=? AND org_slug=? AND principal=? AND operation_key=? AND request_digest=?',
-                (intent['id'], org_slug, intent['admission_principal'], intent['operation_key'], intent['request_digest'])).fetchone()
+            operation = _reader_one(conn, 'SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=? AND org_slug=? AND principal=? AND operation_key=? AND request_digest=?', (_reader_reserve(budget, 144) or (intent['id'], org_slug, intent['admission_principal'], intent['operation_key'], intent['request_digest'])), budget=budget)
         else:
-            operation = conn.execute(
-                "SELECT * FROM workflow_activation_operations WHERE org_slug=? AND principal=? "
-                "AND operation_key=? AND activation_id=? AND request_digest=?",
-                (org_slug, intent["admission_principal"], intent["operation_key"],
-                 intent["activation_id"], intent["request_digest"]),
-            ).fetchone()
+            operation = _reader_one(conn, "SELECT * FROM workflow_activation_operations WHERE org_slug=? AND principal=? "
+                "AND operation_key=? AND activation_id=? AND request_digest=?", (_reader_reserve(budget, 144) or (org_slug, intent["admission_principal"], intent["operation_key"],
+                 intent["activation_id"], intent["request_digest"])), budget=budget)
         if operation is None:
             return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
         # The generic E validator checks schema/event integrity. The
@@ -121,26 +130,23 @@ def _classify_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, 
         dispatcher = getattr(db, "_workflow_drafts", None)
         if dispatcher is None or dispatcher.org.slug != org_slug:
             return WorkflowTaskOwnership("reconciliation_required", intent["id"], intent["state"])
-        dispatcher._intent_from_validated_schema(conn, task_id)
+        dispatcher._intent_from_validated_schema(conn, task_id, budget=budget)
         return WorkflowTaskOwnership("draft", intent["id"], intent["state"])
     if bridges:
         bridge = bridges[0]
-        closure = conn.execute(
-            "SELECT o.id FROM workflow_dispatch_operations o "
+        closure = _reader_all(conn, "SELECT o.id FROM workflow_dispatch_operations o "
             "JOIN workflow_dispatch_outbox x ON x.operation_id=o.id AND x.request_id=o.request_id "
             "JOIN workflow_review_requests q ON q.id=o.request_id AND q.round_id=o.round_id "
             "JOIN workflow_rounds r ON r.id=o.round_id AND r.instance_id=o.instance_id "
             "JOIN workflow_submissions s ON s.id=r.submission_id AND s.instance_id=r.instance_id "
             "WHERE o.id=? AND o.org_slug=? AND o.instance_id=? AND o.request_id=? "
-            "AND q.principal=? AND q.assignment_generation=?",
-            (bridge["operation_id"], org_slug, bridge["instance_id"], bridge["request_id"],
-             bridge["assigned_principal"], bridge["assignment_generation"]),
-        ).fetchall()
+            "AND q.principal=? AND q.assignment_generation=?", (_reader_reserve(budget, 160) or (bridge["operation_id"], org_slug, bridge["instance_id"], bridge["request_id"],
+             bridge["assigned_principal"], bridge["assignment_generation"])), budget=budget)
         if len(closure) == 1:
             reviewer = getattr(db, '_workflow_reviews', None)
             if reviewer is None or reviewer.org.slug != org_slug:
                 return WorkflowTaskOwnership('reconciliation_required')
-            reviewer._intent(conn, task_id)
+            reviewer._intent(conn, task_id, budget=budget)
             return WorkflowTaskOwnership("f5", state=bridge["state"])
     return WorkflowTaskOwnership("reconciliation_required")
 

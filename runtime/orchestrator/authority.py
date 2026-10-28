@@ -1923,10 +1923,10 @@ COMMIT;
 """
 
 
-_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, budget=None) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
@@ -1939,35 +1939,42 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
     # Legacy admission must reject workflow-only histories BEFORE shared cache.
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, budget=budget)
 
 
-def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
+def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, budget=None) -> str:
     """Whole workflow references; legacy authority retains its four histories."""
     if history in _RELEASE_REFERENCE_HISTORIES:
         return _release_schema_digest(layout, history, naming_version,
-            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, budget=budget)
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _WORKFLOW_RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, budget=budget)
 
 
-def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool) -> str:
+def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool, owner_indexed: bool, budget=None) -> str:
     """Shared disposable lifetime, entered only after family-specific admission."""
+    from runtime.infrastructure._workflow_reader import _all, _reserve, _work
     global _release_schema_digest_cache
+    _reserve(budget, 256)
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension)
+    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension, owner_indexed)
     if key in _release_schema_digest_cache:
+        # This existing cache contains only independently built literal
+        # reference digests; it never certifies observed workflow storage.
+        _work((key, _release_schema_digest_cache[key]), budget)
         return _release_schema_digest_cache[key]
     try:
         import tempfile
+        # Account literal reference preparation before any derived copies.
+        _work((_WORKFLOW_RELEASE_REFERENCE_PREIMAGE, _RELEASE_REFERENCE_PREIMAGES), budget)
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
         from runtime.infrastructure.workflow_schema import (initialize_complete_org_schema, _install_foundation,
@@ -1994,9 +2001,9 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                     # startup installer: its additive coding side effect is
                     # separate from these original raw SQL/digest preimages.
                     with fresh.workflow_schema_transaction() as conn:
-                        _install_foundation(conn, expected_org_slug=None, advances=[])
+                        _install_foundation(conn, expected_org_slug=None, advances=[], budget=budget)
                         if layout == "E":
-                            _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+                            _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL, budget=budget)
                             conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
                 elif history == 'v2-chronological-20260530' and layout == "J":
                     # This complete historical seed retains sequence metadata.
@@ -2005,26 +2012,31 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                     # Real migrate_coding_schema would recurse through references.
                     from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I")
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I", owner_indexed=False, budget=budget)
                     with fresh.workflow_schema_transaction() as conn:
-                        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
-                        if validate_workflow_schema(conn, expected_org_slug="release-reference") != "J":
+                        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL, budget=budget)
+                        if validate_workflow_schema(conn, expected_org_slug="release-reference", budget=budget) != "J":
                             raise ValueError("workflow_release_reference_requires_j")
                 else:
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout, owner_indexed=False, budget=budget)
                 if coding_extension and layout != "J":
                     from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
                     with fresh.workflow_schema_transaction() as conn:
-                        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
-                        validate_workflow_schema(conn, expected_org_slug="release-reference")
+                        _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL, budget=budget)
+                        validate_workflow_schema(conn, expected_org_slug="release-reference", budget=budget)
+                if owner_indexed:
+                    from runtime.infrastructure.workflow_schema import _install_owner_indexes, validate_workflow_schema
+                    with fresh.workflow_schema_transaction() as conn:
+                        _install_owner_indexes(conn, layout, coding_extension=coding_extension, budget=budget)
+                        validate_workflow_schema(conn, expected_org_slug="release-reference", budget=budget)
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
-                    install_pause_schema(fresh, org_slug="release-reference")
+                    install_pause_schema(fresh, org_slug="release-reference", budget=budget)
 
                 if team_move_layout:
                     from runtime.infrastructure.team_move_store import install_team_move_schema
-                    install_team_move_schema(fresh, org_slug="release-reference")
+                    install_team_move_schema(fresh, org_slug="release-reference", reader_budget=budget)
 
                 if naming_version:
                     from runtime.identities.schema import REFERENCE_DDL, execute_literal, validate_names
@@ -2035,11 +2047,24 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                                      ("founder", "founder", "founder", "founder", 1))
                         conn.execute("INSERT INTO identity_name_claims VALUES (?,?,?,?,?)",
                                      ("founder", "founder", "founder", 1, 0))
-                        validate_names(conn, org_slug="release-reference")
-                _release_schema_digest_cache[key] = _live_schema_digest(fresh)
+                        validate_names(conn, org_slug="release-reference", budget=budget)
+                if budget is None:
+                    digest = _live_schema_digest(fresh)
+                else:
+                    from runtime.infrastructure.workflow_schema import _schema_snapshot
+                    with fresh._lock, _schema_snapshot(fresh._conn):
+                        sql_rows = _all(fresh._conn,
+                            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name",
+                            budget=budget)
+                        _work(sql_rows, budget, copies=2)
+                        digest = _sha256("\n".join(str(row[0]) for row in sql_rows))
+                _release_schema_digest_cache[key] = digest
             finally:
                 fresh.close()
     except Exception:
+        if budget is not None:
+            # A caller-specific refusal must never poison the literal cache.
+            raise
         _release_schema_digest_cache[key] = "unavailable"
     return _release_schema_digest_cache[key]
 
@@ -3442,7 +3467,9 @@ def _server_evidence(
             names = validate_names(conn, org_slug=orch._slug)
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             team_move_layout = validate_team_move_schema(conn, org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None) for history in _RELEASE_REFERENCE_HISTORIES)
+            from runtime.infrastructure.workflow_schema import _owner_indexes_present
+            owner_indexed = bool(_owner_indexes_present(conn))
+        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None, owner_indexed=owner_indexed) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"
