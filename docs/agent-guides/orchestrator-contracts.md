@@ -6,7 +6,18 @@ Definition availability is system registration, not human publication or admissi
 Normal recovery alone appends four exact template rows with closed
 `workflow-coding-builtin-registration@1` provenance, after actual safety/authority
 recovery and outside early serving. Real native writer/publisher/DB/transaction
-ownership, complete target validation and positive-COMMIT watermark apply;
+ownership, complete target validation and positive-COMMIT watermark apply.
+ONE native census allowance 8192 rows/16MiB/2097152 visits spans all suffixes,
+state/live loops and probes; release/source/target retain separate original
+8192/16MiB/16384, with native cells capped 16384. Only local pure refusal or direct
+healthy `team_move_native_held` can defer. The latter requires canonical producer
+operation identity, no cause/context/notes and the unchanged mounted owner;
+wrapped move schema/history/bounds/SQL failures and uncertain origins propagate
+unchanged. Deferral requires explicit cursor close, original rollback and both
+outer exits on the same usable connection/no notes. Post-reservation validation
+marking occurs inside native_writer after cleanup; warning requires actual
+settlement and exit.
+SQL/full-history, entry/cleanup, COMMIT/publication uncertainty propagate;
 unknown owners are retained, never adopted. No schema/reference/read initializer
 or retry route exists. Independent saved release and queued/native closure accepts
 authentic bootstrap activations/bindings for both system and retained human origin;

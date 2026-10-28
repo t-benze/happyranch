@@ -45,11 +45,35 @@ for either origin and reject orphan/extra/mixed/foreign/unsupported rows.
 
 Existing valid human/system registration is a write-free no-op. New registration
 uses the genuine native writer, publisher then DB lock, an owned transaction,
-complete source/target validation and one cumulative allowance. Active/unknown
-native owners, publisher/lease/profile operations or transitional cutover defer;
-none is recovered or adopted here. Positive COMMIT alone publishes watermarks;
-failed COMMIT/rollback/close retains primary/cleanup and native uncertainty.
-Resource absence defers availability, never repairs storage or invokes import.
+complete source/target validation and two separate attempt-local allowances.
+The complete ordered native census, every suffix, historical/live-state visits
+and fixed safety probes share 8192 acquired rows/16MiB/2097152 visits; native
+payload/cell caps remain 16384 bytes. Release/source/expansion/target retain ONE
+original 8192-row/16MiB/16384-visit budget. Neither allowance resets per phase.
+Strict storage/UTF8/duplicate/org/task/agent/first-active/immutable/transition
+checks and live/durable exclusions remain. Native reservation/settlement replay
+is separate work; these caps guarantee no SQL-engine, RSS or wall-time bound.
+
+Only registrar-owned pure refusals and the direct healthy `team_move_native_held`
+refusal can defer optional registration. The latter requires the producer's
+canonical operation identity, no cause/context/notes and the unchanged mounted
+owner; the exception class or message alone is insufficient. Wrapped move schema,
+complete history, scan-bound/deadline and SQL failures propagate unchanged, as do
+uncertain origins and opaque shared allowance errors. Each native cursor owns
+its consumer loop and explicit close. Safe preflight requires the exact body
+refusal, positive original rollback, BOTH successful publisher/DB exits, identical usable connection,
+no transaction and no secondary notes. Native entry is outside that interval.
+After a durable reservation, those same proofs precede exact writer.validation
+marking INSIDE native_writer; warning follows only its genuine successful exit,
+settlement and original owner/registry disposition. Entry/no-yield, failed close,
+rollback/outer exit/settlement or same-primary cleanup notes never mean no effect.
+Active/unknown native owners, publisher/lease/profile operations or transitional
+cutover defer; none is recovered or adopted. Positive original COMMIT alone
+publishes collected full-reader watermarks under the same DB lock. COMMIT and
+post-COMMIT publication uncertainty propagate with actual effects retained;
+no optional warning/retry follows. Resource absence defers availability with
+bounded reason and resource/original safety-owner remedy, never storage repair
+or import. Package loss or safe refusal does not require enabling coding.
 
 Saved history, template reads, exact original replay and admitted continuation
 remain package-independent. Fresh options/settings/mapping/start use requires the

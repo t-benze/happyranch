@@ -1,5 +1,38 @@
 # Ordered coding workflow — agent-read contract
 
+## Built-in registration census and refusal — issue1248
+
+Normal recovery registers the unchanged packaged definition only after its real
+authority/safety tail, using exactly four existing template rows and genuine
+native ownership. Existing human/system releases remain write-free no-ops.
+ONE attempt-local native census allowance 8192 rows/16MiB/2097152 visits covers
+complete ordered history, every suffix and historical/live/fixed safety work;
+per-native-cell/payload cap remains 16384. ONE separate ORIGINAL release/source/
+expansion/target allowance remains 8192 rows/16MiB/16384 visits. No per-pass reset,
+latest-only history, trusted cache or census watermark is permitted. Original
+strict types/UTF8/duplicates/bindings/lifecycle/transitions/exclusions remain.
+Native reservation/settlement replay is separate; no SQL/RSS/time guarantee follows.
+
+Only registrar-owned pure predicates and the direct healthy `team_move_native_held`
+refusal can defer. The latter requires exact producer exception type/code,
+canonical producer operation identity, no cause/context/notes and the unchanged
+mounted org owner. Shared class/message alone supplies no origin proof. Wrapped
+move schema/history/bounds/deadline/SQL failures and uncertain origins propagate
+unchanged, as do opaque shared history/allowance and complete-reader failures.
+Actual cursor and consumer share lexical explicit-close ownership.
+The exact body refusal requires positive original rollback, BOTH successful outer
+publisher/DB exits, identical usable connection/no transaction/no notes and no
+COMMIT/publication. Native entry/no-yield is outside preflight safe handling.
+After reservation, exact writer.validation marking follows those proofs inside
+native_writer; warning follows only actual durable settlement/successful exit and
+consistent original admission/registry disposition. Same-primary cleanup notes
+or failed close/rollback/outer/settlement never supply no-effect proof. Positive
+original COMMIT publishes collected full-reader advances under the same DB lock;
+post-COMMIT failure propagates with real committed effects retained. No retry,
+history repair, owner adoption, settings/admission or deployment authority follows.
+Resource absence/safe refusal warns with bounded reason and original resource/
+safety-owner remedy; source availability is separate from loaded/scratch acceptance.
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
