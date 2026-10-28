@@ -2685,7 +2685,7 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
 def _consume_accepted_completion_recovery(
     orch: "Orchestrator", task_id: str, report, *, agent: str, session_id: str,
     result_row_id: int,
-) -> _HumanFailedRecoveryOperation | None:
+) -> _HumanFailedRecoveryOperation | str | None:
     """Reconcile one ledger-selected recovery callback at the effect boundary.
 
     Terminal effects retain their established reconciliation.  The blocked
@@ -2734,11 +2734,10 @@ def _consume_accepted_completion_recovery(
         reconcile_authority_policy_v2_post_final(orch, root_task_id=task_id)
         return
     if _recovery_kind != "no_v2":
-        _consume_completion_report(
+        return _consume_completion_report(
             orch, task_id, report, result_row_id=_resolved_recovery_row,
             reclaim_terminal_worktree=False,
         )
-        return
     if _is_human_failed_recovery(orch, current, report):
         return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id)
     effects_applied = (
@@ -2870,13 +2869,17 @@ def _consume_accepted_completion_recovery(
                 payload={**report.model_dump(), "_recovery_session_id": session_id,
                          "_result_row_id": result_row_id},
             )
-        _consume_completion_report(
+        outcome = _consume_completion_report(
             orch, task_id, report, result_row_id=result_row_id,
             recovery_reentry=(current.task_type == "task"),
             recovery_owner=(agent, session_id) if current.task_type == "task" else None,
             recovery_result_id=result_row_id if current.task_type == "task" else None,
             reclaim_terminal_worktree=False,
         )
+        if isinstance(outcome, str):
+            # Accepted transport is not effect settlement. Preserve the actual
+            # negative for the cold owner before any consumed-receipt work.
+            return outcome
         # ``run_authority_hook`` may have returned the already-authorized
         # same root to pending.  Couple its exact recovery receipt now; a
         # later startup will take the branch above if this process dies first.
@@ -3276,8 +3279,9 @@ def _consume_completion_report(
             coding.consume(RetryClaim.from_task(task, result_row_id=resolved_row_id), decision, report)
         except StartupUnavailable as exc:
             # Preserve this already committed original result and native tail.
-            # No result-action spend or graph allocation was admitted; the
-            # explicit held disposition is not callback consumption success.
+            # Initial preallocation refusal prevents new graph/spend only;
+            # this exception alone does not prove rollback or native cleanup.
+            # The explicit negative is not callback consumption success.
             logger.info("coding start pending startup for %s: %s", task_id, exc.code)
             return "startup_held"
         except CodingStartError as exc:

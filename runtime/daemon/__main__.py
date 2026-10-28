@@ -499,11 +499,16 @@ def _sweep_on_startup(
                             task_id, accepted_result, fallback_agent=t.assigned_agent,
                         )
                         from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
-                        _consume_accepted_completion_recovery(
+                        outcome = _consume_accepted_completion_recovery(
                             orchestrator, task_id, accepted_report,
                             agent=t.assigned_agent, session_id=t.current_session_id or "",
                             result_row_id=accepted_result["id"],
                         )
+                        if isinstance(outcome, str):
+                            # Unsupported cold workflow_start remains pending;
+                            # accepted transport does not settle its effects.
+                            root_owner.negative('startup_completion_negative_outcome')
+                        root_owner.raise_if_failed()
                     continue
                 recovery = db.get_claimed_task_completion_recovery(
                     task_id=task_id, agent=t.assigned_agent,
@@ -594,8 +599,8 @@ def _sweep_on_startup(
                         reclaim_terminal_worktree=False,
                     )
                     if isinstance(outcome, str):
-                        # This is a selected human consumer's normal negative,
-                        # not pre-selection non-applicability or empty success.
+                        # A selected human negative or unsupported cold coding
+                        # start is unresolved, not None non-applicability.
                         root_owner.negative('startup_completion_negative_outcome')
                     root_owner.raise_if_failed()
                     continue

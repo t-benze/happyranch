@@ -732,7 +732,22 @@ budget before COMMIT. Missing return, held/unknown/unsettled/native-uncertain wo
 hidden live descendants, drift or malformed membership/order refuse and roll back.
 Point stops of coding-dependent ordinary ancestors still refuse before writes.
 
-Native deferred recovery remains unavailable. Source/static delivery is not native
+Coding-owned native deferred recovery remains unavailable. Genuine ordinary/v2/
+recovery deferred callbacks retain their original discovery/adoption predicates;
+consumer-only adoption does not supply the original live coding-start owner.
+Unsupported cold ordinary or accepted `workflow_start` stays pending with explicit
+`recovery_failed`, without a promised later SAME-result consumer or a new native
+recovery bridge. Both accepted forwarding branches preserve the common consumer's
+actual negative before consumed-receipt/effect settlement; the cold sweep latches
+and raises through its existing failure owner before the successful final batch.
+None nonapplicability and terminal/blocked/causal/continued-root controls retain
+their existing semantics; registered human operations still owe actual completion
+and bookkeeping. Exact INTEGER/result/ledger/claim/graph and committed audit
+prefixes remain attributable. Initial preallocation refusal proves no NEW graph/
+spend from that call only; StartupUnavailable alone does not prove rollback or
+native cleanup. One global failed gate holds fresh launches in both orgs, while
+matching serving and authenticated bounded early reads remain independent.
+Source/static delivery is not native
 or remote workflow acceptance. No deployment, host maintenance/restart, migration,
 import, role assignment, activation or historical settlement follows. Benze or the
 designated host operator owns existing guided deployment/setup; the human Founder
