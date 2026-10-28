@@ -67,10 +67,9 @@ class CodingImportSupport:
     def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...], *,
                  budget: _Budget | None = None) -> _CodingInventory:
         """Reconstruct locally; supplied allowance retains all source/target work."""
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
         if not conn.in_transaction:
             raise CodingReleaseImportError('coding_release_import_caller_transaction')
-        _, coding = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
+        _, coding = self.db._workflow_read(conn, expected_org_slug=self.org.slug, budget=budget)
         if coding is None:
             raise CodingReleaseImportError('coding_release_import_schema_required')
         return coding

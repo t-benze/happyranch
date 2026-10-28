@@ -22,6 +22,41 @@ configuration/start requires its captured exact bytes. No settings wire change,
 new endpoint or loaded-object attestation follows. Source is not host acceptance.
 
 
+### Org workflow physical observation (THR330seq19)
+
+Existing `GET /api/v1/orgs` and `happyranch orgs` add nullable
+`workflow_physical_health` for attached orgs; broken rows and /health semantics
+remain. GET orgs has a generic dict response, not a typed served field schema.
+Both TypeScript org-list mirrors share WorkflowPhysicalHealth. No new route,
+polling, control or status-triggered DB scan is supplied.
+
+`status` is healthy/checking/alert/physical-held. Fields expose `age_seconds`,
+`category`, `hold`, `last_success`, `in_flight_cleanup`, `snapshot_started`,
+`completed_at`, `next_due_in_seconds`, `secondary_category` and
+`scheduling_category`. A missed slot is separate from the original submission,
+completion, cleanup or deadline cause; secondary cleanup remains attributable.
+Checking/in-flight cleanup never proves native exit. Last-success changes only
+on genuine timely same-incarnation full success plus actual return/rollback/close.
+
+Cadence3600s, one original cooperative60s through queue and cleanup, no overlap/
+catchup/auto-retry. Corruption immediately holds NEW workflow effects; other
+failed/missed/late/timeout/unavailable observations alert with growing age. At
+age14400s final reservations hold even without a timer tick;14399s alone does
+not. Timely clean recheck releases physical hold only, preserving other holds.
+Fresh FK/semantics/history remain per call; independent/startup/maintenance/raw/
+builtin/cancellation readers stay FULL. Status grants no authority or loaded-byte
+acceptance. Original callback/terminal/positive outer settlement remains separate.
+
+Busy unload leaves the same positively retained org and physical service usable;
+C/thread and diagnostic drains still precede DB preflight. Unknown native cleanup
+refuses close. Shutdown separately fences/drains periodic lifetime before DB close;
+replacement requires new FULL startup. Send unsafe-close/corruption/stale evidence
+to Engineering for existing separately authorized diagnosis. Do not reset health,
+clear journals, force unload, repair DBs or restart to suppress an alert. No live
+activation follows source delivery. New behavior NOT RUN; proof PROOF NOT RUN;
+static checks do not prove this contract or serving identity.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each

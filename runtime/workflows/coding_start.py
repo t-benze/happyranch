@@ -53,14 +53,13 @@ def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> No
     # and continuations keep their original pins when new admission is disabled.
     require_ready(org)
     from runtime.workflows._coding_settings_execution import _settings_family
-    from runtime.infrastructure.workflow_schema import _read_workflow_schema
     owned = not conn.in_transaction
     if owned:
         conn.execute('BEGIN')
     try:
         _check(_settings_family(command))
         budget = _Budget()
-        layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
+        layout, inventory = org.db._workflow_read(conn, expected_org_slug=org.slug, budget=budget)
         _check(inventory is not None and org.workflow_coding_builtin.available(inventory.release))
         _resolve_start(command, inventory.mappings, inventory.release, budget, fresh=True)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
@@ -184,7 +183,7 @@ class CodingStartStore:
             return
         if not conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone():
             return
-        if task_id in queued_storage(conn, self.org.slug).owners:
+        if task_id in queued_storage(conn, self.org.slug, _database=self.db).owners:
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
@@ -241,7 +240,6 @@ class CodingStartStore:
         Any refusal/error unwinds admission_writer and preserves the callback.
         """
         _check(conn is self.db._conn and conn.in_transaction)
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
         inventory = self.support._storage(conn, references)
         command = decision.workflow
         parsed = parse_decision(_canonical(dict(action='workflow_start', workflow=command)))
@@ -316,7 +314,9 @@ class CodingStartStore:
             brief='Structural coding carrier ' + instance, status=TaskStatus.IN_PROGRESS,
             block_kind=BlockKind.DELEGATED, created_at=stamp, updated_at=stamp,
             session_timeout_seconds=source_before['session_timeout_seconds'])
-        self.db._insert_task_uncommitted(carrier)
+        self.db._check_team_move_task_uncommitted(carrier)
+        self._reserve_physical_effect()
+        self.db._insert_task_row_uncommitted(carrier)
         leaf_id = self.db.next_task_id()
         leaf = TaskRecord(id=leaf_id, task_type='subtask', parent_task_id=carrier_id,
             assigned_agent=roles['implementer']['principal'], team=roles['implementer']['team'],
@@ -385,9 +385,13 @@ class CodingStartStore:
                 result_id=action_claim.causal_result_id)
             _check(ack.status == 'applied')
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-        _, target = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=inventory.budget)
+        _, target = self.db._workflow_read(conn, expected_org_slug=self.org.slug, budget=inventory.budget)
         _check(target is not None)
         return instance
+
+    def _reserve_physical_effect(self) -> None:
+        if not self.db._workflow_effect(self.db._conn):
+            raise CodingStartError('workflow_physical_health_held')
 
     def _claim_result_action_uncommitted(self, claim: RetryClaim) -> Any:
         # Reuse the native owner's existing uncommitted spend/claim/ack seams.
@@ -402,12 +406,14 @@ class CodingStartStore:
                 root_task_id=claim.task_id, manager_agent=context.manager_agent,
                 manager_session_id=context.manager_session_id, result_id=context.causal_result_id,
                 generation_id=context.generation_id, next_session_id=context.next_session_id,
-                spending_result_id=claim.result_row_id, now_dt=datetime.now(timezone.utc))
+                spending_result_id=claim.result_row_id, now_dt=datetime.now(timezone.utc),
+                _final_reservation=self._reserve_physical_effect)
             _check(outcome.status == 'spent')
         else:
             _check(context.kind == 'receipt' and context.decision_state == 'ready')
         outcome = self.db._claim_v2_decision_dispatch_uncommitted(
-            root_task_id=claim.task_id, manager_agent=context.manager_agent, result_id=context.causal_result_id)
+            root_task_id=claim.task_id, manager_agent=context.manager_agent, result_id=context.causal_result_id,
+            _final_reservation=self._reserve_physical_effect)
         _check(outcome.status == 'claimed')
         return context
 
@@ -427,18 +433,20 @@ class CodingStartStore:
             readiness=readiness())).model_dump()
 
 
-def queued_storage(conn: sqlite3.Connection, org: str, *, budget: _Budget | None = None) -> Any:
+def queued_storage(conn: sqlite3.Connection, org: str, *, budget: _Budget | None = None,
+                   _database: Any = None) -> Any:
     """Compose one complete coding snapshot and cumulative caller allowance.
 
     Only internally reconstructed inventories are reused within this call.
     Caller-owned transactions are never ended; no schema recursion/cache.
     """
-    from runtime.infrastructure.workflow_schema import _read_workflow_schema
     if budget is not None and type(budget) is not _Budget:
         raise CodingStartError('coding_start_history_invalid')
     # Central reconstruction calls read_queued directly, never this composer.
     # Cold/recovery/native callers therefore receive the same structural,
     # shared-dependency and complete history validation without recursion.
-    _, inventory = _read_workflow_schema(conn, expected_org_slug=org, budget=budget)
+    from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    reader = _read_workflow_schema if _database is None else _database._workflow_read
+    _, inventory = reader(conn, expected_org_slug=org, budget=budget)
     _check(inventory is not None)
     return inventory.queued

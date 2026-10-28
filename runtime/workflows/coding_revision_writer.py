@@ -132,8 +132,7 @@ def advance_revision(dispatcher: Any, conn: Any, entry: dict, result_id: int, ca
         append_revision(dispatcher, conn, entry, kind, facts, output, now,
             attempt=a if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None, budget=budget)
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-    from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    _, target = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
+    _, target = dispatcher.db._workflow_read(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
     _check(target is not None)
     return task_id
 
@@ -205,7 +204,6 @@ def advance_manager(dispatcher: Any, conn: Any, entry: dict, result_id: int, cap
         append_revision(dispatcher, conn, entry, kind, facts, output, now,
             attempt=a if kind == 'stage_queued' else None, task=task if kind == 'stage_queued' else None, budget=budget)
     dispatcher.org.workflow_authority._validate_admission_uncommitted(conn, capture)
-    from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    _, target = _read_workflow_schema(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
+    _, target = dispatcher.db._workflow_read(conn, expected_org_slug=dispatcher.org.slug, budget=budget)
     _check(target is not None)
     return task_id

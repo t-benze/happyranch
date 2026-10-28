@@ -126,6 +126,7 @@ class OrgState:
     _runner_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
     # Queue tokens survive consumer cancellation through native retirement.
     _native_task_users: set[object] = field(init=False, default_factory=set, repr=False)
+    workflow_physical_health: Any = field(init=False, default=None, repr=False)
 
     # Diagnostic acquisition is separate from ordinary runner/task busy state.
     # A revoked attachment is never re-admitted by detach refusal or reload.
@@ -489,6 +490,10 @@ class OrgState:
             # Inert definition only, after the actual recovery/authority tail.
             # A serving-before-recovery owner must defer this call with that tail.
             state.workflow_coding_builtin.ensure_registered()
+            from runtime.infrastructure.workflow_schema import _capture_startup_physical
+            from runtime.daemon.workflow_physical_health import WorkflowPhysicalHealth
+            startup, identity = _capture_startup_physical(db, expected_org_slug=slug)
+            state.workflow_physical_health = WorkflowPhysicalHealth(state, startup=startup, identity=identity)
             return state
         except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.
@@ -505,4 +510,6 @@ class OrgState:
         self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()
         self._runner_admission_closed = True
+        if self.workflow_physical_health is not None:
+            self.workflow_physical_health.invalidate()
         self.db.close()

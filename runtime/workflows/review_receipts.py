@@ -361,7 +361,7 @@ class WorkflowReviewReceiptStore:
                         store._selected_authority(conn, intent, capture, {'collect-review'})
                     else:
                         store._authority(conn, intent, capture, {'collect-review'})
-                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                     from runtime.workflows.submissions import subject_proof
                     handoff = subject_proof(conn, row)
                     graph = validate_handoff_graph(conn, row, handoff)

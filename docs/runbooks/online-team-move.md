@@ -52,6 +52,33 @@ need their own explicit operation authorization. Source approval alone grants
 neither runtime loading nor that live operation. Installed source SHA is not
 loaded daemon SHA; report loaded identity UNKNOWN without actual attestation.
 
+## Attachment physical alerts and safe close (THR330seq19)
+
+Existing org-list/CLI `workflow_physical_health` is an observation, not permission
+or loaded-source proof. Healthy/checking/alert/physical-held includes actual
+last-success/age, hold/category, cleanup/completion/due, secondary and separate
+scheduling categories. Every3600s the isolated RO full physical check has ONE
+cooperative60s including queue/open/snapshot/rollback/close; no catchup/auto-retry.
+Corruption immediately holds new workflow effects; failed/missed/late/timeout/
+unavailable does not refresh success. Final reservations hold at age>=14400s
+without timer progress. A timely genuine clean recheck releases only physical
+hold, preserving move/Pause/authority/settings/native uncertainty. Fresh FK and
+complete semantics/history remain ordinary per-call work; startup and independent
+maintenance/raw/builtin/cancellation readers remain FULL.
+
+Shutdown fences before awaiting and separately joins actual periodic work outside
+org/DB/state locks before close. Thread-release C and diagnostic revoke/drain still
+precede unload DB preflight; final synchronous checks remain. Ordinary no-detach
+busy refusal retains the same usable physical service. Unknown submission/native
+return/rollback/close keeps its unsafe barrier and original failure cause, even
+if the wrapper ended. Do not clear owners/journals, reset health, force unload,
+repair DBs or restart to obtain a green status. Send exact status and existing
+native evidence to Engineering for separately authorized diagnosis. Replacement
+needs old drain/close then fresh FULL startup; neither old clean nor corrupt
+publication transfers. This adds no move/recovery/control authority or live action.
+Source/static delivery leaves new behavior NOT RUN/proof PROOF NOT RUN and full-loop
+timing OWED, separately from operator release/loaded-identity/activation acceptance.
+
 ## Capability and supported commands
 
 The following command forms are source-supported; none were run against the live

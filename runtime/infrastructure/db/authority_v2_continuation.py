@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from collections.abc import Callable
 
 from pydantic import ValidationError
 
@@ -4022,6 +4023,7 @@ class AuthorityV2ContinuationMixin:
 
     def _consume_v2_continue_envelope_uncommitted(
         self, envelope: AuthorityPolicyV2ContinueEnvelope, spending_result_id: int,
+        *, _final_reservation: Callable[[], None] | None = None,
     ) -> None:
         """CAS E active -> consumed with the result-keyed READY receipt."""
         updated = envelope.model_copy(update={
@@ -4031,6 +4033,8 @@ class AuthorityV2ContinuationMixin:
         })
         snapshot = updated.model_dump(mode="json")
         canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        if _final_reservation is not None:
+            _final_reservation()
         cursor = self._conn.execute(
             """UPDATE authority_policy_v2_continue_envelopes
                   SET lifecycle_state='consumed', spending_result_id=?,
@@ -4065,6 +4069,7 @@ class AuthorityV2ContinuationMixin:
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, generation_id: str | None, next_session_id: str | None,
         spending_result_id, now_dt: datetime,
+        _final_reservation: Callable[[], None] | None = None,
     ) -> AuthorityPolicyV2SpendOutcome:
         def _pending(
             reason: str, **kw,
@@ -4267,7 +4272,8 @@ class AuthorityV2ContinuationMixin:
         # One atomic mutation: E active -> consumed(R2, ready), D admitted ->
         # retired, exactly one closed ``spent`` audit.  Task, R2, N, K/P/V,
         # causal J and every prior audit are retained byte-for-byte.
-        self._consume_v2_continue_envelope_uncommitted(envelope, spending_result_id)
+        self._consume_v2_continue_envelope_uncommitted(
+            envelope, spending_result_id, _final_reservation=_final_reservation)
         self._retire_v2_root_dispatch_uncommitted(dispatch, now_dt)
         self.insert_audit_log_uncommitted(
             root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
@@ -4644,11 +4650,14 @@ class AuthorityV2ContinuationMixin:
 
     def _set_v2_decision_state_uncommitted(
         self, envelope: AuthorityPolicyV2ContinueEnvelope, new_state: str,
+        *, _final_reservation: Callable[[], None] | None = None,
     ) -> None:
         """CAS the closed forward-only decision state with its canonical body."""
         updated = envelope.model_copy(update={"decision_state": new_state})
         snapshot = updated.model_dump(mode="json")
         canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        if _final_reservation is not None:
+            _final_reservation()
         cursor = self._conn.execute(
             """UPDATE authority_policy_v2_continue_envelopes
                   SET decision_state=?, canonical_payload_json=?
@@ -4661,6 +4670,7 @@ class AuthorityV2ContinuationMixin:
 
     def _claim_v2_decision_dispatch_uncommitted(
         self, *, root_task_id: str, manager_agent: str, result_id: int,
+        _final_reservation: Callable[[], None] | None = None,
     ) -> AuthorityPolicyV2DecisionClaimOutcome:
         def _pending(reason: str, **kw) -> AuthorityPolicyV2DecisionClaimOutcome:
             return AuthorityPolicyV2DecisionClaimOutcome(
@@ -4713,7 +4723,8 @@ class AuthorityV2ContinuationMixin:
             spending_result_id=receipt["spending_result_id"],
         ):
             return _pending("evidence_drift", **base)
-        self._set_v2_decision_state_uncommitted(envelope, "claimed")
+        self._set_v2_decision_state_uncommitted(
+            envelope, "claimed", _final_reservation=_final_reservation)
         self.insert_audit_log_uncommitted(
             root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
             self._v2_decision_event_payload(

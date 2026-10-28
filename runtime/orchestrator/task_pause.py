@@ -431,14 +431,17 @@ class TaskInvocation:
                         _authenticate_v2_retry(self.store, entry)
                     if self.orch._db.get_latest_task_result(self.task.id, self.agent, self.session_id) is not None:
                         raise DeferredRootPause("callback already landed")
+                def reserve_workflow_launch() -> None:
+                    if not self.store.db._workflow_effect(self.store.db._conn):
+                        raise DeferredRootPause("workflow_physical_health_held")
                 entry["phase"] = "possible_launch"
                 entry["captured_generation"] = None
-                self.store.save_journal_uncommitted(row)
+                self.store.save_journal_uncommitted(row, _final_reservation=(
+                    reserve_workflow_launch if self.admitted and self.owner in ("draft", "coding") else None))
                 if self.owner == "coding":
                     # Close both native events, their actual admission record
                     # and the final saved journal before this SAME COMMIT.
-                    from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                    validate_workflow_schema(self.store.db._conn, expected_org_slug=self.store.org_slug)
+                    self.store.db._workflow_validate(self.store.db._conn, expected_org_slug=self.store.org_slug)
                 won = True
             if self.publish_binding is not None:
                 cancelled_binding = self.publish_binding()

@@ -1,9 +1,11 @@
 /** Mirror of src/daemon/routes/orgs.py */
 import { request } from './client';
+import type { WorkflowPhysicalHealth } from './types';
 
 export interface OrgSummary {
   slug: string;
   root: string;
+  workflow_physical_health?: WorkflowPhysicalHealth | null;
 }
 
 export interface BrokenOrg {

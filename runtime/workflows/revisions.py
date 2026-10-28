@@ -17,7 +17,7 @@ from pydantic import Field, StrictBool, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import (
     _DRAFT_MUTABLE, _handoff_json, _handoff_record, _records, _stored_json,
-    require_document_revision_schema, validate_workflow_schema,
+    require_document_revision_schema,
 )
 from runtime.models import TaskRecord
 from runtime.workflows.activation import (
@@ -562,7 +562,7 @@ class WorkflowRevisionStore:
                     instance = self._owner(principal, conn, command['instance_id'])
                     first = _record(conn, 'workflow_draft_dispatch_intents', first[0]['id'])
                     store._read_grant(conn, first, {'return-to-author'}, principal)
-                    require_document_revision_schema(conn, expected_org_slug=self.org.slug)
+                    require_document_revision_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                     context = self._authority(conn, first, capture)
                     raw = canonical_bytes(command)
                     existing = _records(conn, 'SELECT * FROM workflow_document_revision_operations WHERE org_slug=? AND principal=? AND operation_key=?',
@@ -597,7 +597,10 @@ class WorkflowRevisionStore:
                         host_launch_started=0, host_execution_id=None, session_id=None, final_result_id=None,
                         last_error=None, created_at=now, updated_at=now)
                     self.db._check_team_move_workflow_uncommitted(instance["id"])
-                    self.db._insert_task_uncommitted(task)
+                    self.db._check_team_move_task_uncommitted(task)
+                    if not self.db._workflow_effect(conn):
+                        raise WorkflowActivationError('workflow_physical_health_held')
+                    self.db._insert_task_row_uncommitted(task)
                     ctxrow = dict(id=ctxid, binding_snapshot_id=first['binding_snapshot_id'], context_bytes=ctxraw,
                         context_digest=digest(ctxraw), source_kind='document-revision', source_id=opid)
                     _insert(conn, 'workflow_contexts', ctxrow)
@@ -618,7 +621,7 @@ class WorkflowRevisionStore:
                     row.update(admission_bytes=proofraw, admission_digest=digest(proofraw))
                     _insert(conn, 'workflow_document_revision_operations', row)
                     append_event_uncommitted(conn, org_slug=self.org.slug, intent_id=iid, kind='admitted', before=None)
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                    self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                     receipt = self._projection(conn, row, capture, replayed=False)
                     notifications.append(task_id)
         queue = getattr(self.org.orchestrator, '_queue', None)
@@ -680,7 +683,7 @@ class WorkflowRevisionStore:
                     with self.org.workflow_authority.admission_writer(capture) as conn:
                         row, intent = self._select(conn, command['revision_operation_id'], principal=None, session_id=session_id)
                         context = self._authority(conn, intent, capture)
-                        require_document_revision_schema(conn, expected_org_slug=self.org.slug)
+                        require_document_revision_schema(conn, expected_org_slug=self.org.slug, _database=self.db)
                         validate_revision_record(conn, row, expected_org_slug=self.org.slug)
                         store._fresh(conn, intent, task, agent, session_id)
                         existing = _stage(conn, row, intent)
@@ -705,7 +708,7 @@ class WorkflowRevisionStore:
                             request_bytes=canonical_bytes(request).hex()))
                         _insert(conn, 'workflow_submissions', submission)
                         _insert(conn, 'workflow_submission_operations', dict(operation, provenance_bytes=provenance, provenance_digest=digest(provenance)))
-                        validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                        self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                         self._select(conn, row['id'], principal=None, session_id=session_id)
                         return self._projection(conn, row, capture, replayed=False)
 
@@ -782,6 +785,8 @@ class WorkflowRevisionStore:
                         return []
                     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
                     raw = canonical_bytes(result)
+                    if not self.db._workflow_effect(conn):
+                        return []
                     _insert(conn, 'workflow_submission_result_links', dict(submission_id=subject['submission_id'], task_result_id=result['id'],
                         source_task_id=intent['task_id'], source_session_id=intent['session_id'], result_bytes=raw,
                         result_digest=digest(raw), accepted_at=now))
@@ -790,7 +795,7 @@ class WorkflowRevisionStore:
                     _insert(conn, 'workflow_submission_contributors', dict(submission_id=subject['submission_id'], **contribution))
                     _insert(conn, 'workflow_instance_contributors', dict(instance_id=row['instance_id'], **contribution))
                     tasks = self._review_graph(conn, subject, proof, context, intent, now)
-                    validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+                    self.db._workflow_validate(conn, expected_org_slug=self.org.slug)
                     return tasks
 
     def _review_graph(self, conn: sqlite3.Connection, subject: dict, proof: dict, context: dict, intent: dict, now: str) -> list[str]:

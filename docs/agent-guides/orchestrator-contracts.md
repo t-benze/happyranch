@@ -576,10 +576,54 @@ snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression canno
 publish. Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper omits
 only duplicate source/team checks proven by its own same-snapshot coding inventory;
-absent/unproven coding retains them. Physical/FK, native/mutable and complete history
-checks and the original cumulative allowance remain. Expected coding rows revalidate
+absent/unproven coding retains them. Fresh FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Only ordinary physically bound
+attachment reads select the physical exception below; independent readers stay FULL.
+Expected coding rows revalidate
 below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
 same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
+
+### Workflow physical reservation and native lifetime (THR330seq19)
+
+Only ordinary complete-reader composition bound to the actual current attachment
+omits physical integrity_check. Fresh FK/semantics/full histories and the original
+successful-snapshot/COMMIT watermark rules remain; candidate-only ordinary proof
+cannot publish complete-reader history. Independent/raw/unknown, startup,
+maintenance, builtin and explicit coding cancellation readers remain FULL.
+
+Physical cadence is3600s; cumulative cooperative60s spans admission, executor
+queue, open/snapshot/check and cleanup. Strong loop registration precedes submit.
+The worker owns an isolated RO/query_only connection and short corruption latch,
+never the primary connection, registry or queue. Actual native return AND positive
+rollback/close precede retirement. Submission ambiguity, lost completion and
+cleanup failures retain unsafe-close ownership and primary/secondary causes.
+A timeout stop remains timeout; an explicit cancellation is separate. Missed
+scheduling is a separate status observation, never a replacement failure cause.
+
+Existing DB/reservation ownership precedes the short physical latch. No SQL,
+I/O, history work, await or join runs under that latch. New-effect gates follow
+ALL original validation and the last await immediately before the first write:
+activation/revision move precheck then prechecked INSERT; coding-start v2
+canonical serialization then spend/claim SQL (other callers keep defaults);
+already-admitted draft/coding launch journal serialization/full decode then its
+same UPDATE. No blanket authority/Pause writer hold is introduced. Age>=14400s
+or corruption refuses;14399s alone does not. Original authority/CAS/rollback/
+budget/error meanings and callback BEGIN/post-write/PID order remain unchanged.
+
+Original bytes/INTEGER callback/native terminal/positive outer settlement can
+commit under their original checks while new graph/revision/attempt reservations
+wait at valid existing pending owners. Rediscovery after physical-only release
+allocates once without replaying callbacks or creating results/partial graphs.
+Shutdown fences before its first await, joins this separate native lifetime
+outside all locks, then permits DB close. Unload drains C/thread and diagnostics
+before DB preflight; final preclose checks remain. A proved retained-attachment
+busy refusal keeps the same service usable without resetting last-success or
+unknown owners. Replacement requires old drain/close and new FULL startup;
+old clean AND corrupt publications cannot authorize the new incarnation.
+All new behavior/proof NOT RUN/PROOF NOT RUN; full-loop timing OWED. Independent
+review/QA and static gates do not authorize live activation or native recovery.
+
+
 
 Central J validation, including validate_data=False, source-data validation,
 startup/reopen, recovery pre-legacy discrimination and drain/downgrade all consume

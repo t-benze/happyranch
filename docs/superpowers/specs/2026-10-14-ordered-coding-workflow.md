@@ -1,5 +1,55 @@
 # Ordered coding workflow — agent-read contract
 
+### Attached physical check selection — Option B / THR330seq19
+
+An actual successful FULL startup precedes each new attachment. Only private
+ordinary Database composition bound to that exact org/connection/boot/file selects
+per-call physical omission. Fresh FK, source/digests/pins, mutable rows, complete
+document/native/coding history, original budgets/snapshots and owner-success audit
+watermarks remain. Candidate-only classification is not complete-reader proof.
+Public/raw/direct/unknown, builtin, initializer/installer/migration/compatibility/
+cutover/whole-reference readers remain FULL. Explicit coding cancellation also
+keeps FULL cost. Required loaded_identity full-validator alias is unchanged.
+
+Per-attachment isolated RO/query_only checks run every3600s under one original
+cooperative60s through admission/queue/open/snapshot/scan/rollback/close. No overlap,
+catchup or retry. Corruption latches immediately; failed/missed/late/timeout/
+unavailable attempts alert without resetting last-success. New effects recompute
+staleness at the final reservation:14399s alone allows,14400s holds. Only timely
+genuine same-incarnation full success plus actual native return and positive
+cleanup clears physical hold. Other authority/settings/Pause/unknown holds stay.
+
+Final gates follow all original validation/serialization and the LAST await,
+immediately before the owned write. Activation/revision task move prechecks run
+once before prechecked insertion. Coding-start alone passes a private final
+callback after original v2 authentication and canonical body serialization before
+spend/claim SQL; other authority callers keep their default behavior. Only admitted
+draft/coding possible-launch passes the analogous callback after Pause full journal
+decode before its same UPDATE. Original SQL/CAS/bytes/audits/errors/budgets remain.
+No common writer or settlement hold is added. Original staging/INTEGER callbacks/
+native terminal/positive outer settlement commit under existing predicates; later
+graph/attempt work waits at valid pending owners and rediscovery allocates once.
+
+Loop registers strong native ownership BEFORE submission. Cancellation does not
+kill native work; actual return plus rollback/close precedes retirement. Ambiguous
+submission, lost completion and cleanup failure retain primary/secondary causes
+and unsafe-close barriers; scheduling lateness is separate. DB/reservation→short
+latch only, never SQL/I/O/history/await/join beneath it. Shutdown fences before its
+first await and drains periodic lifetime separately outside locks before DB close.
+Unload retains C/thread and diagnostic drain-before-DB-preflight ordering with a
+final synchronous preclose check; proved no-detach refusal retains the same usable
+service without resetting health/ownership. Old closure and fresh FULL startup
+precede replacement; old clean/corrupt publications never transfer by slug.
+
+Existing org-list/CLI status and both TS mirrors expose bounded physical age,
+status/hold/category, last-success, cleanup/completion/due and separate secondary/
+scheduling observations. Generic served dict is not a typed response proof.
+Engineering's existing diagnosis remains separately authorized; no reset, repair,
+forced close/restart, live activation or loaded-identity repair follows. Behavior
+B01–B28/R1–R3 NOT RUN, proof PROOF NOT RUN, full-loop timing OWED. Python units
+RETIRED; integration SKIPPED24342; E2E scheduled19UTC only; static source checks
+and review do not certify workflow behavior, loaded bytes or measured performance.
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -25,8 +75,10 @@ snapshot exit, uncertain/failed COMMIT or detected identity/MAX regression canno
 publish. Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper omits
 only duplicate source/team checks proven by its own same-snapshot coding inventory;
-absent/unproven coding retains them. Physical/FK, native/mutable and complete history
-checks and the original cumulative allowance remain. Expected coding rows revalidate
+absent/unproven coding retains them. Fresh FK, native/mutable and complete history
+checks and the original cumulative allowance remain. Only ordinary physically bound
+attachment reads select the physical exception described above; independent readers
+stay FULL. Expected coding rows revalidate
 below ordinary watermarks. This assumes cooperative insert-only history, not arbitrary
 same-UID rewrites; no mutable inventory cache or expanded file-identity trust follows.
 

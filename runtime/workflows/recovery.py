@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Any
 
-from runtime.infrastructure.workflow_schema import _read_workflow_schema, _schema_snapshot
+from runtime.infrastructure.workflow_schema import _schema_snapshot
 from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects, _read_coding_data
 from runtime.workflows.coding_authority_history import _Budget
 
@@ -70,7 +70,7 @@ def _classify_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, 
             return WorkflowTaskOwnership("reconciliation_required")
         # Unknown/case-changed tables, views, indexes and triggers must
         # reach the complete reader before either legacy return.
-        _, inventory = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
+        _, inventory = db._workflow_read(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
     else:
         # Absent coding storage cannot accept setup metadata, even if native
         # coding metadata has no workflow root/draft/F5 alias.
@@ -93,7 +93,7 @@ def _classify_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, 
     if org_slug is None or (drafts and bridges) or len(drafts) > 1 or len(bridges) > 1:
         return WorkflowTaskOwnership("reconciliation_required")
     if not coding_present:
-        _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
+        db._workflow_read(conn, expected_org_slug=org_slug, budget=budget, advances=advances)
     # Coding inventory already includes complete document validation
     # on this unchanged snapshot; do not reconstruct it again.
     if drafts:
@@ -212,8 +212,7 @@ def rediscover_returned(coding: Any) -> None:
     with db.coherent_read_view() as conn:
         if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
             return
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
-        _, inventory = _read_workflow_schema(conn, expected_org_slug=coding.org.slug, budget=_Budget())
+        _, inventory = db._workflow_read(conn, expected_org_slug=coding.org.slug, budget=_Budget())
         if inventory is None:
             return
         returned = tuple(key for key, entry in inventory.queued.runs.items() if entry['native'].get('returned'))

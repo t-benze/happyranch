@@ -74,6 +74,8 @@ def append(store, conn, principal, capture, command, raw, state, inventory):
     tiers = sorted(k for k in after if previous is None or previous[k] != after[k])
     config = dict(section='coding', tiers=tiers, before=previous, after=after)
     pin = envelope['pin']
+    if not store.db._workflow_effect(conn):
+        raise CodingSettingsError('workflow_physical_health_held')
     conn.execute('INSERT INTO workflow_admission_records '
         '(id,namespace,generation,request_digest,admitted_by) VALUES (?,?,?,?,?)',
         (admission, pin['namespace'], pin['generation'], _hash(raw), 'human:founder'))

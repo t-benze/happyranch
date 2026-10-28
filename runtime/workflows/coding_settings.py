@@ -84,10 +84,9 @@ class CodingSettingsStore:
                     yield references, capture
 
     def _state(self, conn, references, budget):
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
         # Existing complete-schema API already accepts a caller allowance.
         # Compose directly rather than resetting CodingImportSupport._storage.
-        _, inventory = _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
+        _, inventory = self.db._workflow_read(conn, expected_org_slug=self.org.slug, budget=budget)
         if inventory is None:
             raise CodingSettingsError('coding_settings_invalid')
         return project(inventory.mappings, inventory.budget), inventory
