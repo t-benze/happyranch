@@ -1654,7 +1654,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_
 
 ## Executor Throttle
 
-A process-wide, **per-provider** throttle (`runtime/orchestrator/throttle.py`, issue #85) gates every agent-subprocess launch at the single chokepoint `executors._run_command`, which both the task `run_step` pool and the thread-reply pool reach on an OS thread. It caps concurrency, de-bursts launches, and absorbs transient 429s — without resizing either pool (they stay as producers; the semaphore is the consumer-side cap). Decision record: [`docs/adr/0001-per-provider-executor-throttle.md`](../adr/0001-per-provider-executor-throttle.md).
+A process-wide, **per-provider** throttle (`runtime/orchestrator/throttle.py`, issue #85) gates every agent-subprocess launch through both built-in `executors._run_command` and the independent `CustomAdapterExecutor.run`, reached by task and thread workers on OS threads. Claude delegates to the common helper; custom adapters own separate selflaunch, communication/parser and throttle bodies, so common-helper evidence does not cover the custom body. It caps concurrency, de-bursts launches, and absorbs transient 429s — without resizing either pool (they stay as producers; the semaphore is the consumer-side cap). Decision record: [`docs/adr/0001-per-provider-executor-throttle.md`](../adr/0001-per-provider-executor-throttle.md).
 
 Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating one provider never blocks another:
 
@@ -4001,3 +4001,22 @@ serving and original import file/intent/CLI send/receipt/GET. A returned command
 is not stage acceptance; a failed command remains failed despite later effect
 observation. Persistence failure prevents continuation and retains original keys,
 bytes, intents/results and uncertainty. No automatic restart/restore/resume/replay.
+
+
+Founder thread abort (THR329 seq3/16) uses an early exact native invocation/SID/
+preparation control. Materialization, provider phases and native finish use
+joined offloads while the original runner/native-user lifetime and pair guard
+remain held. Refresh retains its original batch and completion owner; child
+command tokens attach to the same abort control before host admission. Stop
+dispatch has capacity independent of blocked provider pools. Thread-only
+throttle/host waits observe the same fired token without resetting retry
+schedules or budgets. Contained running-stop uses existing backend controls;
+direct/passthrough retains original exit/timeout waiting and an attributable
+could-not-stop audit. Original worker return and native/backend settlement
+precede successors; missing cleanup evidence keeps the predecessor veto.
+C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.

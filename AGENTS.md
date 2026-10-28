@@ -5041,3 +5041,26 @@ accepted layout, start/pair/serving, and original import file/intent/send/receip
 readback remain distinct. Failed commands remain failed; no next effect, automatic
 restart/restore/replay or new key follows uncertainty. Source delivery leaves
 Coding Disabled and real host/workflow/Founder/backup/recovery acceptance open.
+
+
+Founder thread abort (THR329 seq3/16) binds early cancellation to the exact
+native INTEGER/permanent agent/thread/SID/preparation generation. One abort
+transaction fixes the pending REPLY/BOOTSTRAP/TASK_FOLLOWUP count and discard;
+its signal handoff precedes release of the same DB RLock. Actual original
+provider/preparation/control return and backend/native settlement precede
+successor commitment; uncertainty retains the predecessor veto. Joins and
+teardown run off-loop outside DB/move locks with independent stop capacity.
+Fast stop uses existing contained controls only. Direct/passthrough retains
+original exit/timeout waiting, serialization and attributable
+`thread_abort_could_not_stop` audit, never process=None/PID0 cleanup proof.
+Host first-wins reason stays separate from founder_aborted. Same tokens/frozen
+retry budgets, four atomic resume writers and the post-nudge terminal guard
+prevent aborted follow-on effects. Committed abort effects survive secondary
+signal/dispatch/audit failure; uncertain COMMIT never licenses replay. C1–C10
+NOT RUN / PROOF NOT RUN; integration INCLUDING callback SKIPPED24342, units
+RETIRED. Source/static evidence supplies no process or behavioral acceptance.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.

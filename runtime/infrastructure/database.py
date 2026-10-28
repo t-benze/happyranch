@@ -2796,6 +2796,50 @@ class Database(
         return int(row["n"])
 
     @_synchronized
+    def abort_thread_replies(self, thread_id: str, *, signal: Callable) -> Any:
+        """One abort transaction and signal-only handoff under this SAME RLock.
+
+        A body failure is not rollback proof; a COMMIT failure is uncertain even
+        when a later rollback returns. Never replay a failed/uncertain abort.
+        Post-COMMIT signal failures travel with the exact committed outcome.
+        """
+        outcome = SimpleNamespace(invocations=(), aborted_count=0, controls=(), errors=[])
+        commit_attempted = False
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            thread = self.get_thread(thread_id)
+            if thread is None:
+                raise LookupError("thread_not_found")
+            if thread.status is not ThreadStatus.OPEN:
+                raise ValueError("thread_not_open")
+            purposes = (ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP,
+                ThreadInvocationPurpose.TASK_FOLLOWUP)
+            outcome.invocations = tuple(inv for inv in self.list_thread_invocations(
+                thread_id, status=ThreadInvocationStatus.PENDING) if inv.purpose in purposes)
+            outcome.aborted_count = self._discard_reply_delivery_uncommitted(
+                thread_id, decline_reason="founder_aborted")
+            outcome.aborted_count += self._reap_pending_invocations_uncommitted(
+                thread_id, purposes=list(purposes[1:]), decline_reason="founder_aborted")
+            if outcome.aborted_count != len(outcome.invocations):
+                raise RuntimeError("thread_abort_transition_count_mismatch")
+            commit_attempted = True
+            self._conn.commit()  # A: only a genuine successful return admits S.
+        except BaseException as exc:
+            try:
+                self._conn.rollback()
+            except BaseException as rollback:
+                exc.add_note(f"thread abort rollback unconfirmed: {rollback!r}")
+            else:
+                exc.add_note("thread abort COMMIT outcome uncertain; no replay" if commit_attempted
+                    else "thread abort pre-COMMIT rollback confirmed")
+            raise
+        try:
+            outcome.controls, outcome.errors = signal(outcome.invocations)
+        except BaseException as exc:
+            outcome.errors.append(exc)
+        return outcome
+
+    @_synchronized
     def reap_pending_invocations(
         self,
         thread_id: str,

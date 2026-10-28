@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
+from concurrent.futures import Future
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Callable, Iterator
@@ -51,6 +53,134 @@ def thread_preparation_effects() -> Iterator[None]:
             yield
 
 
+class _ThreadAbortControl:
+    """Exact native generation, retained through original worker settlement.
+
+    The DB lock owns map publication; this last-leaf mutex never enters DB or
+    invokes a callback. Stop threads have capacity independent of provider pools.
+    """
+    def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle) -> None:
+        from runtime.orchestrator.host_supervisor import CancellationToken
+        self.admission = admission
+        self.key = (inv.id, inv.agent_name, inv.thread_id, state.session_id, state.preparation_id)
+        self.token = CancellationToken()
+        self.preparation_stop = threading.Event()
+        self.lock = threading.Lock()
+        self.children: set[Any] = set()
+        self.dispatch_future: Future[None] | None = None
+        self.failure: BaseException | None = None
+        self.mode: str | None = None
+        self.launched = False
+        self.worker_running = False
+        self.audit_attempted = False
+        self.audit_mode: str | None = None
+
+    def record_failure(self, exc: BaseException) -> None:
+        with self.lock:
+            if self.failure is None:
+                self.failure = exc
+            elif self.failure is not exc:
+                self.failure.add_note(f"thread abort secondary: {exc!r}")
+
+    def _capture_unsupported_unlocked(self) -> None:
+        if self.token.cancelled and self.launched and self.worker_running and self.mode is not None:
+            self.audit_mode = self.audit_mode or self.mode
+
+    def signal(self) -> None:
+        with self.lock:
+            self.token.signal()
+            self.preparation_stop.set()
+            self._capture_unsupported_unlocked()
+            for token in self.children:
+                token.signal()
+
+    def attach(self, token: Any) -> None:
+        with self.lock:
+            self.children.add(token)
+            if self.token.cancelled:
+                token.signal()
+
+    def detach(self, token: Any) -> None:
+        with self.lock:
+            self.children.discard(token)
+
+    def unsupported_stop_audit(self) -> None:
+        with self.lock:
+            self._capture_unsupported_unlocked()
+            if self.audit_mode is None or self.audit_attempted:
+                return
+            self.audit_attempted = True
+            mode = self.audit_mode
+        invocation_id, agent, thread, sid, preparation = self.key
+        try:
+            self.admission.db.insert_audit_log(thread, agent, "thread_abort_could_not_stop", {
+                "org": self.admission.store.org_slug, "invocation_id": invocation_id,
+                "agent_id": agent, "thread_id": thread, "session_id": sid,
+                "preparation_id": preparation, "mode": mode,
+                "limitation": "no_authoritative_running_stop_control",
+                "execution_state": "launched_worker_unreturned",
+            })
+        except BaseException as exc:
+            self.record_failure(exc)
+            raise
+
+    def dispatch(self) -> Future[None]:
+        # Claim once before starting: a failed start is retained, never replayed.
+        with self.lock:
+            if self.dispatch_future is not None:
+                return self.dispatch_future
+            future = self.dispatch_future = Future()
+
+        def stop() -> None:
+            primary = None
+            with self.lock:
+                tokens = (self.token, *self.children)
+            for action in (*[token.cancel for token in tokens], self.unsupported_stop_audit):
+                try:
+                    action()
+                except BaseException as exc:
+                    if primary is None:
+                        primary = exc
+                    else:
+                        primary.add_note(f"thread abort secondary: {exc!r}")
+            if primary is not None:
+                self.record_failure(primary)
+                future.set_exception(primary)
+            else:
+                future.set_result(None)
+        try:
+            threading.Thread(target=stop, name=f"thread-abort-{self.key[0]}", daemon=True).start()
+        except BaseException as exc:
+            self.record_failure(exc)
+            future.set_exception(exc)
+        return future
+
+    async def join_dispatch(self) -> None:
+        if not self.token.cancelled:
+            return
+        worker = asyncio.wrap_future(self.dispatch())
+        cancellation = None
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+            except BaseException:
+                break
+        try:
+            worker.result()
+        except BaseException as exc:
+            if cancellation is None:
+                raise
+            cancellation.add_note(f"thread abort dispatch failed: {exc!r}")
+        if cancellation is not None:
+            raise cancellation
+        # A late original on_started may have recorded an audit failure after
+        # the once-only dispatch returned. Never retry that write or hide it.
+        if self.failure is not None:
+            raise self.failure
+
+
 class ThreadPreparation:
     def __init__(self, admission: ThreadMoveAdmission, inv: Any, state: ThreadLifecycle) -> None:
         self.admission, self.inv, self.state = admission, inv, state
@@ -64,6 +194,7 @@ class ThreadPreparation:
         self.claimed = inv.started_at is not None
         self.attempt_open = False
         self.safe_selflaunch_defer = False
+        self.abort_control = admission.controls.get(inv.id) or _ThreadAbortControl(admission, inv, state)
 
         self._repository_preparations = {}
         self._repository_effect_intervals = []
@@ -108,6 +239,8 @@ class ThreadPreparation:
         this effect interval become sticky cleanup uncertainty; ordinary early
         no-effect refusals do not. A later successful interval cannot clear it.
         """
+        if self.abort_control.token.cancelled:
+            raise DeferredTeamMove("thread_invocation_aborted")
         from runtime.orchestrator.workspace_adapters import _repo_effect_interval
         try:
             with _repo_effect_interval(self):
@@ -124,7 +257,8 @@ class ThreadPreparation:
             self.admission.revalidate_uncommitted(self)
 
     def start_phase(self, phase: str) -> None:
-        with self.admission.db._lock:
+        with self.admission.move.gate, self.admission.db._lock:
+            self.admission.revalidate_uncommitted(self)
             if self.state.retry_initialized is None:
                 raise DeferredTeamMove("team_move_thread_retry_initialization_unknown")
             self.admission.write(self, phase=phase, ordinal=0, schedule=(), retry_initialized=False)
@@ -255,7 +389,12 @@ class ThreadPreparation:
                 logger.exception("Thread launched observation persistence failed; retaining unknown owner")
 
     def direct_terminal(self) -> None:
-        # Provider return cannot certify the uncontained tree.
+        # Original communicate returned; this is not uncontained tree proof.
+        # Preserve an already-captured abort fact, but a later abort in retry
+        # backoff must not claim that the previous process is still executing.
+        with self.abort_control.lock:
+            self.abort_control._capture_unsupported_unlocked()
+            self.abort_control.launched = False
         self.terminal(None)
 
     def failed_cleanup(self, *, repository_deadline: float | None = None) -> None:
@@ -276,14 +415,36 @@ class ThreadPreparation:
             except Exception:
                 logger.exception("Thread cleanup attribution persistence failed; retaining unknown owner")
 
+    def save_session(self, *, agent_session_id: str, last_resumed_seq: int) -> bool:
+        # Abort A/S and all four resume writers arbitrate on the SAME DB RLock.
+        with self.admission.db._lock:
+            inv = self.admission.db.get_invocation_any_status(self.inv.invocation_token)
+            if (self.admission.live.get(self.inv.id) is not self or not self.owner_live
+                    or self.admission.controls.get(self.inv.id) is not self.abort_control
+                    or self.abort_control.token.cancelled or inv is None or inv.id != self.inv.id
+                    or inv.status not in {ThreadInvocationStatus.PENDING,
+                        ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}):
+                return False
+            self.admission.db.update_thread_session(self.inv.thread_id, self.inv.agent_name,
+                agent_session_id=agent_session_id, last_resumed_seq=last_resumed_seq)
+            return True
+
     def finish(self, *, deferred: bool, failed: bool) -> None:
         with self.admission.db._lock:
-            failed = failed or any(not v.closed for v in self._repository_preparations.values())
+            control = self.abort_control
+            failed = (failed or control.failure is not None
+                or control.dispatch_future is not None and not control.dispatch_future.done()
+                or any(not v.closed for v in self._repository_preparations.values()))
             self.owner_live = False
             self.admission.write(self, deferred=deferred, producer_settled=True,
                 failed_cleanup=self.state.failed_cleanup or failed)
-            if all(v.closed for v in self._repository_preparations.values()):
-                self.admission.live.pop(self.inv.id, None)
+            if (not self.state.unknown and not failed
+                    and all(v.closed for v in self._repository_preparations.values())
+                    and self.admission.live.get(self.inv.id) is self
+                    and self.admission.controls.get(self.inv.id) is control):
+                self.admission.live.pop(self.inv.id)
+                if not deferred:
+                    self.admission.controls.pop(self.inv.id)
 
 
 class ThreadMoveAdmission:
@@ -291,6 +452,7 @@ class ThreadMoveAdmission:
         self.move, self.db = move, move.store.db
         self.store = ThreadAdmissionStore(self.db, move.store.org_slug)
         self.live: dict[int, ThreadPreparation] = {}
+        self.controls: dict[int, _ThreadAbortControl] = {}
         self.captured: dict[str, frozenset[tuple[int, str, str]]] = {}
 
     @staticmethod
@@ -349,13 +511,61 @@ class ThreadMoveAdmission:
                     invocation_id=inv.id, thread_id=inv.thread_id, agent_id=inv.agent_name,
                     session_id=f"sess-{uuid.uuid4().hex}", preparation_id=uuid.uuid4().hex, retry_initialized=False)
             owner = ThreadPreparation(self, inv, state)
-            self.write(owner, deferred=False, producer_settled=False)
+            if (owner.abort_control.key != (inv.id, inv.agent_name, inv.thread_id,
+                    state.session_id, state.preparation_id) or owner.abort_control.failure is not None):
+                raise DeferredTeamMove("thread_abort_control_unsettled")
+            # Publish before the fallible native COMMIT. A failed/uncertain write
+            # keeps the exact original owner, and cannot permit effects/reentry.
+            self.controls[inv.id] = owner.abort_control
             self.live[inv.id] = owner
+            try:
+                self.write(owner, deferred=False, producer_settled=False)
+            except BaseException as exc:
+                owner.abort_control.failure = exc
+                raise
             return owner
+
+    def signal_aborted_uncommitted(self, invocations: tuple[Any, ...]) -> tuple[tuple[_ThreadAbortControl, ...], list[BaseException]]:
+        """Signal exact transitioned generations after A, still under DB RLock."""
+        controls, errors = [], []
+        for inv in invocations:
+            control = self.controls.get(inv.id)
+            if control is None:
+                continue  # A won before any reservation; native pending recheck refuses.
+            controls.append(control)  # Retain original even when validation/signalling fails.
+            try:
+                state = self.store.read_uncommitted(inv)
+                if state is None or control.key != (inv.id, inv.agent_name, inv.thread_id,
+                        state.session_id, state.preparation_id):
+                    raise RuntimeError("thread_abort_control_identity_mismatch")
+                control.signal()
+            except BaseException as exc:
+                control.record_failure(exc)
+                errors.append(exc)
+        return tuple(controls), errors
+
+    def _abort_predecessors_uncommitted(self, owner: ThreadPreparation) -> None:
+        # Durable history, not map absence or a no-op receipt, decides settlement.
+        for inv in self.db.list_thread_invocations(owner.inv.thread_id):
+            if inv.id == owner.inv.id or inv.agent_name != owner.inv.agent_name or inv.decline_reason != "founder_aborted":
+                continue
+            state = self.store.read_uncommitted(inv)
+            control = self.controls.get(inv.id)
+            if (state is None and inv.started_at is not None
+                    or state is not None and (state.unknown or not state.producer_settled)
+                    or control is not None and (control.failure is not None
+                        or control.dispatch_future is None or not control.dispatch_future.done())):
+                raise DeferredTeamMove("thread_abort_predecessor_unsettled")
 
     def revalidate_uncommitted(self, owner: ThreadPreparation) -> None:
         if self.live.get(owner.inv.id) is not owner or not owner.owner_live:
             raise DeferredTeamMove("team_move_thread_preparation_missing")
+        if (self.controls.get(owner.inv.id) is not owner.abort_control
+                or owner.abort_control.failure is not None):
+            raise DeferredTeamMove("thread_abort_control_unsettled")
+        if owner.abort_control.token.cancelled:
+            raise DeferredTeamMove("thread_invocation_aborted")
+        self._abort_predecessors_uncommitted(owner)
         self.check_agent_uncommitted(owner.identity.agent_id)
         if not self.db._thread_release_pair_permitted_uncommitted(owner.inv.thread_id, owner.identity.agent_id):
             raise DeferredTeamMove("thread_delivery_release_permission_revoked")
