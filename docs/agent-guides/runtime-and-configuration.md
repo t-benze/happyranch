@@ -1,5 +1,24 @@
 # Runtime And Configuration
 
+## Built-in coding availability — ROOT13509 / THR320seq304
+
+The fixed coding v1 definition is registered automatically by the normal org
+recovery owner after move/Pause/cutover/naming/authority safety, outside early
+serving. Exactly four existing template rows carry closed system provenance
+`workflow-coding-builtin-registration@1`; there is no human import operation,
+admission or receipt. Package capture precedes locks. Native reservation,
+publisher/DB ownership, full source/target closure, the original cumulative budget
+and positive-COMMIT watermark remain mandatory. Active/unknown owners defer;
+partial/mixed/foreign state refuses without repair. Constructors/references and
+reads never initialize. Existing human imports remain unchanged no-ops.
+Saved history/replays/admitted work use saved bytes despite package loss; fresh
+options/configuration/start need the captured matching resource. Even empty
+registration requires compatible readers, with no old-reader downgrade claim.
+Guided setup observes saved availability instead of invoking the human importer.
+The existing twelve loaded-object observations do not attest the new registrar.
+Founder settings Save, real loaded acceptance and scratch remain separate.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -50,7 +69,7 @@ health or disk HEAD alone is not loaded acceptance.
 
 This source contract supersedes earlier coding-only J/whole-org-equality and
 mandatory offline-chain instructions below, preserving attributed old evidence.
-Human deployment/restart, Founder original import/settings, independently loaded
+Human deployment/restart, Founder settings, independently loaded
 readiness and one genuine four-role scratch run remain separate root-owned
 acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
@@ -63,7 +82,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -3780,7 +3799,7 @@ terminal. `--org` is required. Strict optional flags are `--runtime-root ABS`
 (the existing literal active registered runtime; default read from runtimes.yaml),
 `--backup-dir ABS` (exclusive new private destination; default daemon-home/
 operator-backups/coding-ORG-UTC-random), `--ui-profile local|production` (local),
-and `--import-file ABS` (default daemon-home/coding-ORG-v1-import.json). Source is
+and `--import-file ABS` (a retained original for readback only; default daemon-home/coding-ORG-v1-import.json). Source is
 the checkout containing the script; daemon home retains its existing configured
 selection. No force/yes/skip/resume/rollback/key/revision override exists.
 
@@ -3828,7 +3847,7 @@ Start prints the uv wrapper PID; daemon.pid contains its Python child PID.
 The coordinator authenticates both against checked process observations, selected
 executables/source/home/custody, the pre-start boundary and direct parent/start
 relationship. Status must report the actual daemon PID and daemon.port value.
-Repeated pair/file observations bracket status and serving/import checks; absent,
+Repeated pair/file observations bracket status and serving/definition checks; absent,
 unrelated, reused or moving identities hold without restart. The saved
 receipts/started-processes.json contains only closed identity evidence.
 
@@ -3912,7 +3931,7 @@ a supported complete running observation, or the human operator must establish
 genuine positive stopped entry with existing controls. No error bypass or memory
 endpoint/reset is supplied. Final selected loaded-source/UI acceptance remains
 after restart, with all twelve actual selected objects, full D1 list validation,
-closed identity/budgets/bookends and human rendering before import.
+closed identity/budgets/bookends and human rendering before saved-definition observation.
 
 Stop's shutdown effects precede the full stopped backup; receipt-only evidence
 is incomplete. Full affected DB/config/source/environment/UI/shared-daemon recovery

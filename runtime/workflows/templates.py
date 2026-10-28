@@ -586,26 +586,30 @@ class WorkflowTemplateStore:
     @staticmethod
     def _read_release(conn: sqlite3.Connection, *, org_slug: str | None,
                       allow_absent: bool = False) -> WorkflowTemplateVersion | None:
-        from runtime.workflows._coding_release_history import read_release_import
+        from runtime.workflows._coding_registered_release import read_registered_release
         from runtime.workflows.coding_authority_history import _Budget
         budget = _Budget()
         owned = not conn.in_transaction
         if owned:
             conn.execute('BEGIN')
         try:
-            imported = read_release_import(conn, expected_org_slug=org_slug, budget=budget)
-            if imported is None:
+            if org_slug is None:
+                # Only a low-level version lookup needs saved org discovery.
+                # Normal org-scoped list/get reconstruct the complete inventory
+                # directly, without parsing the same history twice.
+                discovered = read_registered_release(conn, expected_org_slug=None, budget=budget)
+                if discovered is None:
+                    if allow_absent:
+                        return None
+                    raise WorkflowTemplateError('template_version_not_found')
+                org_slug = discovered.org_slug
+            from runtime.infrastructure.workflow_schema import _read_workflow_schema
+            _, coding = _read_workflow_schema(conn, expected_org_slug=org_slug, budget=budget)
+            if coding is None or coding.release is None:
                 if allow_absent:
                     return None
                 raise WorkflowTemplateError('template_version_not_found')
-            from runtime.infrastructure.workflow_schema import _read_workflow_schema
-            # Discovery and complete history reconstruction share this snapshot
-            # and its original allowance, including when the org was unknown.
-            _, coding = _read_workflow_schema(
-                conn, expected_org_slug=imported.provenance['org_slug'], budget=budget)
-            if coding is None or coding.imported is None:
-                raise WorkflowTemplateError('template_storage_corrupt')
-            return coding.imported.template()
+            return coding.release.template()
         except WorkflowTemplateError:
             raise
         except ValueError:

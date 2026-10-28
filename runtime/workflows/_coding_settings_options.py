@@ -23,8 +23,8 @@ def project_options(store: CodingSettingsStore, conn: sqlite3.Connection,
     """
     budget = inventory.budget
     release = None
-    if inventory.imported is not None:
-        row = inventory.imported.rows[2][1]
+    if inventory.release is not None and store.org.workflow_coding_builtin.available(inventory.release):
+        row = inventory.release.rows[2][1]
         release = dict(identity=row['namespace'] + '/' + row['template_name'],
                        version=row['version'], definition_digest=row['definition_digest'])
         account(release, budget)

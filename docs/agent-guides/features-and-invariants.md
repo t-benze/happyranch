@@ -1,5 +1,25 @@
 # Features And Invariants
 
+## Built-in coding definition invariant — ROOT13509 / THR320seq304
+
+System-owned availability registers the fixed v1 definition in exactly four
+existing template tables with canonical `workflow-coding-builtin-registration@1`
+provenance; no human publication/admission operation or receipt exists. Saved
+human six-row originals and all settings/start/stage/return pins remain literal.
+Complete typed common release/queued/native validation rejects partial, mixed,
+foreign, malformed and orphan state; authentic bootstrap bindings are supported
+for either origin. No DDL/reference/history rewrite or old-reader downgrade.
+Registration runs once after the legitimate recovery/authority safety tail,
+never early serving, constructors or reads. Genuine native writer ownership,
+complete source/target validation, original budgets and positive-COMMIT watermark
+apply. Unknown owners and uncertain COMMIT remain owned, never retried/adopted.
+Package loss gates new work without stranding saved replay/admitted continuation;
+unchanged Disabled-retain keeps its exact mapping. First-use metadata hydration
+sends nothing, preserves empty roles/repos and Disabled, and cannot clear an
+original-save fence. Only Founder Save configures; availability starts nothing.
+Loaded identity, human persistence and genuine scratch remain separate acceptance.
+
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -7,7 +27,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete valid J/import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend

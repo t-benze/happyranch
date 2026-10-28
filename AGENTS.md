@@ -23,6 +23,51 @@ same-agent checks may still refuse a route without a valid link. Report that rea
 constraint without inventing links, changing history or claiming a fresh-task
 bypass. No deploy/restart or live ancestry reconciliation is required by this rule.
 
+## Current built-in coding definition — ROOT13509 / THR320seq304
+
+Normally admitted orgs receive the unchanged packaged coding v1 definition
+without a human import. Normal org recovery constructs the private immutable
+resource observation outside locks and registers only after the actual move,
+Pause, cutover, naming and authority safety tail. With serving-before-recovery,
+registration belongs to the deferred recovery owner, never early serving.
+Generic Database, schema/reference constructors and SELECT readers never register.
+
+System registration appends exactly identity, draft, version and identity-version
+rows, with canonical `workflow-coding-builtin-registration@1` provenance, actual
+org and one UTC timestamp. It creates no human operation/admission/receipt,
+settings, mapping, grant, task or run. The unchanged six-row human import family
+and original receipts remain literal. Template publisher is either the genuine
+human map or `{kind:system,component:coding-builtin,provenance_format:workflow-coding-builtin-registration@1}`.
+Human import GET remains404 `coding_release_import_not_found` for system origin;
+fresh import POST is409 `coding_release_builtin_registered`, with zero human rows.
+Complete typed release/queued/native readers accept legitimate bootstrap bindings
+for either origin and reject orphan/extra/mixed/foreign/unsupported rows.
+
+Existing valid human/system registration is a write-free no-op. New registration
+uses the genuine native writer, publisher then DB lock, an owned transaction,
+complete source/target validation and one cumulative allowance. Active/unknown
+native owners, publisher/lease/profile operations or transitional cutover defer;
+none is recovered or adopted here. Positive COMMIT alone publishes watermarks;
+failed COMMIT/rollback/close retains primary/cleanup and native uncertainty.
+Resource absence defers availability, never repairs storage or invokes import.
+
+Saved history, template reads, exact original replay and admitted continuation
+remain package-independent. Fresh options/settings/mapping/start use requires the
+captured exact packaged bytes; unchanged Disabled-retain preserves its accepted
+mapping. Four registered rows require compatible readers even with no run;
+no old-binary downgrade claim follows. SQL/DDL/reference digests stay unchanged.
+
+First-use Settings binds available metadata only to a pristine zero-basis draft,
+without a request, key or Adopt prerequisite. Select repositories/formats/four
+eligible distinct org agents and Save; Admission starts Disabled. Dirty/stale
+metadata still requires explicit adoption. Org/mount/options lifetimes preserve
+original provider-owned pending/uncertain save fences; no automatic PUT occurs.
+Guided human setup observes the saved template through read-only team/template
+listing instead of importing; actual human originals get readback only.
+The twelve-object loaded observer does not attest this registrar/resolver.
+Source/static delivery is not deployment, loaded identity, settings persistence
+or scratch acceptance. Those and ordinary coding admission remain root-owned.
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -73,7 +118,7 @@ health or disk HEAD alone is not loaded acceptance.
 
 This source contract supersedes earlier coding-only J/whole-org-equality and
 mandatory offline-chain instructions below, preserving attributed old evidence.
-Human deployment/restart, Founder original import/settings, independently loaded
+Human deployment/restart, Founder settings, independently loaded
 readiness and one genuine four-role scratch run remain separate root-owned
 acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
@@ -86,7 +131,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -4656,8 +4701,7 @@ supplies genuine imported release/current authority/configured repository
 selectors. The actual yielded capture, complete central inventory and ONE
 cumulative budget share one caller-owned read snapshot, without writes, a lease
 or repository/Git observations. Unavailable authority has no pin/choices;
-invalid history/budget refuses categorically. E0 requires explicit metadata
-adoption, four distinct across-team bindings and1..8 repositories with explicit
+invalid history/budget refuses categorically. E0 binds available metadata locally without an adoption prerequisite, then requires four distinct across-team bindings and1..8 repositories with explicit
 sha1/sha256 formats. Initial replacements are visibly empty. Saved repositories/
 replacements stay intact by default; current-pin adoption is explicit. Options
 refresh/error never edits a draft or releases a fence; unchanged disabled-retain
@@ -4858,7 +4902,7 @@ grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
 
 From the reviewed published host checkout, a genuine human terminal may run
 `python3 scripts/setup_coding.py --org happyranch`, then use Settings → Coding.
-This explicit coordinator reuses existing lifecycle/build and human import
+This explicit coordinator reuses existing lifecycle/build and saved-definition observation
 owners. Normal OrgState.load atomically adds inert coding storage without
 upgrading document layouts; the coordinator invokes no migration chain. Managed markers,
 workspace/native ancestry, current all-runtime owners and unavailable complete
@@ -4882,18 +4926,18 @@ F/E→G→H→I→J writer is part of normal coding setup. Stop stale/KILL/unkno
 source drift or uncertain writer stops the sequence without automatic restart,
 restore or replay. This is cooperative maintenance, not a new daemon lock.
 
-Actual serving boot/source/org/UI observations precede human CLI release import.
-Selected memory identity observes twelve already-loaded workflow objects through
-OrgState validator-alias and actual org import-store binding agreement. Closed
-rows, origins, recursive code/source hashes and unchanged budgets/bookends must
-agree before import; missing/malformed/moving coverage and unrelated observation
-errors still hold. This finite identity is neither startup invocation nor
-transitive workflow proof; health200/disk HEAD/index equality are insufficient.
-Exact import absence alone permits fresh confirmation, exclusive original canonical file and fsynced
-send intent before one POST. Existing/uncertain originals remain owned; GET
-readback never authorizes another key/replay. No browser import surface changes.
+Actual serving boot/source/org/UI observations precede read-only saved template
+availability. The normal coordinator lists genuine teams, then the existing
+team-scoped template listing, and compares the saved fixed definition, IDs,
+digest/pins and truthful system/human publisher. It sends no importer POST and
+creates no human operation/intent. Genuine human originals retain their exact
+readback/custody, without replay or new key. The existing twelve loaded-object
+observations, OrgState alias and import-store binding checks remain required;
+they do not attest the new registrar/resolver or prove startup invocation.
+Missing/malformed/moving coverage and unrelated observation errors still hold;
+health200/disk HEAD/index equality are insufficient.
 
-The command chooses/saves/enables no roles or settings. Adopt metadata, select
+The command chooses/saves/enables no roles or settings. Select
 repositories/formats and four distinct eligible org agents across teams with an
 eligible final manager; keep Admission Disabled, save/reopen, and use Check
 original save for uncertainty. Source/static delivery is not host acceptance.

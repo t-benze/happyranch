@@ -13,7 +13,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.task_pause import current_invocation
 from runtime.workflows._coding_import_support import CodingImportSupport, _capture
-from runtime.workflows._coding_release_history import read_release_import
+from runtime.workflows._coding_registered_release import read_registered_release
 from runtime.workflows._coding_settings_execution import _configuration, _read_json, _resolve_start
 from runtime.workflows.activation import author_capacity_blocked
 from runtime.workflows.coding_authority_history import _Budget
@@ -61,8 +61,8 @@ def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> No
         _check(_settings_family(command))
         budget = _Budget()
         layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
-        _check(inventory is not None)
-        _resolve_start(command, inventory.mappings, inventory.imported, budget, fresh=True)
+        _check(inventory is not None and org.workflow_coding_builtin.available(inventory.release))
+        _resolve_start(command, inventory.mappings, inventory.release, budget, fresh=True)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
         raise CodingStartError('coding_start_settings_unavailable') from None
     finally:
@@ -251,7 +251,7 @@ class CodingStartStore:
         # Complete schema/reference admission reconstructed these histories on
         # this connection/org/snapshot. Consume locally before any write; the
         # post-write validator below must reconstruct the changed state anew.
-        mappings, imported, saved = inventory.mappings, inventory.imported, inventory.queued
+        mappings, imported, saved = inventory.mappings, inventory.release, inventory.queued
         for instance, entry in saved.runs.items():
             old = entry['command']
             if (entry['source']['principal'], old['operation_key']) == (claim.assigned_agent, command['operation_key']):
@@ -261,6 +261,8 @@ class CodingStartStore:
                         or old != command):
                     raise CodingStartError('coding_start_operation_conflict')
                 return instance  # No admission/task/counter/event/pointer writes.
+        if not self.org.workflow_coding_builtin.available(inventory.release):
+            raise CodingStartError('coding_start_release_unavailable')
         source_before, callback, actual, native = self._native(conn, claim, invocation,
                                                              budget=inventory.budget)
         checkpoints = [*checkpoints, dict(source=encode_row(source_before), ancestors=native['ancestors'])]

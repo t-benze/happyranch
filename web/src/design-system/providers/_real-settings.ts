@@ -246,7 +246,13 @@ function useCodingSettingsOptions() {
   const slug = useRealOrgSlug();
   const query = useQuery({
     queryKey: ['settings', 'coding-options', slug],
-    queryFn: () => settingsApi.getCodingSettingsOptions(slug),
+    queryFn: async ({ signal }) => {
+      // Consuming the query signal gives each active options request its own
+      // lifetime. A detached/older request cannot seed a later A→B→A mount.
+      const data = await settingsApi.getCodingSettingsOptions(slug);
+      if (signal.aborted) throw new DOMException('Obsolete coding options', 'AbortError');
+      return data;
+    },
     enabled: !!slug,
     staleTime: 30_000,
     retry: false,
