@@ -47,9 +47,10 @@ Operational/native/COMMIT/rollback uncertainty raises with the original cause an
 actual secondaries. Audit/queue publication follows successful COMMIT; later
 publication refusal retains that exact committed child/prefix without replay.
 Native teardown and parent publication remain outside writer/capture locks.
-The historical cancel-race note-deferral and inline-chain cancel-clears sketches
-are superseded by these current maintained boundaries; cancellation itself is
-unchanged.
+The historical cancel-race note-deferral sketch is superseded by these current
+maintained boundaries. The CURRENT indexed inline-chain spec retains historical
+sketches; its former cancel-clears passage is superseded by this arbitration
+contract and its reconciled cancellation invariant. Cancellation itself is unchanged.
 
 ## Current explicit coding execution and caller return — ROOT13015
 

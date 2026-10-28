@@ -2,6 +2,8 @@
 
 > Pause boundary superseded by [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md). Existing lifecycle, waiting and lineage meanings remain. A separate actual-root hold gates future commitment; committed sessions/results drain, deferred retries retain their owner, and unknown execution is not proof of quiescence. Cancel/stop/reject remain available. This annotation preserves the historical design below.
 
+> Current cancellation contract: cancellation preserves the cancelled parent's `active_chain`. The control-flow sketch below is subject to the current owner and transaction boundaries in [ordinary completion and inline-chain cancellation arbitration](../../agent-guides/orchestrator-contracts.md#ordinary-completion-and-inline-chain-cancellation-arbitration); it does not authorize clearing or advancing a cancelled or replaced parent's chain.
+
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
 > replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
@@ -229,7 +231,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 | Opaque infra failure mid-leg (TASK-3604) | The failed leg is terminal FAILED — no automatic successor root is spawned. `_enqueue_parent_if_waiting` receives the FAILED child and wakes the parent via the per-slice revisit-lineage contract. A later retry must name the same-agent FAILED child under the current parent, or (from a verified successor root) a same-agent FAILED child reached through the bounded recorded-supersession verifier; an unresolved local failure always takes precedence. `active_chain` is cleared on the parent as part of this wake. The failed leg carries `revisit_of_task_id`-free (it was not auto-revisited) and the chain does not survive — the parent manager receives the wake with the failed-leg report and decides whether to re-declare the chain skipping completed legs. Durable worker artifacts survive so the re-declared chain can pick up evidence. Recovery is explicit manager or founder action — no daemon successor. |
 | Non-root manager task returns `supersede` (THR-277 PR3) | The still-current child atomically becomes FAILED with the non-root-supersede refusal note, creates no successor or supersession row, and reuses the ordinary failed terminal tail. A serial parent's `active_chain` clears and the delegated parent wakes once with the failure; a fan-out parent wakes once and its join context lists the child as failed. A cancelled or replaced child produces no failure or wake. Startup Branch 2 reconstructs a wake lost after the child commit. Root and thread-origin-root supersession behavior is unchanged. |
 | Leg's spawned child fails to launch | Treated as leg failure → manager wakes. Same code path as today's failed-delegate. |
-| Founder cascade-cancels parent | Existing cascade kills any in-flight leg; clears `active_chain` as part of the parent-cancel path. |
+| Founder cascade-cancels parent | Cancellation preserves the parent's `active_chain` and records its cancellation state; existing cascade requests termination of in-flight legs. A later leg terminal cannot spawn a downstream leg or clear/complete the cancelled parent. Cancellation is not proof of native cleanup or quiescence. |
 | Founder cancels a leg directly (no cascade) | Wake parent; clear `active_chain`. Explicit termination beats auto-advance. |
 | Founder revisits parent mid-chain | Cannot happen — `happyranch revisit` requires terminal predecessor; parent is `blocked(delegated)` while chain runs. |
 | Manager declares chain with off-team agent (any leg) | Validated at decision-parse time across all legs; rejected as feedback step back to manager (existing `feedback` mechanism). No partial spawn. |
@@ -259,7 +261,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 
 - Plan a 3-leg chain (`dev_agent` builder → `senior_dev` reviewer → `qa_engineer` QA) where the fake reviewer emits `verdict: APPROVE` and fake QA emits `verdict: PASS`. Assert: exactly 2 `chain_auto_advance` rows, exactly 1 final manager wake, `orchestration_step_count` on parent incremented by 2 total (declare + final wake).
 - Same plan, fake reviewer emits `REQUEST_CHANGES`. Assert: 0 `chain_auto_advance` rows; manager wakes after leg 2 with mismatch context in history block; `active_chain` cleared on parent.
-- Founder-cancel during leg 2 in-flight: assert `active_chain` cleared, no leg 3 spawn, parent ends in `failed-cancelled`.
+- Founder cascade-cancel during leg 2 in-flight: assert the parent is CANCELLED with its `active_chain` preserved, no leg 3 spawn, and the late leg terminal leaves the winning cancellation/chain/note/timestamps unchanged. Native cleanup/quiescence requires separate evidence.
 - Opaque failure on leg 2 (fake worker triggers session timeout under cap — TASK-3604): assert leg 2 FAILED (terminal, no successor root), parent receives bounded wake, `active_chain` cleared on parent, no leg 3 spawn.
 
 ### Contract
@@ -276,13 +278,13 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 
 ## Load-bearing invariants
 
-- **`active_chain` is cleared on every parent wake.** No code path that wakes the parent may leave a stale chain pointer. Centralize the clear in `_enqueue_parent_if_waiting`.
+- **Parent-wake chain clearing is conditional on the original current owner and chain.** A cancelled or replaced parent's chain is preserved; a stale leg terminal cannot clear the winner's chain or wake it as successful.
 - **Chain auto-advances do NOT bump `orchestration_step_count`.** Test this directly so the telemetry remains accurate.
 - **Cross-team validation runs on every leg, at declaration time.** Don't lazy-validate when the leg is about to spawn — by then the manager's session has ended and the feedback loop is broken.
 - **`first_leg_expect_verdict` lives in the chain payload, not derived from audit.** Audit-row recovery would couple the orchestrator to audit-log durability for routing decisions; the chain payload is the source of truth.
 - **Workers don't author chains.** The `is_team_manager(agent)` gate in `run_step.py` already blocks workers from emitting `decision` payloads; do not relax this when adding chain support.
 - **Opaque failure of a chain leg does NOT preserve the chain (TASK-3604).** The failed leg is terminal FAILED with no automatic successor; the bounded parent wake receives the failure and clears `active_chain`. Chains aborted by a failed leg do not auto-resume — the parent manager decides whether to re-declare.
-- **Cancel-during-chain clears `active_chain` before terminating the in-flight leg.** Otherwise the leg's terminal could race the cancel and trigger a phantom auto-advance.
+- **Cancel-during-chain preserves `active_chain` and the winning cancellation bytes.** Before chain/child/link writes or completed-trigger clearing, the writer compares the original noncancelled in_progress/delegated parent, exact chain, newest triggering child and selected raw INTEGER report inside the SAME BEGIN IMMEDIATE. Cancellation, replacement or lost selection cannot insert or publish a downstream child, clear the winner's chain or complete the winner. Only authenticated final-leg `chain_complete` may complete a carrier, subject to its actual conditional completion result; `aborted` and `lost_owner` cannot stand in for success. See [the current arbitration contract](../../agent-guides/orchestrator-contracts.md#ordinary-completion-and-inline-chain-cancellation-arbitration). Cancellation alone proves no native cleanup or quiescence.
 - **Reviewer expect_verdict omission (HARD REJECT) never fails the root.** The delegation is denied before any child spawns; the owner gets a feedback orchestration step naming `expect_verdict: "APPROVE"`, the root returns to PENDING, and exactly one self re-enqueue occurs so the corrected decision can proceed. Only unrecoverable structural errors (missing agent name / missing workspace) hard-fail the task.
 
 ## Open questions
