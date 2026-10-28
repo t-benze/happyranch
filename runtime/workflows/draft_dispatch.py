@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
+from runtime.daemon.startup_recovery import StartupUnavailable, document_admission_validation, require_document_admission
 from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION, validate_workflow_schema
 
 if TYPE_CHECKING:
@@ -293,6 +293,9 @@ class WorkflowDraftDispatcher:
                                     self.org.orchestrator._build_session_id(), owner="draft")
         invocation.workflow_dispatcher = self
         invocation.draft_request_key = key
+        # This original selection must survive preparation and the host FIFO.
+        # Bind it to this invocation so a continuing launch cannot recapture.
+        invocation.draft_selection = (invocation, self, validate)
         try:
             validate()
             invocation.prepare(validate_admission=validate)
@@ -338,10 +341,19 @@ class WorkflowDraftDispatcher:
                     release_live(invocation, failed=failed)
 
     async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
-        # Capture every external read before synchronous ownership. Async locks
-        # are acquired before entering the original synchronous fence interval;
-        # no synchronous lock/lease crosses an event-loop wait.
-        validate = document_admission_validation(self)
+        # Continuing the SAME preparation must use its original selection.
+        # Missing/foreign invocation state supplies no independent entry grant.
+        selection = getattr(invocation, "draft_selection", None)
+        if (type(selection) is not tuple or len(selection) != 3
+                or selection[0] is not invocation or selection[1] is not self
+                or invocation.workflow_dispatcher is not self
+                or invocation.orch is not self.org.orchestrator
+                or invocation.owner != "draft" or not callable(selection[2])):
+            raise StartupUnavailable("startup_document_owner_changed")
+        validate = selection[2]
+        validate()
+        # External reads still precede synchronous ownership; no synchronous
+        # lock/lease crosses the original asynchronous lock waits.
         capture = self.org.workflow_authority.capture_admission()
         validate()
         active_sessions = tuple(self.org.sessions.iter_active())

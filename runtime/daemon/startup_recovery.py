@@ -1311,14 +1311,21 @@ def document_admission_validation(owner: Any, *, recovery: Any = None,
     return validate
 
 
-def publish_document_tasks(owner: Any, queue: Any, task_ids: list[str]) -> None:
+def publish_document_tasks(owner: Any, queue: Any, task_ids: list[str], *,
+                           validate_admission: Callable[[], None] | None = None) -> None:
     """Ordinary postcommit delivery, with the existing durable outbox as intent."""
+    if not task_ids:
+        return
     try:
+        # Only a standalone entry captures here. Continuing graph/discovery
+        # batches retain the wrapper's original selection across every put.
+        validate = document_admission_validation(owner) if validate_admission is None else validate_admission
         for task_id in task_ids:
-            require_document_admission(owner)
+            validate()
             if queue is not owner._startup_state.queue:
                 raise StartupUnavailable("startup_document_queue_changed")
             queue.enqueue_if_absent(owner.org.slug, task_id)
+            validate()
     except StartupUnavailable as exc:
         exc.detail["committed_task_ids"] = list(task_ids)
         exc.add_note("Document graph/task intent is committed; dependent publication remains unacknowledged.")

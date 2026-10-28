@@ -166,22 +166,25 @@ def _publish_cold_document_task(dispatcher: Any, task_id: str, gate: Any,
     from runtime.workflows.authority import WorkflowAuthorityError
     from runtime.workflows.review_join import HOLDS
     from runtime.infrastructure.task_pause_controls import PauseControlError
+    from runtime.daemon.startup_recovery import document_admission_validation
+    validate = document_admission_validation(dispatcher, recovery=gate, sweep_owner=startup_owner)
     org = dispatcher.org
-    from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
-    require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
     with dispatcher._live_lock:
-        require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
+        validate()
         if task_id in dispatcher._live:
             return RecoveryOutcome('local_hold', 'startup_document_live_owner')
     try:
         with dispatcher.db._lock:
-            require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
+            validate()
             if dispatcher._intent(dispatcher.db._conn, task_id)['state'] != 'queued':
                 return RecoveryOutcome('local_hold', 'startup_document_not_queued')
+        validate()
         capture = org.workflow_authority.capture_admission()
+        validate()
         sessions = tuple(org.sessions.iter_active())
-        with org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(dispatcher, recovery=gate, sweep_owner=startup_owner)) as conn:
-            require_document_admission(dispatcher, recovery=gate, sweep_owner=startup_owner)
+        validate()
+        with org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+            validate()
             intent = dispatcher._intent(conn, task_id)
             if (intent['state'] != 'queued' or intent['host_launch_started']
                     or intent['session_id'] is not None or intent['host_execution_id'] is not None
@@ -200,7 +203,11 @@ def _publish_cold_document_task(dispatcher: Any, task_id: str, gate: Any,
         if not isinstance(code, str) or code not in HOLDS | {'workflow_activation_author_pending', 'root_paused'}:
             raise
         return RecoveryOutcome('local_hold', code)
-    return gate.publish_workflow_task(org, task_id, sweep_owner=startup_owner)
+    validate()
+    outcome = gate.publish_workflow_task(org, task_id, sweep_owner=startup_owner)
+    # A refused renewal cannot undo an earlier actual insertion/SAME pending.
+    validate()
+    return outcome
 
 
 def _recover_cold_owned_task(db: Any, queue: Any, slug: str, task_id: str,

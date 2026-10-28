@@ -782,7 +782,7 @@ class WorkflowSubmissionStore:
                     except StartupUnavailable as exc:
                         exc.detail["committed_task_ids"] = list(tasks)
                         raise
-                    publish_document_tasks(self, queue, tasks)
+                    publish_document_tasks(self, queue, tasks, validate_admission=validate)
 
     def author_instruction(self, task_id: str, session_id: str) -> str:
         revision = self.org.workflow_revisions.author_instruction(task_id, session_id)
@@ -1135,7 +1135,7 @@ class WorkflowSubmissionStore:
             except StartupUnavailable as exc:
                 exc.detail["committed_task_ids"] = list(tasks)
                 raise
-            publish_document_tasks(self, queue, tasks)
+            publish_document_tasks(self, queue, tasks, validate_admission=validate)
         # Reuse lifespan/reaper discovery for result-before-consumption recovery.
         # No new scheduler and no replay of an uncertain host launch.
         await self.org.workflow_revisions.discover(queue, validate_admission=validate)

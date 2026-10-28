@@ -4443,6 +4443,19 @@ Selected document admission now carries the same authenticated store/org/gate/
 epoch and captured references from original operation entry, before authority
 capture or the first binding/async/DB/profile wait. Wrappers, synchronous cores
 and original writers renew that SAME closure without adopting replacement owners.
+Draft/F5 dispatch retains it on the exact original invocation before preparation;
+the continuing host FIFO/final launch writer consumes that selection and refuses
+missing or foreign invocation state instead of capturing replacement references.
+The original P2 queued helper captures before its live/DB/authority waits and
+renews the same closure through its admission writer and actual native publication,
+preserving the sweep owner and inserted-or-SAME pending outcome. All five ordinary
+revision/handoff publication callers forward their captured closure into the batch
+adapter, which renews it around every original enqueue. Later refusal retains the
+graph COMMIT, full committed task IDs and any actual earlier insertion/pending
+prefix, without rollback, replay or a delivery-success claim. Empty/no-queue paths
+keep their existing meaning; only a standalone nonempty adapter entry without an
+original callable captures at its own boundary. Owed original settlement stays
+independent of these fresh effects.
 Selected draft writers preserve the original body/post-BEGIN/COMMIT BaseException
 and traceback across their once-only owed rollback, retaining actual rollback
 failure as guarded bounded secondary evidence. No-validator terminal/cancel paths

@@ -642,7 +642,7 @@ class WorkflowRevisionStore:
             except StartupUnavailable as exc:
                 exc.detail["committed_task_ids"] = list(notifications)
                 raise
-            publish_document_tasks(self, queue, notifications)
+            publish_document_tasks(self, queue, notifications, validate_admission=validate)
         return receipt
 
     def _select(self, conn: sqlite3.Connection, operation_id: str, *, principal: WorkflowTemplatePrincipal | None,
@@ -948,7 +948,7 @@ class WorkflowRevisionStore:
             except StartupUnavailable as exc:
                 exc.detail["committed_task_ids"] = list(tasks)
                 raise
-            publish_document_tasks(self, queue, tasks)
+            publish_document_tasks(self, queue, tasks, validate_admission=validate)
 
     def discover_native(self, queue: Any, recovery: Any) -> RecoveryOutcome:
         from runtime.daemon.startup_recovery import RecoveryOutcome
@@ -999,4 +999,4 @@ class WorkflowRevisionStore:
                     except StartupUnavailable as exc:
                         exc.detail["committed_task_ids"] = list(tasks)
                         raise
-                    publish_document_tasks(self, queue, tasks)
+                    publish_document_tasks(self, queue, tasks, validate_admission=validate)
