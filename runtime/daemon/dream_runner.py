@@ -297,7 +297,7 @@ async def _run_dream(
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
     require_producer_admission(org_state)
-    repo_refresh_results = await refresh_workspace_repos_async(workspace,
+    repo_refresh_results = await refresh_workspace_repos_async(workspace, org=org_state,
         preparation=_move_owner, host_supervisor=host_supervisor,
         materialization=(settings, expected_specs))
 

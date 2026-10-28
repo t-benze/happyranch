@@ -1048,7 +1048,11 @@ async def run_invocation(
                 try:
                     owner.finish(deferred=deferred, failed=failed)
                 except BaseException as settlement:
-                    owner.owner_live = False
+                    refresh = owner._repository_refresh_owner
+                    if refresh is None:
+                        owner.owner_live = False
+                    else:
+                        refresh.fail("settlement", settlement)
                     # Retain process-local attribution when durable settlement refuses.
                     if primary is not None:
                         primary.add_note(f"C2 lifecycle settlement failed: {settlement}")
@@ -1281,7 +1285,7 @@ async def _run_invocation_owned(
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
     _require_runner_ready(org_state, host_supervisor)
-    repo_refresh_results = await refresh_workspace_repos_async(workspace,
+    repo_refresh_results = await refresh_workspace_repos_async(workspace, org=org_state,
         preparation=move_owner, host_supervisor=host_supervisor,
         materialization=(settings, expected_specs))
 

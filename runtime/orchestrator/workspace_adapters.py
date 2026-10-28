@@ -3272,7 +3272,7 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
     return results
 
 
-def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: list[dict]) -> dict[str, bool]:
+def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: list[dict], *, _owner=None) -> dict[str, bool]:
     """The original caller owns this tail AFTER actual worker return/join."""
     primary = None
     for record in work:
@@ -3296,24 +3296,40 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
         except BaseException as exc:
             # Failed closure/export cannot turn a completed Popen into a
             # settled preparation; latch before preserving the first safe cause.
+            if _owner is not None:
+                _owner.fail("evidence", exc)
             safe_error = _repo_pull_safe_error(exc)
             try:
                 if evidence is not None:
                     evidence.uncertain = True
                 preparation.failed_cleanup(repository_deadline=record["deadline"])
-            except BaseException:
+            except BaseException as attribution:
+                if _owner is not None:
+                    _owner.fail("attribution", attribution)
                 safe_error.add_note("repository preparation failure attribution unavailable; ownership remains unknown")
             if outcome is not None:
                 try:
                     _repo_pull_failed(preparation, record["name"], outcome,
                         preparation_closed=evidence is not None and evidence.closed,
                         repository_deadline=record["deadline"])
-                except BaseException:
+                except BaseException as attribution:
+                    if _owner is not None:
+                        _owner.fail("cause_attribution", attribution)
                     safe_error.add_note("repository preparation cause attribution failed; original failure retained")
             if primary is None:
-                primary = safe_error
+                primary = exc if _owner is not None else safe_error
         finally:
-            record["lease"].__exit__(None, None, None)
+            try:
+                record["lease"].__exit__(None, None, None)
+            except BaseException as error:
+                if _owner is not None:
+                    _owner.fail("lease", error)
+                    if primary is not None:
+                        raise primary
+                raise
+            else:
+                if _owner is not None:
+                    record["lease_closed"] = True
     if primary is not None:
         raise primary from None
     return results
@@ -3352,66 +3368,265 @@ def refresh_workspace_repos(
     return results
 
 
-async def refresh_workspace_repos_async(workspace: Path, *, preparation=None, host_supervisor=None, materialization=None) -> dict[str, bool]:
-    """Keep the real native owner/OrgState alive through shielded worker join."""
+class _RepositoryRefreshOwner:
+    """One original batch/finally, preparation, org and direct-DB lifetime."""
+
+    def __init__(self, org, preparation, loop, deadline, cancel, context):
+        self.org, self.preparation, self.loop = org, preparation, loop
+        self.db = None if org is None else org.db
+        self.admission = None if preparation is None else preparation.admission
+        self.deadline, self.cancel, self.context = deadline, cancel, context
+        self.work, self.results = [], {}
+        self.pin = None
+        self.lock = threading.Lock()
+        self.finished = self.handed_off = self.acknowledged = False
+        self.closed = self.retired = self.retirement_started = False
+        self.finish_requested = self.finish_started = self.waiter_released = False
+        self.deferred = self.failed = False
+        self.primary = self.traceback = self.diagnostic_error = None
+        self.errors = dict.fromkeys(("submission", "wrapper", "batch", "completion",
+            "evidence", "attribution", "cause_attribution", "lease", "closure",
+            "handoff", "settlement", "retirement"))
+        self.error_tracebacks = self.errors.copy()
+        self.error_order, self.noted = [], set()
+
+    def _annotate_locked(self):
+        if self.primary is None:
+            return
+        try:
+            BaseException.__setattr__(self.primary, "_repository_refresh_owner", self)
+            for kind in self.error_order:
+                if self.errors[kind] is not self.primary and kind not in self.noted:
+                    BaseException.add_note(self.primary, f"repository refresh {kind} failed: "
+                        f"{type(self.errors[kind]).__name__[:128]}; actual exception retained by original owner")
+                    self.noted.add(kind)
+        except BaseException as error:
+            self.diagnostic_error = self.diagnostic_error or error
+
+    def fail(self, kind, error):
+        with self.lock:
+            if self.errors[kind] is None:
+                self.errors[kind] = error
+                self.error_tracebacks[kind] = error.__traceback__
+                self.error_order.append(kind)  # Fixed actual errors cannot be evicted by cancellation.
+            self._annotate_locked()
+
+    def remember_primary(self, error):
+        with self.lock:
+            if self.primary is None:
+                self.primary, self.traceback = error, error.__traceback__
+            self._annotate_locked()
+
+    def run(self, workspace, supervisor):
+        primary = traceback = None
+        try:
+            try:
+                self.results = _repo_refresh_batch(workspace, self.preparation, supervisor,
+                    self.deadline, self.cancel, self.work)
+            except BaseException as error:
+                primary, traceback = error, error.__traceback__
+                self.fail("batch", error)
+            finally:
+                if self.preparation is not None:
+                    self.preparation._repository_worker_active = False
+                try:
+                    self.results = _repo_refresh_complete(self.preparation, self.results,
+                        self.work, _owner=self)
+                except BaseException as error:
+                    self.fail("completion", error)
+                    if primary is None:
+                        primary, traceback = error, error.__traceback__
+                finally:
+                    if self.preparation is not None:
+                        self.preparation._repository_completion_active = False
+            self.closed = all(record.get("lease_closed") is True and
+                (record["evidence"] is None or record["evidence"].closed)
+                for record in self.work) and (self.preparation is None or all(
+                    evidence.closed for evidence in self.preparation._repository_preparations.values()))
+            if not self.closed:
+                error = RuntimeError("repository_refresh_closure_unavailable")
+                self.fail("closure", error)
+                if primary is None:
+                    primary, traceback = error, error.__traceback__
+            if primary is not None:
+                raise primary.with_traceback(traceback)
+            return self.results
+        finally:
+            # A post that enqueues and then raises is not positive handoff.
+            with self.lock:
+                self.finished = True
+                try:
+                    self.loop.call_soon_threadsafe(self.acknowledge)
+                except BaseException as error:
+                    # fail() takes this same mutex, so record outside it below.
+                    posting_error = error
+                else:
+                    self.handed_off = True
+                    posting_error = None
+            if posting_error is not None:
+                self.fail("handoff", posting_error)
+
+    def acknowledge(self):
+        if asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("repository_refresh_loop_changed")
+        with self.lock:
+            if not self.finished or not self.handed_off:
+                return
+            self.acknowledged = True
+            finish = self.finish_requested
+            released = self.waiter_released
+        if not self.closed or not (finish or released) or self.errors["settlement"] is not None:
+            return
+        try:
+            if finish:
+                self.preparation.finish(deferred=self.deferred, failed=self.failed)
+            else:
+                # Healthy refresh releases only its own slot, never finishes the
+                # preparation or consumes the later producer worker's slot.
+                self.retire()
+        except BaseException as error:
+            self.fail("settlement" if finish else "retirement", error)
+
+    def request_finish(self, *, deferred, failed):
+        if (asyncio.get_running_loop() is not self.loop
+                or self.preparation._repository_refresh_owner is not self
+                or self.preparation.admission is not self.admission
+                or self.admission.db is not self.db
+                or self.org.db is not self.db):
+            raise RuntimeError("repository_refresh_finish_owner_changed")
+        with self.lock:
+            if not self.finish_requested:
+                self.finish_requested = True
+                self.deferred = deferred
+                self.failed = failed or not self.acknowledged or not self.closed
+            if (not self.acknowledged or not self.closed or self.finish_started
+                    or self.errors["settlement"] is not None):
+                return False
+            self.finish_started = True
+            return True
+
+    def retire(self):
+        if asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("repository_refresh_loop_changed")
+        with self.lock:
+            if (not self.acknowledged or not self.closed or self.retirement_started
+                    or self.errors["settlement"] is not None):
+                return
+            self.retirement_started = True
+        try:
+            if self.preparation is not None and (
+                    self.preparation._repository_refresh_owner is not self
+                    or self.preparation.admission is not self.admission
+                    or self.admission.db is not self.db):
+                raise RuntimeError("repository_refresh_preparation_changed")
+            if self.org is not None:
+                if self.org.db is not self.db:
+                    raise RuntimeError("repository_refresh_database_changed")
+                # Keep the direct-DB pin until org retirement itself succeeds.
+                self.org._release_native_task(self)
+                self.db._release_repository_refresh_pin(self.pin, self)
+            if self.preparation is not None:
+                self.preparation._repository_refresh_owner = None
+            self.retired = True
+        except BaseException as error:
+            self.fail("retirement", error)
+            raise
+
+    def outcome_error(self):
+        with self.lock:
+            if self.primary is None:
+                for kind in self.error_order:
+                    self.primary, self.traceback = self.errors[kind], self.error_tracebacks[kind]
+                    break
+            self._annotate_locked()
+            return self.primary, self.traceback
+
+
+async def refresh_workspace_repos_async(workspace: Path, *, preparation=None,
+        host_supervisor=None, materialization=None, org=None) -> dict[str, bool]:
+    """Own the original batch AND finally tail before the sole native submit."""
+    loop = asyncio.get_running_loop()
     cancel = threading.Event()
     deadline = time.monotonic()+_REPO_REFRESH_SECONDS
-    context = copy_context()
-    work = []
+    owner = _RepositoryRefreshOwner(org, preparation, loop, deadline, cancel, copy_context())
+    if org is not None:
+        if (preparation is None or owner.db is None
+                or preparation.admission.db is not owner.db
+                or preparation.state.org_slug != org.slug
+                or not preparation.owner_live
+                or preparation._repository_refresh_owner is not None):
+            raise RuntimeError("repository_refresh_attachment_unavailable")
+        admission = preparation.admission
+        thread = hasattr(preparation, "inv")
+        key = preparation.inv.id if thread else (preparation.state.kind, preparation.state.source_id)
+        move = getattr(owner.db, "_team_move_coordinator", None)
+        if (move is None or admission is not (move.threads if thread else move.producers)
+                or admission.live.get(key) is not preparation):
+            raise RuntimeError("repository_refresh_preparation_unavailable")
+    elif preparation is not None:
+        raise RuntimeError("repository_refresh_org_unavailable")
     if preparation is not None and materialization is not None:
         _repo_retain_materialization(preparation, workspace, *materialization)
+    if org is not None:
+        # Close-first refuses here before enqueue, including a failed close.
+        owner.pin = owner.db._acquire_repository_refresh_pin(owner)
+        if not org._acquire_native_task(owner):
+            # Positive pre-submit refusal; no native callable was submitted.
+            owner.db._release_repository_refresh_pin(owner.pin, owner)
+            raise RuntimeError("repository_refresh_admission_closed")
+        preparation._repository_refresh_owner = owner
     if preparation is not None:
         preparation._repository_worker_active = True
         preparation._repository_completion_active = True
-    def refresh():
-        return _repo_refresh_batch(workspace, preparation, host_supervisor, deadline, cancel, work)
-    worker = asyncio.get_running_loop().run_in_executor(None, context.run, refresh)
-    cancellation, failure, results = None, None, {}
+    try:
+        native = loop.run_in_executor(None, owner.context.run, owner.run, workspace, host_supervisor)
+    except BaseException as error:
+        owner.remember_primary(error)
+        owner.fail("submission", error)
+        cancel.set()
+        # Missing Future never proves no-run: return promptly, retaining possible
+        # late work. Only its original-loop acknowledgement may retire custody.
+        owner.waiter_released = True
+        owner.acknowledge()
+        raise
     while True:
         try:
-            results = await asyncio.shield(worker)
+            await asyncio.shield(native)
             break
-        except asyncio.CancelledError as exc:
-            cancellation = cancellation or exc
+        except asyncio.CancelledError as error:
+            owner.remember_primary(error)
             cancel.set()
-            if worker.done():
+            if native.done():
                 break
-        except BaseException as exc:
-            failure = _repo_pull_safe_error(exc)
+        except BaseException as error:
+            owner.remember_primary(error)
             break
-    if preparation is not None:
-        preparation._repository_worker_active = False
-    # The batch has genuinely returned; keep its leases and the caller's org
-    # lifetime through a joined off-loop completion tail. Binding/root/DB waits
-    # use the SAME original deadline, never the serving event loop.
-    tail = asyncio.get_running_loop().run_in_executor(None, context.run,
-        _repo_refresh_complete, preparation, results, work)
     try:
-        while True:
+        native.result()
+    except BaseException as error:
+        owner.remember_primary(error)
+        owner.fail("wrapper", error)
+    owner.acknowledge()
+    if not owner.acknowledged:
+        owner.remember_primary(RuntimeError("repository_refresh_acknowledgement_unavailable"))
+    error, traceback = owner.outcome_error()
+    if error is not None:
+        if preparation is not None and isinstance(error, asyncio.CancelledError):
             try:
-                results = await asyncio.shield(tail)
-                break
-            except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-                cancel.set()
-                if tail.done():
-                    # Retrieve a completed result/error despite waiter cancellation.
-                    results = tail.result()
-                    break
-    except BaseException as exc:
-        failure = failure or _repo_pull_safe_error(exc)
-    finally:
-        if preparation is not None:
-            preparation._repository_completion_active = False
-    if cancellation is not None:
-        # Escaping an outer effects interval retains its sticky uncertainty;
-        # actual worker return is not proof that interval completed normally.
-        if preparation is not None:
-            preparation.failed_cleanup()
-        raise cancellation from None
-    if failure is not None:
-        raise failure from None
-    return results
+                preparation.failed_cleanup(repository_deadline=deadline)
+            except BaseException as cleanup:
+                owner.fail("settlement", cleanup)
+    # The waiter has finished its own owed cancellation attribution too. An
+    # earlier loop callback could acknowledge native exit, but could not retire
+    # this DB pin before that final write.
+    owner.waiter_released = True
+    owner.acknowledge()
+    error, traceback = owner.outcome_error()
+    if error is not None:
+        raise error.with_traceback(traceback)
+    if not owner.retired:
+        raise RuntimeError("repository_refresh_retirement_unavailable")
+    return owner.results
 
 
 def format_repo_refresh_note(results: dict[str, bool]) -> str:

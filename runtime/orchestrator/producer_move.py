@@ -456,6 +456,7 @@ class ProducerPreparation:
         self.safe_defer = False
         self._native_worker_owner = None
 
+        self._repository_refresh_owner = None
         self._repository_preparations = {}
         self._repository_effect_intervals = []
         self._repository_retained_effects = []
@@ -656,6 +657,11 @@ class ProducerPreparation:
             _current.reset(token)
 
     def finish(self, *, deferred=False, failed=False):
+        refresh = self._repository_refresh_owner
+        if refresh is not None:
+            if not refresh.request_finish(deferred=deferred, failed=failed):
+                return
+            deferred, failed = refresh.deferred, refresh.failed
         worker = self._native_worker_owner
         if worker is not None:
             if not worker.request_finish(deferred=deferred, failed=failed):
@@ -675,9 +681,13 @@ class ProducerPreparation:
                 if all(v.closed for v in self._repository_preparations.values()):
                     self.admission.live.pop((self.state.kind, self.state.source_id), None)
         except BaseException as error:
+            if refresh is not None:
+                refresh.fail("settlement", error)
             if worker is not None:
                 worker.fail("settlement", error)
             raise
+        if refresh is not None:
+            refresh.retire()
         if worker is not None:
             worker.retire()
             error, traceback = worker.outcome_error()
@@ -1115,7 +1125,7 @@ async def run_native_producer(org, kind, source_id, action):
         require_producer_admission(org)
         return await action(owner)
     except DeferredTeamMove as exc:
-        worker = None if owner is None else owner._native_worker_owner
+        worker = None if owner is None else (owner._repository_refresh_owner or owner._native_worker_owner)
         if worker is not None and any(worker.errors[kind] is exc
                 for kind in ("submission", "handoff", "settlement", "retirement")):
             # Submission/handoff/settlement uncertainty is not a genuine
@@ -1131,7 +1141,7 @@ async def run_native_producer(org, kind, source_id, action):
         raise
     finally:
         if owner is not None:
-            worker = owner._native_worker_owner
+            worker = owner._repository_refresh_owner or owner._native_worker_owner
             if worker is not None and primary is not None:
                 worker.remember_primary(primary)
             try:

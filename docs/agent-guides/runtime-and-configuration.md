@@ -888,6 +888,31 @@ diagnostic saturation; callbacks never elect primary by notification order.
 Org registration/retirement stays loop-only. Owner-absent real-org and optional
 offline behavior, independent host/cleanup drains and admission controls remain.
 This producer custody correction is SOURCE only, NOT RUN / PROOF NOT RUN.
+
+Repository refresh in all four dream/wake/schedule/thread callers captures the
+actual org, DB, preparation, context and original loop before its sole native
+submission. The original batch and finally completion tail share that callable,
+work/results, leases, evidence, cancellation signal and cooperative30s deadline;
+the tail still runs after a batch failure and has no separate submit boundary.
+A separate refresh slot retains preparation finish/direct-terminal/save and live
+ownership across possible enqueue-then-raise. Healthy acknowledgement retires
+only refresh custody, leaving the later producer worker slot available. Missing
+worker, unsuccessful original-loop posting/acknowledgement, unclosed evidence/
+lease or failed settlement/retirement keeps custody unknown and destruction fenced.
+Fixed actual errors/tracebacks retain the first waiter cause and late secondary
+errors separately from bounded diagnostics; no absent-worker join or retry follows.
+This selected refresh also pins its actual Database connection under the same
+short RLock as direct close. Pin-first makes close refuse without touching or
+poisoning the connection; close-first (including failed/uncertain close) refuses
+a later pin before submission. Exact original token/DB identity and positive
+native/evidence/lease completion plus original-loop acknowledgement precede
+once-only release. No native wait, filesystem work, callback or foreign lock
+runs under that DB lock. Both ordinary and restricted recovery construction
+initialize only these process-local fields; no schema/bootstrap is added.
+This direct-DB guarantee covers the selected refresh lifetime; it grants no
+custody to unrelated raw DB users. Explicit no-org/no-DB async calls, synchronous
+refresh and no-active-pin close retain their original paths. Missing production
+org/preparation/DB attachment refuses. SOURCE only; behavior/PROOF NOT RUN.
 The thread breaker owns all three original offloads under the selected org's
 native-user close barrier before submission and joins its original wrapper through
 cancellation. Exceptional wrapper completion after possible enqueue is not native

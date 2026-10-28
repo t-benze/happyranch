@@ -67,6 +67,7 @@ class ThreadPreparation:
         self.attempt_open = False
         self.safe_selflaunch_defer = False
 
+        self._repository_refresh_owner = None
         self._repository_preparations = {}
         self._repository_effect_intervals = []
         self._repository_retained_effects = []
@@ -307,13 +308,23 @@ class ThreadPreparation:
                 logger.exception("Thread cleanup attribution persistence failed; retaining unknown owner")
 
     def finish(self, *, deferred: bool, failed: bool) -> None:
+        refresh = self._repository_refresh_owner
+        if refresh is not None:
+            if not refresh.request_finish(deferred=deferred, failed=failed):
+                return
+            deferred, failed = refresh.deferred, refresh.failed
         with self.admission.db._lock:
             failed = failed or any(not v.closed for v in self._repository_preparations.values())
-            self.owner_live = False
+            if refresh is None:
+                self.owner_live = False
             self.admission.write(self, deferred=deferred, producer_settled=True,
                 failed_cleanup=self.state.failed_cleanup or failed)
+            if refresh is not None:
+                self.owner_live = False
             if all(v.closed for v in self._repository_preparations.values()):
                 self.admission.live.pop(self.inv.id, None)
+        if refresh is not None:
+            refresh.retire()
 
 
 class ThreadMoveAdmission:
