@@ -14,6 +14,43 @@ hit/miss/fetch/decode/max/outcome/invalidation observations are never a scan or
 recovery grant. New optional counter faults cannot replace primary exceptions.
 All behavior/sensitivity NOT RUN; source delivery grants no restart or retry.
 
+## Ordinary completion and inline-chain cancellation arbitration
+
+Ordinary completion captures its actual lifecycle owner, then checks the same
+nonterminal/noncancelled owner and writes COMPLETED inside one Database-owned
+BEGIN IMMEDIATE. Cancellation, missing/terminal rows and replaced agent/SID,
+claim or delegated state return False without success verdict/history/parent
+or barrier effects. Heartbeat/updated clocks do not replace lifecycle ownership.
+Sessionless carriers remain valid; accepted recovery keeps the separate exact
+ledger/INTEGER-result conditional writer. Root before/after captures remain
+outside the native teardown/publication tail, with both unwind layers and whole
+failed-final-batch suppression intact.
+
+Inline-chain advance and completed-trigger clear writers compare the original
+noncancelled in_progress/delegated parent, exact chain, newest triggering child
+and selected raw INTEGER report after the SAME BEGIN IMMEDIATE as chain/child/
+attachment-link writes. They never refresh into a replacement owner. Modern
+agent/SID selection fails closed on absent, malformed or nonterminal reports;
+a genuine report-landed/in_progress child remains eligible, including its later
+completion under the same report. Only genuine legacy fingerprints retain the
+original task-wide fallback. Unresolved-failure clears retain their separate
+failed-lineage/sibling checks and conditionally compare the original parent/chain.
+Configured reviewer and expected-verdict gates stay.
+
+The caller receives explicit advance, chain_complete, aborted or lost_owner.
+Only authenticated chain_complete may complete the sessionless carrier, and the
+helper returns the actual completion Boolean before feeding its enclosing barrier.
+Attachment failure, an insertion integrity error with successful rollback, or
+unverifiable evidence aborts through the existing carrier-failure/ordinary-owner
+wake path with its causal note. A stale selection produces no wake or success.
+Operational/native/COMMIT/rollback uncertainty raises with the original cause and
+actual secondaries. Audit/queue publication follows successful COMMIT; later
+publication refusal retains that exact committed child/prefix without replay.
+Native teardown and parent publication remain outside writer/capture locks.
+The historical cancel-race note-deferral and inline-chain cancel-clears sketches
+are superseded by these current maintained boundaries; cancellation itself is
+unchanged.
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded

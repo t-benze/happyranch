@@ -561,8 +561,20 @@ Direct task/move redelivery, blocked-task resume and Pause discovery now
 capture the SAME ordinary or genuine P2/P4/P6 selection before observations,
 reservation, chain changes and publication. Original DB/move waits renew it;
 parent/chain writers retain current-owner, causal result, failed-lineage and
-dedup predicates. Native publication requires actual insertion or SAME pending
-ownership. Job redelivery retains its existing checked native registration.
+dedup predicates. Chain advancement and completed-trigger clearing compare the original delegated
+parent/chain, newest triggering child and exact selected INTEGER report inside
+their SAME BEGIN IMMEDIATE; cancellation or replacement wins without new work
+or clearing the winner's chain. Modern exact agent/SID reports retain legitimate
+status-lag recognition; only genuine legacy fingerprints use task-wide fallback.
+Ordinary completion conditionally checks the original nonterminal owner and
+updates within one writer transaction, ignoring heartbeat clock changes; accepted
+recovery retains its separate ledger/result CAS. Lost completion has no success
+tails. Only explicit authenticated chain_complete can complete a sessionless
+carrier, and its Boolean is the actual completion result. Attachment/transaction/
+unverifiable aborts retain failure/owner-wake semantics, never carrier success.
+COMMIT precedes audit/queue publication; later failure retains its original
+committed prefix and native/rollback uncertainty. Native publication requires
+actual insertion or SAME pending ownership. Job redelivery retains its existing checked native registration.
 Genuine failed-human callback settlement and job drains stay independent of fresh
 admission; refused parent/bookkeeping retains the original operation, phase,
 result, pending history and first cause. Job teardown and whole root-finally

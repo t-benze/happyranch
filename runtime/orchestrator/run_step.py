@@ -3524,6 +3524,7 @@ def _consume_completion_report_body(
                 orch, task_id,
                 note=decision.summary or report.output_summary,
                 output_dir=report.output_dir,
+                expected_task=task,
                 **reclaim_kwargs,
             )
         else:
@@ -5126,17 +5127,22 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
               after_recovery_cleanup: Callable[[], None] | None = None,
               after_recovery_parent_effect: Callable[[], None] | None = None,
               reclaim_terminal_worktree: bool = True,
-              validate_admission: Callable[[], None] | None = None) -> bool:
+              validate_admission: Callable[[], None] | None = None,
+              expected_task: "TaskRecord" | None = None,
+              current_owner: Callable[[], bool] | None = None) -> bool:
     root_transitions = _RootWorktreeTransitions()
     root_handed_off = False
     tail_failed = False
+    completion_committed = False
     try:
         from datetime import datetime, timezone
         # Idempotence guard: /cancel may have already taken this task to FAILED
         # between Popen return and here. Don't resurrect a cancelled task back to
         # COMPLETED just because the subprocess happened to finish cleanly before
         # SIGTERM arrived.
-        if _is_already_terminal(orch, task_id):
+        expected = expected_task if expected_task is not None else orch._db.get_task(task_id)
+        if (expected is None or expected.id != task_id
+                or expected.status in TERMINAL_STATES or expected.cancelled_at is not None):
             return False
         if recovery_owner is not None:
             with _capture_root_worktree_transition(orch, task_id, '_complete.recovery', root_transitions):
@@ -5148,15 +5154,15 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
             if not committed:
                 return False
         else:
-            with orch._db._lock if validate_admission is not None else nullcontext():
-                if validate_admission is not None:
-                    validate_admission()
-                with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
-                    if validate_admission is not None:
-                        validate_admission()
-                    orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
-                                     note=note, final_output_dir=output_dir,
-                                     completed_at=datetime.now(timezone.utc).isoformat())
+            with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
+                committed = orch._db.complete_task_if_current_owner(
+                    expected=expected, note=note, output_dir=output_dir,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    validate_admission=validate_admission, current_owner=current_owner,
+                )
+            if not committed:
+                return False
+        completion_committed = True
         _log_verdict_if_delegated(orch, task_id, success=True)
         orch._update_task_history(task_id)
         if recovery_owner is None:
@@ -5180,7 +5186,7 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
         raise
     finally:
         if root_transitions and not root_handed_off:
-            _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or recovery_owner is not None)
+            _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or recovery_owner is not None or not completion_committed)
 
 
 
@@ -5680,92 +5686,99 @@ def _log_verdict_if_delegated(
 from runtime.orchestrator.task_terminal_readers import _verdict_for_delegated
 
 
+@dataclass(frozen=True)
+class _ChainSelection:
+    parent: "TaskRecord"
+    child: "TaskRecord"
+    result: dict | None
+    report: object
+
+    def is_current(self, orch: "Orchestrator") -> bool:
+        with orch._db._lock:
+            return orch._db._chain_owner_is_current_uncommitted(
+                self.parent, self.child, self.result,
+            )
+
+
+@dataclass(frozen=True)
+class _ChainAdvanceOutcome:
+    kind: str  # advance | chain_complete | aborted | lost_owner
+    reason: str
+    selection: _ChainSelection
+    expected: str | None = None
+    actual: str | None = None
+
+
+def _chain_selection(orch: "Orchestrator", parent: "TaskRecord", child: "TaskRecord") -> _ChainSelection:
+    """Capture the actual raw INTEGER row and derive its report once.
+
+    Modern missing/malformed/nonterminal evidence never adopts a task-wide row;
+    only genuinely legacy fingerprints retain the existing unscoped fallback.
+    """
+    from pydantic import ValidationError
+    with orch._db._lock:
+        result = orch._db._chain_trigger_result_uncommitted(child)
+        modern = _child_has_modern_fingerprint(child)
+        report = None
+        if result is not None:
+            try:
+                report = orch._db._row_to_completion_report(child.id, result)
+            except (json.JSONDecodeError, ValidationError):
+                if not modern:
+                    raise
+        if modern and (report is None or report.status != "completed"
+                       or report.decision is not None and report.decision.action == "workflow_start"):
+            report = _NO_AUTHENTICATED_REPORT
+        return _ChainSelection(parent, child, result, report)
+
+
 def _advance_chain_for_completed_child(
     *,
     orch: "Orchestrator",
-    parent_task_id: str,
-    child_task_id: str,
-    report=None,
+    selection: _ChainSelection,
     validate_admission: Callable[[], None] | None = None,
-) -> str:
-    """Inspect the parent's active_chain against the just-completed subtask's
-    report. Either spawn the next leg ("advance") or clear the chain so the
-    caller falls through to the normal parent-wake path ("wake").
+) -> _ChainAdvanceOutcome:
+    """Advance/clear only the original selected chain, never a refreshed owner.
 
-    Returns "advance" or "wake". When "advance" is returned, the parent is
-    NOT re-enqueued and orchestration_step_count is NOT bumped.
-
-    Only called when child.status == COMPLETED — FAILED subtasks are handled
-    by the bounded-wake logic in _enqueue_parent_if_waiting (TASK-573).
-
-    THR-211: ``report`` carries the exact authenticated CompletionReport for
-    the child's current session (``_child_landed_terminal_report``). When it
-    is provided it is authoritative — a newer unrelated row can never advance
-    or clear the chain. When it is ``None`` (a genuinely legacy child with no
-    agent/session fingerprint, or a direct caller that does not scope), the
-    most-recent-row read is kept for compatibility. When it is the
-    ``_NO_AUTHENTICATED_REPORT`` sentinel (a modern child whose exact report
-    is missing or unacceptable — exact-row miss, wrong agent/session,
-    malformed/unknown/blocked/nonterminal) the chain FAILS CLOSED: it is
-    cleared and the parent wakes, and task-wide evidence is never consulted.
+    Only the authenticated final-leg action produces chain_complete. Abort and
+    lost selection are distinct; neither permits successful carrier completion.
+    All chain/child/link writes arbitrate after the SAME BEGIN IMMEDIATE.
     """
     from runtime.models import TaskRecord
-    from runtime.orchestrator.chain import (
-        ChainState,
-        build_prior_leg_context,
-        compute_advance_action,
-    )
+    from runtime.orchestrator.chain import ChainState, build_prior_leg_context, compute_advance_action
 
     validate = validate_admission or _task_followon_validation(orch)
     validate()
-    parent = orch._db.get_task(parent_task_id)
-    validate()
-    if parent is None or parent.active_chain is None:
-        return "wake"
-
+    parent, child, report = selection.parent, selection.child, selection.report
+    if parent.active_chain is None or not selection.is_current(orch):
+        return _ChainAdvanceOutcome("lost_owner", "selection_changed", selection)
     chain = ChainState.deserialize(parent.active_chain)
-    if report is _NO_AUTHENTICATED_REPORT:
-        # TASK-5818: a modern fingerprint exists but the exact authenticated
-        # report is missing/unacceptable — fail closed.  Never consult the
-        # task-wide newest-row read: a wrong-agent/wrong-session (or any
-        # unrelated) row must not gate chain advancement.
-        with _followon_writer(orch, validate):
-            orch._db.update_task_active_chain(parent_task_id, None)
-        return "wake"
-    if report is None:
-        report = orch._db.get_latest_completion_report(child_task_id)
-    if report is None:
-        with _followon_writer(orch, validate):
-            orch._db.update_task_active_chain(parent_task_id, None)
-        return "wake"
 
-    completed_child = orch._db.get_task(child_task_id)
-    completed_agent = completed_child.assigned_agent if completed_child is not None else None
+    def clear(kind, reason, expected=None, actual=None):
+        if not orch._db.try_clear_task_active_chain(
+            expected_parent=parent, expected_child=child, expected_result=selection.result,
+            validate_admission=validate,
+        ):
+            return _ChainAdvanceOutcome("lost_owner", "selection_changed", selection)
+        cleared = _ChainSelection(parent.model_copy(update={"active_chain": None}),
+                                  child, selection.result, report)
+        return _ChainAdvanceOutcome(kind, reason, cleared, expected, actual)
+
+    if report is _NO_AUTHENTICATED_REPORT or report is None:
+        return clear("aborted", "unverifiable_report")
     action = compute_advance_action(
-        chain=chain,
-        report=report,
-        completed_agent=completed_agent,
+        chain=chain, report=report, completed_agent=child.assigned_agent,
         reviewer_agents=_reviewer_agents_for(orch),
     )
     if action.kind == "wake":
-        with _followon_writer(orch, validate):
-            orch._db.update_task_active_chain(parent_task_id, None)
-        return "wake"
+        return clear("chain_complete" if action.reason == "chain_complete" else "aborted",
+                     action.reason, action.expected, action.actual)
 
-    # THR-109: validate attachments FIRST, before any state change.
-    # If validation fails the chain is cleared and parent wakes — no
-    # child, no link/audit, no queue entry, no advanced active_chain.
-    prior_context = build_prior_leg_context(
-        child_task_id=child_task_id, report=report,
-    )
+    prior_context = build_prior_leg_context(child_task_id=child.id, report=report)
     full_brief = action.next_leg.prompt + prior_context
-
     chain_att_params: list[dict] | None = None
     if action.next_leg.attachments:
-        from runtime.infrastructure.task_attachment_store import (
-            TaskAttachmentStore,
-            validate_task_attachment_refs,
-        )
+        from runtime.infrastructure.task_attachment_store import TaskAttachmentStore, validate_task_attachment_refs
         store = TaskAttachmentStore(orch._paths.task_attachments_dir)
         try:
             prevalidated = validate_task_attachment_refs(
@@ -5774,141 +5787,71 @@ def _advance_chain_for_completed_child(
             if prevalidated:
                 chain_att_params = _prepare_attachment_params(orch, prevalidated)
         except ValueError:
-            # Attachment validation failed — do NOT spawn the leg.
-            # Clear the chain so the parent can wake and handle the failure.
-            with _followon_writer(orch, validate):
-                orch._db.update_task_active_chain(parent_task_id, None)
-            return "wake"
+            return clear("aborted", "attachment_validation_failed")
 
-    # Atomic chain advance: update parent active_chain + insert next child +
-    # attachment links/audit in a single transaction. A crash or write failure
-    # rolls back everything — no orphan chain state, no orphan child, no
-    # orphan link/audit/claim, no queue side effect.
     with _followon_writer(orch, validate):
         next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
-    chain_json = chain.serialize()
-
     next_child = TaskRecord(
-        id=next_child_id,
-        team=parent.team,
-        brief=full_brief,
-        parent_task_id=parent_task_id,
-        assigned_agent=action.next_leg.agent,
-        status=TaskStatus.PENDING,
-        session_timeout_seconds=parent.session_timeout_seconds,
+        id=next_child_id, team=parent.team, brief=full_brief,
+        parent_task_id=parent.id, assigned_agent=action.next_leg.agent,
+        status=TaskStatus.PENDING, session_timeout_seconds=parent.session_timeout_seconds,
         task_type="subtask",
     )
-    with _followon_writer(orch, validate):
-        if not orch._db.try_advance_chain(
-            parent_id=parent_task_id,
-            active_chain_json=chain_json,
-            next_child=next_child,
-            attachments=chain_att_params,
-            uploaded_by="orchestrator", validate_admission=validate,
-        ):
-            # Chain advance + child insert failed — transaction rolled back.
-            # No partial state remains; parent wakes normally.
-            return "wake"
+    if not orch._db.try_advance_chain(
+        parent_id=parent.id, active_chain_json=chain.serialize(), next_child=next_child,
+        attachments=chain_att_params, uploaded_by="orchestrator", validate_admission=validate,
+        expected_parent=parent, expected_child=child, expected_result=selection.result,
+    ):
+        # A clean insertion rollback may wake/fail the still-current owner. A
+        # cancellation/replacement/competing advance loses the clear as well.
+        return clear("aborted", "next_child_transaction_aborted")
 
     try:
         with _followon_writer(orch, validate):
             orch._audit.log_chain_auto_advance(
-                parent_task_id=parent_task_id,
-                leg_index=action.next_step_index,
-                spawned_child_id=next_child_id,
-                triggering_child_id=child_task_id,
-                triggering_verdict=report.verdict,
-                chain_origin_step_audit_id=chain.step_audit_id,
+                parent_task_id=parent.id, leg_index=action.next_step_index,
+                spawned_child_id=next_child_id, triggering_child_id=child.id,
+                triggering_verdict=report.verdict, chain_origin_step_audit_id=chain.step_audit_id,
             )
         _publish_followon_task(orch, next_child_id, validate)
     except BaseException as exc:
         exc.add_note(f"Original chain child {next_child_id} committed; publication remains pending.")
         raise
-    return "advance"
+    return _ChainAdvanceOutcome("advance", "next_child_committed", selection)
 
 
 from runtime.orchestrator.task_terminal_readers import _is_carrier
 
 
 def _carrier_fail_on_verdict_mismatch(
-    orch: "Orchestrator", parent: "TaskRecord",
-    child_task_id: str, chain_snapshot: str | None, report=None,
+    orch: "Orchestrator", parent: "TaskRecord", child_task_id: str,
+    outcome: _ChainAdvanceOutcome,
     *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
-    """After a carrier's chain leg completed but the chain did not advance
-    (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
-    the carrier immediately (fail-closed at carrier).  Returns True if the
-    carrier was failed, False otherwise (including non-carriers).
+    """Fail a carrier on an actual aborted advance, with its original cause.
 
-    THR-211: ``report`` carries the exact authenticated CompletionReport for
-    the child's current session when one exists; it is authoritative over the
-    most-recent-row read, which remains the fallback when no fingerprint
-    exists (compatibility with pre-THR-211 behavior).  The
-    ``_NO_AUTHENTICATED_REPORT`` sentinel (modern fingerprint, no acceptable
-    exact report) fails the carrier closed — an unverifiable leg outcome must
-    never complete or advance a carrier on task-wide evidence.
+    Mismatch/reviewer refusal stays distinct from unverifiable evidence,
+    attachment failure and a rolled-back next-child transaction. No recomputed
+    matching verdict can turn any of those aborts into chain_complete.
     """
     validate = validate_admission or _task_followon_validation(orch)
     validate()
-    if chain_snapshot is None:
+    if outcome.kind != "aborted" or not _is_carrier(orch, parent):
         return False
-    if not _is_carrier(orch, parent):
-        return False
-    from runtime.orchestrator.chain import ChainState, compute_advance_action
-    chain = ChainState.deserialize(chain_snapshot)
-    if report is _NO_AUTHENTICATED_REPORT:
-        # TASK-5818: the child has a modern fingerprint but no acceptable
-        # exact authenticated report — the leg's outcome cannot be verified.
-        # Fail the carrier closed rather than complete or advance it on
-        # task-wide evidence.
-        expected = chain.current_expect_verdict()
-        note = (
-            f"carrier leg {child_task_id} outcome unverifiable: "
-            "no exact authenticated report"
-        )
-        if expected is not None:
-            note += f" (expected {expected!r})"
-        _fail(orch, parent.id, note=note, validate_admission=validate)
-        # Feed carrier failure into the fan-out parent's barrier.
+    selection = outcome.selection
+    if not selection.is_current(orch):
+        return True  # handled lost owner; no stale failure or barrier feed
+    if outcome.reason in ("verdict_mismatch", "reviewer_non_approve"):
+        note = f"carrier verdict mismatch: expected {outcome.expected!r}, got {outcome.actual!r}"
+    else:
+        note = f"carrier leg {child_task_id} advance aborted: {outcome.reason}"
+    _fail(orch, parent.id, note=note, validate_admission=validate,
+          current_owner=lambda: selection.is_current(orch))
+    current = orch._db.get_task(parent.id)
+    if current is not None and current.status == TaskStatus.FAILED and current.note == note:
         _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
-        return True
-    if report is None:
-        report = orch._db.get_latest_completion_report(child_task_id)
-    if report is None:
-        # No report for the completed child — fail-closed only when a verdict
-        # expectation exists (pre-existing semantics).
-        expected = chain.current_expect_verdict()
-        if expected is None:
-            return False
-        _fail(
-            orch, parent.id,
-            note=f"carrier verdict mismatch: expected {expected!r}, got None",
-            validate_admission=validate,
-        )
-        # Feed carrier failure into the fan-out parent's barrier.  Returning
-        # True without these side effects strands both carrier and parent.
-        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
-        return True
-    completed_child = orch._db.get_task(child_task_id)
-    completed_agent = completed_child.assigned_agent if completed_child is not None else None
-    action = compute_advance_action(
-        chain=chain,
-        report=report,
-        completed_agent=completed_agent,
-        reviewer_agents=_reviewer_agents_for(orch),
-    )
-    # A verdict mismatch OR a THR-175 reviewer non-approve (omitted-expectation
-    # reviewer leg) must fail the whole carrier — never chain-complete it as a
-    # false success.
-    if action.kind == "wake" and action.reason in ("verdict_mismatch", "reviewer_non_approve"):
-        _fail(orch, parent.id,
-               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}",
-               validate_admission=validate)
-        # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
-        return True
-    return False
+    return True
 
 
 def _carrier_fail_immediate(
@@ -5936,6 +5879,7 @@ def _carrier_fail_immediate(
         orch,
         parent.id,
         validate_admission=validate,
+        current_owner=lambda: orch._db._task_lifecycle_owner_is_current_uncommitted(parent),
         note=(
             f"carrier chain leg {child_task_id} failed; "
             f"causal_leaf_id={child_task_id}; causal_status="
@@ -5951,24 +5895,24 @@ def _carrier_fail_immediate(
 
 
 def _carrier_complete_on_chain_complete(
-    orch: "Orchestrator", parent: "TaskRecord",
+    orch: "Orchestrator", parent: "TaskRecord", outcome: _ChainAdvanceOutcome,
     *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
-    """After a carrier's chain completed successfully (all legs done,
-    final leg verdict matched), complete the carrier DIRECTLY — NO
-    orch._run_agent session, NO manager-wake.  Then feed the carrier's
-    completion into the fan-out parent's barrier EXACTLY ONCE.
+    """Complete only an authenticated final chain leg, returning the actual CAS.
 
-    Returns True if the carrier was completed, False for non-carriers.
+    Sessionless carrier completion creates no provider session/result. A lost
+    completion never feeds successful work into the enclosing fan-out barrier.
     """
     validate = validate_admission or _task_followon_validation(orch)
     validate()
-    if not _is_carrier(orch, parent):
+    if outcome.kind != "chain_complete" or not _is_carrier(orch, parent):
         return False
-    # Complete the carrier directly — it has no session of its own.
-    _complete(orch, parent.id,
-              note="carrier chain complete", validate_admission=validate)
-    # Feed carrier completion into the fan-out parent's barrier.
+    if not _complete(
+        orch, parent.id, note="carrier chain complete", validate_admission=validate,
+        expected_task=outcome.selection.parent,
+        current_owner=lambda: outcome.selection.is_current(orch),
+    ):
+        return False
     _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
     return True
 
@@ -6355,7 +6299,12 @@ def _enqueue_parent_if_waiting_owned(
         return
 
     def enqueue_parent_once() -> None:
-        _publish_followon_task(orch, parent.id, validate)
+        def validate_parent():
+            validate()
+            with orch._db._lock:
+                if not orch._db._task_lifecycle_owner_is_current_uncommitted(parent):
+                    raise _FollowonOwnerLost("parent_lifecycle_owner_lost")
+        _publish_followon_task(orch, parent.id, validate_parent)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
@@ -6392,37 +6341,22 @@ def _enqueue_parent_if_waiting_owned(
                 # (task_id, assigned_agent, current_session_id) fingerprint
                 # scoped row) through the chain gate so a newer unrelated
                 # row can never advance or clear the chain.
-                authenticated_report = _child_landed_terminal_report(orch, child)
-                # TASK-5818: None is ambiguous.  A GENUINELY legacy child
-                # (no agent/session fingerprint) may still use the unscoped
-                # newest-row fallback inside _advance_chain_for_completed_child;
-                # a MODERN child whose exact report is missing or unacceptable
-                # (exact-row miss, wrong agent/session, malformed/unknown/
-                # blocked/nonterminal) must fail closed and must NEVER consult
-                # task-wide evidence for chain advancement.
-                if (
-                    authenticated_report is None
-                    and _child_has_modern_fingerprint(child)
-                ):
-                    authenticated_report = _NO_AUTHENTICATED_REPORT
-                # Snapshot the chain BEFORE advance (which may clear it).
-                chain_snapshot = parent.active_chain
+                selection = _chain_selection(orch, parent, child)
                 outcome = _advance_chain_for_completed_child(
-                    orch=orch, parent_task_id=parent.id, child_task_id=task_id,
-                    report=authenticated_report, validate_admission=validate,
+                    orch=orch, selection=selection, validate_admission=validate,
                 )
-                if outcome == "advance":
-                    return  # next leg spawned; parent stays in_progress(delegated)
-                # outcome == "wake" → chain cleared; carrier fail-closed?
+                if outcome.kind in ("advance", "lost_owner"):
+                    return
+                parent = outcome.selection.parent  # only the committed clear
                 if _carrier_fail_on_verdict_mismatch(
-                    orch, parent, task_id, chain_snapshot,
-                    report=authenticated_report, validate_admission=validate,
+                    orch, parent, task_id, outcome, validate_admission=validate,
                 ):
-                    return  # carrier failed; outer _enqueue_parent_if_waiting skipped
-                # Chain complete + verdict matched → carrier auto-completes
-                # directly (no _run_agent session, no manager-wake).
-                if _carrier_complete_on_chain_complete(orch, parent, validate_admission=validate):
-                    return  # carrier completed; outer _enqueue_parent_if_waiting skipped
+                    return
+                if outcome.kind == "chain_complete" and _is_carrier(orch, parent):
+                    _carrier_complete_on_chain_complete(
+                        orch, parent, outcome, validate_admission=validate,
+                    )
+                    return  # False is lost completion, never ordinary/success wake
             # Stale re-trigger for a leg the chain already advanced past, or a
             # non-newest child: fall through to sibling-check + parent-wake.
         else:
@@ -6460,8 +6394,11 @@ def _enqueue_parent_if_waiting_owned(
             # immediately — no partial-chain completion.
             if parent.active_chain is not None:
                 validate()
-                with _followon_writer(orch, validate):
-                    orch._db.update_task_active_chain(parent.id, None)
+                if not orch._db.try_clear_task_active_chain(
+                    expected_parent=parent, validate_admission=validate,
+                ):
+                    return
+                parent = parent.model_copy(update={"active_chain": None})
             if _is_carrier(orch, parent):
                 causal_leaf = next(
                     (leaf for leaf in unresolved_leaves if leaf.id == task_id),
