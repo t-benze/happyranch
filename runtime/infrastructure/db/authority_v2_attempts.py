@@ -4405,10 +4405,14 @@ class AuthorityV2AttemptsMixin:
                 primary.add_note("authority refusal rollback also failed; custody remains uncertain")
                 raise primary
             if authentic_owner and attempt is not None and owner_attempt_id is not None:
-                self._record_v2_failed_stage_obligation(
-                    attempt_id=attempt.attempt_id, owner_attempt_id=owner_attempt_id,
-                    code="final_commit_failed" if refusal_code == "policy_no_continue" else refusal_code,
-                )
+                try:
+                    self._record_v2_failed_stage_obligation(
+                        attempt_id=attempt.attempt_id, owner_attempt_id=owner_attempt_id,
+                        code="final_commit_failed" if refusal_code == "policy_no_continue" else refusal_code,
+                    )
+                except BaseException:
+                    primary.add_note("authority refusal obligation recording also failed; persistence and custody remain uncertain")
+                    raise primary
             raise
 
     def _v2_housekeeping_target_from_row(

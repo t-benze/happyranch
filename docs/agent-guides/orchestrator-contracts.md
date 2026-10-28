@@ -2922,7 +2922,10 @@ Binding mismatch/corrupt evidence stays machinery refusal. The writer rechecks
 policy eligibility independently, retains first genuine failure obligations,
 exact Q and cancelled/replaced winners, and commits all terminal effects or
 retains the prior set. Opaque failure/uncertain COMMIT retains original custody;
-rollback failure cannot replace the original exception. Consumed-proof reads
+rollback or subsequent best-effort obligation-recorder failure cannot replace
+the original exception. Recorder failure retains secondary persistence/custody
+uncertainty; neither an attempted recorder nor an uncertainty note certifies a
+durable obligation, successful cleanup or COMMIT. Consumed-proof reads
 preserve that first cause through failed rollback on the same connection; a
 successful read returns V only after successful cleanup.
 Startup can classify a fully consumed no-grant with authentic current context,
