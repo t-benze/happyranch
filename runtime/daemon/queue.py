@@ -115,7 +115,10 @@ class TaskQueue:
         _require_ordinary_ready(self)
 
     def _require_publication(self, slug: str, task_id: str, metadata: dict | None,
-                             publication: object) -> None:
+                             publication: object,
+                             coding_validation: Callable[[], None] | None = None) -> Callable[[], None] | None:
+        if coding_validation is not None:
+            coding_validation()
         if publication is None:
             self._require_ready()
             if self._startup_state is not None:
@@ -130,6 +133,13 @@ class TaskQueue:
                 from runtime.daemon.startup_recovery import StartupUnavailable
                 raise StartupUnavailable("startup_task_publication_unbound")
             publication.check(self, slug, task_id, metadata)
+            if coding_validation is not None and coding_validation is not publication.validate_admission:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable("startup_coding_queue_selection_changed")
+            coding_validation = publication.validate_admission
+        # Coding's supplied validator checks only captured references and the
+        # original gate/phase; it never discovers authority or acquires the DB.
+        return coding_validation
 
     def _record_dequeue(self, item: _QueueItem) -> None:
         key = item[0], item[1]
@@ -140,9 +150,12 @@ class TaskQueue:
             self._pending_counts[key] = count - 1
 
     def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None,
-                _publication: object = None) -> None:
-        self._require_publication(slug, task_id, metadata, _publication)
+                _publication: object = None,
+                _coding_validation: Callable[[], None] | None = None) -> None:
+        validate = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
         with self._admission_lock:
+            if validate is not None:
+                validate()
             if self._stopping:
                 logger.warning(
                     "task queue is stopping; refusing %s/%s", slug, task_id,
@@ -163,6 +176,7 @@ class TaskQueue:
         metadata: dict | None = None,
         publisher: Callable[[], None] | None = None,
         _publication: object = None,
+        _coding_validation: Callable[[], None] | None = None,
     ) -> bool:
         """Publish only when this task has no reservation or pending item.
 
@@ -178,9 +192,11 @@ class TaskQueue:
         by the pending count until the same locked dequeue operation, so a
         later qualifying wake is admitted.
         """
-        self._require_publication(slug, task_id, metadata, _publication)
+        validate = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
         key = slug, task_id
         with self._admission_lock:
+            if validate is not None:
+                validate()
             if self._stopping:
                 logger.warning(
                     "task queue is stopping; refusing %s/%s", slug, task_id,
@@ -191,10 +207,15 @@ class TaskQueue:
             self._admission_reservations.add(key)
         try:
             if publisher is None:
-                self.enqueue(slug, task_id, metadata=metadata, _publication=_publication)
+                self.enqueue(slug, task_id, metadata=metadata, _publication=_publication,
+                             _coding_validation=validate)
             else:
+                if validate is not None:
+                    validate()
                 publisher()
             with self._admission_lock:
+                if validate is not None:
+                    validate()
                 return self._pending_counts[key] > 0
         finally:
             with self._admission_lock:

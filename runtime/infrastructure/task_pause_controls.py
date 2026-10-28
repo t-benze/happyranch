@@ -361,6 +361,8 @@ class TaskPauseStore:
                     if root["id"] != root_id:
                         raise PauseControlError("pause_control_unavailable")
                     yield root, self.row_uncommitted(root_id)
+                    if validate_admission is not None:
+                        validate_admission()
                     self.db._conn.commit()
                     if committed is not None:
                         committed()
@@ -370,7 +372,15 @@ class TaskPauseStore:
                     except BaseException as secondary:
                         if validate_admission is None:
                             raise
-                        primary.add_note(f"selected Pause rollback also failed: {secondary!r}")
+                        try:
+                            BaseException.__setattr__(primary, "_pause_rollback_secondary",
+                                                      (secondary, secondary.__traceback__))
+                        except BaseException:
+                            pass
+                        try:
+                            BaseException.add_note(primary, f"selected Pause rollback also failed: {secondary!r}"[:1024])
+                        except BaseException:
+                            pass
                     raise
 
     def ensure_uncommitted(self, root_id: str) -> dict:

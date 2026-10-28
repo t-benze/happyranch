@@ -762,7 +762,8 @@ class StartupRecovery:
         if not matched:
             raise RuntimeError("startup_redelivery_org_unavailable")
 
-    def publish_workflow_task(self, org: Any, task_id: str, *, sweep_owner: Any = None) -> RecoveryOutcome:
+    def publish_workflow_task(self, org: Any, task_id: str, *, sweep_owner: Any = None,
+                              validate_admission: Callable[[], None] | None = None) -> RecoveryOutcome:
         """Acknowledge the original committed task, never its reservation alone.
 
         These document/coding owners already select their authentic queued
@@ -776,12 +777,14 @@ class StartupRecovery:
             raise RuntimeError("startup_workflow_queue_unavailable")
         from runtime.daemon.startup_publication import _TaskPublication
         publication = _TaskPublication(self, org.orchestrator, task_id, "workflow",
-                                       sweep_owner=sweep_owner)
+                                       sweep_owner=sweep_owner, validate_admission=validate_admission)
         inserted = queue.enqueue_if_absent(org.slug, task_id, _publication=publication)
         if type(inserted) is not bool:
             raise RuntimeError("startup_workflow_queue_outcome_unknown")
         if queue.pending_publication(org.slug, task_id) != "pending":
             raise RuntimeError("startup_workflow_task_unacknowledged")
+        if validate_admission is not None:
+            validate_admission()
         self.require_workflow_owner(org, sweep_owner=sweep_owner)
         return RecoveryOutcome("settled", "startup_workflow_task_inserted" if inserted
                                else "startup_workflow_task_already_pending")

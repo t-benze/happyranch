@@ -1726,6 +1726,9 @@ class HostSessionSupervisor:
             try:
                 if native_owner:
                     final_prelaunch_validator.require_admission()
+                from runtime.orchestrator.task_pause import TaskInvocation
+                if isinstance(final_prelaunch_validator, TaskInvocation) and final_prelaunch_validator.owner == "coding":
+                    final_prelaunch_validator._fresh_validation()()
                 self._require_startup_ready()
             except StartupUnavailable as exc:
                 record_task_refusal(exc)

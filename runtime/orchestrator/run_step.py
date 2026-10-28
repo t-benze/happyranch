@@ -6440,6 +6440,7 @@ def _publish_redelivery_task(
     orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
     publisher: Callable[[], str | None] | None = None,
     generation_aware: bool = True,
+    validate_admission: Callable[[], None] | None = None,
 ):
     """P6 selected original pointer: actual insertion/SAME pending ownership.
 
@@ -6462,7 +6463,7 @@ def _publish_redelivery_task(
     with publication.attempt(orch, "task_attempted"):
         from runtime.daemon.startup_publication import _TaskPublication
         selected = _TaskPublication(publication.gate, orch, task_id, "redelivery",
-                                    metadata, publication=publication)
+                                    metadata, publication=publication, validate_admission=validate_admission)
         if generation_aware:
             # Exact target-local read, not discovery or reconstruction. Unknown
             # classification is never inferred to be an empty/held selection.
@@ -6495,6 +6496,8 @@ def _publish_redelivery_task(
             raise RuntimeError("startup_redelivery_task_unacknowledged")
         publication.count("acknowledged")
         publication.count("inserted" if inserted else "already_pending")
+        if validate_admission is not None:
+            validate_admission()
         publication.gate.require_redelivery_owner(org)
         return RecoveryOutcome("settled")
 

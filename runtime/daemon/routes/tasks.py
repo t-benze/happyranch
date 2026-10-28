@@ -1454,7 +1454,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     coding_owner = org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None
     try:
         admission_context = coding_owner.callback_admission(task_id) if coding_owner is not None else nullcontext(None)
-        async with admission_context as coding_capture:
+        async with admission_context as coding_selection:
+            coding_capture, coding_validation = coding_selection if coding_owner is not None else (None, None)
             async with org.db_lock if coding_owner is None else nullcontext():
                 current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
                 if current_ownership.kind != ownership.kind:
@@ -1509,6 +1510,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                         recovery_deadline_monotonic=recovery_deadline_monotonic,
                         v2_admission=v2_admission,
                         coding_admission=coding_capture,
+                        coding_validation=coding_validation,
                     ):
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,

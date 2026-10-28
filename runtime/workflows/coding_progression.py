@@ -12,7 +12,7 @@ from runtime.daemon.startup_recovery import coding_admission_validation
 from copy import deepcopy
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from runtime.models import TaskRecord
 from runtime.workflows.coding_revision import current_stage, independent
@@ -266,9 +266,11 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
 
 
 def advance_in_writer(dispatcher: Any, conn: Any, *, instance: str, result_id: int,
-                      capture: Any, sessions: tuple, references: tuple[str, ...]) -> str | None:
+                      capture: Any, sessions: tuple, references: tuple[str, ...],
+                      validate_admission: Callable[[], None] | None = None) -> str | None:
     """Only uncommitted native primitives; no await, I/O, enqueue or commit."""
-    coding_admission_validation(dispatcher)()
+    validate = coding_admission_validation(dispatcher) if validate_admission is None else validate_admission
+    validate()
     from runtime.workflows.coding_dispatch import stamp
     _check(conn is dispatcher.db._conn and conn.in_transaction and type(result_id) is int and result_id > 0)
     inventory = dispatcher.org.workflow_coding_start.support._storage(conn, references)
@@ -479,28 +481,33 @@ def return_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     _check(changed.rowcount == 1)
 
 
-def notify_returned(dispatcher: Any, instance: str) -> bool:
+def notify_returned(dispatcher: Any, instance: str, *,
+                    validate_admission: Callable[[], None] | None = None) -> bool:
     """Read the committed return before idempotent native caller notifications."""
     from runtime.daemon.startup_publication import current_publication
     orch = dispatcher.org.orchestrator
     publication = current_publication(orch)
-    coding_admission_validation(dispatcher, publication=publication)()
+    validate = (coding_admission_validation(dispatcher, publication=publication)
+                if validate_admission is None else validate_admission)
+    validate()
     if publication is None:
-        return _notify_returned_native(dispatcher, instance)
+        return _notify_returned_native(dispatcher, instance, validate_admission=validate)
     # Both history writes, original parent wake and serialized SYSTEM marker
     # belong to this selection. Its finally observes actual queue outcomes only
     # after _notify_returned_native has unwound every enclosing DB lock.
     with publication.notification(orch):
-        return _notify_returned_native(dispatcher, instance)
+        return _notify_returned_native(dispatcher, instance, validate_admission=validate)
 
 
-def _notify_returned_native(dispatcher: Any, instance: str) -> bool:
+def _notify_returned_native(dispatcher: Any, instance: str, *,
+                            validate_admission: Callable[[], None]) -> bool:
     from runtime.daemon.startup_publication import current_publication
     from runtime.models import TaskStatus
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _maybe_post_thread_followup
     orch = dispatcher.org.orchestrator
     publication = current_publication(orch)
-    validate = coding_admission_validation(dispatcher, publication=publication)
+    validate = validate_admission
+    validate()
 
     def current_owner() -> bool:
         validate()
@@ -573,8 +580,10 @@ def _notify_returned_native(dispatcher: Any, instance: str) -> bool:
 
 
 
-async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
-    validate = coding_admission_validation(dispatcher)
+async def reconcile_settled_stage(dispatcher: Any, instance: str, *,
+                                  validate_admission: Callable[[], None] | None = None) -> str | None:
+    validate = coding_admission_validation(dispatcher) if validate_admission is None else validate_admission
+    validate()
     require_ready(dispatcher.org)
     org, db = dispatcher.org, dispatcher.db
     with db._lock:
@@ -606,16 +615,17 @@ async def reconcile_settled_stage(dispatcher: Any, instance: str) -> str | None:
                 with org.workflow_authority._admission_ownership(capture, validate_admission=validate):
                     with db._task_pause_store.writer(entry['source']['task_id'], admission=True, validate_admission=validate):
                         return advance_in_writer(dispatcher, db._conn, instance=instance,
-                            result_id=entry['attempt']['result_id'], capture=capture, sessions=sessions, references=references)
+                            result_id=entry['attempt']['result_id'], capture=capture, sessions=sessions, references=references,
+                            validate_admission=validate)
 
 
 def reconcile_run(dispatcher: Any, instance: str, queue: Any) -> None:
     # Mounted coding capability and boot recovery readiness are independent.
     # Refuse before returned-history notification OR creating a stage coroutine.
     from runtime.daemon.startup_recovery import require_ready as require_startup_ready
-    coding_admission_validation(dispatcher)()
+    validate = coding_admission_validation(dispatcher)
     require_startup_ready(dispatcher.org)
-    if notify_returned(dispatcher, instance):
+    if notify_returned(dispatcher, instance, validate_admission=validate):
         return
     try:
         require_ready(dispatcher.org)
@@ -627,8 +637,11 @@ def reconcile_run(dispatcher: Any, instance: str, queue: Any) -> None:
     from runtime.workflows.authority import WorkflowAuthorityError
     from runtime.workflows.profile_coordinator import ProfileCoordinatorError
     try:
-        coding_admission_validation(dispatcher)()
-        task_id = dispatcher._on_loop(reconcile_settled_stage(dispatcher, instance))
+        validate()
+        task_id = dispatcher._on_loop(reconcile_settled_stage(dispatcher, instance, validate_admission=validate),
+                                      validate_admission=validate)
+        if task_id is not None and queue is not None:
+            dispatcher.notify_queued(task_id, queue, validate_admission=validate)
     except (ValueError, PauseControlError, TeamMoveError, DeferredTeamMove, WorkflowAuthorityError, ProfileCoordinatorError) as exc:
         # Admission refusal after a committed positive outer record must not
         # rewrite that original settlement as a native teardown failure. The
@@ -637,5 +650,3 @@ def reconcile_run(dispatcher: Any, instance: str, queue: Any) -> None:
         logging.getLogger(__name__).warning('coding progression held: instance=%s cause=%s',
             instance, getattr(exc, 'code', type(exc).__name__))
         return
-    if task_id is not None and queue is not None:
-        dispatcher.notify_queued(task_id, queue)

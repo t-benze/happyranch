@@ -1317,6 +1317,8 @@ class WorkflowAuthorityCoordinator:
                 if validate_admission is not None:
                     validate_admission()
                 yield conn
+                if validate_admission is not None:
+                    validate_admission()
                 conn.commit()
             except BaseException as primary:
                 try:
@@ -1324,7 +1326,21 @@ class WorkflowAuthorityCoordinator:
                 except BaseException as secondary:
                     if validate_admission is None:
                         raise
-                    primary.add_note(f"selected admission rollback also failed: {secondary!r}")
+                    try:
+                        BaseException.__setattr__(primary, "_admission_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+                    try:
+                        BaseException.add_note(primary, f"selected admission rollback also failed: {secondary!r}"[:1024])
+                    except BaseException:
+                        pass
+                else:
+                    if validate_admission is not None:
+                        try:
+                            BaseException.__setattr__(primary, "_admission_rollback_complete", True)
+                        except BaseException:
+                            pass
                 raise
 
     @contextmanager
@@ -1342,31 +1358,62 @@ class WorkflowAuthorityCoordinator:
         if validate_admission is not None:
             validate_admission()
         with ExitStack() as stack:
-            for name in capture.profile_names:
-                stack.enter_context(coordinator.profile_read(name))
-                if validate_admission is not None:
-                    validate_admission()
-                coordinator._assert_no_active_operation(name)
-            stack.enter_context(self._publisher_lock)
-            if validate_admission is not None:
-                validate_admission()
-            owner = f"workflow-admission:{uuid.uuid4().hex}"
-            self._acquire_lease(owner, validate_admission=validate_admission)
             try:
+                for name in capture.profile_names:
+                    stack.enter_context(coordinator.profile_read(name))
+                    if validate_admission is not None:
+                        validate_admission()
+                    coordinator._assert_no_active_operation(name)
+                stack.enter_context(self._publisher_lock)
                 if validate_admission is not None:
                     validate_admission()
-                yield
-            except BaseException as primary:
-                if validate_admission is None:
-                    self._release_lease(owner)
-                else:
-                    try:
+                owner = f"workflow-admission:{uuid.uuid4().hex}"
+                self._acquire_lease(owner, validate_admission=validate_admission)
+                try:
+                    if validate_admission is not None:
+                        validate_admission()
+                    yield
+                except BaseException as primary:
+                    if validate_admission is None:
                         self._release_lease(owner)
+                    else:
+                        try:
+                            self._release_lease(owner)
+                        except BaseException as secondary:
+                            try:
+                                BaseException.__setattr__(primary, "_admission_release_secondary",
+                                                          (secondary, secondary.__traceback__))
+                            except BaseException:
+                                pass
+                            try:
+                                BaseException.add_note(primary,
+                                    f"workflow admission lease release also failed: {secondary!r}"[:1024])
+                            except BaseException:
+                                pass
+                        else:
+                            try:
+                                BaseException.__setattr__(primary, "_admission_release_complete", True)
+                            except BaseException:
+                                pass
+                    raise
+                else:
+                    self._release_lease(owner)
+            except BaseException as primary:
+                if validate_admission is not None:
+                    try:
+                        stack.__exit__(type(primary), primary, primary.__traceback__)
                     except BaseException as secondary:
-                        primary.add_note(f"workflow admission lease release also failed: {secondary!r}")
+                        try:
+                            BaseException.__setattr__(primary, "_admission_fence_secondary",
+                                                      (secondary, secondary.__traceback__))
+                        except BaseException:
+                            pass
+                        try:
+                            BaseException.add_note(primary,
+                                f"workflow admission fence exit also failed: {secondary!r}"[:1024])
+                        except BaseException:
+                            pass
                 raise
-            else:
-                self._release_lease(owner)
 
     def _validate_admission_uncommitted(
         self, conn: sqlite3.Connection, capture: AuthorityAdmissionCapture,

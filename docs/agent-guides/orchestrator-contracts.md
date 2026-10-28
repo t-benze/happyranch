@@ -4490,9 +4490,47 @@ Coding source admission separately captures original start/dispatch/roles/import
 owners, their support stores and authority references beside the unchanged task
 and document tuples. Request-created coding settings retain their own operation,
 org/DB/state/epoch/loop references. Ordinary starts, queue preparation, selected
-reads, settings/import/mapping writers, advancement and notifications renew
-startup admission through original awaited and authority/Pause/registry owners.
+reads, settings/import/mapping writers, advancement and notifications retain
+ONE original coding validator from their independent operation entry. Continuing
+callers forward that SAME callable through loop scheduling, policy/discovery,
+binding/profile/read waits and authority/Pause writers; they never recapture a
+replacement tuple, even over the same org/DB and equal durable snapshot. Coding
+preparation binds the exact invocation, original dispatcher and callable before
+its first preparation; dispatch, host FIFO, final launch writer and existing
+native launch boundaries refuse a missing/foreign selection. Draft selection and
+ordinary/v2/recovery owners remain separate. Role access yields its validator to
+continuing readers/publishers. Reconciliation carries it through the graph writer
+and postcommit queue publication; late refusal holds the actual committed prefix.
 Shared complete schema/source-readiness helpers remain available to P0.
+
+Coding P2/P6 and ordinary queue publication explicitly carries that selection
+through the existing task publication/generation adapters. After the original
+queue mutex waits, reservation and insertion renew only the captured reference/
+gate checks, with no authority discovery or DB work under that mutex. Actual
+insertion or SAME pending ownership is still required; a reservation/submission
+alone is not delivery. Later refusal preserves prior insertion and committed task
+identities. Returned rediscovery forwards its already captured callable into the
+existing notification scope; the helper renews it after the notification wait
+and through BOTH original history owners. No extra discovery or notification
+scope is introduced. Callback admission carries its original IDENTITY-ONLY
+validator with the native capture through route binding, BEGIN/classification,
+the uncommitted result writer and final callback COMMIT. It never turns owed
+settlement into fresh-ready admission; terminal/host/tracker/lease tails remain
+independently owed.
+
+Selected authority admission and Pause writers renew the SAME optional validator
+AFTER the complete caller body/read returns and immediately BEFORE COMMIT. Stop
+or reference drift there rolls back only original uncommitted work. A successful
+COMMIT followed by refusal retains its committed prefix and native ownership.
+Selected metadata reads preserve the exact original BaseException and traceback
+through their once-only rollback and every independently owed outer fence exit;
+actual cleanup failures/tracebacks remain guarded bounded secondary evidence.
+Diagnostic formatting cannot replace the first cause. Cleanup-only failure still
+fails, while no-validator reader/writer precedence remains unchanged and cleanup
+never rechecks admission. Settings validation-only no-effect classification needs
+positive original rollback AND positive lease release, the exact selected body
+exception, no active transaction and no secondary cleanup evidence. Exception
+identity or an ended transaction alone proves neither closure nor no effect.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery
 keep their actual native owners; no new stage or session exception follows.

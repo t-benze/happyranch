@@ -1906,6 +1906,7 @@ class Database(
         recovery_deadline_monotonic: float | None = None,
         v2_admission: dict | None = None,
         coding_admission: Any = None,
+        coding_validation: Callable[[], None] | None = None,
     ) -> bool:
         """Atomically admit, persist, and ledger-accept one completion callback.
 
@@ -1922,7 +1923,11 @@ class Database(
         assessment digest refuses.
         """
         try:
+            if coding_validation is not None:
+                coding_validation()
             self._conn.execute("BEGIN IMMEDIATE")
+            if coding_validation is not None:
+                coding_validation()
             from runtime.workflows.recovery import classify_task
             drafts = getattr(self, "_workflow_drafts", None)
             from runtime.workflows.coding_authority_history import _Budget
@@ -1934,15 +1939,19 @@ class Database(
                 payload = dict(output_summary=output_summary, confidence_score=confidence_score, status=status,
                                risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
                                waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
-                if coding is None or v2_admission is not None or not coding.callback_uncommitted(
+                if coding is None or coding_validation is None or v2_admission is not None or not coding.callback_uncommitted(
                         task_id=task_id, agent=agent, session_id=session_id, payload=payload, capture=coding_admission,
-                        budget=coding_budget):
+                        budget=coding_budget, validate_admission=coding_validation):
                     self._conn.rollback()
                     return False
                 from runtime.infrastructure.workflow_schema import _read_workflow_schema
                 _read_workflow_schema(self._conn, expected_org_slug=coding.org.slug, budget=coding_budget)
+                coding_validation()
                 self._conn.commit()
                 return True
+            if coding_validation is not None:
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                raise StartupUnavailable('startup_coding_callback_owner_changed')
             if ownership.kind == 'f5':
                 drafts = getattr(self, '_workflow_reviews', None)
             if ownership.kind != "legacy":
@@ -2149,8 +2158,23 @@ class Database(
                     admitted_attempt.owner_attempt_id
                 )
             return True
-        except Exception:
-            self._conn.rollback()
+        except BaseException as primary:
+            if coding_validation is None:
+                if isinstance(primary, Exception):
+                    self._conn.rollback()
+                raise
+            try:
+                self._conn.rollback()
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, '_coding_callback_rollback_secondary',
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
+                try:
+                    BaseException.add_note(primary, f'coding callback rollback also failed: {secondary!r}'[:1024])
+                except BaseException:
+                    pass
             raise
 
 

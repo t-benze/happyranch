@@ -333,6 +333,6 @@ def rediscover_returned(coding: Any) -> None:
             publication.count('not_applicable')
     for instance in returned:
         validate()
-        result = notify_returned(coding, instance)
+        result = notify_returned(coding, instance, validate_admission=validate)
         if publication is not None and type(result) is not bool:
             raise RuntimeError('startup_returned_notification_outcome_unknown')

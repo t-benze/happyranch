@@ -83,35 +83,70 @@ class CodingImportSupport:
         if validate_admission is not None:
             validate_admission()
         authority = self.org.workflow_authority
-        with ExitStack() as fences:
-            if capture is not None:
-                coordinator = authority._profile_coordinator
-                try:
-                    for name in capture.profile_names:
-                        fences.enter_context(coordinator.profile_read(name))
-                        if validate_admission is not None:
-                            validate_admission()
-                except ProfileCoordinatorError:
-                    # Safe original metadata remains readable under revocation;
-                    # no failed profile lease becomes active authority.
-                    fences.close()
-                    capture = None
-            fences.enter_context(authority._publisher_lock)
-            if validate_admission is not None:
-                validate_admission()
-            fences.enter_context(self.db._lock)
-            if validate_admission is not None:
-                validate_admission()
-            conn = self.db._conn
-            if conn.in_transaction:
-                raise CodingReleaseImportError('coding_release_import_caller_transaction')
-            conn.execute('BEGIN')
+
+        def retain(primary: BaseException, secondary: BaseException) -> None:
             try:
+                saved = getattr(primary, '_coding_read_secondaries', ())
+                if len(saved) < 8:
+                    BaseException.__setattr__(primary, '_coding_read_secondaries',
+                                              (*saved, (secondary, secondary.__traceback__)))
+            except BaseException:
+                pass
+            try:
+                BaseException.add_note(primary, f'selected coding read cleanup also failed: {secondary!r}'[:1024])
+            except BaseException:
+                pass  # Diagnostics cannot replace the original exception.
+
+        with ExitStack() as fences:
+            try:
+                if capture is not None:
+                    coordinator = authority._profile_coordinator
+                    try:
+                        for name in capture.profile_names:
+                            fences.enter_context(coordinator.profile_read(name))
+                            if validate_admission is not None:
+                                validate_admission()
+                    except ProfileCoordinatorError:
+                        # Revoked metadata remains readable without active authority.
+                        fences.close()
+                        capture = None
+                fences.enter_context(authority._publisher_lock)
                 if validate_admission is not None:
                     validate_admission()
-                yield conn, capture
-            finally:
-                conn.rollback()
+                fences.enter_context(self.db._lock)
+                if validate_admission is not None:
+                    validate_admission()
+                conn = self.db._conn
+                if conn.in_transaction:
+                    raise CodingReleaseImportError('coding_release_import_caller_transaction')
+                conn.execute('BEGIN')
+                primary = None
+                try:
+                    if validate_admission is not None:
+                        validate_admission()
+                    yield conn, capture
+                    if validate_admission is not None:
+                        validate_admission()
+                except BaseException as exc:
+                    primary = exc
+                    raise
+                finally:
+                    try:
+                        conn.rollback()
+                    except BaseException as secondary:
+                        if validate_admission is None or primary is None:
+                            raise
+                        retain(primary, secondary)
+            except BaseException as primary:
+                if validate_admission is not None:
+                    # ExitStack still attempts EVERY original outer fence. Run
+                    # its owed exit once before rethrowing the selected cause;
+                    # the surrounding with sees an empty stack afterward.
+                    try:
+                        fences.__exit__(type(primary), primary, primary.__traceback__)
+                    except BaseException as secondary:
+                        retain(primary, secondary)
+                raise
 
     def _discover(self, *, validate_admission: Callable[[], None] | None = None) -> AuthorityAdmissionCapture | None:
         if validate_admission is not None:

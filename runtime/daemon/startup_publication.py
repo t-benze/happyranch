@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import threading
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 
 _CURRENT: ContextVar[tuple[StartupPublications, Any] | None] = ContextVar(
@@ -53,6 +53,7 @@ class _TaskPublication:
     metadata: Any = None
     sweep_owner: Any = None
     publication: Any = None
+    validate_admission: Callable[[], None] | None = None
     epoch: str = field(init=False)
     queue: Any = field(init=False)
 
@@ -68,9 +69,11 @@ class _TaskPublication:
         if task_id != self.task_id:
             raise RuntimeError("startup_task_publication_target_changed")
         return _TaskPublication(self.gate, self.orch, task_id, self.kind,
-                                metadata, self.sweep_owner, self.publication)
+                                metadata, self.sweep_owner, self.publication, self.validate_admission)
 
     def check(self, queue: Any, slug: str, task_id: str, metadata: Any) -> None:
+        if self.validate_admission is not None:
+            self.validate_admission()
         gate, orch = self.gate, self.orch
         gate.require_attachment(orch)
         if (gate.epoch != self.epoch or queue is not self.queue

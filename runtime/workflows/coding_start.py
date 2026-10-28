@@ -4,7 +4,7 @@ from __future__ import annotations
 from runtime.daemon.startup_recovery import coding_admission_validation
 
 import sqlite3
-from typing import Any
+from typing import Any, Callable
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -143,14 +143,14 @@ class CodingStartStore:
         return source, result, decision, native
 
     async def get(self, *, principal: Any, instance_id: str) -> dict:
-        coding_admission_validation(self)()
+        validate = coding_admission_validation(self)
         # Reuse current-manager native session transport and lock ownership.
         # Select the source owner before private run/context decoding.
         from runtime.workflows.coding_roles import CodingRoleError
         roles = self.org.workflow_coding_roles
-        async with roles._access(principal) as (references, capture, _):
+        async with roles._access(principal, validate_admission=validate) as (references, capture, _, validate):
             budget = _Budget()
-            with roles._read(principal, capture, references, budget=budget) as (conn, current):
+            with roles._read(principal, capture, references, budget=budget, validate_admission=validate) as (conn, current):
                 selected = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?',
                                         (instance_id,)).fetchone()
                 if selected is None or selected[0] != principal.operation_principal:
@@ -161,16 +161,17 @@ class CodingStartStore:
                     raise CodingRoleError('coding_role_not_found')
                 from runtime.workflows._coding_settings_execution import _settings_family
                 if not _settings_family(entry['command']):
-                    roles._current(conn, principal, current, entry['mapping'], budget=budget)
+                    roles._current(conn, principal, current, entry['mapping'], budget=budget, validate_admission=validate)
                 effective = effective_mapping(entry['mapping'], entry['command'])
                 roles._current(conn, principal, current, effective,
-                    command=entry['command'], budget=inventory.budget)
+                    command=entry['command'], budget=inventory.budget, validate_admission=validate)
                 self.db._check_team_move_workflow_uncommitted(binding_bytes=effective_bindings(instance_id, entry['roles']))
                 return self.project(instance_id, entry)
 
     async def get_final(self, *, principal: Any, instance_id: str) -> dict:
-        coding_admission_validation(self)()
-        return await self.org.workflow_coding_dispatch.selected_final(principal=principal, instance=instance_id)
+        validate = coding_admission_validation(self)
+        return await self.org.workflow_coding_dispatch.selected_final(principal=principal, instance=instance_id,
+                                                                     validate_admission=validate)
 
     def guard_cancellation(self, task_id: str, *, cascade: bool, rationale: str,
                            actor: str, transitions: Any) -> dict | None:
@@ -200,7 +201,7 @@ class CodingStartStore:
         # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
         validate()
-        coroutine = self._start(claim, decision, report, owner)
+        coroutine = self._start(claim, decision, report, owner, validate_admission=validate)
         return self.org.workflow_drafts._on_loop(coroutine)
 
     def _policy(self, claim: RetryClaim, revise_limit: int) -> None:
@@ -209,8 +210,10 @@ class CodingStartStore:
         _check(actor is not None and actor.role == 'manager' and bool(actor.executor) and actor.team == claim.team)
         _check(load_org_config(self.org.orchestrator._paths).max_revise_rounds == revise_limit)
 
-    async def _start(self, claim: RetryClaim, decision: NextStep, report: CompletionReport, invocation: Any) -> str:
-        validate = coding_admission_validation(self)
+    async def _start(self, claim: RetryClaim, decision: NextStep, report: CompletionReport, invocation: Any, *,
+                     validate_admission: Callable[[], None] | None = None) -> str:
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         references = self.support._schema_references()
         authority = self.org.workflow_authority
         # Discovery/file I/O occurs before the synchronous bootstrap interval.
@@ -245,17 +248,19 @@ class CodingStartStore:
                     with authority.admission_writer(capture, validate_admission=validate) as conn:
                         return self.start_in_writer(conn, claim=claim, decision=decision, report=report, invocation=invocation,
                             capture=capture, references=references, revise_limit=revise_limit, active_sessions=sessions,
-                            checkpoints=checkpoints)
+                            checkpoints=checkpoints, validate_admission=validate)
 
     def start_in_writer(self, conn: sqlite3.Connection, *, claim: RetryClaim, decision: NextStep,
                         report: CompletionReport, invocation: Any, capture: AuthorityAdmissionCapture,
-                        references: tuple[str, ...], revise_limit: int, active_sessions: tuple, checkpoints: list) -> str:
+                        references: tuple[str, ...], revise_limit: int, active_sessions: tuple, checkpoints: list,
+                        validate_admission: Callable[[], None] | None = None) -> str:
         """Single uncommitted bootstrap; caller owns native admission transaction.
 
         No self-committing task/delegate helper, I/O, await or queue publication.
         Any refusal/error unwinds admission_writer and preserves the callback.
         """
-        coding_admission_validation(self)()
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         _check(conn is self.db._conn and conn.in_transaction)
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
         inventory = self.support._storage(conn, references)
@@ -305,7 +310,7 @@ class CodingStartStore:
         for child in rows(conn, 'tasks', inventory.budget, where='parent_task_id=?', args=(claim.task_id,)):
             _check(child['status'] in ('completed', 'failed', 'cancelled', 'superseded'))
         _check(revise_limit == 0 or claim.revision < revise_limit)
-        action_claim = self._claim_result_action_uncommitted(claim)
+        action_claim = self._claim_result_action_uncommitted(claim, validate_admission=validate)
         now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
         digest = _hash(_canonical(command))
         instance = identity('root', self.org.slug, claim.task_id, callback['id'], digest)
@@ -403,8 +408,10 @@ class CodingStartStore:
         _check(target is not None)
         return instance
 
-    def _claim_result_action_uncommitted(self, claim: RetryClaim) -> Any:
-        coding_admission_validation(self)()
+    def _claim_result_action_uncommitted(self, claim: RetryClaim, *,
+                                         validate_admission: Callable[[], None] | None = None) -> Any:
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         # Reuse the native owner's existing uncommitted spend/claim/ack seams.
         # Their exact evidence/CAS/limits stay unchanged; all writes now share
         # this bootstrap transaction instead of a prior self-committing call.

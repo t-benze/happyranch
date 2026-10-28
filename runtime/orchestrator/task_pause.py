@@ -155,6 +155,7 @@ class TaskInvocation:
     _repository_retained_effects: list = field(default_factory=list, repr=False)
     _repository_worker_active: bool = False
     _startup_validation: Callable[[], None] | None = field(default=None, repr=False)
+    _coding_selection: tuple | None = field(default=None, repr=False)
     _held_recovery: dict | None = field(default=None, repr=False)
     _deferred_recovery_adoption: dict | None = field(default=None, repr=False)
 
@@ -195,7 +196,25 @@ class TaskInvocation:
         return self.orch._db._task_pause_store
 
     def _fresh_validation(self, additional: Callable[[], None] | None = None) -> Callable[[], None] | None:
-        """Keep one ordinary/v2/recovery selection across the original fresh seams."""
+        """Keep the original native selection across the original fresh seams."""
+        if self.owner == "coding":
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            selection = self._coding_selection
+            if (type(selection) is not tuple or len(selection) != 3
+                    or selection[0] is not self or selection[1] is not self.workflow_dispatcher
+                    or selection[1] is not self.orch._workflow_coding_dispatch
+                    or getattr(getattr(selection[1], "org", None), "orchestrator", None) is not self.orch
+                    or not callable(selection[2])):
+                raise StartupUnavailable("startup_coding_owner_changed")
+            selected = selection[2]
+
+            def validate_coding() -> None:
+                selected()
+                if additional is not None and additional is not selected:
+                    additional()
+
+            validate_coding()
+            return validate_coding
         if self.owner not in {"ordinary", "v2", "recovery"}:
             return additional
         if self._startup_validation is None:
@@ -212,18 +231,21 @@ class TaskInvocation:
         return validate
 
     def prepare(self, *, validate_admission: Callable[[], None] | None = None) -> None:
+        if self.owner == "coding" and self._coding_selection is None:
+            # Only an independently entered preparation may establish V0. A
+            # continuing dispatch/commit with missing selection must refuse.
+            from runtime.daemon.startup_recovery import StartupUnavailable, coding_admission_validation
+            if self.move_reservation is not None or self.admitted or self.attempt_committed or self.unsettled:
+                raise StartupUnavailable("startup_coding_owner_changed")
+            dispatcher = self.workflow_dispatcher or self.orch._workflow_coding_dispatch
+            if dispatcher is not self.orch._workflow_coding_dispatch:
+                raise StartupUnavailable("startup_coding_owner_changed")
+            self.workflow_dispatcher = dispatcher
+            self._coding_selection = (self, dispatcher, coding_admission_validation(dispatcher))
         validate_admission = self._fresh_validation(validate_admission)
         if self.owner == "coding":
-            from runtime.daemon.startup_recovery import coding_admission_validation
-            coding_validate = coding_admission_validation(self.orch._workflow_coding_dispatch)
-            previous_validation = validate_admission
-
-            def validate_admission() -> None:
-                coding_validate()
-                if previous_validation is not None:
-                    previous_validation()
-
-            self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
+            self.workflow_dispatcher.require_task_ready(self.task.id, validate_admission=validate_admission)
+            validate_admission()
         store, move = self.store, self.orch._team_moves
         committed = False
 
@@ -428,23 +450,17 @@ class TaskInvocation:
 
     def commit(self, ctx: Any = None) -> bool:
         if self.owner in ("draft", "coding"):
+            validate = self._fresh_validation() if self.owner == "coding" else None
             drafts = self.workflow_dispatcher or self.orch._workflow_drafts
-            return drafts._on_loop(drafts._commit_pause_launch(self, ctx))
+            coroutine = drafts._commit_pause_launch(self, ctx)
+            if self.owner == "coding":
+                return drafts._on_loop(coroutine, validate_admission=validate)
+            return drafts._on_loop(coroutine)
         return self._commit_local(ctx)
 
     def _commit_local(self, ctx: Any = None, *, validate_admission: Callable[[], None] | None = None) -> bool:
         """One writer commits with the terminal lock last and still owned."""
         from contextlib import nullcontext
-        if self.owner == "coding":
-            from runtime.daemon.startup_recovery import coding_admission_validation
-            coding_validate = coding_admission_validation(self.orch._workflow_coding_dispatch)
-            previous_validation = validate_admission
-
-            def validate_admission() -> None:
-                coding_validate()
-                if previous_validation is not None:
-                    previous_validation()
-
         validate_admission = self._fresh_validation(validate_admission)
         sessions = self.orch._sessions
         lease = sessions.binding_lease(self.task.id, self.agent) if sessions else nullcontext()

@@ -8,7 +8,7 @@ import hashlib
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -73,10 +73,12 @@ class CodingReleaseImportStore:
         self._startup_state = self._startup_org = self._startup_recovery = None
         self._support = CodingImportSupport(org, self)
 
-    def _principal(self, principal: WorkflowTemplatePrincipal) -> None:
+    def _principal(self, principal: WorkflowTemplatePrincipal, *,
+                   validate_admission: Callable[[], None] | None = None) -> None:
         # Reuse the genuine Founder predicate. Manager/source imports stay
         # unavailable in this Founder-only unit.
-        coding_admission_validation(self)()
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         self._support._principal(principal)
 
     def _current(self, conn, capture) -> dict:
@@ -118,28 +120,28 @@ class CodingReleaseImportStore:
 
     async def get(self, *, principal: WorkflowTemplatePrincipal) -> dict:
         validate = coding_admission_validation(self)
-        self._principal(principal)  # Entitlement before private lookup/decode.
+        self._principal(principal, validate_admission=validate)  # Entitlement before private lookup/decode.
         references = self._support._schema_references()
-        capture = self._support._discover()
+        capture = self._support._discover(validate_admission=validate)
         async with self.org.workflow_authority._async_writer_lock:
             validate()
-            self._principal(principal)
+            self._principal(principal, validate_admission=validate)
             async with self.org.db_lock:
                 validate()
-                self._principal(principal)
-                with self._support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, current_capture):
+                self._principal(principal, validate_admission=validate)
+                with self._support._read(capture, validate_admission=validate) as (conn, current_capture):
                     inventory = self._support._storage(conn, references)
                     history = inventory.imported
                     if history is None:
                         raise CodingReleaseImportError('coding_release_import_not_found')
                     receipt = self._receipt(conn, history, current_capture, replayed=False)
                     validate()
-                    self._principal(principal)
+                    self._principal(principal, validate_admission=validate)
                     return receipt
 
     async def import_release(self, *, principal: WorkflowTemplatePrincipal, raw: bytes) -> dict:
         validate = coding_admission_validation(self)
-        self._principal(principal)
+        self._principal(principal, validate_admission=validate)
         try:
             parse_import_command(raw)
         except ValueError:
@@ -153,19 +155,19 @@ class CodingReleaseImportStore:
         except ReleaseTemplateError as exc:
             resource_error = exc
             definition = None
-        capture = self._support._discover()
+        capture = self._support._discover(validate_admission=validate)
         authority = self.org.workflow_authority
         async with authority._async_writer_lock:
             validate()
-            self._principal(principal)
+            self._principal(principal, validate_admission=validate)
             async with self.org.db_lock:
                 validate()
-                self._principal(principal)
-                with self._support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, current_capture):
+                self._principal(principal, validate_admission=validate)
+                with self._support._read(capture, validate_admission=validate) as (conn, current_capture):
                     inventory = self._support._storage(conn, references)
                     replay = self._replay(conn, raw, current_capture, inventory.imported)
                     validate()
-                    self._principal(principal)
+                    self._principal(principal, validate_admission=validate)
                     if replay is not None:
                         return replay
                 if resource_error is not None:
@@ -174,14 +176,14 @@ class CodingReleaseImportStore:
                     raise CodingReleaseImportError('coding_release_import_authority_unavailable')
                 try:
                     budget = _Budget()  # Fresh writer snapshot; never reuse pre-read inventory.
-                    with authority.admission_writer(capture, validate_admission=coding_admission_validation(self)) as conn:
+                    with authority.admission_writer(capture, validate_admission=validate) as conn:
                         validate()
-                        self._principal(principal)
+                        self._principal(principal, validate_admission=validate)
                         inventory = self._support._storage(conn, references, budget=budget)
                         replay = self._replay(conn, raw, capture, inventory.imported)
                         if replay is not None:
                             validate()
-                            self._principal(principal)
+                            self._principal(principal, validate_admission=validate)
                             return replay
                         now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
                         admission_id = 'coding-import-admission:' + uuid.uuid4().hex
@@ -206,7 +208,7 @@ class CodingReleaseImportStore:
                             raise CodingReleaseImportError('coding_release_import_history_invalid')
                         receipt = self._receipt(conn, history, capture, replayed=False)
                         validate()
-                        self._principal(principal)
+                        self._principal(principal, validate_admission=validate)
                         authority._validate_admission_uncommitted(conn, capture)
                         return receipt
                 except sqlite3.IntegrityError:

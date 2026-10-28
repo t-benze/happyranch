@@ -11,7 +11,7 @@ from runtime.daemon.startup_recovery import (
 
 import sqlite3
 from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from runtime.orchestrator.producer_move import native_writer
 from runtime.workflows._coding_import_support import CodingImportSupport
@@ -72,33 +72,34 @@ class CodingSettingsStore:
         from runtime.daemon.startup_recovery import capture_coding_settings
         capture_coding_settings(self)
 
-    def _principal(self, principal):
-        coding_admission_validation(self)()
+    def _principal(self, principal, *, validate_admission: Callable[[], None] | None = None):
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        validate()
         self.support._principal(principal)
 
     @asynccontextmanager
-    async def _access(self, principal):
-        validate = coding_admission_validation(self)
-        self._principal(principal)
+    async def _access(self, principal, *, validate_admission: Callable[[], None] | None = None):
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
+        self._principal(principal, validate_admission=validate)
         references = self.support._schema_references()
         async with self.org.workflow_authority._async_writer_lock:
             validate()
-            self._principal(principal)
+            self._principal(principal, validate_admission=validate)
             async with self.org.teams_lock:
                 validate()
-                self._principal(principal)
+                self._principal(principal, validate_admission=validate)
                 async with self.org.db_lock:
                     # File/profile discovery follows the last awaited lock and
                     # precedes the short synchronous admission/DB writer.
                     validate()
-                    capture = self.support._discover()
+                    capture = self.support._discover(validate_admission=validate)
                     validate()
-                    self._principal(principal)
+                    self._principal(principal, validate_admission=validate)
                     yield references, capture
 
     @contextmanager
-    def _writer(self) -> Iterator[Any]:
-        validate = coding_admission_validation(self)
+    def _writer(self, *, validate_admission: Callable[[], None] | None = None) -> Iterator[Any]:
+        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
         from runtime.orchestrator.producer_move import owner_for
         admission = owner_for(self.db)
         # Enter the existing reservation under its original short move/DB
@@ -132,14 +133,15 @@ class CodingSettingsStore:
             current=state.current, configuration=state.configuration, operation=operation)
 
     async def get(self, *, principal, operation_key=None):
+        validate = coding_admission_validation(self)
         budget = _Budget()
         try:
-            async with self._access(principal) as (references, capture):
-                with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, _):
-                    self._principal(principal)
+            async with self._access(principal, validate_admission=validate) as (references, capture):
+                with self.support._read(capture, validate_admission=validate) as (conn, _):
+                    self._principal(principal, validate_admission=validate)
                     state, _ = self._state(conn, references, budget)
                     result = self._view(state, operation_key=operation_key)
-                    self._principal(principal)
+                    self._principal(principal, validate_admission=validate)
                     return result
         except StartupUnavailable:
             raise
@@ -152,15 +154,16 @@ class CodingSettingsStore:
             raise CodingSettingsError('coding_settings_invalid') from None
 
     async def options(self, *, principal: WorkflowTemplatePrincipal) -> dict:
+        validate = coding_admission_validation(self)
         budget = _Budget()
         try:
-            async with self._access(principal) as (references, capture):
-                with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, admitted_capture):
-                    self._principal(principal)
+            async with self._access(principal, validate_admission=validate) as (references, capture):
+                with self.support._read(capture, validate_admission=validate) as (conn, admitted_capture):
+                    self._principal(principal, validate_admission=validate)
                     _, inventory = self._state(conn, references, budget)
                     from runtime.workflows._coding_settings_options import project_options
                     result = project_options(self, conn, admitted_capture, inventory)
-                    self._principal(principal)
+                    self._principal(principal, validate_admission=validate)
                     return result
         except StartupUnavailable:
             raise
@@ -181,7 +184,8 @@ class CodingSettingsStore:
         return None
 
     async def publish(self, *, principal, raw: bytes):
-        self._principal(principal)
+        validate = coding_admission_validation(self)
+        self._principal(principal, validate_admission=validate)
         try:
             command = parse_command(raw, self.org.slug)
         except (ValueError, TypeError, KeyError, RecursionError, OverflowError):
@@ -191,16 +195,16 @@ class CodingSettingsStore:
         account(command, budget)
         writer = None
         try:
-            with self._writer() as writer:
+            with self._writer(validate_admission=validate) as writer:
                 business_entered = False
                 try:
-                    async with self._access(principal) as (references, capture):
+                    async with self._access(principal, validate_admission=validate) as (references, capture):
                         # Original replay does not need fresh authority or CAS.
-                        with self.support._read(capture, validate_admission=coding_admission_validation(self)) as (conn, _):
+                        with self.support._read(capture, validate_admission=validate) as (conn, _):
                             state, _ = self._state(conn, references, budget)
                             replay = self._replay(state, command, raw)
                             if replay is not None:
-                                self._principal(principal)
+                                self._principal(principal, validate_admission=validate)
                                 return replay
                         if capture is None:
                             raise CodingSettingsError('coding_settings_authority_unavailable', current=state.current)
@@ -209,9 +213,9 @@ class CodingSettingsStore:
                         validation_error = None
                         try:
                             business_entered = True
-                            with self.org.workflow_authority.admission_writer(capture, validate_admission=coding_admission_validation(self)) as conn:
+                            with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
                                 try:
-                                    self._principal(principal)
+                                    self._principal(principal, validate_admission=validate)
                                     state, inventory = self._state(conn, references, budget)
                                     replay = self._replay(state, command, raw)
                                     if replay is not None:
@@ -225,7 +229,7 @@ class CodingSettingsStore:
                                             org_slug=self.org.slug, current=state.current,
                                             configuration=state.configuration,
                                             operation=receipt(state.publications[-1], replayed=False))
-                                    self._principal(principal)
+                                    self._principal(principal, validate_admission=validate)
                                     self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
                                 except (CodingSettingsError, ValueError, TypeError, KeyError) as exc:
                                     validation_error = exc
@@ -235,15 +239,24 @@ class CodingSettingsStore:
                             # Selected cleanup preserves the primary with notes on
                             # failure; identity/transaction state alone is not proof.
                             if (exc is validation_error and not self.db._conn.in_transaction
-                                    and not getattr(exc, '__notes__', None)):
+                                    and getattr(exc, '_admission_rollback_complete', False) is True
+                                    and getattr(exc, '_admission_release_complete', False) is True
+                                    and not getattr(exc, '__notes__', None)
+                                    and not getattr(exc, '_admission_rollback_secondary', None)
+                                    and not getattr(exc, '_admission_release_secondary', None)
+                                    and not getattr(exc, '_admission_fence_secondary', None)):
                                 writer.no_effect_error = exc
                             else:
                                 writer.uncertain = True
                             raise
                         return result  # COMMIT + lease release, then native settlement.
                 except BaseException as exc:
-                    if not business_entered and isinstance(exc, (ValueError, TypeError, KeyError)):
+                    if (not business_entered and isinstance(exc, (ValueError, TypeError, KeyError))
+                            and not self.db._conn.in_transaction and not getattr(exc, '__notes__', None)
+                            and not getattr(exc, '_coding_read_secondaries', None)):
                         writer.no_effect_error = exc
+                    elif not business_entered:
+                        writer.uncertain = True
                     raise
         except StartupUnavailable:
             raise
