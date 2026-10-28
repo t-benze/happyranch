@@ -719,143 +719,19 @@ class AuthorityV2ContinuationMixin:
         A legitimate finalized replay/reopen must authenticate without
         restoring a live pre-final owner, re-evaluating or reminting.
         """
-        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+        code, proof = self._authenticate_v2_committed_policy_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        row = self._conn.execute(
-            """SELECT * FROM authority_policy_v2_attempts
-               WHERE root_task_id=? AND manager_agent=?
-                 AND manager_session_id=? AND result_id=?""",
-            (root_task_id, manager_agent, manager_session_id, result_id),
-        ).fetchone()
-        if row is None:
-            return "identity_mismatch", None
-        try:
-            attempt = self._authority_policy_v2_attempt_from_row(row)
-        except ValueError:
-            return "identity_mismatch", None
-        if attempt.attempt_id != attempt_id:
-            return "identity_mismatch", None
+        if code is not None:
+            return code, None
+        assert proof is not None
+        attempt = proof["attempt"]
         if attempt.finalization_state != "continued":
             return "identity_mismatch", None
-        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
-            return "evidence_drift", None
-        attempt_row = dict(row)
-        # a0 half: the single immutable admission event.  A deleted, mutated,
-        # duplicated or foreign admitted audit is missing evidence.
-        if not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row):
-            return "identity_mismatch", None
-        # R: the exact causal result row, its identity AND its persisted
-        # normalized body/decision (including the accepted escalation action and
-        # the assessment digest the attempt was admitted with).
-        result_row = self._conn.execute(
-            "SELECT * FROM task_results WHERE id=?", (result_id,)
-        ).fetchone()
-        if (
-            result_row is None
-            or result_row["task_id"] != root_task_id
-            or result_row["agent"] != manager_agent
-            or result_row["session_id"] != manager_session_id
-        ):
-            return "identity_mismatch", None
-        if not self._authenticate_v2_result_body_uncommitted(result_row, attempt):
-            return "identity_mismatch", None
-        # Authentic immutable launch binding and its pinned release/activation/
-        # selector history (a later legitimate activation never invalidates the
-        # pinned tuple; today's selector equality is never required).
-        binding = self.get_authority_policy_v2_session_binding(
-            root_task_id=root_task_id, manager_agent=manager_agent,
-            manager_session_id=manager_session_id,
-        )
-        if binding is None:
-            return "identity_mismatch", None
-        try:
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except Exception:
-            return "identity_mismatch", None
-        if (
-            binding.binding_id != attempt.binding_id
-            or binding.team != attempt.team
-            or binding.contract_id != attempt.contract_id
-            or binding.contract_version != attempt.contract_version
-            or binding.contract_digest != attempt.contract_digest
-            or binding.release_id != attempt.release_id
-            or binding.activation_id != attempt.activation_id
-            or binding.activation_epoch != attempt.activation_epoch
-            or binding.selector_id != attempt.selector_id
-        ):
-            return "identity_mismatch", None
-        release = self.get_authority_policy_v2_release(attempt.release_id)
-        activation = self.get_authority_policy_v2_activation(attempt.activation_id)
-        if release is None or activation is None:
-            return "identity_mismatch", None
-        if (
-            release.team != attempt.team
-            or release.policy_digest != binding.policy_digest
-            or release.version != binding.policy_version
-            or activation.team != attempt.team
-            or activation.release_id != attempt.release_id
-            or activation.release_digest != release.policy_digest
-            or activation.selector_epoch != attempt.activation_epoch
-            or binding.provider_id == "" or binding.executor_kind == ""
-            or binding.model_id == ""
-        ):
-            return "identity_mismatch", None
-        # K/P: the exact consumed candidate and its immutable pin tuple.
-        candidate_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
-            (result_id,),
-        ).fetchone()
-        if candidate_row is None:
-            return "evidence_drift", None
-        try:
-            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
-        except ValueError:
-            return "identity_mismatch", None
-        pin_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
-            (candidate.candidate_id,),
-        ).fetchone()
-        if pin_row is None:
-            return "evidence_drift", None
-        try:
-            pin = self._authority_policy_v2_pin_from_row(pin_row)
-        except ValueError:
-            return "identity_mismatch", None
-        if not self._authenticate_v2_candidate_pin_joins_uncommitted(
-            attempt=attempt, candidate=candidate, pin=pin, binding=binding,
-            release=release,
-        ):
-            return "identity_mismatch", None
-        if candidate.lifecycle_stage != "consumed":
-            return "evidence_drift", None
-        # BOTH halves of a1/a2/a3.
-        for event in (
-            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
-            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
-            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
-        ):
-            if not self._authenticate_v2_candidate_audit_uncommitted(candidate, event):
-                return "evidence_drift", None
-        if not self._authenticate_v2_prior_result_stages_uncommitted(
-            attempt_row,
-            (
-                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
-                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
-                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
-            ),
-            candidate.candidate_id,
-        ):
-            return "evidence_drift", None
-        # V: the persisted outcome is authoritative and is never re-derived.
-        eval_code, eval_ctx = self._authenticate_v2_evaluation_evidence_uncommitted(
-            candidate=candidate, attempt=attempt, binding=binding, release=release,
-        )
-        if eval_code is not None:
-            return "evidence_drift", None
-        assert eval_ctx is not None
-        evaluation = eval_ctx["evaluation"]
+        attempt_row = proof["row"]
+        candidate = proof["candidate"]
+        evaluation = proof["evaluation"]
         # E/N/D plus the complete final audit set (candidate ``final`` event,
         # closed ``continued`` result-stage evidence, final task/hook audits).
         code, ctx = self._authenticate_v2_final_rows_uncommitted(
@@ -866,11 +742,7 @@ class AuthorityV2ContinuationMixin:
         if code is not None:
             return code, None
         assert ctx is not None
-        return None, {
-            **ctx, "attempt": attempt, "candidate": candidate, "pin": pin,
-            "binding": binding, "release": release, "activation": activation,
-            "result_row": result_row, "evaluation": evaluation,
-        }
+        return None, {**proof, **ctx}
 
     def _authenticate_v2_post_final_task_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
@@ -5787,6 +5659,15 @@ class AuthorityV2ContinuationMixin:
             )
         if attempt.finalization_state != AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED:
             return False
+        if attempt.refusal_code == "policy_no_continue":
+            code, proof = self._authenticate_v2_committed_policy_evidence_uncommitted(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id, result_id=result_id,
+            )
+            if code is not None or proof is None or not self._v2_evaluation_is_policy_no_continue(
+                proof["evaluation"],
+            ):
+                return False
         candidate_row = self._conn.execute(
             "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
             (result_id,),
@@ -5814,7 +5695,21 @@ class AuthorityV2ContinuationMixin:
         )
         if not completion_ok:
             return False
-        if recovery_claimed:
+        if attempt.refusal_code == "policy_no_continue":
+            receipt_ok, exact_receipt = self._classify_v2_refusal_receipt_uncommitted(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id, result_id=result_id,
+            )
+            if not receipt_ok:
+                return False
+            if recovery_claimed:
+                if exact_receipt is None or exact_receipt["state"] != "callback_consumed":
+                    return False
+            elif exact_receipt is not None:
+                # Ordinary policy evidence requires ordinary absence, even
+                # when an exact Q would otherwise be a valid consumed receipt.
+                return False
+        elif recovery_claimed:
             receipts = self._conn.execute(
                 """SELECT * FROM task_completion_recoveries
                    WHERE task_id=? AND agent=? AND recovery_session_id=?""",

@@ -182,6 +182,17 @@ class AuthorityHookV2RefusalOutcome(str):
         value.task_disposition = task_disposition
         return value
 
+
+def _authority_hook_caller_transaction_owned(db) -> bool:
+    """Observe the original connection only; never diagnose or repair it."""
+    with db._lock:
+        conn = db._conn
+        owned = conn.in_transaction
+        if db._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority hook connection ownership unavailable")
+        return owned
+
+
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
 AUDIT_ACTION_ENVELOPE_CONSUMED = "authority_continue_envelope_consumed"
@@ -3691,6 +3702,10 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     manager_session_id=target.manager_session_id,
                     result_id=target.result_id,
                     refusal_code=refusal_code,
+                    max_revise_rounds=(
+                        int(authority_policy_v2_claim_eligibility(orchestrator).get("max_revise_rounds", 0))
+                        if orchestrator is not None else None
+                    ),
                 )
                 if outcome.status == "housekeeping_pending":
                     # A bounded writer disposition is not an exception/audit kind,
@@ -3707,7 +3722,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                             _task_matches_authority_v2_refusal_failure,
                             _maybe_post_thread_followup,
                         )
-                        expected_note = f"authority_v2_refusal:{refusal_code}"
+                        expected_note = f"authority_v2_refusal:{outcome.refusal_code}"
                         if outcome.receipt_settled:
                             _handoff_consumed_recovery_terminal_effects(
                                 orchestrator,
@@ -3763,10 +3778,19 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         if result is not None and result.get("id") == target.result_id
                         else ""
                     )
+                    surface_reason = "authority_v2_refusal"
+                    if outcome.refusal_code == "policy_no_continue":
+                        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                        if result is None or result.get("id") != target.result_id:
+                            raise ValueError("policy terminal causal result unavailable")
+                        causal_report = completion_report_from_result_row(
+                            target.root_task_id, result, fallback_agent=target.manager_agent,
+                        )
+                        surface_reason = orchestrator._parse_next_step(causal_report).reason or "Escalated"
                     orchestrator.notify_escalated(
                         task_id=target.root_task_id,
                         agent=target.manager_agent,
-                        reason="authority_v2_refusal",
+                        reason=surface_reason,
                         last_summary=last_summary or "",
                     )
                     # Import lazily to preserve the authority/run_step module
@@ -3778,7 +3802,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     _maybe_post_thread_escalation(
                         orchestrator,
                         target.root_task_id,
-                        reason="authority_v2_refusal",
+                        reason=surface_reason,
                     )
                 reads.check()
             except _V2StartupConnectionUnsafe:
@@ -3819,6 +3843,9 @@ def _v2_request_refusal(
     and a later discovery unit owns the bounded obligation.
     """
     db = orch._db
+    policy_terminal = code == "policy_no_continue"
+    if _authority_hook_caller_transaction_owned(db):
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     if result_row_id is None:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
@@ -3834,8 +3861,11 @@ def _v2_request_refusal(
             result_id=result_row_id,
             refusal_code=code,
             owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=int(authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)),
         )
     except Exception as exc:
+        if policy_terminal or _authority_hook_caller_transaction_owned(db):
+            return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             error=f"v2 refusal housekeeping failed: {exc}",
@@ -3847,7 +3877,10 @@ def _v2_request_refusal(
             status=status,
             task_disposition=getattr(outcome, "task_disposition", None),
         )
-    # housekeeping_pending (or an unknown bounded value): prior state intact.
+    # A selected policy terminal owns task/J/exact-Q atomically. Pending
+    # cannot use the ordinary split escalation fallback or a postcommit tail.
+    if policy_terminal:
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     return HOOK_V2_PENDING
 
 
@@ -3870,6 +3903,8 @@ def _run_authority_hook_v2(
     adverse-review/partial-work/raw-DDL veto or second evaluator is introduced.
     """
     db = orch._db
+    if _authority_hook_caller_transaction_owned(db):
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     if result_row_id is None:
         return _v2_request_refusal(
             orch, task, agent, result_row_id=None, owner_attempt_id=None,
@@ -3912,9 +3947,10 @@ def _run_authority_hook_v2(
         )
         return HOOK_V2_CONTINUED
     if attempt.finalization_state in ("refused", "owner_lost"):
-        return AuthorityHookV2RefusalOutcome(
-            status="already_refused",
-            task_disposition=None,
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            code=attempt.refusal_code or "interrupted_pre_final",
         )
 
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -3931,43 +3967,77 @@ def _run_authority_hook_v2(
         owner_attempt_id=attempt.owner_attempt_id,
         max_revise_rounds=max_revise_rounds,
     )
-    for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
-        forwarder = getattr(store, forwarder_name)
-        try:
-            outcome = forwarder(**stage_kwargs)
-        except Exception as exc:
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 stage {stage_name} raised: {exc}",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id,
-                code="interrupted_pre_final",
-            )
-        status = getattr(outcome, "status", None)
-        if status == "refused":
-            code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
-                getattr(outcome, "refusal_code", None), "interrupted_pre_final",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id, code=code,
-            )
-        if status != expected_status:
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 stage {stage_name} unexpected status {status!r}",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id,
-                code="interrupted_pre_final",
-            )
+    if attempt.stage not in {"admitted", "consumed_audited"}:
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="interrupted_pre_final",
+        )
+    if attempt.stage == "admitted":
+        for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
+            forwarder = getattr(store, forwarder_name)
+            try:
+                outcome = forwarder(**stage_kwargs)
+            except Exception as exc:
+                try:
+                    transaction_owned = _authority_hook_caller_transaction_owned(db)
+                except BaseException:
+                    raise exc
+                if transaction_owned:
+                    return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+                _record_hook_outcome(
+                    db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                    error=f"v2 stage {stage_name} raised: {exc}",
+                )
+                return _v2_request_refusal(
+                    orch, task, agent, result_row_id=result_row_id,
+                    owner_attempt_id=attempt.owner_attempt_id,
+                    code="interrupted_pre_final",
+                )
+            status = getattr(outcome, "status", None)
+            if status == "refused":
+                code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
+                    getattr(outcome, "refusal_code", None), "interrupted_pre_final",
+                )
+                return _v2_request_refusal(
+                    orch, task, agent, result_row_id=result_row_id,
+                    owner_attempt_id=attempt.owner_attempt_id, code=code,
+                )
+            if status != expected_status:
+                _record_hook_outcome(
+                    db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                    error=f"v2 stage {stage_name} unexpected status {status!r}",
+                )
+                return _v2_request_refusal(
+                    orch, task, agent, result_row_id=result_row_id,
+                    owner_attempt_id=attempt.owner_attempt_id,
+                    code="interrupted_pre_final",
+                )
+    # Authenticate the ONCE-persisted consumed V before selecting its owner.
+    # Reentry after a3 never reclaims, re-evaluates or reconsumes the prefix.
+    try:
+        evaluation = store.get_authenticated_v2_consumed_evaluation(**stage_kwargs)
+    except Exception:
+        evaluation = None
+    if evaluation is None or evaluation.diagnostic_code == "binding_mismatch":
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="identity_mismatch",
+        )
+    if not (evaluation.outcome == "continue_applies" and evaluation.diagnostic_code is None):
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="policy_no_continue",
+        )
     # ---- Final continuation (atomic; mints E/N/D and returns the root Pending) ----
     try:
         final = store.finalize_v2_continuation(**stage_kwargs)
     except Exception as exc:
+        try:
+            transaction_owned = _authority_hook_caller_transaction_owned(db)
+        except BaseException:
+            raise exc
+        if transaction_owned:
+            return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             error=f"v2 final continuation raised: {exc}",
@@ -4016,7 +4086,8 @@ def run_authority_hook(
     """The pre-escalation authority hook. Returns ``"continue_same_root"``
     (the named same-root permitted action was executed and audited) or
     ``"escalate"`` (fail closed — the caller proceeds through the exact
-    existing escalation path). Never raises into the caller.
+    existing escalation path). Opaque connection-ownership failures propagate;
+    they never become autocommit success or diagnostic/fallback writes.
 
     ``result_row_id`` is the immutable ``task_results`` row id whose
     CompletionReport produced this escalate decision — the causal event
@@ -4026,6 +4097,8 @@ def run_authority_hook(
     no immutable causality exists: the hook fails closed with a
     ``capture_failure`` outcome and never creates a candidate.
     """
+    if _authority_hook_caller_transaction_owned(orch._db):
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     policy = POLICY_BY_TEAM.get(task.team)
 
     db = orch._db

@@ -3171,6 +3171,22 @@ Traps:
 
 ## Task Blocked By Job
 
+Authority-v2 eligibility treats retained wait IDs as history, not an active-wait
+veto. It strictly authenticates all owned terminal jobs, full all-attempt
+producer history, exact original submission/SID joins and Pause/native custody.
+A terminal preflight row plus removed Pause entry before original native finish
+still denies; genuine original settled no-launch can qualify. Missing evidence,
+launched nonquiescence, older uncertainty, deferred/failed cleanup and omitted
+owned work remain fenced. No history clearing, settlement or new budget follows.
+
+Authentic stored no-grant V closes J/task/exact-Q atomically as
+`policy_no_continue`; only continue_applies enters continuation. Policy pending
+never takes ordinary escalation fallback. Complete replay/zombie proof and fresh
+writer-only surfacing preserve the original human reason. See the current
+THR-328 [orchestrator contract](orchestrator-contracts.md). New readers preserve
+old histories; old typed binaries reject the new code, compatible-code rollback
+only. Behavior NOT RUN; custody/sentinel/rollback PROOF NOT RUN.
+
 Blocked-on-job tasks use `tasks.blocked_on_job_ids` plus `BlockKind.BLOCKED_ON_JOB`. Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`.
 
 Implementation touches `runtime/orchestrator/run_step.py`, `runtime/daemon/jobs_runner.py`, and `runtime/daemon/app.py`.

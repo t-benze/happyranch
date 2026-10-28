@@ -1,5 +1,27 @@
 # Task blocked-by-job — Design Spec
 
+## Current retained-history authority eligibility (THR-328)
+
+Ordinary claim clears block_kind but deliberately retains blocked_on_job_ids for
+resume/audit history. The historical iff/NULL description below is not the
+current authority eligibility rule. NULL, legacy empty string and [] are empty
+metadata; other values require a strict distinct nonempty-string list without
+rewriting stored bytes. Terminal owned jobs are separate from native settlement.
+Every authority stage/final recheck reads all owned jobs, complete original
+producer history with every attempt, strict Pause/control and exact immutable
+submission/job/source/occurrence/agent/task/original-SID evidence. Missing or
+foreign/malformed history/control, omitted active/unsettled jobs, deferred/
+failed cleanup/UNKNOWN and launched nonquiescence deny without history repair.
+
+A genuine original automatic preflight no-launch can qualify only after original
+native finish committed and retired its owner. The otherwise-authentic unheld
+split after failed preflight/Pause entry removal, before native finish, still
+denies specifically at custody. This changes neither the all-terminal resume
+bridge nor its once-only step/history and grants no new budget, Pause exception,
+settlement, legacy-absence certificate or process probe. C3/C4/C6–C9 behavior
+NOT RUN / custody and rollback PROOF NOT RUN; the three retained blocked-job
+integration files are SKIPPED THR211seq270/271 + THR243seq42, never PASS.
+
 ## Current job terminal/startup boundary
 
 Stop200 acknowledges an actual attributed signal request, never terminal state.
