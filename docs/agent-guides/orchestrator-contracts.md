@@ -4441,7 +4441,15 @@ it supplies no delivery acknowledgement or synthetic execution failure.
 
 Selected document admission now carries the same authenticated store/org/gate/
 epoch and captured references through the original profile, publisher and short
-DB lease/business writer boundaries. Pause preparation and final launch renew
+DB lease/business writer boundaries. Selected profile transactions preserve the
+original body/post-BEGIN or COMMIT exception and traceback while attempting the
+original rollback once. Profile fencing likewise attempts its original publication
+lease release once, keeping a preceding validation/fence/read/cancellation error
+primary and actual cleanup failures as secondary notes. Diagnostic formatting or
+recording cannot replace that primary. A release-only failure still propagates;
+committed operation/member/fence prefixes remain attributable, and no-validator
+rollback/release behavior stays unchanged. Owed cleanup never rechecks admission.
+Pause preparation and final launch renew
 that validation after original root/move/DB/terminal ownership; postcommit registry
 admission checks precede insertion. A closed gate cannot strand an owed original
 no-launch settlement: the committed preparation keeps its journal/SID/reservation

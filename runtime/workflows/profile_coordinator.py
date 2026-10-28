@@ -388,15 +388,33 @@ class ProfileCoordinator:
                 if validate_admission is not None:
                     validate_admission()
                 yield conn
-            except BaseException:
-                conn.rollback()
+            except BaseException as primary:
+                try:
+                    conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    try:
+                        BaseException.add_note(primary, f"selected profile transaction rollback also failed: {secondary!r}")
+                    except BaseException:
+                        # Secondary diagnostics must not replace the first cause.
+                        pass
                 raise
             else:
                 try:
                     conn.commit()
-                except BaseException:
+                except BaseException as primary:
                     # This context owns the transaction; do not leak a failed commit.
-                    conn.rollback()
+                    try:
+                        conn.rollback()
+                    except BaseException as secondary:
+                        if validate_admission is None:
+                            raise
+                        try:
+                            BaseException.add_note(primary, f"selected profile commit rollback also failed: {secondary!r}")
+                        except BaseException:
+                            # Secondary diagnostics must not replace the first cause.
+                            pass
                     raise
 
     def _max_generation(self, profile_name: str) -> int:

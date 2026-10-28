@@ -828,7 +828,20 @@ class WorkflowAuthorityCoordinator:
                     if active is None or str(active["id"]) != journal_id:
                         raise WorkflowAuthorityError("authority_pointer_not_ready")
                     profile_fence = int(active["profile_fence"])
-            finally:
+            except BaseException as primary:
+                if validate_admission is None:
+                    self._release_lease(owner)
+                else:
+                    try:
+                        self._release_lease(owner)
+                    except BaseException as secondary:
+                        try:
+                            BaseException.add_note(primary, f"selected profile lease release also failed: {secondary!r}")
+                        except BaseException:
+                            # Secondary diagnostics must not replace the first cause.
+                            pass
+                raise
+            else:
                 self._release_lease(owner)
             yield ProfileFenceBinding(
                 journal_id=journal_id,
