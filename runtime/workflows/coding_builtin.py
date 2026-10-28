@@ -5,6 +5,8 @@ import json
 import logging
 import sqlite3
 from typing import Any
+from collections.abc import Iterator
+from types import TracebackType
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -65,7 +67,7 @@ class _NativeCensusBudget:
 
 
 @contextmanager
-def _pure_validation(reason: str):
+def _pure_validation(reason: str) -> Iterator[None]:
     """Use only around the named pure parser/accounting/transition operation."""
     try:
         yield
@@ -92,7 +94,7 @@ def _close_cursor(cursor: sqlite3.Cursor, primary: BaseException | None) -> None
             primary.cursor_closed = True
 
 
-def _probe(conn: sqlite3.Connection, query: str):
+def _probe(conn: sqlite3.Connection, query: str) -> Any:
     cursor, primary = conn.cursor(), None
     try:
         return cursor.execute(query).fetchone()
@@ -109,16 +111,17 @@ class _ExitProof:
     Merely seeing the original exception outside a context cannot prove that
     its exit returned rather than raising that same exception during cleanup.
     """
-    def __init__(self, context):
+    def __init__(self, context: Any) -> None:
         self.context = context
         self.entered = self.exited = self.suppressed = False
 
-    def __enter__(self):
+    def __enter__(self) -> Any:
         value = self.context.__enter__()
         self.entered = True
         return value
 
-    def __exit__(self, kind, error, traceback):
+    def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                 traceback: TracebackType | None) -> Any:
         result = self.context.__exit__(kind, error, traceback)
         self.suppressed = bool(result) and error is not None
         self.exited = True
@@ -126,7 +129,7 @@ class _ExitProof:
 
 
 class _RegistrationPhase:
-    def __init__(self, authority, db):
+    def __init__(self, authority: Any, db: Any) -> None:
         self.publisher = _ExitProof(authority._publisher_lock)
         self.database = _ExitProof(db._lock)
         self.transaction = _ExitProof(db.workflow_schema_transaction())
@@ -134,12 +137,12 @@ class _RegistrationPhase:
         self.refusal = None
         self.committed = False
 
-    def capture(self, db):
+    def capture(self, db: Any) -> None:
         self.conn = db._conn
         if type(self.conn) is not sqlite3.Connection or self.conn.in_transaction:
             raise ValueError('coding_builtin_caller_transaction')
 
-    def rolled_back(self, db, error: _Deferred) -> bool:
+    def rolled_back(self, db: Any, error: _Deferred) -> bool:
         return (self.refusal is error and not self.committed
                 and error.cursor_closed and not getattr(error, '__notes__', ())
                 and all(p.entered and p.exited and not p.suppressed
@@ -292,7 +295,7 @@ class CodingBuiltinStore:
                        'restore the packaged resource or resolve the original native/recovery safety owner',
                        self.org.slug, str(error)[:128])
 
-    def _writer_owned(self, admission, writer, reservation) -> bool:
+    def _writer_owned(self, admission: Any, writer: Any, reservation: dict | None) -> bool:
         with self.db._lock:
             return (owner_for(self.db) is admission and reservation is not None
                     and admission.move.store.org_slug == self.org.slug
