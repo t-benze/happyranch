@@ -3717,6 +3717,7 @@ class AuthorityV2AttemptsMixin:
             or payload["owner_attempt_id"] != attempt_row["owner_attempt_id"]
             or payload["refusal_code"]
             not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES
+            or payload["refusal_code"] == "policy_no_continue"
         ):
             return None
         return payload["refusal_code"]
@@ -3999,7 +4000,8 @@ class AuthorityV2AttemptsMixin:
                         manager_session_id=manager_session_id, result_id=result_id,
                     )
                     terminal_ok = (
-                        proof_code is None and proof is not None
+                        attempt.finalization_state == AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED
+                        and proof_code is None and proof is not None
                         and self._v2_evaluation_is_policy_no_continue(proof["evaluation"])
                     )
                 if terminal_ok:
