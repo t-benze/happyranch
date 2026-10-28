@@ -1,5 +1,28 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+## Fresh work after failure (Founder THR-291 seq557)
+
+After failure, dispatch a fresh task by default with a complete brief and prior
+findings, failures and spent allowances. A new manager task may commission
+independent QA of a saved design after a reviewer returned no verdict/output;
+the design is the assessment subject, not partial reviewer work. No cross-root
+ancestry repair is needed just for a fresh assessment.
+
+Use a linked retry only to continue partial work or account for an attempt that
+may still be running. Inspect relevant effects/ownership proportionately to avoid
+conflicting execution. Preserve partial edits/PRs/results and existing active
+owners; terminal status or missing PID alone proves no cleanup. Fresh independent
+work has no universal reconciliation or full-census prerequisite.
+
+Preserve failed histories, genuine uncertainty, authorization, holds and consumed/
+remaining attempt/resource budgets across task numbers. Never conceal failures,
+replenish exhausted allowances, revive terminal tasks or duplicate execution.
+Existing review, QA, hooks and guarded merge remain required. This rule supersedes
+contrary operating guidance, not installed native retry predicates: same-parent/
+same-agent checks may still refuse a route without a valid link. Report that real
+constraint without inventing links, changing history or claiming a fresh-task
+bypass. No deploy/restart or live ancestry reconciliation is required by this rule.
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -3416,10 +3439,13 @@ and original parent links stay intact. See orchestrator-contracts.md.
 
 **Delegated retry failures.** An exhausted per-slice retry lineage is durable
 causal context for the owning manager, not a runtime `runtime_retry_ceiling`
-escalation or automatic successor. The manager may dispatch revised work with
-the mechanically required failed-child `revisit_of_task_id`, or propose
-escalation through the existing THR-181 path; completed/superseded descendants
-retire historical failed ancestors.
+escalation or automatic successor. Apply the fresh-work rule above when selecting
+independent work versus linked continuation. Existing native same-parent/same-agent
+checks still require a valid failed-child `revisit_of_task_id` where applicable;
+report a refusal rather than inventing provenance or a bypass. A manager may
+propose escalation through the existing THR-181 path; completed/superseded
+descendants retire historical failed ancestors from causal selection, preserving
+their history.
 
 Run focused behavior tests for every changed domain. Before committing, run `git diff --check`, `git diff --stat`, and inspect the final diff. Compare it against the latest scope summary and explain any unexpected changes.
 

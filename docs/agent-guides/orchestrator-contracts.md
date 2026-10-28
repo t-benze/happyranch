@@ -4029,19 +4029,45 @@ updated prose, not schema or role-identity strings.
 
 ## Bounded Failure-Recovery (TASK-573)
 
+### Current operating rule (Founder THR-291 seq557)
+
+After failure, dispatch a fresh task by default with a complete brief and prior
+findings, failures and spent allowances. A new manager task may commission fresh
+independent QA of a saved design after a reviewer returned no verdict/output;
+the design is the assessment subject, not partial reviewer work. Cross-root
+ancestry repair is not required just to obtain that assessment.
+
+Use a linked retry only to continue partial work or account for an attempt that
+may still be running. Inspect relevant effects/ownership proportionately to avoid
+conflicting execution; preserve partial edits/PRs/results and existing active
+owners. Terminal status or missing PID alone proves no cleanup. Fresh independent
+work has no universal reconciliation or full-census prerequisite.
+
+Preserve failed history, genuine uncertainty, authorization, holds and consumed/
+remaining attempt/resource budgets across fresh numbers. No failure concealment,
+allowance replenishment, terminal revival or duplicate execution is authorized.
+Existing review, QA, hooks and guarded merge remain required. This supersedes
+contrary operating guidance, not the native mechanics below: installed
+same-parent/same-agent checks still require valid links where applicable. Report
+an actual refusal without inventing links, changing history or claiming a fresh
+task bypass. No deploy/restart or live ancestry reconciliation is required by
+this operating rule.
+
+### Existing native mechanics
+
 When a subtask fails, the parent task is re-enqueued for a bounded manager-wake
 decision step — NOT cascade-failed. This replaces the pre-TASK-573 behavior where
 any subtask FAILED unconditionally cascade-failed the parent without giving the
 task owner a chance to re-ground.
 
-Contract (founder-approved in THR-028, refined in THR-078):
+Mechanical contract (THR-028/THR-078; not a rule to select linked retries):
 
 1. **Bounded wake.** On child failure, re-enqueue the parent for a fresh
    decision step. The failed subtask's reason is available so the task owner can
    author an updated brief.
 
-2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
-   unchanged work or direct revised work with a valid `revisit_of_task_id`
+2. **Mechanical retry provenance (THR-078).** An intentional linked
+   continuation uses a valid `revisit_of_task_id`
    link to a FAILED same-agent predecessor under the same parent, or under
    a root connected to the current root by verified recorded supersessions.
    Cross-root verification admits at most 20 root records (19 edges), joining
@@ -4080,10 +4106,11 @@ Traps:
 - A linked historical failure is causal context, not a runtime escalation
   trigger: the owner decides unchanged re-execution, revised recovery, or a
   THR-181 escalation proposal.
-- Retry links are mechanical provenance, never a semantic brief comparison:
-  unchanged assignment re-execution and manager-directed revised work both
-  require an explicit valid predecessor link, and the daemon creates neither
-  retry nor successor loops.
+- Retry links are mechanical provenance, never a semantic brief comparison.
+  The installed same-parent/same-agent checks require a valid predecessor link
+  for a FAILED child under this parent even if the proposed brief differs. Report
+  that constraint without treating it as a universal linked-retry instruction;
+  the daemon creates neither retry nor successor loops.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed
