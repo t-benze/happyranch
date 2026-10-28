@@ -215,7 +215,7 @@ class _RootWorktreeTransitions(list):
 
 @contextmanager
 def _defer_root_worktree_batches(orch, transitions):
-    delivery = dict(orch=orch, events=transitions, active=True, teardown_incomplete=False)
+    delivery = dict(orch=orch, events=transitions, active=True, teardown_incomplete=False, consumption_pending=False)
     token = _ROOT_WORKTREE_OWNER_EVENTS.set(delivery)
     try:
         yield delivery
@@ -1220,14 +1220,20 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     disposition = None
     try:
         with _defer_root_worktree_batches(orch, transitions) as delivery:
-            _run_step_owned(orch, task_id, metadata)
+            consumption = _run_step_owned(orch, task_id, metadata)
+            if _completion_consumption_pending(consumption):
+                delivery['consumption_pending'] = True
     except BaseException:
         tail_failed = True
         raise
     finally:
         tail_failed |= delivery['teardown_incomplete']
         try:
-            disposition = _root_worktree_batch(orch, transitions, teardown_incomplete=tail_failed)
+            disposition = (
+                _RootWorktreeBatchDisposition('unknown', 'completion_consumption_pending')
+                if delivery['consumption_pending']
+                else _root_worktree_batch(orch, transitions, teardown_incomplete=tail_failed)
+            )
             tail_failed |= disposition.kind != 'safe'
             if tail_failed:
                 logger.warning('task %s outer cleanup retained: %s processes=%s',
@@ -1248,7 +1254,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
 
 
-def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> _HumanFailedRecoveryOperation | str | None:
     from runtime.orchestrator.task_pause import (
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
     )
@@ -1303,7 +1309,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                 return
         raise
     token = _invocation.set(invocation)
-    root_delivery = dict(orch=orch, events=_RootWorktreeTransitions(), active=True, teardown_incomplete=False)
+    root_delivery = dict(orch=orch, events=_RootWorktreeTransitions(), active=True, teardown_incomplete=False, consumption_pending=False)
     root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
         consumer_only = getattr(invocation, "consumer_only", False)
@@ -1317,7 +1323,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             from runtime.orchestrator.orchestrator import completion_report_from_result_row
             report = completion_report_from_result_row(task_id, landed, fallback_agent=invocation.agent)
             orch._audit.log_completion_report(report=report)
-            _consume_completion_report(orch, task_id, report, result_row_id=landed["id"])
+            consumption = _consume_completion_report(orch, task_id, report, result_row_id=landed["id"])
         elif consumer_only:
             raise DeferredRootPause("exact callback no longer available")
         elif getattr(invocation, "deferred_recovery", False):
@@ -1327,11 +1333,15 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                 proof = invocation._entry(row)["context"]["recovery_return"]
             result = ExecutorResult(success=True, session_id=proof["origin_session_id"],
                                     agent_session_id=proof["provider_session_id"], duration_seconds=proof["duration_seconds"])
-            _finish_step_return(orch, task, invocation.agent, result,
+            consumption = _finish_step_return(orch, task, invocation.agent, result,
                                 orch._read_completion_from_db(task_id, invocation.agent, result.session_id),
                                 usage_already_recorded=True)
         else:
-            _run_step_body(orch, task_id, invocation.metadata)
+            consumption = _run_step_body(orch, task_id, invocation.metadata)
+        if _completion_consumption_pending(consumption):
+            root_delivery['consumption_pending'] = True
+            root_delivery['teardown_incomplete'] = True
+            return consumption
     except (DeferredRootPause, DeferredTeamMove) as exc:
         # A same-owner cleanup refusal is not an intentional move hold. Keep
         # every other native move/hold disposition and its admission policy.
@@ -1374,11 +1384,17 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             _invocation.reset(token)
             root_delivery['active'] = False
             _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-            _root_worktree_batch(orch, root_delivery['events'],
-                teardown_incomplete=root_delivery['teardown_incomplete'])
+            if root_delivery['consumption_pending']:
+                outer_delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
+                if outer_delivery is not None and outer_delivery['orch'] is orch:
+                    outer_delivery['consumption_pending'] = True
+                    outer_delivery['teardown_incomplete'] = True
+            else:
+                _root_worktree_batch(orch, root_delivery['events'],
+                    teardown_incomplete=root_delivery['teardown_incomplete'])
 
 
-def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> _HumanFailedRecoveryOperation | str | None:
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1644,11 +1660,11 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         )
         return
 
-    _finish_step_return(orch, task, agent, result, report)
+    return _finish_step_return(orch, task, agent, result, report)
 
 
 def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, result, report,
-                        *, usage_already_recorded: bool = False) -> None:
+                        *, usage_already_recorded: bool = False) -> _HumanFailedRecoveryOperation | str | None:
     db, task_id = orch._db, task.id
     from runtime.orchestrator.task_pause import current_invocation, DeferredRootPause
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1913,12 +1929,12 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
             result_row_id = _result_row["id"]
     orch._log_step_result(task_id, result, report, result_row_id=result_row_id)
     if accepted_recovery_callback:
-        _consume_accepted_completion_recovery(
+        return _consume_accepted_completion_recovery(
             orch, task_id, report, agent=agent,
             session_id=recovery_session_id or "", result_row_id=result_row_id,
         )
     else:
-        _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+        return _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
 
 
 @dataclass
@@ -2179,10 +2195,40 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
     return operation
 
 
+class _CompletionConsumerHeld(str):
+    """Private unconsumed marker; lost_owner is the existing reaper skip tag.
+
+    This does not assert an owner-loss event or settle any native/receipt owner.
+    """
+
+    status = "housekeeping_pending"
+    task_disposition = None
+    reason = "caller_transaction_owned"
+
+    def __new__(cls):
+        return super().__new__(cls, "lost_owner")
+
+
+def _completion_consumer_entry_held(db) -> _CompletionConsumerHeld | None:
+    # Original-connection observation before even task/workflow classifiers.
+    # Opaque/closed/replaced connection errors propagate unchanged; no writer,
+    # fallback connection or diagnostic may turn them into autocommit success.
+    with db._lock:
+        conn = db._conn
+        owned = conn.in_transaction
+        if db._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("completion consumer connection ownership unavailable")
+        return _CompletionConsumerHeld() if owned else None
+
+
+def _completion_consumption_pending(outcome) -> bool:
+    return getattr(outcome, "status", None) == "housekeeping_pending"
+
+
 def _consume_accepted_completion_recovery(
     orch: "Orchestrator", task_id: str, report, *, agent: str, session_id: str,
     result_row_id: int,
-) -> _HumanFailedRecoveryOperation | None:
+) -> _HumanFailedRecoveryOperation | str | None:
     """Reconcile one ledger-selected recovery callback at the effect boundary.
 
     Terminal effects retain their established reconciliation.  The blocked
@@ -2192,6 +2238,9 @@ def _consume_accepted_completion_recovery(
     a crash after commit leaves ordinary startup to reconstruct queue delivery.
     """
     db = orch._db
+    held = _completion_consumer_entry_held(db)
+    if held is not None:
+        return held
     current = db.get_task(task_id)
     if current is None:
         return
@@ -2231,11 +2280,10 @@ def _consume_accepted_completion_recovery(
         reconcile_authority_policy_v2_post_final(orch, root_task_id=task_id)
         return
     if _recovery_kind != "no_v2":
-        _consume_completion_report(
+        return _consume_completion_report(
             orch, task_id, report, result_row_id=_resolved_recovery_row,
             reclaim_terminal_worktree=False,
         )
-        return
     if _is_human_failed_recovery(orch, current, report):
         return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id)
     effects_applied = (
@@ -2248,11 +2296,10 @@ def _consume_accepted_completion_recovery(
         # recovery transaction.  A missing job remains an ordinary fail-closed
         # outcome; it is not a recoverable partial receipt.
         if any(db.get_job_status(jid) is None for jid in deduped):
-            _consume_completion_report(
+            return _consume_completion_report(
                 orch, task_id, report, result_row_id=result_row_id,
                 reclaim_terminal_worktree=False,
             )
-            return
         transitioned = db.consume_accepted_blocked_task_completion_recovery(
             task_id=task_id, agent=agent, session_id=session_id,
             result_row_id=result_row_id, blocked_on_job_ids=deduped,
@@ -2367,13 +2414,15 @@ def _consume_accepted_completion_recovery(
                 payload={**report.model_dump(), "_recovery_session_id": session_id,
                          "_result_row_id": result_row_id},
             )
-        _consume_completion_report(
+        consumption = _consume_completion_report(
             orch, task_id, report, result_row_id=result_row_id,
             recovery_reentry=(current.task_type == "task"),
             recovery_owner=(agent, session_id) if current.task_type == "task" else None,
             recovery_result_id=result_row_id if current.task_type == "task" else None,
             reclaim_terminal_worktree=False,
         )
+        if _completion_consumption_pending(consumption):
+            return consumption
         # ``run_authority_hook`` may have returned the already-authorized
         # same root to pending.  Couple its exact recovery receipt now; a
         # later startup will take the branch above if this process dies first.
@@ -2745,6 +2794,9 @@ def _consume_completion_report(
     provably ordinary/v1 result is unchanged.
     """
     db = orch._db
+    held = _completion_consumer_entry_held(db)
+    if held is not None:
+        return held
     task = db.get_task(task_id)
     if task is None:
         return
@@ -2785,20 +2837,19 @@ def _consume_completion_report(
                     return "lost_owner"
                 return _submit_human_failed_recovery(orch, task_id, agent, task.current_session_id or "", resolved_row_id,
                     bookkeeping=after_human_recovery)
-        _consume_completion_report_body(
+        return _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
             **reclaim_kwargs,
         )
-        return
     # ADMITTED: the winning claim authorizes exactly one consumer entry.  The
     # SAME caller runs the EXISTING body outside any DB transaction once, then
     # acknowledges the EXACT causal receipt it claimed.
     manager_agent = outcome.manager_agent or agent
     causal_result_id = outcome.causal_result_id
     try:
-        _consume_completion_report_body(
+        consumption = _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
@@ -2820,6 +2871,8 @@ def _consume_completion_report(
         except Exception:  # pragma: no cover - fail-closed defensive
             logger.exception("run_step %s: v2 decision refusal failed", task_id)
         raise
+    if _completion_consumption_pending(consumption):
+        return consumption
     # A bounded ack/audit failure leaves the receipt ``claimed``; a later restart
     # performs refusal housekeeping and never re-runs the consumer.
     try:
@@ -2842,7 +2895,7 @@ def _consume_completion_report_body(
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
     reclaim_terminal_worktree: bool = True,
-) -> None:
+) -> str | None:
     """Consume a persisted CompletionReport and apply its transition.
 
     Used both inline in ``run_step_impl`` (after ``_log_step_result``) and
@@ -3083,6 +3136,10 @@ def _consume_completion_report_body(
         if hook_outcome == "v2_refused":
             refusal_status = getattr(hook_outcome, "status", None)
             task_disposition = getattr(hook_outcome, "task_disposition", None)
+            if refusal_status == "housekeeping_pending":
+                # The policy terminal transaction retains J/task/exact-Q.
+                # No ordinary CAS, postcommit tail or success acknowledgement.
+                return hook_outcome
             refused_task = orch._db.get_task(task_id)
             expected_prefix = "authority_v2_refusal:"
             if (
@@ -3143,12 +3200,28 @@ def _consume_completion_report_body(
                 and refused_task.completed_at is None
                 and (refused_task.note or "").startswith(expected_prefix)
             ):
-                # Root refusal retains the pre-existing escalation projection.
+                # Policy surfacing uses the immutable causal result, never a
+                # caller-supplied report/reason or the bounded refusal sentinel.
+                surface_reason = reason
+                surface_summary = getattr(report, "output_summary", "") or ""
+                if refused_task.note == "authority_v2_refusal:policy_no_continue":
+                    causal = db.get_latest_task_result(
+                        task_id, refused_task.assigned_agent,
+                        refused_task.current_session_id,
+                    )
+                    if causal is None or causal.get("id") != result_row_id:
+                        return  # committed terminality supplies no missing tail proof
+                    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                    causal_report = completion_report_from_result_row(
+                        task_id, causal, fallback_agent=agent,
+                    )
+                    surface_reason = orch._parse_next_step(causal_report).reason or "Escalated"
+                    surface_summary = causal_report.output_summary or ""
                 orch.notify_escalated(
-                    task_id=task_id, agent=agent, reason=reason,
-                    last_summary=getattr(report, "output_summary", "") or "",
+                    task_id=task_id, agent=agent, reason=surface_reason,
+                    last_summary=surface_summary,
                 )
-                _maybe_post_thread_escalation(orch, task_id, reason=reason)
+                _maybe_post_thread_escalation(orch, task_id, reason=surface_reason)
             return
         # A bounded v2_pending outcome means refusal housekeeping did not
         # commit.  Failing closed must still terminate and surface the root, so

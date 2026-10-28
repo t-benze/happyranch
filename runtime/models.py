@@ -1165,7 +1165,7 @@ AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES = frozenset({
     "interrupted_pre_final", "claim_failed", "claim_audit_missing",
     "evaluation_failed", "evaluation_audit_missing", "consume_failed",
     "consume_audit_missing", "final_commit_failed", "identity_mismatch",
-    "owner_lost", "cancelled", "decision_dispatch_interrupted",
+    "owner_lost", "cancelled", "decision_dispatch_interrupted", "policy_no_continue",
 })
 # A ``housekeeping_pending`` outcome carries a bounded control classification
 # (never a finalized refusal code).  The pending marker itself is the status.

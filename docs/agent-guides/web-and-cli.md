@@ -2921,6 +2921,25 @@ before any future production save/activation. Rollback is compatible-code-only;
 this candidate performs no deployment, save, activation, or natural production
 continuation.
 
+### Authority policy no-continuation and retained waits (THR-328)
+
+An authenticated stored no-grant assessment closes the existing terminal
+J/task/exact-Q set with `policy_no_continue`. The existing current-episode
+`escalation_reason.primary` preserves the original manager reason; secondary
+copy is “The recorded assessment did not authorize automatic continuation.”
+Task notes and escalation audit shapes keep their bounded values. Only a fresh
+committed writer sends existing root notifications/thread surfacing with the
+original reason/summary; replay/pending never repeats them. Nonroot escalation
+continues to fail to its parent without a founder notification.
+
+A resumed task can retain `blocked_on_job_ids` as history. Terminal status alone
+permits the existing resume bridge, but authority eligibility separately requires
+complete original producer/submission/Pause/native custody; a preflight terminal
+before original native finish remains fenced. No callback field, UI/API shape,
+manual resume/settlement command or permission is added. New readers preserve old
+histories; old typed binaries reject policy_no_continue, compatible-code rollback
+only. Backend C1–C9 NOT RUN; Web rendering does not prove terminalization.
+
 ## Agent-Side Callbacks
 
 These are invoked by skills inside agent sessions. Do not invoke them by hand; doing so falsifies audit data.

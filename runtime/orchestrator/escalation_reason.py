@@ -15,6 +15,7 @@ class EscalationReason(BaseModel):
 
 
 AUTHORITY_V2_REFUSAL_EXPLANATIONS: dict[str, str] = {
+    "policy_no_continue": "The recorded assessment did not authorize automatic continuation.",
     "interrupted_pre_final": (
         "Automatic continuation was interrupted before it finished, so this was escalated to you."
     ),
