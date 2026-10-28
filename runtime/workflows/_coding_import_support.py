@@ -10,7 +10,7 @@ import base64
 import hashlib
 import sqlite3
 from contextlib import ExitStack, contextmanager
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
@@ -47,7 +47,8 @@ def _capture(capture: AuthorityAdmissionCapture, admission_id: str, raw: bytes) 
 
 
 class CodingImportSupport:
-    def __init__(self, org) -> None:
+    def __init__(self, org, owner=None) -> None:
+        self.owner = owner
         self.org = org
         self.db = org.db
 
@@ -76,8 +77,11 @@ class CodingImportSupport:
         return coding
 
     @contextmanager
-    def _read(self, capture: AuthorityAdmissionCapture | None) -> Iterator[tuple[sqlite3.Connection, AuthorityAdmissionCapture | None]]:
+    def _read(self, capture: AuthorityAdmissionCapture | None, *,
+              validate_admission: Callable[[], None] | None = None) -> Iterator[tuple[sqlite3.Connection, AuthorityAdmissionCapture | None]]:
         """SELECT-only, no durable admission lease, no file reads in snapshot."""
+        if validate_admission is not None:
+            validate_admission()
         authority = self.org.workflow_authority
         with ExitStack() as fences:
             if capture is not None:
@@ -85,24 +89,37 @@ class CodingImportSupport:
                 try:
                     for name in capture.profile_names:
                         fences.enter_context(coordinator.profile_read(name))
+                        if validate_admission is not None:
+                            validate_admission()
                 except ProfileCoordinatorError:
                     # Safe original metadata remains readable under revocation;
                     # no failed profile lease becomes active authority.
                     fences.close()
                     capture = None
             fences.enter_context(authority._publisher_lock)
+            if validate_admission is not None:
+                validate_admission()
             fences.enter_context(self.db._lock)
+            if validate_admission is not None:
+                validate_admission()
             conn = self.db._conn
             if conn.in_transaction:
                 raise CodingReleaseImportError('coding_release_import_caller_transaction')
             conn.execute('BEGIN')
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield conn, capture
             finally:
                 conn.rollback()
 
-    def _discover(self) -> AuthorityAdmissionCapture | None:
+    def _discover(self, *, validate_admission: Callable[[], None] | None = None) -> AuthorityAdmissionCapture | None:
+        if validate_admission is not None:
+            validate_admission()
         try:
-            return self.org.workflow_authority.capture_admission()
+            capture = self.org.workflow_authority.capture_admission()
+            if validate_admission is not None:
+                validate_admission()
+            return capture
         except (WorkflowAuthorityError, ProfileCoordinatorError):
             return None

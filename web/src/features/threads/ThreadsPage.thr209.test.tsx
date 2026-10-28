@@ -20,6 +20,7 @@ import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { stubReadyHealth } from '@/test/startup';
 
 const SLUG = 'alpha';
 
@@ -51,6 +52,7 @@ function QueryClientProbe(): null {
 }
 
 function mountAt(route: string) {
+  stubReadyHealth();
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),

@@ -19,6 +19,7 @@ import {
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { useTranslation } from '@/hooks/i18n';
+import { useStartupStatus } from '@/hooks/health';
 import { classifyAddOrgError, renderAddOrgError, type AddOrgError } from '@/lib/addOrgError';
 
 const SLUG_RE = /^[a-z0-9-]{1,40}$/;
@@ -34,9 +35,14 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  // THR-308: creating an org is new work; held until startup is ready.
+  const startup = useStartupStatus();
 
   const create = useMutation({
-    mutationFn: (body: { slug: string }) => orgsApi.createOrg(body),
+    mutationFn: (body: { slug: string }) => {
+      startup.assertAdmittedNow();
+      return orgsApi.createOrg(body);
+    },
     onSuccess: (resp) => {
       qc.invalidateQueries({ queryKey: ['orgs'] });
       onOpenChange(false);
@@ -73,13 +79,16 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
           {errorText && (
             <p className="text-tier-red text-sm">{errorText}</p>
           )}
+          {!startup.admitted && (
+            <p role="status" className="text-attention-text text-xs">{t('startup.action.paused')}</p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             {t('common.cancel')}
           </Button>
           <Button
-            disabled={!valid || create.isPending}
+            disabled={!valid || create.isPending || !startup.admitted}
             onClick={() => create.mutate({ slug })}
           >
             {create.isPending ? t('org.add.creating') : t('org.add.create')}

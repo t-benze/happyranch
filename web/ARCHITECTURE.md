@@ -41,6 +41,27 @@ QA's independently source-pinned public two-template scratch journey and root's
 actual Founder acceptance remain distinct. No new global mock/test seam, source
 execution/merge grant, or automated behavioral CI is introduced.
 
+## Daemon startup recovery (THR-308)
+
+`src/lib/startup.ts` interprets the ONE shared `['health']` observation polled
+by `AppShell` through `useHealth` (2 s while unavailable, 30 s once ready);
+`HealthApi.useStartup` / `useStartupStatus` read it without polling. Only a
+fresh successful `startup` block with `state=ready`, `recovery_ready`, `serving`
+and not `stopping` admits effects; everything else (checking, error, malformed or
+missing fields, unknown, stopping, recovery_failed, stale) is held. Staleness
+needs no render or network event: one per-QueryClient expiry owner in
+`_real-health.ts` arms a single timer at the ready observation's 90 s deadline and
+notifies every subscriber (no extra poller, query key or cache write). Threads stay
+mounted and readable; other org routes and onboarding render the held panel via
+a pathless gate in `routes.tsx` without mounting their pages. Real providers
+gate held reads/SSE with `enabled` plus a queryFn recheck and reject mutations
+with `StartupHeldError` before network; pages and providers recheck after every
+await. `classifyStartupRefusal` is the one owner of the daemon 503 startup family
+(`daemon_recovering|daemon_recovery_failed|daemon_stopped`, `startup_*`) used by
+both the health-refresh hook and thread error copy.
+`StartupStatusBanner` (AppShell) carries the translated copy. The prototype
+sandbox's fixed ready fixture is not daemon evidence.
+
 ## Layers (strict)
 
 1. **`src/lib/api/<X>.ts`** — Daemon route mirror. One TS module per

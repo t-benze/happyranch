@@ -5,7 +5,7 @@ import json as _json
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -54,6 +54,14 @@ router = APIRouter(dependencies=[require_token()])
 # Routes via the inbox UI instead.
 FOUNDER_LITERAL = "@founder"
 MAX_THREAD_ATTACHMENTS = 5
+
+
+def _require_thread_ready(org: Any, slug: str | None = None) -> None:
+    """Direct producer admission; request metadata confers no recovery path."""
+    from runtime.daemon.startup_recovery import _require_ordinary_ready, StartupUnavailable
+    _require_ordinary_ready(org)
+    if org._startup_state is not None and slug is not None and slug != org.slug:
+        raise StartupUnavailable("startup_attachment_changed")
 
 
 def _naming_http_error(exc: NamingError) -> HTTPException:
@@ -183,6 +191,7 @@ def _create_agent_thread_locked(
     thread) reuse the exact participant/turn/audit semantics without going
     through the authenticated compose route.
     """
+    _require_thread_ready(org)
     # This is also the actual non-HTTP dream compose boundary. All address
     # classification occurs before even thread-ID allocation, without awaits.
     recipients = _resolve_message_recipients(org, recipients, body_text)
@@ -482,11 +491,13 @@ async def _compose_thread_multipart(
     slug: str, org: OrgDep, request: Request, *, uploaded_by: str,
 ) -> dict:
     """Handle compose as multipart/form-data for thread-scoped attachment uploads."""
+    _require_thread_ready(org, slug)
     import json as _json
     from fastapi import UploadFile
 
     # Parse multipart form: expect a 'body' field with JSON, and optional 'files' fields.
     form = await request.form()
+    _require_thread_ready(org, slug)
     body_raw = form.get("body")
     if body_raw is None:
         raise HTTPException(
@@ -496,6 +507,7 @@ async def _compose_thread_multipart(
         body_data = _json.loads(
             body_raw if isinstance(body_raw, str) else await body_raw.read()
         )
+        _require_thread_ready(org, slug)
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=422, detail={"code": "invalid_body_json"},
@@ -562,6 +574,7 @@ async def _compose_thread_multipart(
         )
 
     uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+    _require_thread_ready(org, slug)
 
     for file_field, content in zip(file_fields, uploaded_contents):
         if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
@@ -573,6 +586,7 @@ async def _compose_thread_multipart(
         _normalize_message_body(body.body_markdown, shared_attachments)
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown, founder_recipients=body.recipients)
         addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
@@ -681,6 +695,7 @@ async def _compose_thread_multipart(
 async def compose_thread(
     slug: str, org: OrgDep, request: Request
 ) -> dict:
+    _require_thread_ready(org, slug)
     state: DaemonState = request.app.state.daemon
 
     # Support both JSON and multipart/form-data for thread-scoped attachments (TASK-1616).
@@ -691,6 +706,7 @@ async def compose_thread(
         )
     # JSON path (backward compatible).
     body_data = await request.json()
+    _require_thread_ready(org, slug)
     body = ComposeBody(**body_data)
 
     subject = body.subject.strip()
@@ -751,6 +767,7 @@ async def compose_thread(
     addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown, founder_recipients=body.recipients)
         addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
@@ -818,10 +835,12 @@ async def _compose_agent_thread_multipart(
     slug: str, org: OrgDep, request: Request,
 ) -> dict:
     """Handle compose-as-agent as multipart/form-data for thread-scoped attachment uploads."""
+    _require_thread_ready(org, slug)
     import json as _json
     from fastapi import UploadFile
 
     form = await request.form()
+    _require_thread_ready(org, slug)
     body_raw = form.get("body")
     if body_raw is None:
         raise HTTPException(
@@ -831,6 +850,7 @@ async def _compose_agent_thread_multipart(
         body_data = _json.loads(
             body_raw if isinstance(body_raw, str) else await body_raw.read()
         )
+        _require_thread_ready(org, slug)
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=422, detail={"code": "invalid_body_json"},
@@ -936,6 +956,7 @@ async def _compose_agent_thread_multipart(
     ]
 
     uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+    _require_thread_ready(org, slug)
 
     for file_field, content in zip(file_fields, uploaded_contents):
         if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
@@ -947,6 +968,7 @@ async def _compose_agent_thread_multipart(
         _normalize_message_body(body.body_markdown, shared_attachments)
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown)
         addressed_agents = [name for name in recipients if name != FOUNDER_LITERAL and name != body.composer]
@@ -1060,11 +1082,13 @@ async def _compose_agent_thread_multipart(
 async def compose_thread_as_agent(
     slug: str, org: OrgDep, request: Request,
 ) -> dict:
+    _require_thread_ready(org, slug)
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
         return await _compose_agent_thread_multipart(slug, org, request)
     # JSON path.
     body_data = await request.json()
+    _require_thread_ready(org, slug)
     body = ComposeAsAgentBody(**body_data)
     subject = body.subject.strip()
     if not subject:
@@ -1151,6 +1175,7 @@ async def compose_thread_as_agent(
     composed_from_task_id = body.task_id
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
         _validate_message_addresses(org, body.body_markdown)
         thread_id, seq, tokens_to_enqueue, wake_recipients = _create_agent_thread_locked(
@@ -1304,7 +1329,7 @@ def _responder_entry(e: dict) -> ResponderStatusEntry:
     )
 
 
-def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
+def _msg_to_dict(m: Any, responders: list[dict] | None = None, *, _budget: Any = None) -> dict:
     d = {
         "seq": m.seq,
         "speaker": m.speaker,
@@ -1313,17 +1338,101 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
         "decline_reason": m.decline_reason,
         "system_payload": m.system_payload,
         "attachments": [
-            attachment.model_dump(mode="json") for attachment in m.attachments
+            _checked_read_value(_budget, attachment.model_dump, mode="json") for attachment in m.attachments
         ],
         "created_at": m.created_at.isoformat(),
     }
     if responders is not None:
         d["responder_status"] = [
-            _responder_entry(e).model_dump(mode="json") for e in responders
+            _checked_read_value(_budget, _responder_entry, e).model_dump(mode="json") for e in responders
         ]
     else:
         d["responder_status"] = []
     return d
+
+
+def _checked_read_value(budget: Any, build: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    if budget is not None:
+        budget.check()
+    value = build(*args, **kwargs)
+    if budget is not None:
+        budget.check()
+    return value
+
+
+def _thread_read_dto(db: Any, build: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    budget = getattr(db, "_startup_read_budget", None)
+    if build is _msg_to_dict:
+        kwargs["_budget"] = budget
+    return _checked_read_value(budget, build, *args, **kwargs)
+
+
+async def _early_thread_read(
+    request: Request, org: Any, projection: Callable[..., Any], *, unbounded: bool = False,
+) -> Response | None:
+    """Original auth/OrgDep precede one finite, worker-owned read operation."""
+    import asyncio
+    from runtime.daemon.startup_reads import StartupReadUnavailable, StartupReads
+    from runtime.daemon.startup_recovery import StartupRecovery, StartupUnavailable, public_startup_status
+    state = getattr(request.app.state, "daemon", None)
+    gate = getattr(state, "_startup_recovery", None)
+    references = getattr(request.app.state, "startup_http", None)
+    # Explicitly unselected standalone helpers retain their original contract.
+    # A bound org/app or any gate reference can never select this offline case.
+    if (state is not None and gate is None and references is None and getattr(org, "_startup_state", None) is None
+            and getattr(org, "_startup_recovery", None) is None):
+        return None
+    operation = None
+    observed = False
+    try:
+        if (not isinstance(gate, StartupRecovery) or references is None
+                or gate._http_references is not references):
+            raise StartupReadUnavailable("startup_reader_unavailable")
+        references.validate(request.scope)
+        gate.require_attachment(org)
+        if gate.snapshot()["recovery_ready"]:
+            gate.require_ready()  # Closed/stop must not select canonical DB.
+            return None
+        pool = getattr(state, "_startup_reads", None)
+        if (not isinstance(pool, StartupReads) or pool is not references.reads
+                or pool.recovery is not gate or pool.state is not state or org._startup_reads is not pool):
+            raise StartupReadUnavailable("startup_reader_unavailable")
+        if unbounded:
+            raise StartupReadUnavailable("startup_reader_unbounded_request")
+        operation = asyncio.create_task(pool.read(org, projection))
+        while not operation.done():
+            if await request.is_disconnected():
+                raise asyncio.CancelledError()
+            await asyncio.wait((operation,), timeout=0.05)
+        # Check caller departure even when native completion won the last wait.
+        if await request.is_disconnected():
+            raise asyncio.CancelledError()
+        observed = True
+        result = await operation
+        # No await from original reference/epoch/stop/deadline recheck to the
+        # complete encoded response. Filesystem readback already ran natively.
+        content = pool.content_for_publication(result)
+        request.scope["_startup_thread_read"] = (pool, result)
+        return Response(content=content, media_type="application/json")
+    except StartupUnavailable as exc:
+        unavailable = StartupReadUnavailable("startup_reader_unavailable")
+        raise HTTPException(status_code=503, detail=unavailable.detail(public_startup_status(state, request.app))) from exc
+    except StartupReadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=exc.detail(public_startup_status(state, request.app))) from exc
+    finally:
+        if operation is not None and not observed:
+            operation.cancel()
+            # Observe the local wrapper; repeated cancellation never abandons
+            # the actual native Future/slot/connection retained by StartupReads.
+            while True:
+                try:
+                    await asyncio.shield(operation)
+                    break
+                except asyncio.CancelledError:
+                    if operation.done():
+                        break
+                except BaseException:
+                    break  # Original departure/error stays primary.
 
 
 # ---------------------------------------------------------------------------
@@ -1347,20 +1456,35 @@ async def list_threads_endpoint(
 ) -> ThreadListResponse | ThreadListPageResponse:
     if (page_size is None and cursor is not None) or (page_size is not None and "limit" in request.query_params):
         raise HTTPException(status_code=422, detail={"code": "invalid_thread_pagination"})
+    early = await _early_thread_read(
+        request, org,
+        lambda db, budget: _project_thread_list(
+            db, slug=slug, status=status, limit=limit, page_size=page_size, cursor=cursor,
+        ).model_dump(mode="json"),
+        unbounded=page_size is None and limit < 0,
+    )
+    if early is not None:
+        return early
+    return _project_thread_list(
+        org.db, slug=slug, status=status, limit=limit, page_size=page_size, cursor=cursor,
+    )
+
+
+def _project_thread_list(db, *, slug, status, limit, page_size, cursor):
     if page_size is not None:
         if status not in (None, "open", "archived"):
             raise HTTPException(status_code=422, detail={"code": "invalid_thread_bucket"})
         try:
-            page = org.db.list_threads_page(org=slug, status=status, page_size=page_size, cursor=cursor)
+            page = db.list_threads_page(org=slug, status=status, page_size=page_size, cursor=cursor)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"code": "invalid_thread_cursor"}) from exc
         participants = page.pop("participants")
-        page["threads"] = [_thread_row_to_dict(t, participants=participants[t.id]) for t in page["threads"]]
+        page["threads"] = [_thread_read_dto(db, _thread_row_to_dict, t, participants=participants[t.id]) for t in page["threads"]]
         return ThreadListPageResponse(**page)
-    rows = org.db.list_threads(status=status, limit=min(limit, 500))
-    participants = org.db.list_thread_participant_names_for_threads([t.id for t in rows])
+    rows = db.list_threads(status=status, limit=min(limit, 500))
+    participants = db.list_thread_participant_names_for_threads([t.id for t in rows])
     return ThreadListResponse(
-        threads=[_thread_row_to_dict(t, participants=participants[t.id]) for t in rows]
+        threads=[_thread_read_dto(db, _thread_row_to_dict, t, participants=participants[t.id]) for t in rows]
     )
 
 
@@ -1414,6 +1538,7 @@ async def get_thread_endpoint(
     slug: str,
     thread_id: str,
     org: OrgDep,
+    request: Request,
 ) -> dict:
     """Return thread detail including authoritative ``reply_delivery``.
 
@@ -1421,12 +1546,21 @@ async def get_thread_endpoint(
     omission. Held requires an OPEN exchange plus matching HELD participant
     deferral; it is neutral waiting, never subprocess or fault evidence.
     """
-    t = org.db.get_thread(thread_id)
+    early = await _early_thread_read(
+        request, org, lambda db, budget: _project_thread_detail(db, thread_id),
+    )
+    if early is not None:
+        return early
+    return _project_thread_detail(org.db, thread_id)
+
+
+def _project_thread_detail(db, thread_id):
+    t = db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-    msgs = org.db.list_thread_messages(thread_id, limit=200)
-    responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
+    participants = [p.agent_name for p in db.list_thread_participants(thread_id)]
+    msgs = db.list_thread_messages(thread_id, limit=200)
+    responders_by_seq = db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
     # Pass responders unconditionally: the grouped query returns reply and
@@ -1436,12 +1570,12 @@ async def get_thread_endpoint(
     # REPLY). The blanket lookup surfaces the followup in-flight strip on its
     # system row without contaminating message rows.
     d["messages"] = [
-        _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
+        _thread_read_dto(db, _msg_to_dict, m, responders=responders_by_seq.get(m.seq))
         for m in msgs
     ]
     d["reply_delivery"] = [
-        p.model_dump(mode="json")
-        for p in org.db.list_reply_delivery_projections(thread_id)
+        _thread_read_dto(db, p.model_dump, mode="json")
+        for p in db.list_reply_delivery_projections(thread_id)
     ]
     return d
 
@@ -1451,6 +1585,7 @@ async def list_thread_messages_endpoint(
     slug: str,
     thread_id: str,
     org: OrgDep,
+    request: Request,
     since_seq: int = 0,
     limit: int = 200,
 ) -> dict:
@@ -1460,30 +1595,41 @@ async def list_thread_messages_endpoint(
     omission. Terminal reason is historical metadata exposed only for a
     genuine current retry, never classification proof for held.
     """
-    t = org.db.get_thread(thread_id)
+    early = await _early_thread_read(
+        request, org,
+        lambda db, budget: _project_thread_messages(db, thread_id, since_seq, limit),
+        unbounded=limit < 0,
+    )
+    if early is not None:
+        return early
+    return _project_thread_messages(org.db, thread_id, since_seq, limit)
+
+
+def _project_thread_messages(db, thread_id, since_seq, limit):
+    t = db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     effective_limit = min(limit, 1000)
     fetch_limit = effective_limit + 1
-    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
+    msgs = db.list_thread_messages(thread_id, since_seq=since_seq, limit=fetch_limit)
     has_more = len(msgs) > effective_limit
     if has_more:
         msgs = msgs[:effective_limit]
     next_since_seq = msgs[-1].seq if msgs else since_seq
-    responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
+    responders_by_seq = db.list_invocations_for_thread_grouped_by_seq(thread_id)
     # Unconditional responders lookup — see get_thread_endpoint: entries are
     # keyed by their own triggering_seq and carry the authoritative purpose on
     # the wire (TASK-5553), so a REPLY anchored on a system row stays a REPLY.
     return {
         "messages": [
-            _msg_to_dict(m, responders=responders_by_seq.get(m.seq))
+            _thread_read_dto(db, _msg_to_dict, m, responders=responders_by_seq.get(m.seq))
             for m in msgs
         ],
         "has_more": has_more,
         "next_since_seq": next_since_seq,
         "reply_delivery": [
-            p.model_dump(mode="json")
-            for p in org.db.list_reply_delivery_projections(thread_id)
+            _thread_read_dto(db, p.model_dump, mode="json")
+            for p in db.list_reply_delivery_projections(thread_id)
         ],
     }
 
@@ -1735,6 +1881,7 @@ class DispatchBody(BaseModel):
 async def dispatch_from_thread_endpoint(
     slug: str, thread_id: str, body: DispatchBody, org: OrgDep, request: Request,
 ) -> dict:
+    _require_thread_ready(org, slug)
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
     try:
@@ -1776,6 +1923,7 @@ async def dispatch_from_thread_endpoint(
 
         dispatcher = body.dispatcher
         async with org.teams_lock:
+            _require_thread_ready(org, slug)
             is_manager = org.teams.is_team_manager(dispatcher)
             dispatcher_team = (
                 org.teams.team_for_manager(dispatcher) if is_manager
@@ -1855,12 +2003,14 @@ async def dispatch_from_thread_endpoint(
                     detail={"code": "task_followup_dispatch_resolves_forbidden"},
                 )
             async with org.teams_lock:
+                _require_thread_ready(org, slug)
                 if not org.teams.is_team_manager(dispatcher):
                     raise HTTPException(
                         status_code=403,
                         detail={"code": "task_followup_dispatch_manager_required"},
                     )
                 async with org.db_lock:
+                    _require_thread_ready(org, slug)
                     task_id = org.db.next_task_id()
                     result = org.db.dispatch_task_followup_replacement(
                         token=body.invocation_token,
@@ -1879,6 +2029,7 @@ async def dispatch_from_thread_endpoint(
             family_closed = []
         else:
             async with org.db_lock:
+                _require_thread_ready(org, slug)
                 from runtime.orchestrator.task_pause import origin_guard
                 with origin_guard(org, resolves):
                     with org.db._lock:
@@ -2202,6 +2353,7 @@ async def _send_thread_message_inprocess(
     Returns the same response shape as POST /threads/{id}/send.
     Raises _SendThreadError on validation failures (route translates to HTTP).
     """
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise _SendThreadError(404, "not_found")
@@ -2254,6 +2406,7 @@ async def _send_thread_message_inprocess(
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         _validate_message_addresses(org, body_text, founder_recipients=[
             p.agent_name for p in org.db.list_thread_participants(thread_id)
         ])
@@ -2306,8 +2459,10 @@ async def _post_agent_message(
     the task/session binding is valid, the speaker is a participant, and
     `addressed` (participants to mint REPLY for) excludes the speaker.
     """
+    _require_thread_ready(org, slug)
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         _validate_message_addresses(org, body_text)
         seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
@@ -2344,6 +2499,7 @@ async def _post_agent_message(
 async def send_thread_endpoint(
     slug: str, thread_id: str, body: SendBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     try:
         return await _send_thread_message_inprocess(
             org, slug, thread_id,
@@ -2385,6 +2541,7 @@ async def post_thread_as_agent(
 ) -> dict:
     # Task binding — mirrors compose_thread_as_agent: task_id+session_id
     # required, task exists, composer owns it, active session matches.
+    _require_thread_ready(org, slug)
     if not body.task_id or not body.session_id:
         raise HTTPException(status_code=422, detail={"code": "binding_required"})
     try:
@@ -2446,6 +2603,7 @@ class InviteBody(BaseModel):
 async def invite_thread_endpoint(
     slug: str, thread_id: str, body: InviteBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2463,6 +2621,7 @@ async def invite_thread_endpoint(
     # but cap enforcement was removed per THR-046 msg86.
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         inserted = org.db.add_thread_participant(thread_id, body.agent_name, added_by="founder")
         if not inserted:
             raise HTTPException(status_code=409, detail={"code": "already_participant"})
@@ -2501,6 +2660,7 @@ class RemoveParticipantBody(BaseModel):
 async def remove_thread_participant_endpoint(
     slug: str, thread_id: str, body: RemoveParticipantBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2514,6 +2674,7 @@ async def remove_thread_participant_endpoint(
         raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
 
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         removed = org.db.remove_thread_participant(thread_id, body.agent_name)
         if not removed:
             raise HTTPException(status_code=409, detail={"code": "not_participant"})
@@ -2566,6 +2727,7 @@ class ExtendBody(BaseModel):
 async def extend_thread_endpoint(
     slug: str, thread_id: str, body: ExtendBody, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2578,6 +2740,7 @@ async def extend_thread_endpoint(
                     "current": t.turn_cap, "requested": body.new_cap},
         )
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         prior_cap = t.turn_cap
         org.db.set_thread_turn_cap(thread_id, new_cap=body.new_cap)
         sys_seq = org.db.append_thread_message(
@@ -2678,6 +2841,7 @@ async def archive_thread_endpoint(
 async def resume_thread_endpoint(
     slug: str, thread_id: str, org: OrgDep,
 ) -> dict:
+    _require_thread_ready(org, slug)
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -2693,6 +2857,7 @@ async def resume_thread_endpoint(
         t.archived_at.isoformat() if t.archived_at else None
     )
     async with org.db_lock:
+        _require_thread_ready(org, slug)
         org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
         # Re-activate per-pair reply delivery state (idempotent no-op for pairs
         # already cut over; seeds any pair still missing a row).
@@ -2985,6 +3150,7 @@ async def upload_thread_attachment(
     file: UploadFile = File(...),
     agent: str = Query(...),
 ) -> dict:
+    _require_thread_ready(org, slug)
     from fastapi import UploadFile
     t = org.db.get_thread(thread_id)
     if t is None:
@@ -2997,6 +3163,7 @@ async def upload_thread_attachment(
             raise HTTPException(status_code=403, detail={"code": "not_participant"})
 
     content = await file.read(MAX_THREAD_ATTACHMENT_BYTES + 1)
+    _require_thread_ready(org, slug)
     if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
         raise HTTPException(
             status_code=413,

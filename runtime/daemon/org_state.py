@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from runtime.infrastructure.memory_collection import CollectionObserver
     from runtime.daemon.cleanup_diagnostics import _Attachment
 
+from runtime.infrastructure.startup_observation import BootObservation, observed
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
 from runtime.daemon.event_bus import EventBus
@@ -134,6 +135,18 @@ class OrgState:
     # C is independent of diagnostic B and ordinary runner/task ownership.
     _thread_release_attachment: Any = field(init=False, default=None, repr=False)
     _thread_release_users: set[object] = field(init=False, default_factory=set, repr=False)
+    # Shared daemon boot owner; these references do not admit or launch work.
+    # Admission captures orchestrator/DB/tracker/thread/dream/wake/schedule queues.
+    _startup_admission_refs: Any = field(init=False, default=None, repr=False)
+    _startup_document_refs: Any = field(init=False, default=None, repr=False)
+    _startup_coding_refs: Any = field(init=False, default=None, repr=False)
+    _startup_state: Any = field(init=False, default=None, repr=False)
+    _startup_org: Any = field(init=False, default=None, repr=False)
+    _startup_recovery: Any = field(init=False, default=None, repr=False)
+    _startup_reads: Any = field(init=False, default=None, repr=False)
+    _startup_read_revoked: bool = field(init=False, default=False, repr=False)
+    _startup_read_file: Any = field(init=False, default=None, repr=False)
+    _startup_detached: tuple | None = field(init=False, default=None, repr=False)
 
     def _acquire_thread_release(self, operation) -> bool:
         a = self._thread_release_attachment
@@ -258,6 +271,17 @@ class OrgState:
         self.workflow_revisions = WorkflowRevisionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
         self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
+        self._startup_document_refs = (
+            self.workflow_drafts, self.workflow_reviews, self.workflow_submissions,
+            self.workflow_revisions, self.workflow_review_receipts,
+            self.workflow_authority, self.workflow_activations,
+        )
+        self._startup_coding_refs = (
+            self.workflow_coding_start, self.workflow_coding_dispatch, self.workflow_coding_roles,
+            self.workflow_coding_release_import, self.workflow_authority, self.workflow_activations,
+            self.workflow_coding_start.support, self.workflow_coding_roles.support,
+            self.workflow_coding_release_import._support,
+        )
         self.workflow_repository_artifacts = WorkflowRepositoryArtifactService()
         if self.orchestrator is not None:
             self.orchestrator._workflow_coding_start = self.workflow_coding_start
@@ -386,23 +410,29 @@ class OrgState:
         return ts.isoformat()
 
     @classmethod
-    def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
-        paths = OrgPaths(root=root)
-        from runtime.orchestrator.team_move_startup import before_org_attachment
-        before_org_attachment(root, slug)
-        from runtime.identities.schema import preflight
-        naming_preflight = preflight(paths.db_path, org_slug=slug)
-        db = Database(paths.db_path)
+    def load(cls, *, slug: str, root: Path, settings: Settings,
+             observation: BootObservation | None = None) -> "OrgState":
+        with observed(observation, "org_preflight"):
+            paths = OrgPaths(root=root)
+            from runtime.orchestrator.team_move_startup import before_org_attachment
+            before_org_attachment(root, slug)
+            from runtime.identities.schema import preflight
+            naming_preflight = preflight(paths.db_path, org_slug=slug)
+        with observed(observation, "database"):
+            db = Database(paths.db_path)
         try:
-            install_or_recover(db, expected_org_slug=slug)
-            with db._lock:
-                layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with observed(observation, "workflow_install"):
+                install_or_recover(db, expected_org_slug=slug)
+            with observed(observation, "workflow_validate"):
+                with db._lock:
+                    layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
             # Native org release preparation, after strict early move discovery
             # and complete workflow validation, before any roster/publication or
             # producer attachment. Generic Database and diagnostic recovery never
             # install this extension. An existing hold/unknown layout refuses.
             from runtime.infrastructure.team_move_store import install_team_move_schema
-            install_team_move_schema(db, org_slug=slug)
+            with observed(observation, "move_schema"):
+                install_team_move_schema(db, org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
@@ -413,13 +443,17 @@ class OrgState:
                 ))
             if layout == "G":
                 logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
-            WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
+            with observed(observation, "cutover"):
+                WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
-            install_pause_schema(db, org_slug=slug)
-            db._task_pause_store = TaskPauseStore(db, slug)
-            with db._lock:
-                validate_workflow_schema(db._conn, expected_org_slug=slug)
-            teams = TeamsRegistry.load(root)
+            with observed(observation, "pause_schema"):
+                install_pause_schema(db, org_slug=slug)
+                db._task_pause_store = TaskPauseStore(db, slug)
+            with observed(observation, "workflow_validate"):
+                with db._lock:
+                    validate_workflow_schema(db._conn, expected_org_slug=slug)
+            with observed(observation, "roster"):
+                teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.
             # Idempotent (sentinel); runs on every daemon startup but is a no-op
@@ -435,6 +469,8 @@ class OrgState:
                 # never overwrites an explicit setting.
                 backfill_reviewer_agents_setting(paths, db)
             except Exception as exc:
+                if observation is not None:
+                    observation.count("org_seed_nonfatal")
                 logger.warning(
                     "org %r: org_settings seed skipped (non-fatal): %s", slug, exc
                 )
@@ -443,25 +479,28 @@ class OrgState:
             # OrgConsistencyError on drift; DaemonState.from_runtime catches
             # per-org so one broken org cannot crash daemon startup, while
             # add_org propagates so explicit founder actions fail loudly.
-            validate_team_membership(paths, teams)
-            orchestrator = Orchestrator(
-                db=db,
-                settings=settings,
-                paths=paths,
-                slug=slug,
-                teams=teams,
-                authority_evaluator=_build_authority_evaluator(),
-            )
+            with observed(observation, "roster"):
+                validate_team_membership(paths, teams)
+            with observed(observation, "orchestrator"):
+                orchestrator = Orchestrator(
+                    db=db,
+                    settings=settings,
+                    paths=paths,
+                    slug=slug,
+                    teams=teams,
+                    authority_evaluator=_build_authority_evaluator(),
+                )
             from runtime.orchestrator.task_pause import restore_pause_preparations
-            restore_pause_preparations(orchestrator)
-            state = cls(
-                slug=slug,
-                root=root,
-                db=db,
-                teams=teams,
-                settings=settings,
-                orchestrator=orchestrator,
-            )
+            with observed(observation, "org_services"):
+                restore_pause_preparations(orchestrator)
+                state = cls(
+                    slug=slug,
+                    root=root,
+                    db=db,
+                    teams=teams,
+                    settings=settings,
+                    orchestrator=orchestrator,
+                )
             from runtime.identities.registry import read_name_metadata, refresh_names
             # Binding reads current validated org metadata at prompt construction;
             # no cached snapshot, reconciliation or new launch/readiness gate.
@@ -469,20 +508,29 @@ class OrgState:
             state.naming_diagnostic = naming_preflight
             # Cold load has no concurrent route coroutine. Capture/install is
             # outside short authority/profile leases, after baseline admission.
-            with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
-                refresh_names(state, install=True, writer=interval.native_disposition)
+            with observed(observation, "identity_publication"):
+                with state.workflow_authority.writer_interval(publisher="identity_names_load") as interval:
+                    refresh_names(state, install=True, writer=interval.native_disposition)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain
             # behavior; later supported writers and the next cold start retain
             # the same recovery path.
             try:
-                state.workflow_authority.recover_or_publish()
+                with observed(observation, "authority_publication"):
+                    state.workflow_authority.recover_or_publish()
             except Exception:
+                if observation is not None:
+                    observation.count("authority_fenced")
                 logger.exception(
                     "org %r: workflow authority startup publication remains fenced",
                     slug,
                 )
+            # P0, before publication: pin this validated attachment's file.
+            # Early requests do no filesystem work on the request loop and
+            # cannot adopt a replacement path while queued on their executor.
+            read_file = paths.db_path.stat()
+            state._startup_read_file = (db, root, paths.db_path, read_file.st_dev, read_file.st_ino)
             return state
         except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.
@@ -493,6 +541,15 @@ class OrgState:
             raise
 
     def close(self) -> None:
+        # Synchronous direct close cannot cancel/join a native reader. Refuse
+        # before touching any connection unless its actual owner has drained.
+        if self._startup_state is not None:
+            self._startup_state._assert_startup_idle(self)
+        if self._startup_recovery is not None:
+            self._startup_recovery.assert_native_idle()
+        if self._startup_reads is not None:
+            self._startup_reads.revoke(self)
+            self._startup_reads.assert_idle(self)
         self._revoke_thread_releases()
         self._assert_thread_releases_idle()
         self._revoke_cleanup_diagnostics()

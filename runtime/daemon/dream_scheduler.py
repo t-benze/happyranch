@@ -1,7 +1,10 @@
 """Nightly dream scheduling decisions."""
 from __future__ import annotations
 
-from runtime.orchestrator.producer_move import native_writer, native_claim, owner_for
+from runtime.orchestrator.producer_move import (
+    native_writer, native_claim, owner_for, require_producer_admission, producer_admission_writer,
+)
+from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 from runtime.orchestrator.team_move import DeferredTeamMove
 
 
@@ -121,7 +124,23 @@ def _window_start(org_state, agent_name: str, window_end):
 
 
 async def _enqueue(org, dream_id: str) -> None:
-    await org.dream_queue.put(DreamJob(org_slug=org.slug, dream_id=dream_id))
+    try:
+        require_producer_admission(org)
+        await org.dream_queue.put(DreamJob(org_slug=org.slug, dream_id=dream_id))
+    except BaseException as exc:
+        try:
+            logger.exception("committed dream source %s remains pending; queue delivery unacknowledged", dream_id)
+        except BaseException as secondary:
+            exc.add_note(f"queue refusal logging failed: {secondary!r}")
+        raise
+
+
+def _enqueue_finished(task: asyncio.Task, source_id: str) -> None:
+    # Cancellation before coroutine entry must also report the committed intent.
+    if task.cancelled():
+        logger.error("committed source %s: queue delivery cancelled/unacknowledged", source_id)
+    else:
+        task.exception()  # _enqueue already reported the original source failure.
 
 
 def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
@@ -133,6 +152,7 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     recorded so the steady-state loop will not pick it up later the same day.
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
+    require_producer_admission(org)
     admission = owner_for(org.db)
     if admission is not None:
         try:
@@ -153,7 +173,8 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
         effective_startup = startup or bool(admission and key in admission.startup_deferred)
         held = False
         try:
-            with native_writer(org.db, publisher='dream_scheduler', agents=(agent,), durable=False):
+            with producer_admission_writer(org, native_writer(org.db, publisher='dream_scheduler', agents=(agent,), durable=False)):
+                require_producer_admission(org)
                 local_date, _scheduled = _scheduled_datetime(now, cfg, tz)
                 existing = org.db.get_dream_for_agent_date(agent, local_date)
                 decision = should_schedule_for_agent(
@@ -165,6 +186,7 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
                 )
                 if not decision.should_schedule:
                     continue
+                require_producer_admission(org)
                 dream_id = org.db.next_dream_id()
                 base = dict(
                     id=dream_id,
@@ -184,7 +206,12 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
                 AuditLogger(org.db).log_dream_scheduled(dream_id, agent, local_date=decision.local_date)
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(_enqueue(org, dream_id))
+                    require_producer_admission(org)
+                    loop.create_task(_enqueue(org, dream_id)).add_done_callback(
+                        lambda task, source_id=dream_id: _enqueue_finished(task, source_id),
+                    )
+                except StartupUnavailable:
+                    raise
                 except RuntimeError:
                     # No running loop (synchronous callers/tests): enqueue directly via
                     # the unbounded queue. Avoids asyncio.run(), which resets the
@@ -192,6 +219,9 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
                     # calls asyncio.get_event_loop().
                     org.dream_queue.put_nowait(DreamJob(org_slug=org.slug, dream_id=dream_id))
                 count += 1
+        except StartupUnavailable:
+            held = True  # retain original startup_deferred and committed source intent
+            raise
         except DeferredTeamMove:
             held = True
             if admission is not None and effective_startup:
@@ -229,9 +259,11 @@ async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
     # subsequent iteration is steady-state on-time scheduling.
     startup = True
     while True:
+        require_ready(state)
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
+            require_producer_admission(org)
             try:
                 schedule_due_dreams(org=org, now=now, startup=startup)
             except OrgConfigError:

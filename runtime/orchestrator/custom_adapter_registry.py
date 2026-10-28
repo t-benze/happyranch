@@ -18,6 +18,8 @@ executable dependencies at registration and re-validates at launch.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import json
 import logging
 import os
@@ -655,6 +657,7 @@ def run_conformance_probe(
     expected_canary: str | None = None,
     require_success: bool = True,
     deadline_seconds: int | None = None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> AdapterOutput:
     """Run a bounded stdin/stdout conformance probe against an adapter executable.
 
@@ -679,6 +682,8 @@ def run_conformance_probe(
 
     ZERO durable residue is left on failure — this is a pure validation step.
     """
+    if validate_admission is not None:
+        validate_admission()
     if deadline_seconds is None:
         deadline_seconds = CONFORMANCE_PROBE_TIMEOUT_SECONDS
     prompt_canary = None
@@ -705,6 +710,8 @@ def run_conformance_probe(
     # so the adapter does not need to create it.
     probe_workspace = Path(probe_input.workspace)
     try:
+        if validate_admission is not None:
+            validate_admission()
         probe_workspace.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise ValueError(
@@ -712,6 +719,8 @@ def run_conformance_probe(
         ) from exc
 
     try:
+        if validate_admission is not None:
+            validate_admission()
         proc = subprocess.Popen(
             [executable],
             stdin=subprocess.PIPE,
@@ -724,12 +733,30 @@ def run_conformance_probe(
             f"Failed to launch adapter executable {executable!r}: {exc}"
         ) from exc
 
+    def retire_probe(primary: BaseException) -> bool:
+        """One cleanup attempt; failed reap never replaces the original cause."""
+        try:
+            _kill_and_reap(proc)
+            if validate_admission is not None:
+                # Consume positive settlement of THIS Process, not a returncode
+                # field or completion of a wrapper whose cleanup may have failed.
+                proc.wait(timeout=0)
+        except BaseException as secondary:
+            if validate_admission is not None:
+                primary.maintenance_native_unsettled = True
+                primary.maintenance_native_process = proc
+            primary.add_note("conformance native cleanup also failed: " + repr(secondary)[:512])
+            return False
+        return True
+
     # Read stdout and stderr concurrently with byte limits.
     # Do NOT use communicate() — it fully buffers both streams before we can
     # enforce limits. Instead, send stdin, close it, then read from both pipes
     # in a bounded loop.
     try:
         # Send stdin and close it so the adapter can start processing
+        if validate_admission is not None:
+            validate_admission()
         if proc.stdin is not None:
             proc.stdin.write(input_json.encode("utf-8"))
             proc.stdin.close()
@@ -748,25 +775,11 @@ def run_conformance_probe(
             time.monotonic() - conformance_start
         )
         if remaining <= 0:
-            _kill_and_reap(proc)
-            if require_prompt_delivery:
-                raise direct_failure("timed out")
-            raise ValueError(
-                f"Conformance probe timed out after "
-                f"{deadline_seconds}s for {executable!r}"
-            )
-        try:
-            proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            _kill_and_reap(proc)
-            if require_prompt_delivery:
-                raise direct_failure("timed out")
-            raise ValueError(
-                f"Conformance probe timed out after "
-                f"{deadline_seconds}s for {executable!r}"
-            )
+            raise subprocess.TimeoutExpired(proc.args, deadline_seconds)
+        proc.wait(timeout=remaining)
     except subprocess.TimeoutExpired as exc:
-        _kill_and_reap(proc)
+        if not retire_probe(exc):
+            raise  # Retain the actual timeout/traceback and cleanup secondary.
         if require_prompt_delivery:
             raise direct_failure("timed out") from exc
         stderr_tail = ""
@@ -776,10 +789,15 @@ def run_conformance_probe(
             f"Conformance probe timed out after "
             f"{deadline_seconds}s for {executable!r}. "
             f"stderr tail: {stderr_tail[:500]}"
-        )
+        ) from exc
     except BoundedReadError as exc:
-        _kill_and_reap(proc)
+        if not retire_probe(exc):
+            raise
         raise ValueError(str(exc)) from exc
+    except BaseException as primary:
+        if validate_admission is not None:
+            retire_probe(primary)
+        raise
 
     if proc.returncode != 0:
         if require_prompt_delivery:
@@ -1388,6 +1406,7 @@ def _perform_adapter_profile_binding(
     adapter_id: str,
     profile_name: str,
     workspace_adapter: str,
+    *, validate_admission=None,
 ) -> dict:
     """Bind a named custom profile to an APPROVED adapter (THR-107 seq237).
 
@@ -1420,6 +1439,8 @@ def _perform_adapter_profile_binding(
     from runtime.infrastructure.database import Database
     from runtime.runtime import daemon_home
 
+    if validate_admission is not None:
+        validate_admission()
     registry = get_registry()
 
     # 1. Profile name must not collide with a built-in
@@ -1487,7 +1508,10 @@ def _perform_adapter_profile_binding(
     durable_committed = False
     try:
         # 6. Write the durable runtime store first
-        save_runtime_profile(profile_name, profile_cfg)
+        if validate_admission is not None:
+            validate_admission()
+        save_runtime_profile(profile_name, profile_cfg,
+            **({"validate_admission": validate_admission} if validate_admission is not None else {}))
         durable_committed = True
 
         # 7. Replace in the in-memory registry
@@ -1511,7 +1535,7 @@ def _perform_adapter_profile_binding(
             db.commit()
         finally:
             db.close()
-    except BaseException:
+    except BaseException as primary:
         if durable_committed:
             # Compensating rollback: restore both durable and in-memory surfaces
             if profile_name in pre_request_profiles:
@@ -1522,6 +1546,9 @@ def _perform_adapter_profile_binding(
                 registry.replace_custom_profile(pre_request_in_memory)
             else:
                 registry.unregister_custom_profile(profile_name)
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if validate_admission is not None and isinstance(primary, StartupUnavailable):
+            raise
         raise ValueError(
             "Profile binding failed after durable write; "
             "pre-request state has been restored."

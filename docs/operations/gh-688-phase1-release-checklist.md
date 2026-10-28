@@ -18,6 +18,14 @@
 > they describe the state **before** the daemon restart that activates
 > Phase 1.
 
+Before recovery-dependent post-start checks or effects, require a fresh positive
+startup observation: state=ready, serving=true, recovery_ready=true, stopping=false
+(or the matching finite shell line `startup serving=yes recovery=ready launches=admitted`).
+Health200, PID/port and shell exit0 establish no recovery completion. All original
+source/native/authorization gates below still apply. A held/failed/unknown result
+preserves the original process and operation; no automatic restart/replay follows.
+This clarification changes no historical measurement record or activation authority.
+
 ## 1. Deployment model (read first)
 
 - **Merging this PR is NOT deploying.** The daemon is a long-lived Python

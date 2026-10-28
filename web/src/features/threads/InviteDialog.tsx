@@ -15,6 +15,7 @@ import { FormField } from '@/design-system/patterns/FormField';
 import { useInviteAgent } from '@/hooks/threads';
 import { RecipientsInput } from './RecipientsInput';
 import { useTranslation } from '@/hooks/i18n';
+import { useStartupStatus } from '@/hooks/health';
 import { classifyThreadError, renderThreadError, type ThreadErrorView } from '@/lib/threadErrors';
 import type { AgentSummary } from '@/lib/api/types';
 
@@ -30,6 +31,8 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
   const invite = useInviteAgent(threadId);
   const options = useIdentityOptions(agents);
   const preflight = usePreflightAddresses();
+  // THR-308: invites are new work, held until daemon startup is ready.
+  const startup = useStartupStatus();
   const scopedSlug = useOrgSlugOptional();
   const { slug: routeSlug } = useParams<{ slug: string }>();
   const slug = scopedSlug ?? routeSlug ?? '';
@@ -69,6 +72,7 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
     latch.current = true; setPending(true);
     const capturedScope = scope.current;
     try {
+      startup.assertAdmittedNow();
       // Prospective invite must NOT pass thread_id (that resolver admits existing participants only).
       const resolved = await preflight.mutateAsync({ slug, context: 'thread_recipient', recipients: uniqueNames, canonicalAgentIds: agents.map((a) => a.name) });
       if (scope.current !== capturedScope) return;
@@ -76,6 +80,7 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
       // server contract one-agent-per-request.
       for (const name of resolved.recipients) {
         if (scope.current !== capturedScope) return;
+        startup.assertAdmittedNow();
         await invite.mutateAsync({ agent_name: name, destination: { slug, threadId } });
       }
       if (scope.current === capturedScope) onClose();
@@ -117,9 +122,12 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
               </p>
             )}
           </FormField>
+          {!startup.admitted && (
+            <p role="status" className="text-attention-text text-caption">{t('startup.action.paused')}</p>
+          )}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-            <Button type="submit" disabled={pending || invite.isPending}>
+            <Button type="submit" disabled={pending || invite.isPending || !startup.admitted}>
               {pending || invite.isPending ? t('threads.dialog.invite.pending') : t('threads.dialog.invite.confirm')}
             </Button>
           </DialogFooter>

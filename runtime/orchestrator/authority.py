@@ -86,7 +86,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Callable
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -3598,8 +3598,11 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         _V2StartupEvidenceUnavailable,
     )
 
+    from runtime.infrastructure.startup_observation import v2_lifetime
+    boot = getattr(getattr(orchestrator, "_startup_recovery", None), "_observation", None)
     store = AuthorityPolicyStore(db)
-    with store._startup_v2_reads() as reads:
+    with v2_lifetime(boot) as observation, store._startup_v2_reads() as reads:
+        observation.reader = reads
         try:
             targets = reads.discover()
         except _V2StartupConnectionUnsafe:
@@ -3608,6 +3611,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
             reads.check()
             _v2_startup_failure_log("discovery_unavailable")
             reads.check()
+            observation.outcome = "unavailable"
             return None
         fenced_roots: set[str] = set()
         failed_roots: set[str] = set()
@@ -3634,6 +3638,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     # the authentic final owner to its own reconciliation, without
                     # another refusal or postcommit tail in this pass.
                     if anchor is None:
+                        observation.outcome = "unavailable"
                         return None
                     fenced_roots.add(discovered.root_task_id)
                     failed_roots.add(discovered.root_task_id)
@@ -3801,6 +3806,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                 _v2_startup_failure_log("exact_or_refusal_unavailable")
                 reads.check()
                 if anchor is None:
+                    observation.outcome = "unavailable"
                     return None
         return fenced_roots
 
@@ -4694,6 +4700,8 @@ def run_authority_hook(
 
 def publish_authority_policy_v2_notifications(
     orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
+    startup_observer: Callable[[str, object, BaseException | None], None] | None = None,
+    _publication=None, _startup_recovery=None,
 ) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
@@ -4720,12 +4728,28 @@ def publish_authority_policy_v2_notifications(
     This function performs no evaluation, no remint and no task mutation, and
     returns bounded per-target receipts for the caller.
     """
+    if _publication is not None:
+        _publication.check(queue, orch._slug, _publication.task_id, _publication.metadata)
+    elif _startup_recovery is not None:
+        _startup_recovery.require_attachment(orch)
+        _startup_recovery.require_native_owner()
+        _startup_recovery._require_phase_attachments("sweep")
+    else:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(orch)
     db = orch._db
     receipts: list[dict] = []
+    # Observe ORIGINAL producer values/exceptions without changing receipts,
+    # discovery order, transaction ownership or target-local isolation.
+    def observe(stage: str, value: object = None, cause: BaseException | None = None) -> None:
+        if startup_observer is not None:
+            startup_observer(stage, value, cause)
     try:
         targets = db.list_authority_policy_v2_publication_targets()
     except Exception as exc:  # discovery is read-only best effort
+        observe("discovery", cause=exc)
         return [{"status": "discovery_failed", "error": type(exc).__name__}]
+    observe("discovery", targets)
     if root_task_id is not None:
         # Common-entry single-target use: publication stays the SAME
         # authenticated claim -> raw put -> exact ack sequence; only the
@@ -4754,12 +4778,14 @@ def publish_authority_policy_v2_notifications(
                 result_id=target.result_id,
             )
         except Exception as exc:
+            observe("claim", cause=exc)
             receipts.append({
                 "status": "publication_claim_failed",
                 "reason": type(exc).__name__,
                 "notification_id": target.notification_id,
             })
             continue
+        observe("claim", claim)
         if claim.status != "claimed":
             receipts.append({
                 "status": claim.status,
@@ -4768,14 +4794,17 @@ def publish_authority_policy_v2_notifications(
             })
             continue
         try:
-            queue.put_nowait(
-                orch._slug,
-                target.root_task_id,
-                metadata={
-                    "authority_v2_generation": claim.generation_id,
-                    "publication_attempt": claim.publication_attempt,
-                },
-            )
+            metadata = {"authority_v2_generation": claim.generation_id,
+                        "publication_attempt": claim.publication_attempt}
+            raw_publication = None
+            if _publication is not None:
+                raw_publication = _publication.generation(target.root_task_id, metadata)
+            elif _startup_recovery is not None:
+                from runtime.daemon.startup_publication import _TaskPublication
+                raw_publication = _TaskPublication(_startup_recovery, orch,
+                                                   target.root_task_id, "v2", metadata)
+            queue.put_nowait(orch._slug, target.root_task_id, metadata=metadata,
+                             **({"_publication": raw_publication} if raw_publication is not None else {}))
         except Exception as exc:
             try:
                 failure = (
@@ -4788,12 +4817,18 @@ def publish_authority_policy_v2_notifications(
                         publisher_boot_id=claim.publisher_boot_id,
                     )
                 )
-                reason = failure.reason
             except Exception as record_exc:
                 # A failure-bookkeeping write failure keeps the prior
                 # ``publishing`` lease safely reclaimable and must not abort
                 # the pass; the original queue error stays authoritative.
+                # Keep the original queue failure primary; record the actual
+                # secondary bookkeeping cause without replacing it.
+                exc.add_note("publication failure bookkeeping also failed: " + type(record_exc).__name__)
+                observe("failure", cause=exc)
                 reason = type(record_exc).__name__
+            else:
+                observe("failure", failure, exc)
+                reason = failure.reason
             receipts.append({
                 "status": "publish_failed",
                 "reason": reason,
@@ -4812,6 +4847,7 @@ def publish_authority_policy_v2_notifications(
                 publisher_boot_id=claim.publisher_boot_id,
             )
         except Exception as exc:
+            observe("ack", cause=exc)
             # The raw tagged put already happened; the retained claim/lease
             # stays recoverable and reclaimable, so a restart republishes and
             # the non-bypassable generation fence still admits only once.
@@ -4823,6 +4859,7 @@ def publish_authority_policy_v2_notifications(
                 "publication_attempt": claim.publication_attempt,
             })
             continue
+        observe("ack", ack)
         receipts.append({
             "status": ack.status,
             "reason": ack.reason,
@@ -5053,7 +5090,7 @@ ENQUEUE_DISPATCH_NO_QUEUE = "no_queue"
 
 def enqueue_task_generation_aware(
     orch, queue, slug: str, task_id: str, *, metadata: dict | None = None,
-    ordinary_enqueue=None,
+    ordinary_enqueue=None, _publication=None,
 ) -> str:
     """Common DB-aware task enqueue entry (THR-229 checkpoint C3d4a).
 
@@ -5086,6 +5123,11 @@ def enqueue_task_generation_aware(
     original call so the tuple/metadata shape and any queue-double contract are
     unchanged; the default uses the shared legacy ``enqueue`` shape.
     """
+    if _publication is not None:
+        _publication.check(queue, slug, task_id, metadata)
+    else:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(orch)
     if queue is None:
         return ENQUEUE_DISPATCH_NO_QUEUE
 
@@ -5093,7 +5135,7 @@ def enqueue_task_generation_aware(
         if ordinary_enqueue is not None:
             ordinary_enqueue()
         else:
-            _ordinary_enqueue(queue, slug, task_id, metadata)
+            _ordinary_enqueue(queue, slug, task_id, metadata, _publication=_publication)
 
     db = getattr(orch, "_db", None)
     # Only a genuine durable ``Database`` carries the classification read.  A
@@ -5115,7 +5157,7 @@ def enqueue_task_generation_aware(
         # The publisher performs the claim -> raw put -> ack itself; a refusal or
         # an empty target set means NO queue call and NO ordinary fallback.
         receipts = publish_authority_policy_v2_notifications(
-            orch, queue, root_task_id=task_id,
+            orch, queue, root_task_id=task_id, _publication=_publication,
         )
         published = any(
             isinstance(r, dict) and r.get("status") in ("published", "published_exact")
@@ -5155,7 +5197,7 @@ def _durable_dispatch_classifier(db):
     return classifier if callable(classifier) else None
 
 
-def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> None:
+def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None, *, _publication=None) -> None:
     """Raw ordinary enqueue preserving the legacy call shape exactly.
 
     The common legacy entry (``runner.enqueue_task``, startup sweep) used
@@ -5169,7 +5211,8 @@ def _ordinary_enqueue(queue, slug: str, task_id: str, metadata: dict | None) -> 
         put = getattr(queue, "put_nowait", None)
     if not callable(put):
         raise AttributeError("queue exposes neither enqueue nor put_nowait")
+    kwargs = {"_publication": _publication} if _publication is not None else {}
     if metadata is None:
-        put(slug, task_id)
+        put(slug, task_id, **kwargs)
     else:
-        put(slug, task_id, metadata=metadata)
+        put(slug, task_id, metadata=metadata, **kwargs)

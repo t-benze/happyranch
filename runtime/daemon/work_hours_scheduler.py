@@ -7,7 +7,10 @@ and FastAPI lifespan wiring are added in leg B and call the functions here.
 """
 from __future__ import annotations
 
-from runtime.orchestrator.producer_move import native_writer, native_claim, owner_for
+from runtime.orchestrator.producer_move import (
+    native_writer, native_claim, owner_for, require_producer_admission, producer_admission_writer,
+)
+from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 from runtime.orchestrator.team_move import DeferredTeamMove
 
 
@@ -260,7 +263,23 @@ def _agent_team(org, agent_name: str) -> str | None:
 
 
 async def _enqueue(org, work_hour_id: str) -> None:
-    await org.wake_queue.put(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
+    try:
+        require_producer_admission(org)
+        await org.wake_queue.put(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
+    except BaseException as exc:
+        try:
+            logger.exception("committed wake source %s remains pending; queue delivery unacknowledged", work_hour_id)
+        except BaseException as secondary:
+            exc.add_note(f"queue refusal logging failed: {secondary!r}")
+        raise
+
+
+def _enqueue_finished(task: asyncio.Task, source_id: str) -> None:
+    # Cancellation before coroutine entry must also report the committed intent.
+    if task.cancelled():
+        logger.error("committed source %s: queue delivery cancelled/unacknowledged", source_id)
+    else:
+        task.exception()  # _enqueue already reported the original source failure.
 
 
 def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
@@ -273,6 +292,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     the steady-state loop won't re-pick the slot today).
     """
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
+    require_producer_admission(org)
     admission = owner_for(org.db)
     if admission is not None:
         try:
@@ -291,7 +311,8 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
         effective_startup = startup or bool(admission and key in admission.startup_deferred)
         held = False
         try:
-            with native_writer(org.db, publisher='wake_scheduler', agents=(agent,), durable=False):
+            with producer_admission_writer(org, native_writer(org.db, publisher='wake_scheduler', agents=(agent,), durable=False)):
+                require_producer_admission(org)
                 schedule = cfg.resolve_for(agent, _agent_team(org, agent))
                 due = current_due_slot(schedule, now)
                 if due is None:
@@ -308,6 +329,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
                 )
                 if not decision.should_schedule:
                     if decision.record_skipped:
+                        require_producer_admission(org)
                         org.db.work_hours.insert(WorkHourRecord(
                             id=org.db.work_hours.next_id(),
                             agent_name=agent,
@@ -321,6 +343,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
                         ))
                     continue
 
+                require_producer_admission(org)
                 work_hour_id = org.db.work_hours.next_id()
                 org.db.work_hours.insert(WorkHourRecord(
                     id=work_hour_id,
@@ -339,13 +362,21 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
                 )
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(_enqueue(org, work_hour_id))
+                    require_producer_admission(org)
+                    loop.create_task(_enqueue(org, work_hour_id)).add_done_callback(
+                        lambda task, source_id=work_hour_id: _enqueue_finished(task, source_id),
+                    )
+                except StartupUnavailable:
+                    raise
                 except RuntimeError:
                     # No running loop (sync callers/tests): enqueue directly. The queue
                     # is unbounded so put_nowait never raises (LRN-005: never
                     # asyncio.run() from a no-loop context — it nukes the global loop).
                     org.wake_queue.put_nowait(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
                 count += 1
+        except StartupUnavailable:
+            held = True  # retain original startup_deferred and committed source intent
+            raise
         except DeferredTeamMove:
             held = True
             if admission is not None and effective_startup:
@@ -363,9 +394,11 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
     # Every later iteration is steady-state on-time scheduling.
     startup = True
     while True:
+        require_ready(state)
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
+            require_producer_admission(org)
             try:
                 schedule_due_wakes(org=org, now=now, startup=startup)
             except OrgConfigError:

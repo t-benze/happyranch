@@ -188,6 +188,28 @@ unavailable. Historical disabled checkpoints later in this skill retain their
 original-head evidence; this paragraph governs current settings-pinned execution.
 Your genuine current-session report-completion remains the FINAL action.
 
+## Serving versus recovery readiness
+
+Shell start/status output has process identity plus one finite startup line.
+Exit0 or HTTP health alone is not recovery-ready. Only a fresh valid
+`serving=yes recovery=ready launches=admitted` observation reports startup
+readiness, still subject to existing authorization. Held/failed/unknown recovery
+preserves original process/task/SID/operation ownership; never restart or replay
+a callback/write automatically. CLI web can open readable threads while held;
+ordinary startup503 means not accepted, not queued. Complete the genuine current
+session callback through its original transport; this note adds no preflight,
+retry, launch, deployment or permission authority. See maintained
+`docs/agent-guides/web-and-cli.md` for setup/Mac and operator observation limits.
+
+Startup's bounded private clock/phase/cache records are observations only.
+A fresh shell late-exec marker excludes preflight, is untrusted local telemetry,
+and is not original-parent/API/UI timing. Mac/direct launch has no shell marker.
+Only the actual listener owner records serving; native completion and ready are
+separate. Null duration means unavailable, never zero. Do not run a profiler,
+restart, scan, collect DB history or create a new benchmark to fill missing data.
+Use existing task-owned source/job receipts and the runtime guide's fixed summary
+limits; source/static approval never establishes under10s or behavior acceptance.
+
 ## Steps
 
 Each attachment storage_key can be claimed by one task only, including within

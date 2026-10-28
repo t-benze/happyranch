@@ -1,5 +1,9 @@
 # Ordered coding workflow — agent-read contract
 
+Cold queued document recovery reads PauseControlError.detail['code']; authenticated
+root_paused remains a local hold with pending intent. Unknown or malformed Pause
+state still fails closed and cannot supply a generic recovery exemption.
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
@@ -38,8 +42,16 @@ code at downgrade; document blockers and returned/live/held drain rules remain.
 
 The existing human setup coordinator retains present maintenance, backup,
 source/UI/loaded-object and original operation/receipt custody. Its normal run
-no longer invokes F/E→G→H→I→J migrations. The original supported deployment/start
-owns inert coding initialization; post-start revalidation requires complete
+authenticates only the exact normal wrapper/Python commands, including the ordered
+startup-clock/launch-id arguments before the guarded-start flag. The closed local
+marker must have a matching launch id, or both values must be unavailable; the
+pair digest must agree across wrapper/Python and repeated original observations.
+Missing/partial/duplicate/reordered/foreign markers or extra arguments hold, with
+all original executable/source/home/UID/PID/birth/ancestry and pid/port checks
+retained. Telemetry grants no boot/readiness/timing authority; fresh recovery-ready
+remains independent before import/Settings, with no second start or replay.
+Its normal run no longer invokes F/E→G→H→I→J migrations. The original supported
+deployment/start owns inert coding initialization; post-start revalidation requires complete
 coding storage on each normally admitted selected-runtime org, with document
 identity unchanged except I+coding=J. Existing explicit document migration tools
 remain separate. No old-folder or historical uncertainty settlement is a new
@@ -2064,8 +2076,13 @@ config:coding/founder at the same time, upserts the pointer, independently
 validates complete new state and rechecks authority before COMMIT. There is no
 await, filesystem/network work or self-committing helper in this transaction.
 Reservation and authority lease evidence have separate durable boundaries.
-Validation-only rollback preserves their native no-effect classification;
-unknown COMMIT/rollback/settlement remains uncertain. Post-COMMIT release failure
+Validation-only rejection preserves native no-effect classification only after
+the original rollback AND lease release complete: the same validation exception,
+no active transaction and no exception notes are required. Selected cleanup
+failures preserve the primary with secondary notes and retain native uncertainty;
+exception identity or transaction state alone cannot establish clean settlement.
+Owed cleanup remains independent of fresh admission. Unknown COMMIT/rollback/
+lease release/settlement remains uncertain. Post-COMMIT release failure
 never becomes an ordinary unsaved rejection or an automatic retry.
 
 The publication audit closes original command bytes/digest/key, org/principal,

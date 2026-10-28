@@ -25,8 +25,10 @@ HAPPYRANCH_DAEMON_START_TIMEOUT=60 scripts/daemon.sh start
 
 If the process exits before it becomes healthy, startup fails immediately. A
 process-exit or timeout failure includes the last 20 lines of `daemon.log`.
-When `curl` is not installed, the command prints a note and falls back to the
-fresh `daemon.port` file.
+Curl is required before launching. A PID or port file cannot prove serving.
+Success may mean serving while recovery continues; it never implies recovery
+completion by itself. A timeout can leave the original process alive. Preserve
+that owner and inspect status/logs; do not start another daemon automatically.
 
 ## Check Status
 
@@ -34,11 +36,20 @@ fresh `daemon.port` file.
 scripts/daemon.sh status
 ```
 
-A healthy daemon prints something like:
+An alive daemon serving readable threads during recovery prints:
 
 ```text
 running (pid 12345, port 8765)
+startup serving=yes recovery=recovering launches=held
 ```
+
+Only `startup serving=yes recovery=ready launches=admitted` reports recovery
+readiness. Original permissions and admission controls still apply. Other
+recovery states are `recovery_failed`, `stopping` and `unknown`; serving may
+also be `no` or `unknown`. Missing/malformed fields or a failed probe never mean
+ready. Status exit0 means only that the process is alive. `happyranch web` can
+open threads while recovery is held or failed. Preserve the original process
+and operation on failure/unknown; no automatic restart/import/replay follows.
 
 The daemon records its process and logs under `~/.happyranch/`:
 

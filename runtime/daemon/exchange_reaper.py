@@ -18,6 +18,7 @@ import logging
 from datetime import datetime, timezone
 
 from runtime.daemon.zombie_reaper import REAPER_INTERVAL_SECONDS
+from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,11 @@ async def exchange_reaper_loop(
     """Periodic exchange-bound reaper (TASK-5966). Registered in
     runtime/daemon/app.py ``_lifespan`` alongside zombie_reaper_loop."""
     while True:
+        require_ready(state)
         t0 = _monotonic()
         for org in list(state.orgs.values()):
             try:
+                require_ready(org)
                 arrivals = org.db.reaper_sweep_reply_exchanges()
                 for a in arrivals:
                     if a.invocation_token is not None:
@@ -41,6 +44,8 @@ async def exchange_reaper_loop(
                             org_slug=org.slug,
                             invocation_token=a.invocation_token,
                         ))
+            except StartupUnavailable:
+                raise
             except Exception:
                 logger.exception(
                     "exchange reaper sweep failed for org %s", org.slug,

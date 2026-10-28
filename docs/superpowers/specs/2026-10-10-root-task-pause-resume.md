@@ -71,6 +71,12 @@ restart; rollback before commitment leaves it unclaimed, while committed
 no-launch/crash cases remain spent under existing settlement rules. Authentic late callbacks use existing INTEGER result consumers even while held, with no new provider launch;
 consumed results are never replayed to create a continuation.
 
+StartupUnavailable from the original TaskInvocation recovery launch propagates
+unchanged before generic execution-failure conversion. The successful original
+return, committed recovery proof/SIDs and current owner remain; held recovery
+is not durably failed. Original terminal/native/tracker/release settlement stays
+owed independently of fresh admission and no earlier snapshot is restored.
+
 A host lease, tracker registration, callback, task status or persisted PID is
 not running/quiescence proof. Real launch observation creates a drain blocker;
 actual compatible containment terminal/cleanup receipt can discharge only
@@ -83,6 +89,38 @@ settlement, terminal lifecycle and restart cannot discharge it. A genuinely
 settled known-quiescent original adds no unknown blocker; an unclaimed
 recovery alone is not execution, while actual recovery launch has its own
 drain evidence.
+The first successful-return handoff generates its inert sess-UUID proof identity
+inside the original owed writer, even if fresh admission has closed; it allocates
+no session or claim. Registration, preparation and provider launch stay gated.
+After a host FIFO grant, only the SAME task/attempt/request/reservation/host/context
+can carry an observed preclaim refusal through actual terminal-hook completion
+and positive lease retirement. If preparation returned a handle, its actual
+successful abandonment is additionally required. No-handle refusal alone is not
+cleanup failure. Both outer tails and the final writer independently renew all
+current-owner/callback/claim/native-return and positive whole-cleanup checks.
+Failed or uncertain abandonment, terminal work, release or COMMIT, a terminal
+winner, possible launch, changed ownership and existing unknown remain sticky;
+the original error/traceback and bounded actual secondary causes are retained.
+Both original run-step unwind layers distinguish that refusal from cleanup
+failure only after rechecking the same invocation/attempt, committed journal
+proof, current task/callback and claim exclusions, original native return (or
+its separately retained unknown owner), reservation and completed preparation
+obligations. The original final settlement writer keeps recovery_deferred only
+after the whole outer cleanup batch positively settles. Claimed/possible launch,
+changed ownership, existing uncertainty or any real cleanup failure remains
+sticky and suppresses the whole batch; no exception class or purpose grants
+admission. The primary exception/traceback and secondary cleanup evidence remain.
+Genuine deferred discovery carries its authenticated original entry through the
+actual adoption COMMIT to prepared. Repeated clean preclaim refusals retain that
+SAME proof, SIDs, attempt and reservation only after current owner/INTEGER callback/
+claim checks, positive preparation closure and whole outer cleanup; prepared or
+memory-only discovery alone proves nothing. Postcommit admission refusal owes the
+same tail; unknown COMMIT/rollback/registry/cleanup retains uncertainty. Real v2
+publication keeps G plus publication_attempt in transport, authenticating the exact
+closed journal owner projection and current settled notification attempt without
+adding a journal key or discarding foreign metadata. Ordinary redelivery retains
+its existing owner projection. No claim/deadline, winner or separate original
+unknown is reset, and no source inspection supplies behavioral acceptance.
 Passthrough receipts describe absence of containment, not descendant cleanup.
 The original job owner commits its running-only terminal row, one original-trigger
 audit, actual producer observation and this strict Pause entry disposition in one

@@ -379,8 +379,21 @@ The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_P
 `HAPPYRANCH_DAEMON_START_TIMEOUT=<seconds>` to another positive integer for a
 slower host. If the daemon process exits during startup, the command fails
 immediately; process-exit and timeout failures print the last 20 log lines.
-When `curl` is unavailable, the script reports that it is falling back to the
-fresh `daemon.port` file as its readiness signal.
+Curl is required before launch; a PID or port file alone is insufficient.
+Start and status append a startup observation, for example:
+
+```text
+running (pid 12345, port 8765)
+startup serving=yes recovery=recovering launches=held
+```
+
+Start may return while recovery continues. Only `serving=yes recovery=ready
+launches=admitted` reports startup readiness; ordinary authorization still applies.
+Failed, stopping, malformed, missing or unreachable observations keep new work
+held. `happyranch web` can open readable threads while recovering or failed.
+Preserve an alive original process on a held/failed/unknown result; do not
+restart it to manufacture readiness. See the [consumer contract](docs/agent-guides/web-and-cli.md#startup-health-and-finite-thread-api-source--root13137)
+for setup, Mac and separately authorized operator observations.
 
 > **Offline org relocation:** for the founder-operated manual procedure to move
 > an org between runtimes, see

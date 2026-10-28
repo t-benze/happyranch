@@ -151,6 +151,29 @@ def _logical_owner(invocation) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _recovery_owner_metadata_current(store, entry: dict, metadata: dict) -> bool:
+    """Authenticate the closed journal projection and its optional v2 transport.
+
+    Publication attempts belong to the real delivery, never owner_identity.
+    Only that named, current notification fact may extend the exact projection.
+    """
+    owner = entry["owner_identity"]
+    if type(metadata) is not dict:
+        return False
+    if "publication_attempt" not in metadata:
+        return metadata == owner
+    generation = owner.get("authority_v2_generation")
+    attempt = metadata["publication_attempt"]
+    if (set(metadata) != set(owner) | {"publication_attempt"}
+            or {key: metadata[key] for key in owner} != owner
+            or not isinstance(generation, str) or not generation
+            or type(attempt) is not int or attempt < 1):
+        return False
+    notification = store.db.get_authority_policy_v2_recovery_notification(generation)
+    return (notification is not None and notification.state == "settled"
+            and notification.publication_attempt == attempt)
+
+
 def _current(invocation, *, refusal: bool = False) -> bool:
     from runtime.orchestrator.task_pause import fingerprint, eligible
     db = invocation.orch._db
@@ -176,7 +199,7 @@ def _current(invocation, *, refusal: bool = False) -> bool:
                 or task.status != TaskStatus.IN_PROGRESS or task.block_kind is not None
                 or task.assigned_agent != invocation.agent or entry["owner"] != "recovery"
                 or entry["session_id"] != invocation.session_id or entry["fingerprint"] != fingerprint(task)
-                or entry["owner_identity"] != invocation.metadata
+                or not _recovery_owner_metadata_current(store, entry, invocation.metadata)
                 or proof is None or proof["origin_session_id"] != task.current_session_id
                 or proof["recovery_session_id"] != invocation.session_id
                 or len([e for e in row["journal"]["entries"] if e["task_id"] == task.id

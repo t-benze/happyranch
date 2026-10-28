@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
+import { stubReadyHealth } from '@/test/startup';
 
 const SLUG = 'alpha';
 const NOW = Date.parse('2026-10-05T12:00:00Z');
@@ -38,6 +39,7 @@ const SNAPSHOT = {
 };
 
 function stub(mode: { history?: 'rows' | 'empty' | 'error'; live?: 'ok' | 'error' } = {}) {
+  stubReadyHealth();
   const rows =
     mode.history === 'rows'
       ? [1, 2].map((id) => ({

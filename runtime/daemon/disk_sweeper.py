@@ -764,7 +764,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     return report
 
 
-async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
+async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None, validate_admission=None, await_native=None) -> dict:
     """Supervise entire process group, including Git, until stopped/reaped.
 
     SIGKILL at the shared deadline (no deletion grace/window extension).
@@ -772,9 +772,19 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     is not presented as a hard real-time guarantee. No detached worker survives
     ordinary cancellation and the daemon waits for group termination.
     """
+    validate = validate_admission or (lambda: None)
+    validate()
+    async def native_call(function, *args):
+        if await_native is None:
+            return await asyncio.to_thread(function, *args)
+        return await await_native(asyncio.create_task(asyncio.to_thread(function, *args)))
+    def publish_initial(value):
+        validate()
+        atomic_json(summary, value)
     started_monotonic = time.monotonic()
     deadline = started_monotonic + budget
-    revision = await asyncio.to_thread(_revision)
+    revision = await native_call(_revision)
+    validate()
     argv = [sys.executable, '-m', 'runtime.daemon.disk_sweeper', '--worker', '--summary', str(summary), '--deadline', str(deadline), '--started-monotonic', str(started_monotonic), '--revision', revision]
     for root in roots:
         argv += ['--org-root', root]
@@ -806,40 +816,121 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
                 with directory(component, deadline):
                     pass
     if dry_run:
-        await asyncio.to_thread(preview_parents)
-    await asyncio.to_thread(atomic_json, summary, initial)
-    spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-        *argv, start_new_session=True, stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        await native_call(preview_parents)
+    await native_call(publish_initial, initial)
+    validate()
+    async def spawn_admitted():
+        validate()
+        return await asyncio.create_subprocess_exec(
+            *argv, start_new_session=True, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    spawn = asyncio.create_task(spawn_admitted())
     cause = None
-    cancelled = False
+    primary = None
+    primary_traceback = None
+    secondary_errors = []
+    secondary_cancellations = []
+    spawn_errors = []
+
+    def retain_failure(error, context, interruption=None):
+        # Each original join selects its own first event; later phases cannot
+        # replace that exception/traceback or its interruption attribution.
+        nonlocal primary, primary_traceback, cause
+        if error is None:
+            return
+        if primary is None:
+            primary, primary_traceback = error, error.__traceback__
+            if cause is None:
+                cause = interruption
+        else:
+            # Cancellation storms cannot exhaust the evidence for actual
+            # cleanup/publication failures. Both buckets remain bounded.
+            secondaries = (secondary_cancellations if isinstance(error, asyncio.CancelledError)
+                           else secondary_errors)
+            if (error is not primary and len(secondaries) < 8
+                    and not any(error is item for item in secondaries)):
+                secondaries.append(error)
+                primary.add_note(context + repr(error)[:512])
+        if getattr(error, "maintenance_native_unsettled", False):
+            primary.maintenance_native_unsettled = True
+
+    def retain_spawn_error(error):
+        if len(spawn_errors) < 8 and not any(error is item for item in spawn_errors):
+            spawn_errors.append(error)
+
+    from runtime.daemon.startup_recovery import _await_startup_owned
     try:
-        process = await asyncio.shield(spawn)
-    except asyncio.CancelledError:
-        # A cancellation during spawn still obtains and stops the real child;
-        # never lose its handle while it might begin deletion.
-        process = await spawn
-        cause, cancelled = 'shutdown', True
+        process = await _await_startup_owned(spawn, retain_spawn_error)
+    except asyncio.CancelledError as exc:
+        retain_failure(exc, "original disk spawn secondary: ", 'shutdown')
+        native_error = None if not spawn.done() or spawn.cancelled() else spawn.exception()
+        for secondary in (native_error, *spawn_errors):
+            retain_failure(secondary, "original disk spawn secondary: ")
+        # Failed native creation supplies no Process. In particular, do not let
+        # result() replace an earlier cancellation with the later spawn error.
+        if spawn.cancelled() or spawn.exception() is not None:
+            raise primary.with_traceback(primary_traceback)
+        process = spawn.result()
     except Exception as exc:
+        retain_failure(exc, "original disk spawn secondary: ")
+        for secondary in spawn_errors:
+            retain_failure(secondary, "original disk spawn secondary: ")
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            exc.add_note(f"Initial disk summary {summary} published before spawn refusal.")
+            raise
         initial.update(error='worker_spawn:' + type(exc).__name__)
-        await asyncio.to_thread(atomic_json, summary, initial)
+        try:
+            await native_call(atomic_json, summary, initial)
+        except BaseException as secondary:
+            retain_failure(secondary, "disk spawn failure publication secondary: ")
+            raise primary.with_traceback(primary_traceback)
         return initial
     try:
-        if not cancelled:
+        if primary is None:
+            try:
+                validate()
+            except Exception as exc:
+                retain_failure(exc, "disk admission secondary: ", 'startup_admission_closed')
+        if primary is None:
             await asyncio.wait_for(process.wait(), max(.001, deadline - time.monotonic()))
-        if process.returncode:
+        if process.returncode and cause is None:
             cause = f'worker_exit:{process.returncode}'
     except asyncio.TimeoutError:
         cause = 'deadline'
-    except asyncio.CancelledError:
-        cause, cancelled = 'shutdown', True
+    except asyncio.CancelledError as exc:
+        retain_failure(exc, "owned disk wait secondary: ", 'shutdown')
+    except BaseException as exc:
+        retain_failure(exc, "owned disk wait secondary: ")
+        raise
     finally:
         # Reconcile the entire group even if its leader exited first.
+        reap_errors = []
+        def retain_reap_error(error):
+            if len(reap_errors) < 8 and not any(error is item for item in reap_errors):
+                reap_errors.append(error)
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        await process.wait()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            # The process is already owned; stop/reap is independent of readiness.
+            reap = asyncio.create_task(process.wait())
+            try:
+                await _await_startup_owned(reap, retain_reap_error)
+            except asyncio.CancelledError as exc:
+                retain_failure(exc, "owned disk reap secondary: ", 'shutdown')
+            # The joined wait preserves its first cancellation even when the
+            # SAME reap fails. Only its actual successful result proves reap.
+            reap.result()
+            for secondary in reap_errors:
+                retain_failure(secondary, "owned disk reap secondary: ")
+        except BaseException as cleanup:
+            retain_failure(cleanup, f"owned disk worker {process.pid} termination/reap failed: ")
+            primary.maintenance_native_unsettled = True
+            for secondary in reap_errors:
+                retain_failure(secondary, f"owned disk worker {process.pid} termination/reap failed: ")
+            raise primary.with_traceback(primary_traceback)
     def finish():
         try:
             report = _read_json(summary)
@@ -852,11 +943,36 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
             report.update(outcome='incomplete', interruption=cause, partial_mutation='unknown', finished_at=datetime.now().astimezone().isoformat())
         atomic_json(summary, report)
         return report
-    report = await asyncio.to_thread(finish)
-    if cancelled:
-        error = asyncio.CancelledError()
-        error.disk_sweep_report = report
-        raise error
+    finish_worker = asyncio.create_task(asyncio.to_thread(finish))
+    report_errors = []
+
+    def retain_report_error(error):
+        if len(report_errors) < 8 and not any(error is item for item in report_errors):
+            report_errors.append(error)
+
+    try:
+        # This SAME actual completion owns native publication; the maintenance
+        # registry remains additional ownership when the daemon supplied it.
+        report = await (await_native(finish_worker) if await_native is not None
+                        else _await_startup_owned(finish_worker, retain_report_error))
+    except BaseException as exc:
+        retain_failure(exc, "owned disk report secondary: ",
+                       'shutdown' if isinstance(exc, asyncio.CancelledError) else None)
+        native_error = (None if not finish_worker.done() or finish_worker.cancelled()
+                        else finish_worker.exception())
+        for secondary in (native_error, *report_errors):
+            retain_failure(secondary, "owned disk report secondary: ")
+        if (not finish_worker.done() or finish_worker.cancelled()
+                or finish_worker.exception() is not None):
+            # No report is fabricated on failed/cancelled native completion.
+            if not finish_worker.done() or finish_worker.cancelled():
+                primary.maintenance_native_unsettled = True
+            raise primary.with_traceback(primary_traceback)
+        report = finish_worker.result()
+    if primary is not None:
+        primary.disk_sweep_report = report
+        primary.add_note(f"Owned disk worker {process.pid} stopped/reaped; retain original report {summary}.")
+        raise primary.with_traceback(primary_traceback)
     return report
 
 
@@ -915,13 +1031,44 @@ def _scheduled_admission(deadline: float) -> dict:
         return dict(admission, error=f'{type(exc).__name__}: {exc}')
 
 
-async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
+async def _run_scheduled_worker(state, summary: Path, date: str, *, validate_admission=None) -> dict:
+    from runtime.daemon.startup_recovery import maintenance_admission_validation
+    validate = validate_admission or maintenance_admission_validation(state)
+    validate()
+    task = asyncio.current_task()
+    registered = task not in state._maintenance_workers
+    state._maintenance_workers.add(task)
+    effects = []
+    native_unsettled = False
+    try:
+        return await _run_scheduled_worker_owned(state, summary, date, validate, effects)
+    except BaseException as exc:
+        native_unsettled = getattr(exc, "maintenance_native_unsettled", False)
+        exc.add_note(f"Disk scheduled date={date}; original committed/uncertain scope={effects!r}; no marker rollback/retry.")
+        raise
+    finally:
+        if registered and not native_unsettled:
+            state._maintenance_workers.remove(task)
+
+
+async def _run_scheduled_worker_owned(state, summary, date, validate, effects):
     from runtime.orchestrator.producer_move import native_writer
+    from runtime.daemon.startup_recovery import ordinary_admission_validation
+    async def native_call(function, *args):
+        return await state._await_maintenance_worker(asyncio.create_task(asyncio.to_thread(function, *args)))
+    def observe_control(deadline):
+        validate()
+        return _scheduled_admission(deadline)
+    def initial_report(report):
+        validate()
+        atomic_json(summary, report)
+        effects.append({"summary": str(summary)})
     from runtime.orchestrator.team_move import DeferredTeamMove
     started = time.monotonic()
     started_at = datetime.now().astimezone().isoformat()
     deadline = started + BUDGET_SECONDS
-    admission = await asyncio.to_thread(_scheduled_admission, deadline)
+    admission = await native_call(observe_control, deadline)
+    validate()
     report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=started_at, deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
@@ -935,7 +1082,7 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     # An unsafe target/pending inode must refuse while all orgs are unstarted.
     # Worker checkpoints still publish independently; a later failure retains
     # genuine reservation uncertainty rather than claiming this check fences it.
-    await asyncio.to_thread(atomic_json, summary, report)
+    await native_call(initial_report, report)
     if admission['state'] == 'suspended':
         return report
     # Reservations span filesystem/process work; their short gate/transaction
@@ -943,12 +1090,18 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     with ExitStack() as stack:
         roots, writers, dispositions, deferred = [], {}, {}, {}
         for slug, org in sorted(state.orgs.items()):
+            validate()
+            validate_org = ordinary_admission_validation(org)
+            def validate_selected():
+                validate()
+                validate_org()
             check(deadline)
             try:
-                disposition = stack.enter_context(native_writer(org.db, publisher='disk_sweep'))
+                disposition = stack.enter_context(native_writer(org.db, publisher='disk_sweep', validate_admission=validate_selected))
             except DeferredTeamMove as exc:
                 deferred[slug] = exc.code
                 continue
+            effects.append({"org": slug, "writer_id": disposition.writer_id})
             root = str(org.root)
             roots.append(root)
             dispositions[slug] = disposition
@@ -959,12 +1112,14 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
         for disposition in dispositions.values():
             disposition.uncertain = True
         check(deadline)
+        validate()
         report = await run_worker(roots, summary, dry_run=False, scheduled_date=date,
-                                  native_writers=writers, budget=deadline - time.monotonic())
+                                  native_writers=writers, budget=deadline - time.monotonic(),
+                                  validate_admission=validate, await_native=state._await_maintenance_worker)
         report['scheduled_admission'] = admission
         if deferred:
             report.update(outcome='incomplete', move_deferred_orgs=deferred)
-        await asyncio.to_thread(atomic_json, summary, report)
+        await native_call(atomic_json, summary, report)
         for slug, disposition in dispositions.items():
             items = [item for item in report.get('orgs', []) if item.get('org') == slug]
             if (len(items) == 1
@@ -997,15 +1152,29 @@ def next_night(now: datetime) -> datetime:
 
 async def disk_sweeper_loop(state) -> None:
     from runtime.runtime import daemon_home
+    from runtime.daemon.startup_recovery import (
+        maintenance_admission_validation, maintenance_service_validation, maintenance_runtime_replaced,
+        StartupUnavailable,
+    )
+    validate_service = maintenance_service_validation(state)
+    async def native_call(function, *args):
+        return await state._await_maintenance_worker(asyncio.create_task(asyncio.to_thread(function, *args)))
     while True:
+        validate_service()
         due = next_night(datetime.now().astimezone())
         await asyncio.sleep(max(0, due.timestamp() - time.time()))
+        validate_service()
+        runtime = state.runtime
+        validate = maintenance_admission_validation(state)
         if state.runtime is None:
             continue
         data = daemon_home() / 'disk-sweep'
         marker = data / 'last-scheduled.json'
         date = due.date().isoformat()
+        marker_committed = False
         def reserve():
+            nonlocal marker_committed
+            validate()
             # Mark BEFORE launching. An interrupted night's partial run is not
             # retried after restart. Corrupt metadata refuses, never duplicates.
             # Validate literal parents BEFORE interpreting final-file ENOENT.
@@ -1023,15 +1192,25 @@ async def disk_sweeper_loop(state) -> None:
                     raise ValueError('invalid disk sweep date metadata')
                 if old['scheduled_date'] >= date:
                     return False
+            validate()
             atomic_json(marker, {'scheduled_date': date})
+            marker_committed = True
             return True
+        operation = asyncio.current_task()
+        state._maintenance_workers.add(operation)
+        native_unsettled = False
         try:
-            if not await asyncio.to_thread(reserve):
+            if not await native_call(reserve):
                 continue
             summary = data / f'{date}.json'
+            try:
+                validate()
+            except StartupUnavailable as exc:
+                exc.add_note(f"Disk date marker {marker} reserved for {date}; no automatic same-night retry.")
+                raise
             cancelled = None
             try:
-                report = await _run_scheduled_worker(state, summary, date)
+                report = await _run_scheduled_worker(state, summary, date, validate_admission=validate)
             except asyncio.CancelledError as exc:
                 report = getattr(exc, 'disk_sweep_report', None)
                 if report is None:
@@ -1041,19 +1220,34 @@ async def disk_sweeper_loop(state) -> None:
                 report.update(unloaded_orgs_unknown=sorted(state.broken_orgs))
                 if report.get('outcome') != 'suspended':
                     report['outcome'] = 'incomplete'
-                await asyncio.to_thread(atomic_json, summary, report)
+                await native_call(atomic_json, summary, report)
             # Existing audit interface and row shape, one summary per swept org.
             # No notification interface suitable for a disk alert exists here;
             # below-20% context is carried in this audit/JSON, as approved.
             for slug, org in sorted(state.orgs.items()):
                 item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
-                await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
+                await native_call(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
             if cancelled is not None:
                 raise cancelled
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+        except BaseException as exc:
+            if marker_committed:
+                exc.add_note(f"Original disk date marker {marker} committed for {date}; no same-night retry.")
+            native_unsettled = getattr(exc, "maintenance_native_unsettled", False)
+            if isinstance(exc, StartupUnavailable):
+                if not maintenance_runtime_replaced(state, runtime, validate_service, exc):
+                    raise
+                LOG.warning("Disk selected runtime retired; no same-night retry: %s", exc)
+                continue
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            if not isinstance(exc, Exception):
+                raise
             LOG.exception('Disk sweep incomplete; no same-night automatic retry')
+            if native_unsettled:
+                raise
+        finally:
+            if not native_unsettled:
+                state._maintenance_workers.remove(operation)
 
 
 def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:

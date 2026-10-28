@@ -1,5 +1,71 @@
 # Jobs — Design Spec
 
+## Startup admission source — ROOT13137 / THR308seq173/174/175
+
+Ordinary job submission, core/reservation, runner registration, output/scratch
+preparation, final native spawn and terminal-resume production now check the
+SAME daemon startup gate. Checks precede allocation and repeat after awaited
+locks; recovering/failed/stopping admission raises StartupUnavailable without
+inventing FAILED, a move deferral or successful no-op. Actual original state,
+org/DB/orchestrator, epoch, request loop and resolver must agree. Early reference
+attachment closes anonymous lower run_job admission even before P4; P4 binds
+and reads back its SAME gate/loop/resolver without I/O. Ready-only dynamic org
+attachment inherits these references before exposure. Explicit standalone
+construction keeps its offline contract; missing production attachment refuses.
+
+Selected native-writer reservation carries the original callback through BEGIN
+and successful COMMIT before live publication/body entry. Coding settings forwards
+its selected validator; direct-connect/ProfileCoordinator keeps its existing
+forwarding and profile fences. Postcommit refusal settles only the proven exact
+committed no-effect reservation; failed settlement retains its durable owner and
+primary/secondary evidence. Default document/profile/settlement/compensation
+writers stay ungated. Source only; behavior/proof NOT RUN, no activation follows.
+
+Fresh thread and producer reservations retain their original org/DB, daemon gate,
+epoch, reference selection and loop across move/DB/ctx waits. Their selected
+writers renew after BEGIN before the first claim/journal write, and reservation
+publication renews after COMMIT before the live registry. Closure there settles
+the same durable no-launch reservation; failed settlement retains its exact owner.
+Commitment and final passthrough/self-launch renew that SAME selection, including
+an already-open attempt. Original typed admission refusals remain unavailable/
+deferred with pending history, not fabricated execution or cleanup failures.
+Terminal, on_started, failed attribution, finish and native/DB cleanup keep their
+ungated default writers; real failed/unknown cleanup remains sticky. Explicit
+standalone defaults and original Pause/move/authority controls remain.
+
+A final-admitted asynchronous spawn retains its original Task/registration and
+native attempt until actual creation is observed, even if its waiter is cancelled.
+The observed Process immediately enters exception cleanup custody before fallible
+registration validation, scratch reset, on_started accounting, stdin and partial
+pump setup. Ordinary errors and saved cancellation both join identity-validated
+stop/reap/output settlement; repeated cancellation cannot retire that same cleanup
+Task. Earlier cancellation keeps its original object/traceback with bounded real
+secondary errors. Refused/failed cleanup retains explicit native uncertainty and
+the original registration/native-user DB barrier, with no terminal execution
+classification or safe pre-launch deferral. Standalone callers owe their same
+actual Process and output tasks proportionately. Closure during
+creation suppresses script input and requests original owned termination/reap;
+cancellation retains its original primary object/traceback and bounded real
+secondary errors, including later spawn OSError and repeated-cancel/done races.
+An already observed native failure keeps precedence. A failed spawn supplies no
+Process; a successful spawn after cancellation is captured and stopped/reaped.
+Post-creation admission renews the original matching listener before script input;
+listener loss still permits independently owed identity-only cleanup.
+The registration also occupies the org's existing native-user close barrier through its committed
+postcommit tail, or remains retained on uncertainty. Signals, output pumps,
+terminal CAS/first cause, registration release and native cleanup use identity
+validation independently of fresh admission. No closed gate proves quiescence.
+
+Job-terminal notification refusal is separate from execution/terminal COMMIT;
+original durable blocked-waiter intent and terminal evidence remain. Deferred
+native callbacks are removed only after real registration and renewed admission.
+Ordinary Pause pending-job rediscovery propagates startup refusal before release
+acknowledgement/cursor advancement. Native P6 discovery remains unchanged and
+holds pending jobs without launching. No new deferred queue or recovery exception.
+This named job SOURCE stage leaves whole-feature integration and final independent
+review/same-head behavioral QA with ROOT13137; runtime/proof NOT RUN, maker0/3
+QA0/3 unchanged, under10s UNVERIFIED. No partial merge or activation follows.
+
 ## Automatic job admission — THR309seq1
 
 Obtain any required content authorization in an existing thread BEFORE job

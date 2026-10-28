@@ -199,6 +199,12 @@ class _CleanupDiagnostics:
         """Schedule once; called only by the real successful Server adapter."""
         if self.signalled or self.revoked or app is not self.app or app.state.daemon is not self.state:
             return
+        recovery = self.state._startup_recovery
+        if recovery is None:
+            return
+        startup = recovery.snapshot()
+        if not startup["serving"] or not startup["recovery_ready"] or startup["stopping"]:
+            return
         self.signalled = True
         self.budget = _CleanupReadBudget(deadline=time.monotonic() + 3.0)
         coroutine = self._run()

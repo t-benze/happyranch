@@ -16,6 +16,13 @@ injected content.
 """
 from __future__ import annotations
 
+import time
+
+# Earliest module-body marker: Python and runtime/daemon package startup excluded.
+_MODULE_ENTRY_NS = time.monotonic_ns()
+from runtime.infrastructure.startup_observation import BootObservation, observed, observation_time_ns
+_BOOT_OBSERVATION = BootObservation(_MODULE_ENTRY_NS)
+
 import argparse
 import logging
 import os
@@ -24,6 +31,11 @@ import socket
 import sys
 from datetime import datetime, timezone
 from types import FrameType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.daemon.org_state import OrgState
 
 import uvicorn
 
@@ -44,6 +56,8 @@ from runtime.orchestrator.orchestrator import (
 )
 from runtime.runtime import RuntimeDir
 
+_BOOT_OBSERVATION.record_interval("imports", _MODULE_ENTRY_NS, time.monotonic_ns())
+
 logger = logging.getLogger("happyranch.daemon")
 
 
@@ -60,15 +74,22 @@ def _sweep_enqueue(
     there is no durable classifier to consult and the unchanged ordinary enqueue
     is preserved.
     """
+    publication = None
+    if orchestrator is not None and orchestrator._startup_state is not None:
+        from runtime.daemon.startup_publication import _TaskPublication
+        from runtime.orchestrator.run_step import _startup_sweep_owner
+        publication = _TaskPublication(orchestrator._startup_recovery, orchestrator,
+            task_id, "sweep", sweep_owner=_startup_sweep_owner(orchestrator))
+    kwargs = {"_publication": publication} if publication is not None else {}
     def publish() -> None:
         if orchestrator is None:
             queue.enqueue(slug, task_id)
             return
         from runtime.orchestrator.authority import enqueue_task_generation_aware
-        enqueue_task_generation_aware(orchestrator, queue, slug, task_id)
+        enqueue_task_generation_aware(orchestrator, queue, slug, task_id, **kwargs)
 
     if pending_once:
-        queue.enqueue_if_absent(slug, task_id, publisher=publish)
+        queue.enqueue_if_absent(slug, task_id, publisher=publish, **kwargs)
     else:
         publish()
 
@@ -82,6 +103,185 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
         except Exception:
             # A held source remains durable; it is never coerced or relaunched.
             logging.getLogger(__name__).exception('completed workflow handoff remains pending for %s', org.slug)
+
+
+def discover_completed_workflow_handoffs_native(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """P3 completed-document coordinator, called once by the native boot owner.
+
+    The caller owes P2 and original v2 generation publication first. This entry
+    owns only the workflows phase and never binds queues or releases readiness.
+    The original native lifecycle invokes it once after all org sweeps.
+    """
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError('startup_workflow_state_owner_unavailable')
+    held = False
+    # phase() reserves before discovery, forbids repeat invocation in this epoch
+    # and records the first original BaseException instead of logging success.
+    with recovery.phase('workflows') as settle:
+        state._assert_attachments_unchanged(recovery._attachments)
+        for org in state.orgs.values():
+            recovery.require_workflow_owner(org)
+            # Invoke each existing selection once, in its original order. Read
+            # outcomes immediately: tuple construction would run later producers
+            # even after an earlier unknown/negative result.
+            discoveries = (
+                lambda: org.workflow_submissions.discover_completed_handoffs_native(state.queue, recovery),
+                lambda: org.workflow_revisions.discover_native(state.queue, recovery),
+                lambda: org.workflow_review_receipts.discover_completed_native(recovery),
+                lambda: org.workflow_review_receipts.discover_collections_native(recovery),
+            )
+            for index, discover in enumerate(discoveries):
+                recovery.require_workflow_owner(org)
+                outcome = discover()
+                if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+                    code = outcome.code if isinstance(outcome, RecoveryOutcome) else None
+                    raise RuntimeError(code or 'startup_workflow_outcome_unavailable')
+                held |= outcome.disposition == 'local_hold'
+                recovery.require_workflow_owner(org)
+                if index == 0 and outcome.code == 'startup_handoff_family_absent':
+                    # Preserve the original entry's absent-H early return.
+                    # P0 already validated the complete optional-family layout.
+                    break
+        state._assert_attachments_unchanged(recovery._attachments)
+        outcome = RecoveryOutcome('local_hold' if held else 'settled')
+        settle(outcome)
+    return outcome
+
+
+def bind_returned_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """Own P4 once: positively bind the real loop, then notify actual returns.
+
+    The original lifecycle calls this entry once; dynamic attachment owns
+    its separate explicit return obligation after the same gate is ready.
+    """
+    from runtime.daemon.startup_recovery import StartupRecovery
+    from runtime.workflows.recovery import rediscover_returned
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_returned_state_owner_unavailable")
+    with recovery.phase("returned") as settle:
+        recovery.bind_returned_references()
+        for org in state.orgs.values():
+            recovery.require_returned_owner(org)
+            coding = getattr(org.orchestrator, "_workflow_coding_dispatch", None)
+            if coding is None:
+                recovery.count_phase("returned", "coding_absent")
+            else:
+                if coding.org is not org or coding.db is not org.db:
+                    raise RuntimeError("startup_returned_dispatcher_changed")
+                # notify_returned already owns its per-selection observer and
+                # drains outside DB/marker locks; do not nest that observer.
+                with recovery.publications(org.orchestrator):
+                    rediscover_returned(coding)
+            recovery.require_returned_owner(org)
+            recovery.count_phase("returned", "orgs_observed")
+        outcome = recovery.publication_outcome()
+        settle(outcome)
+    return outcome
+
+
+def compatibility_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """Own P5 once using exactly the shared legacy compatibility bodies."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.daemon.app import recover_startup_compatibility
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_compatibility_state_owner_unavailable")
+    with recovery.phase("compatibility") as settle:
+        recovery.require_compatibility_owner()
+        outcome = recover_startup_compatibility(state, recovery=recovery)
+        if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+            raise RuntimeError("startup_compatibility_outcome_unavailable")
+        recovery.require_compatibility_owner()
+        settle(outcome)
+    return outcome
+
+
+def recover_producers_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """Own P7 once after P5/P6; no scheduler, consumer or job is started."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.daemon.app import recover_startup_dreams, recover_startup_wakes, recover_startup_schedules
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_producers_state_owner_unavailable")
+    held = False
+    with recovery.phase("producers") as settle:
+        # Each family retains its original all-org order and actual store;
+        # inspect its result BEFORE invoking the next original family.
+        for recover in (recover_startup_dreams, recover_startup_wakes, recover_startup_schedules):
+            recovery.require_producers_owner()
+            result = recover(state, recovery=recovery)
+            if not isinstance(result, RecoveryOutcome) or not result.positive:
+                raise RuntimeError("startup_producers_outcome_unavailable")
+            held |= result.disposition == "local_hold"
+            recovery.require_producers_owner()
+        outcome = RecoveryOutcome("local_hold" if held else "settled")
+        settle(outcome)
+    return outcome
+
+
+def redeliver_native_on_startup(state: DaemonState, recovery: StartupRecovery) -> RecoveryOutcome:
+    """One callable P6 seam, after P4 actual-loop binding and P5 compatibility.
+
+    The original lifecycle calls this entry once. It neither binds references
+    nor activates consumers, and ordinary post-ready producers stay separate.
+    """
+    from runtime.daemon.startup_recovery import RecoveryOutcome, StartupRecovery
+    from runtime.orchestrator.run_step import _maybe_resume_blocked_task, _StartupSweepOutcome
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    from runtime.orchestrator.team_move_operation import TeamMoveOperation
+    from runtime.orchestrator.task_pause import discover_pause_work_native
+    from runtime.daemon.thread_queue import ThreadJob
+    if not isinstance(recovery, StartupRecovery) or state is not recovery.state:
+        raise RuntimeError("startup_redelivery_state_owner_unavailable")
+    held = False
+    with recovery.phase("redelivery") as settle:
+        state._assert_attachments_unchanged(recovery._attachments)
+        # Retain original all-org blocked -> move -> Pause -> token order.
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with recovery.publications(org.orchestrator):
+                for task_id in org.db.list_tasks_blocked_on_jobs():
+                    _maybe_resume_blocked_task(org.orchestrator, task_id,
+                        trigger="startup_recovery", triggering_job_id=None)
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with org.db._lock:
+                installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
+                completed_move = installed and org.db._conn.execute(
+                    "SELECT 1 FROM team_move_operations WHERE phase='complete' LIMIT 1"
+                ).fetchone() is not None
+            if completed_move:
+                if state.profile_coordinator is None:
+                    raise RuntimeError("startup_move_profile_owner_unavailable")
+                with recovery.publications(org.orchestrator):
+                    TeamMoveOperation(org, state.profile_coordinator).redeliver_native(recovery)
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with recovery.publications(org.orchestrator):
+                outcome = discover_pause_work_native(org, state.queue, recovery)
+                if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+                    raise RuntimeError("startup_pause_outcome_unavailable")
+                held |= outcome.disposition == "local_hold"
+        for org in state.orgs.values():
+            recovery.require_redelivery_owner(org)
+            with recovery.publications(org.orchestrator) as publication:
+                # Missing P2 completion is not an empty successful token set.
+                tokens = getattr(org, "_startup_recovered_thread_tokens", None)
+                if (not isinstance(tokens, _StartupSweepOutcome)
+                        or tokens.disposition not in ("settled", "local_hold")
+                        or tokens.first_cause is not None or tuple(tokens) != tokens.tokens
+                        or any(type(token) is not str or not token for token in tokens)):
+                    raise RuntimeError("startup_recovered_thread_tokens_unavailable")
+                for token in tokens:
+                    publication.make_room(org.orchestrator)
+                    publication.submit_thread(org.orchestrator, org.thread_queue,
+                        recovery._loop, ThreadJob(org_slug=org.slug, invocation_token=token))
+            recovery.require_redelivery_owner(org)
+        state._assert_attachments_unchanged(recovery._attachments)
+        outcome = recovery.publication_outcome()
+        if held and outcome.disposition == "settled":
+            outcome = RecoveryOutcome("local_hold")
+        settle(outcome)
+    return outcome
 
 
 def _sweep_on_startup(
@@ -135,14 +335,21 @@ def _sweep_on_startup(
     the caller enqueues them once the event loop is live.
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
-    from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
+    from runtime.orchestrator.run_step import (
+        _capture_root_worktree_transition,
+        _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS,
+        _StartupSweepOwner,
+    )
     from runtime.infrastructure.db.authority_v2_attempts import _V2StartupConnectionUnsafe
     root_transitions = _RootWorktreeTransitions()
-    root_tail_failed = False
-    startup_unsafe = None
-    root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
+    root_owner = _StartupSweepOwner(orchestrator, root_transitions)
+    root_delivery = root_owner.delivery
+    recovery_gate = getattr(orchestrator, '_startup_recovery', None)
+    if recovery_gate is not None:
+        recovery_gate.retain_sweep(root_owner)
     root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
+        root_owner.check()
         # A full sweep may commit in Pause/workflow/thread/batch consumers.
         # Reject caller-owned or unknown connections before reaching any of
         # them; this entry observation never settles or repairs caller work.
@@ -177,6 +384,12 @@ def _sweep_on_startup(
             db, orchestrator=orchestrator,
         )
         v2_discovery_unavailable = v2_pre_final_roots is None
+        if v2_discovery_unavailable:
+            # This normal-return negative is NOT an empty successful scan.
+            # Retain the source-local branch fences; the owner cannot activate
+            # or attempt a final cleanup batch on this observation.
+            root_owner.negative('startup_v2_discovery_unavailable')
+            root_owner.raise_if_failed()
 
         # Accepted recovery callbacks whose effects committed just before a crash
         # may now be terminal.  Include only the ledger's exact current-owner
@@ -197,6 +410,7 @@ def _sweep_on_startup(
             *db.get_nonterminal_task_ids(),
         ])
         for task_id in task_ids:
+            root_owner.check()
             t = db.get_task(task_id)
             if t is None:
                 continue
@@ -204,9 +418,11 @@ def _sweep_on_startup(
             if pause_deferred_owner(db, task_id):
                 continue
             from runtime.workflows.recovery import recover_owned_task
-            if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
+            if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator,
+                                  startup_owner=root_owner):
                 continue
             if v2_discovery_unavailable or task_id in v2_pre_final_roots:
+                root_owner.local_hold()
                 continue
 
             # A completed leaf receipt can commit immediately before its ordinary
@@ -215,7 +431,12 @@ def _sweep_on_startup(
             # a persisted PID; terminal-child handling below reconstructs its wake.
             selected_owner = selected_recovery_owners.get(task_id)
             if selected_owner is not None and orchestrator is not None:
-                if t.task_type == "subtask" and selected_owner["status"] == TaskStatus.FAILED.value:
+                try:
+                    human_recovery = orchestrator.teams.manager_for_team(t.team).kind == 'human'
+                except KeyError:
+                    human_recovery = False
+                if (human_recovery and t.task_type == "subtask"
+                        and selected_owner["status"] == TaskStatus.FAILED.value):
                     from runtime.orchestrator.run_step import _submit_human_failed_recovery
                     _submit_human_failed_recovery(orchestrator, task_id, selected_owner["agent"],
                         selected_owner["recovery_session_id"], selected_owner["accepted_result_id"])
@@ -367,11 +588,16 @@ def _sweep_on_startup(
                     # never ran (the daemon died before that point).
                     orchestrator._audit.log_completion_report(report=orphaned_report)
                     from runtime.orchestrator.run_step import _consume_completion_report
-                    _consume_completion_report(
+                    outcome = _consume_completion_report(
                         orchestrator, task_id, orphaned_report,
                         result_row_id=orphaned_result_row.get("id"),
                         reclaim_terminal_worktree=False,
                     )
+                    if isinstance(outcome, str):
+                        # This is a selected human consumer's normal negative,
+                        # not pre-selection non-applicability or empty success.
+                        root_owner.negative('startup_completion_negative_outcome')
+                    root_owner.raise_if_failed()
                     continue
 
                 # Dead or undeterminable (no orphaned result to consume):
@@ -448,6 +674,7 @@ def _sweep_on_startup(
             # The boot-time migration flips any legacy blocked(escalated) row
             # before startup; this branch is reached only via new escalated rows.
 
+        root_owner.check()
         # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
         # Replace ONLY the conversational REPLY portion of the generic reaper with
         # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
@@ -521,100 +748,180 @@ def _sweep_on_startup(
         )
         if move is not None:
             recovered_tokens.extend(move.threads.runnable_tokens())
-        return list(dict.fromkeys(recovered_tokens))
+        recovered_tokens = list(dict.fromkeys(recovered_tokens))
     except _V2StartupConnectionUnsafe as exc:
-        startup_unsafe = exc
-        root_tail_failed = True
         # Keep an original interrupt/SystemExit as a BaseException, with the
         # unsafe disposition chained and the finally suppression already set.
         for cause in exc.causes:
             if not isinstance(cause, Exception):
+                root_owner.fail(cause)
                 raise cause from exc
+        root_owner.fail(exc)
         raise
-    except BaseException:
-        root_tail_failed = True
+    except BaseException as exc:
+        root_owner.fail(exc)
         raise
     finally:
-        root_delivery['active'] = False
-        if startup_unsafe is not None:
-            # In-memory reset only. teardown_incomplete still permits DB work
-            # in the normal batch, so skip that ENTIRE batch on this path.
-            # A secondary reset/logging failure cannot hide the unsafe cause.
+        # The owner remains registered through actual tail exit, every cold
+        # human completion/bookkeeping result, context reset and ONE genuine
+        # final batch. Failure/stop suppresses the whole batch, including late
+        # transitions. A failed join/reset/attempt retains native ownership.
+        root_owner.finalize(root_token)
+        if recovery_gate is not None:
             try:
-                _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+                recovery_gate.settle_sweep(root_owner)
             except BaseException as exc:
-                startup_unsafe.causes = (*startup_unsafe.causes, exc)
-            try:
-                logger.error("startup aborted: connection unsafe; worktree cleanup incomplete")
-            except BaseException as exc:
-                startup_unsafe.causes = (*startup_unsafe.causes, exc)
-        else:
-            _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-            _root_worktree_batch(orchestrator, root_transitions,
-                teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
+                root_owner.fail(exc)
+        root_owner.raise_if_failed()
+    return root_owner.outcome(recovered_tokens)
 
 
-def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
-    """THR-229 checkpoint C3d4b startup publication discovery (every root).
+def _publish_v2_generations_on_startup(org: OrgState, queue: TaskQueue) -> RecoveryOutcome:
+    """Consume actual publisher values; opaque transaction failures are unknown.
 
-    After the startup sweep and the real owner bindings, independently discover
-    and publish every pending v2 continuation generation for this org through
-    the EXISTING authenticated publisher (real claim -> raw tagged queue put ->
-    exact acknowledgement).  ``limit=None`` guarantees coverage for every
-    eligible root rather than the first 32 targets.
-
-    This admits and launches NOTHING: only the tagged generation claim at
-    dequeue can admit, and a same-boot unexpired lease is never stolen, so a
-    generation already published by the sweep's accepted-recovery path is not
-    duplicated.  Publishing is liveness bookkeeping; a failure to publish leaves
-    the durable pending pointer intact and is retried on the next startup.
+    The original publisher retains complete discovery/order, receipts and
+    per-target isolation. No additional query infers safety after a failure.
     """
-    orchestrator = getattr(org, "orchestrator", None)
-    if orchestrator is None or queue is None:
-        return
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    from runtime.models import (AuthorityPolicyV2PublicationTarget,
+        AuthorityPolicyV2PublicationClaimOutcome, AuthorityPolicyV2PublicationAckOutcome,
+        AuthorityPolicyV2PublicationFailureOutcome)
     from runtime.orchestrator.authority import publish_authority_policy_v2_notifications
-    try:
-        publish_authority_policy_v2_notifications(orchestrator, queue, limit=None)
-    except Exception:
-        logger.exception(
-            "startup v2 generation publication failed for org %s", org.slug,
-        )
+    held = False
+    first = None
+    observed = False
 
-
-def _build_state(settings: Settings) -> DaemonState:
-    reg = runtimes.load()
-    move_diagnostics = {}
-    if reg.active is None:
-        # Auto-provision a default runtime on first launch so the daemon
-        # never starts idle unless the provisioning itself fails.
-        # Precedence:
-        #   1. Registered runtimes exist but none active → activate the first.
-        #   2. Registry empty → create a default runtime at daemon_home/runtime.
-        if reg.registered:
-            target = reg.registered[0]
-            logger.info("no active runtime — activating existing registered runtime: %s", target)
-            move_diagnostics.update(runtimes.activate(target))
+    def observe(stage: str, value: object, cause: BaseException | None) -> None:
+        nonlocal held, first, observed
+        if stage == "discovery":
+            observed = True
+            positive = (cause is None and type(value) is list
+                        and all(type(item) is AuthorityPolicyV2PublicationTarget for item in value))
+        elif stage == "claim":
+            positive = type(value) is AuthorityPolicyV2PublicationClaimOutcome and (
+                value.status == "claimed" or (value.status == "publication_pending" and value.reason in
+                {"identity_mismatch", "evidence_drift", "owner_lost", "lease_live", "attempt_overflow", "not_publishable"}))
+            held |= positive and value.status == "publication_pending"
+        elif stage == "ack":
+            positive = type(value) is AuthorityPolicyV2PublicationAckOutcome and (
+                value.status in {"published", "publish_returned"} or (value.status == "ack_pending" and value.reason in
+                {"identity_mismatch", "evidence_drift", "stale_claim", "admission_evidence_missing"}))
+            held |= positive and value.status == "ack_pending"
+        elif stage == "failure":
+            # Only genuine successful audited queue-failure bookkeeping proves
+            # an attributable pending hold. Opaque rollback/COMMIT loss refuses.
+            positive = (type(value) is AuthorityPolicyV2PublicationFailureOutcome
+                        and value.status == "failure_recorded")
+            held |= positive
         else:
-            default_path = paths.daemon_home() / "runtime"
-            logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
-            RuntimeDir.init(default_path)
-            move_diagnostics.update(runtimes.register(default_path))
+            positive = False
+        if not positive:
+            if first is None:
+                first = cause if cause is not None else RuntimeError("startup_v2_" + stage + "_outcome_unknown")
+            # Known target-local holds retain the original isolation. Unknown
+            # connection/rollback/COMMIT safety forbids further writer use.
+            raise first
+
+    if getattr(org, "orchestrator", None) is None or queue is None:
+        raise RuntimeError("startup_v2_owner_unavailable")
+    try:
+        receipts = publish_authority_policy_v2_notifications(org.orchestrator, queue,
+            limit=None, startup_observer=observe, _startup_recovery=org._startup_recovery)
+    except BaseException as exc:
+        if first is not None and first is not exc:
+            first.add_note("v2 publication also raised: " + type(exc).__name__)
+            raise first from exc
+        raise
+    if first is not None:
+        raise first
+    if not observed or type(receipts) is not list:
+        raise RuntimeError("startup_v2_discovery_unobserved")
+    return RecoveryOutcome("local_hold" if held else "settled", "startup_v2_publication_observed")
+
+
+def recover_startup_native(recovery: StartupRecovery) -> RecoveryOutcome:
+    """ONE P2-P7 operation; no asyncio loop exists on this native thread."""
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    from runtime.orchestrator.run_step import _StartupSweepOutcome
+    state = recovery.state
+    held = False
+    with recovery.phase("sweep") as settle:
+        state._assert_attachments_unchanged(recovery._attachments)
+        for org in state.orgs.values():
+            recovery.require_native_owner()
+            state._assert_attachments_unchanged(recovery._attachments)
+            tokens = _sweep_on_startup(org.db, state.queue, org.slug, org.orchestrator)
+            if (not isinstance(tokens, _StartupSweepOutcome)
+                    or tokens.disposition not in ("settled", "local_hold")
+                    or tokens.first_cause is not None or tuple(tokens) != tokens.tokens
+                    or any(type(token) is not str or not token for token in tokens)
+                    or type(tokens.counters) is not dict
+                    or any(type(value) is not int or value < 0 for value in tokens.counters.values())
+                    or tokens.counters.get("tails_started") != tokens.counters.get("tails_settled")
+                    or tokens.counters.get("effects_started") != tokens.counters.get("effects_settled")
+                    or tokens.counters.get("human_started") != tokens.counters.get("human_done")
+                    or tokens.counters.get("negative") != 0):
+                raise RuntimeError("startup_sweep_outcome_unavailable")
+            org._startup_recovered_thread_tokens = tokens
+            held |= tokens.disposition == "local_hold"
+            recovery.require_native_owner()
+            state._assert_attachments_unchanged(recovery._attachments)
+            outcome = _publish_v2_generations_on_startup(org, state.queue)
+            if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+                raise RuntimeError("startup_v2_outcome_unavailable")
+            held |= outcome.disposition == "local_hold"
+        settle(RecoveryOutcome("local_hold" if held else "settled"))
+    # Each entry reserves/settles its OWN phase. Consume before the next call.
+    for operation in (discover_completed_workflow_handoffs_native,
+                      bind_returned_native_on_startup, compatibility_native_on_startup,
+                      redeliver_native_on_startup, recover_producers_native_on_startup):
+        recovery.require_native_owner()
+        outcome = operation(state, recovery)
+        if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
+            raise RuntimeError("startup_phase_outcome_unavailable")
+        held |= outcome.disposition == "local_hold"
+    return RecoveryOutcome("local_hold" if held else "settled")
+
+
+def _build_state(settings: Settings, *, observation: BootObservation | None = None) -> DaemonState:
+    with observed(observation, "runtime_registry") as registry_observation:
         reg = runtimes.load()
+        move_diagnostics = {}
         if reg.active is None:
-            # Defensive: if provisioning still yields no active runtime,
-            # fall back to idle rather than raising. This path should be
-            # unreachable in practice.
-            logger.error("runtime auto-provision failed — starting in idle mode")
-            return DaemonState.idle(settings)
-    runtime = RuntimeDir.load(reg.active)
-    state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics)
+            # Auto-provision a default runtime on first launch so the daemon
+            # never starts idle unless the provisioning itself fails.
+            # Precedence:
+            #   1. Registered runtimes exist but none active → activate the first.
+            #   2. Registry empty → create a default runtime at daemon_home/runtime.
+            if reg.registered:
+                target = reg.registered[0]
+                logger.info("no active runtime — activating existing registered runtime: %s", target)
+                move_diagnostics.update(runtimes.activate(target))
+            else:
+                default_path = paths.daemon_home() / "runtime"
+                logger.info("no active runtime — auto-provisioning default runtime at %s", default_path)
+                RuntimeDir.init(default_path)
+                move_diagnostics.update(runtimes.register(default_path))
+            reg = runtimes.load()
+            if reg.active is None:
+                # Defensive: if provisioning still yields no active runtime,
+                # fall back to idle rather than raising. This path should be
+                # unreachable in practice.
+                logger.error("runtime auto-provision failed — starting in idle mode")
+                registry_observation.outcome = "local_hold"
+                return DaemonState.idle(settings)
+    with observed(observation, "runtime_load"):
+        runtime = RuntimeDir.load(reg.active)
+    with observed(observation, "daemon_state"):
+        state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics, observation=observation)
     for org in state.orgs.values():
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
         # server-owned permission-surface reader before any startup recovery or
         # publication.  These bindings are the production owner setup; they were
         # previously exercised only by tests/store forwarders.
-        org.bind_authority_v2_owner()
+        with observed(observation, "authority_owner"):
+            org.bind_authority_v2_owner()
         # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
         # through the existing serialized transaction owner BEFORE any startup
         # recovery/enqueue and before the API becomes available. Initialization
@@ -623,28 +930,18 @@ def _build_state(settings: Settings) -> DaemonState:
         # and an initializer-audit failure rather than manufacturing empty state
         # or silently selecting legacy. A refusal propagates out of
         # ``_build_state`` so the daemon never binds the API or admits launch.
-        for team in org.teams.teams():
-            manager = org.teams.executable_manager_for_team(team)
-            if manager is not None and is_eligible_policy_manager(
-                root=org.root, agent_name=manager, team=team, teams=org.teams,
-            ):
-                org.workflow_authority.ensure_authority_selector(
-                    team=team,
-                    publisher="daemon-startup:selector-initialization",
-                )
-        recovered_tokens = _sweep_on_startup(
-            org.db, state.queue, org.slug, org.orchestrator,
-        )
-        # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
-        # org after the sweep (covers ordinary continuations with no recovery Q,
-        # a lost in-memory queue after a committed ``published``, an old-boot
-        # ``publishing`` lease and exact already-consumed receipts) and before
-        # the API/worker pool admits work.
-        _publish_v2_generations_on_startup(org, state.queue)
-        # GitHub #688 Slice B: startup reply-delivery recovery returns the
-        # queued/replacement tokens to re-enqueue once the event loop is live
-        # (the lifespan enqueues them before thread workers start).
-        org._startup_recovered_thread_tokens = recovered_tokens
+        with observed(observation, "authority_selectors"):
+            for team in org.teams.teams():
+                manager = org.teams.executable_manager_for_team(team)
+                if manager is not None and is_eligible_policy_manager(
+                    root=org.root, agent_name=manager, team=team, teams=org.teams,
+                ):
+                    org.workflow_authority.ensure_authority_selector(
+                        team=team,
+                        publisher="daemon-startup:selector-initialization",
+                    )
+        # P0 ends here. The original ordered sweep/publication and tokens
+        # belong exclusively to the lifespan's retained native P2-P7 owner.
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.
@@ -826,6 +1123,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "and requires a fresh explicit invocation for retry."
         ),
     )
+    parser.add_argument("--startup-clock", help=argparse.SUPPRESS)
+    parser.add_argument("--startup-launch-id", help=argparse.SUPPRESS)
     parser.add_argument("--reader-guarded-start", nargs="?", const="online-team-move@1",
         choices=("online-team-move@1", "online-team-move@2", "online-team-move@3"),
         help="Supported launcher reader-capability protocol; incompatible older parsers refuse before startup.")
@@ -841,27 +1140,39 @@ class _DiagnosticServer(uvicorn.Server):
         self._diagnostic_signalled = False
 
     async def startup(self, sockets=None) -> None:
-        await super().startup(sockets=sockets)
-        if (self._diagnostic_signalled or not self.started or self.should_exit
-                or self.lifespan.should_exit or self.config.app is not self._diagnostic_app):
-            return
-        self._diagnostic_signalled = True
+        started_ns = observation_time_ns()
+        observation = getattr(getattr(getattr(self._diagnostic_app, "state", None), "daemon", None),
+                              "_startup_observation", None)
         try:
+            await super().startup(sockets=sockets)
+            if self._diagnostic_signalled:
+                return
+            if (not self.started or self.should_exit or self.lifespan.should_exit
+                    or self.config.app is not self._diagnostic_app):
+                self._diagnostic_app.state.daemon._startup_recovery.fail(
+                    "startup_listener_unavailable", RuntimeError("startup_listener_unavailable"))
+                if observation is not None:
+                    observation.record_interval("asgi_listener", started_ns, observation_time_ns(), "incomplete")
+                return
+            self._diagnostic_signalled = True
             app = self._diagnostic_app
-            coordinator = app.state.daemon._cleanup_diagnostics
-            if coordinator is not None:
-                coordinator.signal_ready(app)
-        except Exception:
-            # Scheduling/logging/diagnostic results never gate successful serve.
-            pass
-        # Independent of B's signalling outcome. Only actual successful ASGI
-        # AND listener startup admits this dormant private service.
+            # Only this original adapter proves ASGI AND actual listener success.
+            # Service admission additionally waits for positive recovery readiness.
+            from runtime.daemon.startup_recovery import bind_http_listener
+            bind_http_listener(app, self)
+        except BaseException as exc:
+            self._diagnostic_app.state.daemon._startup_recovery.fail("startup_listener_failed", exc)
+            if observation is not None:
+                observation.record_interval("asgi_listener", started_ns, observation_time_ns(),
+                                            "failed" if isinstance(exc, Exception) else "incomplete")
+            raise
+        if observation is not None:
+            observation.record_interval("asgi_listener", started_ns, observation_time_ns())
         try:
-            service = self._diagnostic_app.state.daemon._thread_release_service
-            if service is not None:
-                service.signal_ready(self._diagnostic_app)
-        except Exception:
-            pass  # C stays unavailable, never substitutes readiness success
+            app.state.daemon._startup_recovery.signal_serving(app)
+        except BaseException as exc:
+            app.state.daemon._startup_recovery.fail("startup_listener_failed", exc)
+            raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -883,20 +1194,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.maintenance:
         return run_maintenance()
 
-    paths.ensure_daemon_home()
+    _BOOT_OBSERVATION.origin(args.startup_clock, args.startup_launch_id)
+    try:
+        with observed(_BOOT_OBSERVATION, "main_preflight"):
+            paths.ensure_daemon_home()
 
-    paths.ensure_token()
+            paths.ensure_token()
 
-    settings = Settings()
-    # Normalise PATH so the bundled happyranch CLI and standard tool
-    # directories are available even when the daemon is launched by
-    # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
-    # binary resolution is handled separately via the machine-local
-    # executors.json registry (THR-107 seq155).  Must happen before any
-    # executor is constructed (issue #254).
-    from runtime.orchestrator.executors import _normalize_path
-    _normalize_path()
-    state = _build_state(settings)
+            settings = Settings()
+            # Normalise PATH so the bundled happyranch CLI and standard tool
+            # directories are available even when the daemon is launched by
+            # Finder/launchd with a stripped PATH (/usr/bin:/bin).  Executor
+            # binary resolution is handled separately via the machine-local
+            # executors.json registry (THR-107 seq155).  Must happen before any
+            # executor is constructed (issue #254).
+            from runtime.orchestrator.executors import _normalize_path
+            _normalize_path()
+        with observed(_BOOT_OBSERVATION, "build_state"):
+            state = _build_state(settings, observation=_BOOT_OBSERVATION)
+        state._startup_observation = _BOOT_OBSERVATION
+    except BaseException:
+        _BOOT_OBSERVATION.emit("boot_failed")
+        raise
+    _BOOT_OBSERVATION.emit("boot_prepared")
     app = create_app(state)
 
     sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
@@ -904,7 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
     paths.pid_file().write_text(str(os.getpid()))
     _install_signal_handlers(state)
 
-    logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
+    logger.info("HappyRanch daemon socket bound (ASGI/listener pending) on %s:%d", settings.daemon_bind_host, port)
     config = uvicorn.Config(app, log_level="info", lifespan="on")
     server = _DiagnosticServer(config, app)
     # Hand the bound socket to uvicorn so we don't race the port number.

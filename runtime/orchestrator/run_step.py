@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import importlib.util
@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 from runtime.infrastructure.database import (
     AttachmentCorrectionStopped, Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
 )
+from runtime.infrastructure.db.authority_v2_attempts import _V2StartupConnectionUnsafe
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.executors import _meaningful_stderr
@@ -178,6 +179,375 @@ def _terminal_worktree_process_reference(
 _ROOT_WORKTREE_OWNER_EVENTS: ContextVar = ContextVar('root_worktree_owner_events', default=None)
 
 
+class _StartupSweepUnavailable(RuntimeError):
+    """An observed mandatory outcome was negative or remains unsettled."""
+
+
+class _StartupSweepOutcome(list[str]):
+    """List-compatible tokens with the positively consumed native outcome.
+
+    Existing token callers retain their public shape. The recovery coordinator
+    can consume disposition/counters directly, without reconstructing success
+    from tokens or running another DB scan. Failed sweeps rethrow their cause.
+    """
+
+    def __init__(self, tokens, disposition: str, counters: dict[str, int]):
+        super().__init__(tokens)
+        self.tokens = tuple(self)
+        self.disposition = disposition
+        self.counters = dict(counters)
+        self.first_cause = None
+
+
+class _StartupSweepOwner:
+    """One cold body, retained native tails and ONE final cleanup decision.
+
+    Admission tokens serialize with failure/stop; their short mutex never
+    spans DB work, callbacks or native waits. Already admitted effects retain
+    their actual history. Only the body thread drains and closes this owner.
+    """
+
+    def __init__(self, orch, transitions):
+        self.orch = orch
+        self.delivery = dict(orch=orch, events=transitions, active=True,
+                             teardown_incomplete=False, startup=self)
+        self._lock = threading.RLock()
+        self._body_thread = threading.get_ident()
+        self._body_open = True
+        self._sealed = False
+        self._boundary_complete = False
+        self._batch_attempted = False
+        self.batch_result = None
+        self._tails: dict[threading.Thread, Future] = {}
+        self._humans: dict[int, Any] = {}
+        self._first: BaseException | None = None
+        self._first_chain: BaseException | None = None
+        self._secondary: list[BaseException] = []
+        self.counts = dict(tails_started=0, tails_settled=0, effects_started=0,
+                           effects_settled=0, human_started=0, human_done=0,
+                           negative=0, local_hold=0, secondary_overflow=0)
+
+    def fail(self, cause: BaseException) -> None:
+        unsafe = cause if isinstance(cause, _V2StartupConnectionUnsafe) else None
+        if unsafe is not None:
+            cause = next((original for original in unsafe.causes
+                          if not isinstance(original, Exception)), cause)
+        with self._lock:
+            self.delivery['teardown_incomplete'] = True
+            if self._first is None:
+                self._first = cause
+                self._first_chain = unsafe if unsafe is not cause else None
+            elif self._first is not cause:
+                if len(self._secondary) < 8:
+                    self._secondary.append(cause)
+                else:
+                    self.counts['secondary_overflow'] += 1
+
+    def negative(self, code: str) -> None:
+        with self._lock:
+            self.counts['negative'] += 1
+        self.fail(_StartupSweepUnavailable(code))
+
+    def observe_gate(self) -> None:
+        gate = getattr(self.orch, '_startup_recovery', None)
+        if gate is not None:
+            snapshot = gate.snapshot()
+            if snapshot['stopping'] or snapshot['state'] != 'recovering':
+                self.negative('startup_sweep_admission_closed')
+
+    def check(self) -> None:
+        with self._lock:
+            self.observe_gate()
+            if self._first is not None:
+                raise _StartupSweepUnavailable('startup_sweep_unsettled') from self._first
+            if self._sealed:
+                self.negative('startup_sweep_sealed')
+                raise _StartupSweepUnavailable('startup_sweep_sealed')
+
+    def admission_open(self) -> bool:
+        with self._lock:
+            try:
+                self.observe_gate()
+            except BaseException as exc:
+                self.fail(exc)
+            return self._first is None and not self._sealed
+
+    @contextmanager
+    def effect(self):
+        with self._lock:
+            self.check()
+            if not self._body_open and threading.current_thread() not in self._tails:
+                self.negative('startup_sweep_effect_closed')
+                raise _StartupSweepUnavailable('startup_sweep_effect_closed')
+            self.counts['effects_started'] += 1
+        try:
+            yield
+        except BaseException as exc:
+            self.fail(exc)
+            raise
+        finally:
+            with self._lock:
+                self.counts['effects_settled'] += 1
+
+    def local_hold(self) -> None:
+        with self._lock:
+            self.counts['local_hold'] += 1
+
+    def human_finished(self, disposition: str) -> None:
+        # The Future's positive result is consumed separately, after the cold
+        # caller and its original bookkeeping have actually returned.
+        if disposition != 'done':
+            self.negative('startup_human_negative_outcome')
+
+    def _consume_humans(self) -> None:
+        for key, operation in tuple(self._humans.items()):
+            if not operation.completion.done():
+                continue
+            try:
+                result = operation.completion.result()
+                if (result != 'done' or operation.disposition != 'done'
+                        or operation.phase != 'caller_bookkeeping'
+                        or operation.bookkeeping or operation.drain is not None):
+                    self.negative('startup_human_unsettled')
+                else:
+                    self.counts['human_done'] += 1
+            except BaseException as exc:
+                self.fail(exc)
+            self._humans.pop(key)
+
+    def _retire_ended(self) -> None:
+        # Called under the mutex: Future.done alone never frees a native slot.
+        for ended, completed in tuple(self._tails.items()):
+            if ended.ident is not None and not ended.is_alive():
+                self._tails.pop(ended)
+                self._consume(completed)
+
+    def register_human(self, operation) -> None:
+        with self._lock:
+            self.check()
+            self._retire_ended()
+            self._consume_humans()
+            if self._first is not None:
+                raise _StartupSweepUnavailable('startup_human_prior_failure') from self._first
+            if (threading.get_ident() != self._body_thread or not self._body_open
+                    or len(self._humans) + len(self._tails) >= 16):
+                self.negative('startup_human_registration_closed')
+                raise _StartupSweepUnavailable('startup_human_registration_closed')
+            self._humans[id(operation)] = operation
+            self.counts['human_started'] += 1
+
+    def merge(self, transitions, *, teardown_incomplete=False):
+        with self._lock:
+            if self._sealed or not self.delivery['active']:
+                self.negative('startup_transition_after_seal')
+                raise _StartupSweepUnavailable('startup_transition_after_seal')
+            if transitions is not self.delivery['events']:
+                self.delivery['events'].extend(transitions)
+            if teardown_incomplete:
+                self.negative('startup_tail_teardown_incomplete')
+            self._check_capture()
+        return _RootWorktreeBatchDisposition('deferred', 'outer_owner_retained')
+
+    def _check_capture(self) -> None:
+        transitions = self.delivery['events']
+        if (getattr(transitions, 'unexamined', ()) or getattr(transitions, 'overflow_count', 0)
+                or getattr(transitions, 'capture_seconds', 0.0) > 0.5):
+            self.negative('startup_transition_capture_incomplete')
+
+    def start_tail(self, operation: Callable[[], Any]) -> threading.Thread:
+        """Reserve BEFORE Thread.start; Future.done is not Thread exit."""
+        future = Future()
+
+        def run() -> None:
+            token = None
+            cause = None
+            try:
+                token = _ROOT_WORKTREE_OWNER_EVENTS.set(self.delivery)
+                operation()
+            except BaseException as exc:
+                cause = exc
+                self.fail(exc)
+            finally:
+                if token is not None:
+                    try:
+                        _ROOT_WORKTREE_OWNER_EVENTS.reset(token)
+                    except BaseException as exc:
+                        self.fail(exc)
+                        if cause is None:
+                            cause = exc
+                if cause is None:
+                    future.set_result(None)
+                else:
+                    future.set_exception(cause)
+
+        thread = threading.Thread(target=run, name='startup-cleanup-tail', daemon=True)
+        with self._lock:
+            self.check()
+            retained_caller = threading.current_thread() in self._tails
+            if not self._body_open and not retained_caller:
+                self.negative('startup_tail_registration_closed')
+                raise _StartupSweepUnavailable('startup_tail_registration_closed')
+            self._retire_ended()
+            if threading.get_ident() == self._body_thread:
+                self._consume_humans()
+            self.check()
+            if len(self._tails) + len(self._humans) >= 16:
+                self.negative('startup_tail_capacity')
+                raise _StartupSweepUnavailable('startup_tail_capacity')
+            self._tails[thread] = future
+            self.counts['tails_started'] += 1
+            try:
+                thread.start()
+            except BaseException as exc:
+                # Even an interrupted start before ident publication can have
+                # native effects. Retain the reservation; join must prove exit.
+                self.fail(exc)
+                raise
+        return thread
+
+    def _consume(self, future: Future) -> None:
+        if not future.done():
+            self.negative('startup_tail_outcome_missing')
+            return
+        try:
+            if future.result() is not None:
+                self.negative('startup_tail_outcome_unknown')
+        except BaseException as exc:
+            self.fail(exc)
+        self.counts['tails_settled'] += 1
+
+    def drain(self) -> None:
+        """Close body admissions, then join outside all DB/publisher locks."""
+        with self._lock:
+            self._body_open = False
+        if threading.get_ident() != self._body_thread:
+            raise RuntimeError('startup_sweep_wrong_drain_owner')
+        db = getattr(self.orch, '_db', None)
+        if db is not None and db._lock._is_owned():
+            raise RuntimeError('startup_sweep_drain_under_database_lock')
+        org = getattr(getattr(self.orch, '_workflow_drafts', None), 'org', None)
+        if org is not None and org.workflow_authority._publisher_lock._is_owned():
+            raise RuntimeError('startup_sweep_drain_under_publisher_lock')
+        failed_joins = set()
+        while True:
+            with self._lock:
+                tails = tuple((thread, future) for thread, future in self._tails.items()
+                              if thread not in failed_joins)
+                if not tails:
+                    self._consume_humans()
+                    if (not self._tails and not self._humans
+                            and self.counts['effects_started'] == self.counts['effects_settled']):
+                        self._sealed = True
+                    else:
+                        self.negative('startup_native_owners_incomplete')
+                    return
+            for thread, future in tails:
+                try:
+                    thread.join()
+                    if thread.is_alive():
+                        raise RuntimeError('startup_tail_join_incomplete')
+                except BaseException as exc:
+                    self.fail(exc)
+                    failed_joins.add(thread)
+                    continue
+                with self._lock:
+                    if self._tails.pop(thread, None) is not None:
+                        self._consume(future)
+
+    def finalize(self, token) -> None:
+        """Retain this owner through drain, reset and the real batch result."""
+        try:
+            self.observe_gate()
+        except BaseException as exc:
+            self.fail(exc)
+        try:
+            self.drain()
+            with self._lock:
+                self._check_capture()
+                if self.delivery['teardown_incomplete'] and self._first is None:
+                    self.negative('startup_sweep_teardown_incomplete')
+            self.observe_gate()
+        except BaseException as exc:
+            self.fail(exc)
+        # Unjoined tails keep their explicitly installed context active. They
+        # may still merge captures, but sticky failure denies publications.
+        if self._sealed:
+            self.delivery['active'] = False
+        reset = False
+        try:
+            _ROOT_WORKTREE_OWNER_EVENTS.reset(token)
+            reset = True
+        except BaseException as exc:
+            self.fail(exc)
+        # No batch function at all on suppression: even its report/DB path
+        # would be an effect. Seal and reset failures also retain the owner.
+        with self._lock:
+            attempt = self._first is None and self._sealed and reset
+            if attempt:
+                if self._batch_attempted:
+                    self.negative('startup_final_batch_duplicate')
+                    attempt = False
+        if attempt:
+            try:
+                # Same short admission rule as tail publications. Stop may
+                # close NEW effects; an already admitted batch remains history.
+                with self._lock:
+                    self.observe_gate()
+                    admitted = self._first is None
+                    if admitted:
+                        self._batch_attempted = True
+                if admitted:
+                    self.batch_result = _root_worktree_batch(self.orch, self.delivery['events'])
+                    if getattr(self.batch_result, 'kind', None) != 'safe':
+                        self.negative('startup_final_batch_unsettled')
+            except BaseException as exc:
+                self.fail(exc)
+        with self._lock:
+            self._boundary_complete = (self._sealed and reset
+                and (not self._batch_attempted
+                     or getattr(self.batch_result, 'kind', None) == 'safe'))
+
+    def outcome(self, tokens) -> _StartupSweepOutcome:
+        self.raise_if_failed()
+        with self._lock:
+            if (not self._boundary_complete or not self._batch_attempted
+                    or getattr(self.batch_result, 'kind', None) != 'safe'):
+                raise _StartupSweepUnavailable('startup_sweep_outcome_incomplete')
+            disposition = 'local_hold' if self.counts['local_hold'] else 'settled'
+            return _StartupSweepOutcome(tokens, disposition, self.counts)
+
+    def raise_if_failed(self) -> None:
+        with self._lock:
+            cause = self._first
+            secondary = tuple(self._secondary)
+        if cause is not None:
+            for failure in secondary:
+                try:
+                    cause.add_note('Secondary startup failure: ' + type(failure).__name__)
+                except BaseException:
+                    pass
+            if self._first_chain is not None:
+                raise cause from self._first_chain
+            raise cause
+
+
+def _startup_sweep_owner(orch):
+    delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
+    if delivery is not None and delivery['orch'] is orch and delivery['active']:
+        return delivery.get('startup')
+    return None
+
+
+@contextmanager
+def _startup_sweep_effect(orch):
+    owner = _startup_sweep_owner(orch)
+    if owner is None:
+        yield
+    else:
+        with owner.effect():
+            yield
+
+
 class _RootWorktreeTransitions(list):
     """Bounded owner manifest; overflow is an explicit audit-window frontier."""
     def __init__(self):
@@ -247,7 +617,10 @@ def _capture_root_worktree_transition(orch, task_id, writer, transitions):
         yield
         return
     db = orch._db
-    allowance = max(0.0, min(0.05, 0.5-getattr(transitions, 'capture_seconds', 0.0)))
+    startup = _startup_sweep_owner(orch)
+    capture_lock = startup._lock if startup is not None else nullcontext()
+    with capture_lock:
+        allowance = max(0.0, min(0.05, 0.5-getattr(transitions, 'capture_seconds', 0.0)))
     capture_started = time.monotonic()
     acquired = allowance > 0 and db._lock.acquire(timeout=allowance)
     before = None
@@ -262,13 +635,15 @@ def _capture_root_worktree_transition(orch, task_id, writer, transitions):
                     anchor = db.terminal_worktree_audit_high_watermark()
                     if type(anchor) is not int:
                         raise ValueError('capture_audit_anchor_unavailable')
-                    if transitions.audit_low is None:
-                        transitions.audit_low = anchor
-                    transitions.audit_high = anchor
+                    with capture_lock:
+                        if transitions.audit_low is None:
+                            transitions.audit_low = anchor
+                        transitions.audit_high = anchor
             except Exception:
                 capture_unavailable = True
                 if isinstance(transitions, _RootWorktreeTransitions):
-                    transitions.audit_high = None
+                    with capture_lock:
+                        transitions.audit_high = None
                 logger.exception('root worktree %s before projection unavailable', task_id)
         before_seconds = time.monotonic()-capture_started
         yield
@@ -280,29 +655,38 @@ def _capture_root_worktree_transition(orch, task_id, writer, transitions):
                 capture_unavailable |= after is None
                 if (after is not None and before['status'] not in {s.value for s in TERMINAL_STATES}
                         and after['status'] in {s.value for s in TERMINAL_STATES}):
-                    transitions.append(_RootWorktreeTransition(before, after, writer))
+                    with capture_lock:
+                        transitions.append(_RootWorktreeTransition(before, after, writer))
                 if isinstance(transitions, _RootWorktreeTransitions):
                     anchor = db.terminal_worktree_audit_high_watermark()
                     if type(anchor) is not int:
                         raise ValueError('capture_audit_anchor_unavailable')
-                    transitions.audit_high = anchor
+                    with capture_lock:
+                        transitions.audit_high = anchor
         except Exception:
             capture_unavailable = True
             if isinstance(transitions, _RootWorktreeTransitions):
-                transitions.audit_high = None
+                with capture_lock:
+                    transitions.audit_high = None
             logger.exception('root worktree %s transition capture unavailable', task_id)
         finally:
-            if isinstance(transitions, _RootWorktreeTransitions):
-                transitions.capture_seconds += before_seconds+time.monotonic()-after_started
-                if capture_unavailable:
-                    if len(transitions.unexamined) < 256:
-                        transitions.unexamined.append(dict(task_id=task_id, writer=writer, reason='transition_capture_unavailable',
-                            audit_low=transitions.audit_low, audit_high=transitions.audit_high))
-                    else:
-                        transitions.overflow_count += 1
+            with capture_lock:
+                if isinstance(transitions, _RootWorktreeTransitions):
+                    transitions.capture_seconds += before_seconds+time.monotonic()-after_started
+                    if capture_unavailable:
+                        if len(transitions.unexamined) < 256:
+                            transitions.unexamined.append(dict(task_id=task_id, writer=writer, reason='transition_capture_unavailable',
+                                audit_low=transitions.audit_low, audit_high=transitions.audit_high))
+                        else:
+                            transitions.overflow_count += 1
             if acquired:
                 db._lock.release()
-            else:
+            if startup is not None:
+                with startup._lock:
+                    if (capture_unavailable or getattr(transitions, 'overflow_count', 0)
+                            or getattr(transitions, 'capture_seconds', 0.0) > 0.5):
+                        startup.negative('startup_transition_capture_incomplete')
+            if not acquired:
                 logger.warning('root worktree %s transition capture lock unavailable; no new admission', task_id)
 
 
@@ -772,8 +1156,12 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
     """One finite, synchronous owner batch; no continuation or replay retry."""
     delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
     if delivery is not None and delivery['orch'] is orch and delivery['active']:
-        delivery['events'].extend(transitions)
-        delivery['teardown_incomplete'] |= teardown_incomplete
+        startup = delivery.get('startup')
+        if startup is not None:
+            return startup.merge(transitions, teardown_incomplete=teardown_incomplete)
+        else:
+            delivery['events'].extend(transitions)
+            delivery['teardown_incomplete'] |= teardown_incomplete
         return _RootWorktreeBatchDisposition('deferred', 'outer_owner_retained')
     if orch is None:
         return _RootWorktreeBatchDisposition('unknown', 'cleanup_owner_unavailable')
@@ -872,7 +1260,10 @@ def _root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
 
 
 async def _await_root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
-    """Cancellation retains ownership of a started finite off-loop action."""
+    """Merge cold tails inline; normal callers retain finite off-loop cleanup."""
+    startup = _startup_sweep_owner(orch)
+    if startup is not None:
+        return startup.merge(transitions, teardown_incomplete=teardown_incomplete)
     return await _await_worktree_cleanup(_root_worktree_batch, orch, transitions,
                                         teardown_incomplete=teardown_incomplete)
 
@@ -1124,6 +1515,7 @@ def is_root(task: "TaskRecord") -> bool:
 def _enqueue_task_generation_aware(
     orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
     legacy: str = "put_nowait",
+    _observe: Callable[[str], None] | None = None, _publication=None,
 ) -> None:
     """Route a producer's enqueue through the common DB-aware boundary.
 
@@ -1144,17 +1536,26 @@ def _enqueue_task_generation_aware(
     if queue is None:
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware
+    if _publication is None:
+        startup = _startup_sweep_owner(orch)
+        if startup is not None and orch._startup_state is not None:
+            from runtime.daemon.startup_publication import _TaskPublication
+            _publication = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                            "sweep", metadata, sweep_owner=startup)
+    kwargs = {"_publication": _publication} if _publication is not None else {}
     if legacy == "enqueue":
         if metadata is None:
-            raw = lambda: queue.enqueue(orch._slug, task_id)
+            raw = lambda: queue.enqueue(orch._slug, task_id, **kwargs)
         else:
-            raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata)
+            raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata, **kwargs)
     else:
-        raw = lambda: queue.put_nowait(orch._slug, task_id)
-    enqueue_task_generation_aware(
+        raw = lambda: queue.put_nowait(orch._slug, task_id, **kwargs)
+    outcome = enqueue_task_generation_aware(
         orch, queue, orch._slug, task_id, metadata=metadata,
-        ordinary_enqueue=raw,
+        ordinary_enqueue=raw, _publication=_publication,
     )
+    if _observe is not None:
+        _observe(outcome)
 
 
 def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
@@ -1209,6 +1610,7 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    orch._require_startup_ready()
     # Workflow dispatch returns before the ordinary invocation owner exists.
     # This worker scope also carries its terminal event past tracker teardown,
     # workflow invocation close/release and the dispatcher's live-claim tail.
@@ -1218,11 +1620,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     tail_token = _task_tail.set(tail)
     tail_failed = False
     disposition = None
+    primary = None
     try:
         with _defer_root_worktree_batches(orch, transitions) as delivery:
             _run_step_owned(orch, task_id, metadata)
-    except BaseException:
-        tail_failed = True
+    except BaseException as exc:
+        primary = exc
+        # Only the actual invocation returned by the inner owner may carry
+        # its authenticated no-new-launch refusal through this second tail.
+        tail_failed = not (len(tail) == 1 and not tail[0][1]
+                           and tail[0][0]._held_recovery_refusal(exc))
         raise
     finally:
         tail_failed |= delivery['teardown_incomplete']
@@ -1232,9 +1639,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             if tail_failed:
                 logger.warning('task %s outer cleanup retained: %s processes=%s',
                     task_id, disposition.reason, disposition.processes)
-        except BaseException:
+        except BaseException as secondary:
             tail_failed = True
-            raise
+            if primary is None:
+                raise
+            primary.add_note(f"Root worktree tail also failed: {type(secondary).__name__}")
         finally:
             _task_tail.reset(tail_token)
             from runtime.orchestrator.task_pause import settle_live
@@ -1245,10 +1654,15 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 except BaseException as exc:
                     settlement_errors.append(exc)
             if settlement_errors:
-                raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
+                if primary is None:
+                    raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
+                for secondary in settlement_errors:
+                    primary.add_note(f"Task Pause tail also failed: {type(secondary).__name__}")
 
 
 def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    from runtime.daemon.startup_recovery import ordinary_admission_validation
+    validate = ordinary_admission_validation(orch)
     from runtime.orchestrator.task_pause import (
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
     )
@@ -1278,11 +1692,12 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     invocation = TaskInvocation(orch, task, task.assigned_agent or _default_agent_for_root(orch, task),
         orch._build_session_id(),
         owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
-        metadata=metadata or {})
+        metadata=metadata or {}, _startup_validation=validate)
     try:
         deferred = deferred_invocation(orch, task, metadata, adopt=False)
         if deferred is not None:
             invocation = deferred
+            invocation._startup_validation = validate
             adopt_deferred_invocation(invocation)
         else:
             if not eligible(orch, task):
@@ -1295,6 +1710,9 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     except DeferredRootPause:
         return
     except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         if isinstance(exc, PauseControlError) and exc.detail["code"] == "root_paused":
             return
         if invocation is not None:
@@ -1354,7 +1772,10 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
         elif invocation.admitted:
             invocation.phase("retry_deferred", started_at=None, captured_generation=None)
     except BaseException as exc:
-        root_delivery['teardown_incomplete'] = True
+        root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(exc)
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         if isinstance(exc, Exception) and not invocation.launch_observed:
             from runtime.orchestrator.launch_refusals import settle_refusal
             if settle_refusal(invocation, exc, prepared=True):
@@ -1363,22 +1784,38 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             invocation.phase("unknown")
         raise
     finally:
-        root_delivery['teardown_incomplete'] |= sys.exc_info()[0] is not None
+        primary = sys.exception()
+        if primary is not None:
+            root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(primary)
         from runtime.orchestrator.task_pause import release_live
         try:
             release_live(invocation, failed=root_delivery['teardown_incomplete'])
-        except BaseException:
+        except BaseException as secondary:
             root_delivery['teardown_incomplete'] = True
-            raise
+            invocation.move_reservation.cleanup_failed = True
+            try:
+                invocation.failed_cleanup()
+            except BaseException as persistence:
+                secondary.add_note(f"Task release uncertainty save failed: {type(persistence).__name__}")
+            if primary is None:
+                raise
+            primary.add_note(f"Task live release also failed: {type(secondary).__name__}")
         finally:
             _invocation.reset(token)
             root_delivery['active'] = False
             _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-            _root_worktree_batch(orch, root_delivery['events'],
-                teardown_incomplete=root_delivery['teardown_incomplete'])
+            try:
+                _root_worktree_batch(orch, root_delivery['events'],
+                    teardown_incomplete=root_delivery['teardown_incomplete'])
+            except BaseException as secondary:
+                invocation.move_reservation.cleanup_failed = True
+                if primary is None:
+                    raise
+                primary.add_note(f"Inner root worktree tail also failed: {type(secondary).__name__}")
 
 
 def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    orch._require_startup_ready()
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1605,6 +2042,9 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         # owner boundary for bounded refusal accounting and normal failure.
         raise
     except Exception as exc:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if isinstance(exc, StartupUnavailable):
+            raise
         if pause_invocation is not None and not pause_invocation.launch_observed:
             # The native owner records and settles before its release tail.
             raise
@@ -1771,6 +2211,9 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
                     except (DeferredRootPause, DeferredTeamMove, PauseControlError):
                         raise
                     except Exception as exc:
+                        from runtime.daemon.startup_recovery import StartupUnavailable
+                        if isinstance(exc, StartupUnavailable):
+                            raise
                         result.error = f"completion recovery launch failed: {exc}"
                 else:
                     # The durable claim has already spent the sole recovery.  Do
@@ -1938,6 +2381,9 @@ class _HumanFailedRecoveryOperation:
     job_ids: tuple[str, ...] = ()
     bookkeeping: list[Callable[[], None]] = field(default_factory=list)
     parent_effect: Callable[[], None] | None = None
+    startup_owner: _StartupSweepOwner | None = None
+    followon_validation: Callable[[], None] | None = None
+    first_error: BaseException | None = None
 
     def matches_context(self, context: dict) -> bool:
         task, episode = context["task"], context["episode"]
@@ -1951,11 +2397,15 @@ class _HumanFailedRecoveryOperation:
                                  "expires_at", "accepted_result_session_id")))
 
     def finish(self, disposition: str) -> None:
+        if self.completion.done():
+            return
         self.disposition = disposition
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None
         if not self.completion.done():
+            if self.startup_owner is not None:
+                self.startup_owner.human_finished(disposition)
             self.completion.set_result(disposition)
 
 
@@ -1972,6 +2422,9 @@ def _is_human_failed_recovery(orch: "Orchestrator", task, report) -> bool:
 def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
     """One synchronous gate attempt on the writer loop, or before serving."""
     if operation.completion.done():
+        return
+    if operation.startup_owner is not None and not operation.startup_owner.admission_open():
+        operation.finish('recovery_required')
         return
     org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
     queue = getattr(orch, "_queue", None)
@@ -1994,72 +2447,89 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
             params = dict(task_id=operation.task_id, agent=operation.agent,
                           session_id=operation.session_id, result_row_id=operation.result_id)
             while operation.phase != "drain_jobs":
-                disposition, context = db.human_failed_recovery_context(
-                    **params, allow_unbound_live=operation.phase == "evidence")
-                if disposition != "eligible":
-                    operation.finish("lost_owner" if disposition == "not_applicable" else disposition)
+                if operation.phase not in ('evidence', 'chain', 'fanout', 'fail', 'review',
+                                           'history', 'marker', 'settle_jobs',
+                                           'parent_handoff', 'caller_bookkeeping'):
+                    operation.finish('recovery_required')
                     return
-                task, episode = context["task"], context["episode"]
-                key = (operation.task_id, operation.agent, episode["origin_session_id"], operation.session_id, operation.result_id)
-                if operation.key is None:
-                    operation.key = key
-                    operation.accepted_payload = episode, context["report"].model_dump(), context["selected_row"]
-                    operation.relation = (task.parent_task_id, task.team)
-                    if operation.parent_effect is None:
-                        operation.parent_effect = lambda: _enqueue_parent_if_waiting(
-                            orch, operation.task_id, root_auto_revisit_spawned=False)
-                    full = getattr(orch, "_human_failed_recovery_by_fingerprint", None)
-                    if full is None:
-                        full = orch._human_failed_recovery_by_fingerprint = {}
-                    full[key] = operation
-                elif not operation.matches_context(context):
-                    operation.finish("lost_owner")
-                    return
-                if episode["state"] == "callback_consumed" and operation.phase in ("evidence", "chain", "fanout", "fail", "review", "history", "marker"):
-                    operation.phase = "settle_jobs"
-                if operation.phase in ("evidence", "chain", "fanout", "fail", "review", "marker"):
-                    disposition = db.apply_human_failed_recovery_effect(**params, effect=operation.phase)
-                    if disposition != "progressed":
-                        operation.finish(disposition)
+                with _startup_sweep_effect(orch):
+                    disposition, context = db.human_failed_recovery_context(
+                        **params, allow_unbound_live=operation.phase == "evidence")
+                    if disposition != "eligible":
+                        operation.finish("lost_owner" if disposition == "not_applicable" else disposition)
                         return
-                    order = ("evidence", "chain", "fanout", "fail", "review", "history", "marker", "settle_jobs")
-                    operation.phase = order[order.index(operation.phase) + 1]
-                elif operation.phase == "history":
-                    # Preserve the native file boundary outside DB/SQL while
-                    # retaining the publisher; fresh reads precede the marker.
-                    db._lock.release()
-                    acquired_db = False
-                    orch._update_task_history(operation.task_id)
-                    if not db._lock.acquire(blocking=False):
-                        return
-                    acquired_db = True
-                    operation.phase = "marker"
-                elif operation.phase == "settle_jobs":
-                    ids = db.settle_consumed_task_completion_recovery_jobs(
-                        task_id=operation.task_id, agent=operation.agent,
-                        recovery_session_id=operation.session_id, result_row_id=operation.result_id,
-                        terminal_status=TaskStatus.FAILED.value,
-                        finished_at=datetime.now(timezone.utc).isoformat())
-                    if ids is None:
+                    task, episode = context["task"], context["episode"]
+                    key = (operation.task_id, operation.agent, episode["origin_session_id"], operation.session_id, operation.result_id)
+                    if operation.key is None:
+                        operation.key = key
+                        operation.accepted_payload = episode, context["report"].model_dump(), context["selected_row"]
+                        operation.relation = (task.parent_task_id, task.team)
+                        if operation.parent_effect is None:
+                            operation.parent_effect = lambda: _enqueue_parent_if_waiting(
+                                orch, operation.task_id, root_auto_revisit_spawned=False)
+                        full = getattr(orch, "_human_failed_recovery_by_fingerprint", None)
+                        if full is None:
+                            full = orch._human_failed_recovery_by_fingerprint = {}
+                        full[key] = operation
+                    elif not operation.matches_context(context):
                         operation.finish("lost_owner")
                         return
-                    operation.job_ids = ids
-                    operation.phase = "drain_jobs" if ids else "parent_handoff"
-                elif operation.phase == "parent_handoff":
-                    if not db.handoff_consumed_task_completion_recovery_parent_effect(
+                    if episode["state"] == "callback_consumed" and operation.phase in ("evidence", "chain", "fanout", "fail", "review", "history", "marker"):
+                        operation.phase = "settle_jobs"
+                    if operation.phase in ("evidence", "chain", "fanout", "fail", "review", "marker"):
+                        disposition = db.apply_human_failed_recovery_effect(**params, effect=operation.phase)
+                        if disposition != "progressed":
+                            operation.finish(disposition)
+                            return
+                        order = ("evidence", "chain", "fanout", "fail", "review", "history", "marker", "settle_jobs")
+                        operation.phase = order[order.index(operation.phase) + 1]
+                    elif operation.phase == "history":
+                        # Preserve the native file boundary outside DB/SQL while
+                        # retaining the publisher; fresh reads precede the marker.
+                        db._lock.release()
+                        acquired_db = False
+                        orch._update_task_history(operation.task_id)
+                        if not db._lock.acquire(blocking=False):
+                            return
+                        acquired_db = True
+                        operation.phase = "marker"
+                    elif operation.phase == "settle_jobs":
+                        ids = db.settle_consumed_task_completion_recovery_jobs(
                             task_id=operation.task_id, agent=operation.agent,
                             recovery_session_id=operation.session_id, result_row_id=operation.result_id,
-                            terminal_status=TaskStatus.FAILED.value, effect=operation.parent_effect):
-                        operation.finish("lost_owner")
+                            terminal_status=TaskStatus.FAILED.value,
+                            finished_at=datetime.now(timezone.utc).isoformat())
+                        if ids is None:
+                            operation.finish("lost_owner")
+                            return
+                        operation.job_ids = ids
+                        operation.phase = "drain_jobs" if ids else "parent_handoff"
+                    elif operation.phase == "parent_handoff":
+                        if operation.followon_validation is None:
+                            operation.followon_validation = _task_followon_validation(orch)
+                        operation.followon_validation()
+                        if not db.handoff_consumed_task_completion_recovery_parent_effect(
+                                task_id=operation.task_id, agent=operation.agent,
+                                recovery_session_id=operation.session_id, result_row_id=operation.result_id,
+                                terminal_status=TaskStatus.FAILED.value, effect=operation.parent_effect):
+                            operation.finish("lost_owner")
+                            return
+                        operation.phase = "caller_bookkeeping"
+                    elif operation.phase == "caller_bookkeeping":
+                        if operation.followon_validation is None:
+                            operation.followon_validation = _task_followon_validation(orch)
+                        for effect in operation.bookkeeping:
+                            operation.followon_validation()
+                            with _startup_sweep_effect(orch):
+                                effect()
+                        operation.bookkeeping.clear()
+                        operation.finish("done")
                         return
-                    operation.phase = "caller_bookkeeping"
-                elif operation.phase == "caller_bookkeeping":
-                    for effect in operation.bookkeeping:
-                        effect()
-                    operation.bookkeeping.clear()
-                    operation.finish("done")
-                    return
-    except Exception:
+    except Exception as exc:
+        if operation.first_error is None:
+            operation.first_error = exc
+        if operation.startup_owner is not None:
+            operation.startup_owner.fail(exc)
         logger.exception("human failed recovery requires next-start reconciliation task=%s phase=%s", operation.task_id, operation.phase)
         operation.finish("recovery_required")
     finally:
@@ -2123,8 +2593,22 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
                                  bookkeeping: Callable[[], None] | None = None,
                                  parent_effect: Callable[[], None] | None = None) -> _HumanFailedRecoveryOperation:
     """Retain selected identity before transferring a worker's finite tail."""
+    startup_owner = _startup_sweep_owner(orch)
+    if startup_owner is not None:
+        startup_owner.check()
     operation = _HumanFailedRecoveryOperation(task_id, agent, session_id, result_id,
-        parent_effect=parent_effect)
+        parent_effect=parent_effect, startup_owner=startup_owner)
+    if startup_owner is not None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if getattr(orch, '_main_loop', None) is not None:
+                startup_owner.negative('startup_human_loop_already_bound')
+                startup_owner.raise_if_failed()
+        else:
+            startup_owner.negative('startup_human_requires_cold_caller')
+            startup_owner.raise_if_failed()
+        startup_owner.register_human(operation)
     def install() -> None:
         operations = getattr(orch, "_human_failed_recovery_operations", None)
         if operations is None:
@@ -2140,6 +2624,10 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
             operation.finish("recovery_required")
             return
         if existing is not None and not existing.completion.done():
+            if startup_owner is not None:
+                # Do not adopt an unknown timer/drain or transfer its loop.
+                operation.finish('recovery_required')
+                return
             if bookkeeping is not None:
                 existing.bookkeeping.append(bookkeeping)
             # Preserve the original phase/callback rather than redraining.
@@ -2154,28 +2642,43 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
         operations[transport_key] = operation
         _drive_human_failed_recovery(orch, operation)
     try:
-        running = asyncio.get_running_loop()
-    except RuntimeError:
-        running = None
-    loop = getattr(orch, "_main_loop", None)
-    if running is not None:
-        if loop is not None and running is not loop:
-            operation.finish("recovery_required")
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        loop = getattr(orch, "_main_loop", None)
+        if running is not None:
+            if loop is not None and running is not loop:
+                operation.finish("recovery_required")
+            else:
+                install()
+        elif loop is not None:
+            if loop.is_closed() or not loop.is_running():
+                operation.finish("recovery_required")
+            else:
+                try:
+                    loop.call_soon_threadsafe(install)
+                except RuntimeError:
+                    operation.finish("recovery_required")
         else:
             install()
-    elif loop is not None:
-        if loop.is_closed() or not loop.is_running():
-            operation.finish("recovery_required")
-        else:
-            try:
-                loop.call_soon_threadsafe(install)
-            except RuntimeError:
-                operation.finish("recovery_required")
-    else:
-        install()
-        while not operation.completion.done():
-            time.sleep(0.05)
-            _drive_human_failed_recovery(orch, operation)
+            while not operation.completion.done():
+                if startup_owner is not None:
+                    startup_owner.check()
+                time.sleep(0.05)
+                _drive_human_failed_recovery(orch, operation)
+    except BaseException as exc:
+        if startup_owner is not None:
+            startup_owner.fail(exc)
+            operation.finish('recovery_required')
+        raise
+    if startup_owner is not None:
+        # Completion.result, phase, bookkeeping and drain are consumed; a
+        # successful install/Future cannot hide a normal negative outcome.
+        with startup_owner._lock:
+            startup_owner._consume_humans()
+        startup_owner.raise_if_failed()
+
     return operation
 
 
@@ -2764,12 +3267,19 @@ def _consume_completion_report(
     decision = orch._parse_next_step(report) if task.task_type == "task" else None
     if decision is not None and decision.action == "workflow_start":
         from runtime.workflows.coding_start import CodingStartError
+        from runtime.daemon.startup_recovery import StartupUnavailable
         coding = getattr(orch, "_workflow_coding_start", None)
         if coding is None:
             logger.warning("coding start unavailable for %s", task_id)
             return
         try:
             coding.consume(RetryClaim.from_task(task, result_row_id=resolved_row_id), decision, report)
+        except StartupUnavailable as exc:
+            # Preserve this already committed original result and native tail.
+            # No result-action spend or graph allocation was admitted; the
+            # explicit held disposition is not callback consumption success.
+            logger.info("coding start pending startup for %s: %s", task_id, exc.code)
+            return "startup_held"
         except CodingStartError as exc:
             logger.warning("coding start held for %s: %s", task_id, exc.code)
         return
@@ -3929,6 +4439,18 @@ def _attachment_owned_effect(
                 orch._db._conn.rollback()
 
 
+def _publish_retry_feedback_task(orch: "Orchestrator", task_id: str) -> None:
+    queue = orch._queue
+    startup = _startup_sweep_owner(orch)
+    kwargs = {}
+    if startup is not None and orch._startup_state is not None:
+        from runtime.daemon.startup_publication import _TaskPublication
+        selected = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                    "sweep", sweep_owner=startup)
+        kwargs["_publication"] = selected
+    queue.put_nowait(orch._slug, task_id, **kwargs)
+
+
 def _attachment_feedback_and_reenqueue(
     orch: "Orchestrator", expected_claim: RetryClaim, detail: dict, *,
     location: str | None = None, reclaim_terminal_worktree: bool = True,
@@ -3936,7 +4458,7 @@ def _attachment_feedback_and_reenqueue(
     feedback = _attachment_feedback_text(detail, location)
     outcome = orch._db.try_attachment_retry_feedback(expected_claim, feedback, detail["code"])
     if isinstance(outcome, PendingRetry):
-        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, expected_claim.task_id)
+        enqueue = None if orch._queue is None else lambda: _publish_retry_feedback_task(orch, expected_claim.task_id)
         orch._db.admit_retry_feedback(outcome, enqueue)
         return
     if not isinstance(outcome, AttachmentCorrectionStopped):
@@ -4216,7 +4738,7 @@ def _reject_retry_link_decision(
     )
     pending = orch._db.try_retry_feedback(expected_claim, feedback)
     if isinstance(pending, PendingRetry):
-        enqueue = None if orch._queue is None else lambda: orch._queue.put_nowait(orch._slug, task_id)
+        enqueue = None if orch._queue is None else lambda: _publish_retry_feedback_task(orch, task_id)
         orch._db.admit_retry_feedback(pending, enqueue)
 
 
@@ -4599,7 +5121,8 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
               recovery_owner: tuple[str, str, int] | None = None,
               after_recovery_cleanup: Callable[[], None] | None = None,
               after_recovery_parent_effect: Callable[[], None] | None = None,
-              reclaim_terminal_worktree: bool = True) -> bool:
+              reclaim_terminal_worktree: bool = True,
+              validate_admission: Callable[[], None] | None = None) -> bool:
     root_transitions = _RootWorktreeTransitions()
     root_handed_off = False
     tail_failed = False
@@ -4621,8 +5144,13 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
             if not committed:
                 return False
         else:
-            with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
-                orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
+            with orch._db._lock if validate_admission is not None else nullcontext():
+                if validate_admission is not None:
+                    validate_admission()
+                with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
+                    if validate_admission is not None:
+                        validate_admission()
+                    orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
                                      note=note, final_output_dir=output_dir,
                                      completed_at=datetime.now(timezone.utc).isoformat())
         _log_verdict_if_delegated(orch, task_id, success=True)
@@ -4656,6 +5184,7 @@ def _fail(
     orch: "Orchestrator", task_id: str, *, note: str,
     reclaim_terminal_worktree: bool = True,
     current_owner: Callable[[], bool] | None = None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> None:
     root_transitions = _RootWorktreeTransitions()
     from datetime import datetime, timezone
@@ -4666,6 +5195,8 @@ def _fail(
     if _is_already_terminal(orch, task_id):
         return
     with orch._db._lock:
+        if validate_admission is not None:
+            validate_admission()
         current = orch._db.get_task(task_id)
         if current is not None:
             try:
@@ -4836,13 +5367,15 @@ def _handoff_consumed_recovery_terminal_effects(
     if not recovery_job_ids:
         handed_off = False
         if after_recovery_cleanup is not None:
-            handed_off = orch._db.handoff_consumed_task_completion_recovery_parent_effect(
-                task_id=task_id, agent=agent, recovery_session_id=session_id,
-                result_row_id=result_row_id, terminal_status=terminal_status,
-                effect=after_recovery_cleanup,
-            )
+            with _startup_sweep_effect(orch):
+                handed_off = orch._db.handoff_consumed_task_completion_recovery_parent_effect(
+                    task_id=task_id, agent=agent, recovery_session_id=session_id,
+                    result_row_id=result_row_id, terminal_status=terminal_status,
+                    effect=after_recovery_cleanup,
+                )
         if handed_off and after_recovery_parent_effect is not None:
-            after_recovery_parent_effect()
+            with _startup_sweep_effect(orch):
+                after_recovery_parent_effect()
         if root_transitions:
             current_owner = orch._db.consumed_task_completion_recovery_owner_is_current(
                 task_id=task_id, agent=agent, recovery_session_id=session_id,
@@ -4868,7 +5401,7 @@ def _kill_jobs_for_terminating_task(
     after_recovery_parent_effect: Callable[[], None] | None = None,
     human_recovery_operation: _HumanFailedRecoveryOperation | None = None,
     current_owner: Callable[[], bool] | None = None,
-) -> asyncio.Task | None:
+) -> asyncio.Task | threading.Thread | None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
@@ -4886,6 +5419,9 @@ def _kill_jobs_for_terminating_task(
     """
     db = orch._db
     if current_owner is not None and not current_owner():
+        startup = _startup_sweep_owner(orch)
+        if startup is not None:
+            startup.local_hold()
         return
     inflight_map = (
         {job_id: task_id for job_id in recovery_job_ids}
@@ -4958,6 +5494,9 @@ def _kill_jobs_for_terminating_task(
             return
         with db._lock:
             if current_owner is not None and not current_owner():
+                startup = _startup_sweep_owner(orch)
+                if startup is not None:
+                    startup.local_hold()
                 return
         drain_failed = False
         try:
@@ -4968,36 +5507,67 @@ def _kill_jobs_for_terminating_task(
             # termination, signals, or the runner's grace-period wait above.
             now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             if recovery_owner is None:
-                if current_owner is None:
-                    db.backstop_terminated_task_jobs(task_id, finished_at=now)
-                else:
-                    _attachment_owned_effect(orch, current_owner, lambda: db.backstop_terminated_task_jobs(task_id, finished_at=now))
+                with _startup_sweep_effect(orch):
+                    if current_owner is None:
+                        db.backstop_terminated_task_jobs(task_id, finished_at=now)
+                    else:
+                        _attachment_owned_effect(orch, current_owner, lambda: db.backstop_terminated_task_jobs(task_id, finished_at=now))
             else:
                 agent, session_id, result_row_id, terminal_status = recovery_owner
                 handed_off = False
                 if after_recovery_cleanup is not None:
-                    handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
-                        task_id=task_id, agent=agent,
-                        recovery_session_id=session_id, result_row_id=result_row_id,
-                        terminal_status=terminal_status,
-                        effect=after_recovery_cleanup,
-                    )
+                    with _startup_sweep_effect(orch):
+                        handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
+                            task_id=task_id, agent=agent,
+                            recovery_session_id=session_id, result_row_id=result_row_id,
+                            terminal_status=terminal_status,
+                            effect=after_recovery_cleanup,
+                        )
+                if after_recovery_cleanup is not None:
+                    startup = _startup_sweep_owner(orch)
+                    if startup is not None:
+                        if handed_off is False:
+                            startup.local_hold()
+                        elif handed_off is not True:
+                            startup.negative('startup_parent_handoff_unknown')
                 if handed_off and after_recovery_parent_effect is not None:
-                    after_recovery_parent_effect()
-        except BaseException:
+                    with _startup_sweep_effect(orch):
+                        after_recovery_parent_effect()
+        except BaseException as exc:
             drain_failed = True
+            startup = _startup_sweep_owner(orch)
+            if startup is not None:
+                startup.fail(exc)
             raise
         finally:
             if root_transitions:
-                current_owner = False
-                if recovery_owner is not None:
-                    agent, session_id, result_row_id, terminal_status = recovery_owner
-                    current_owner = db.consumed_task_completion_recovery_owner_is_current(
-                        task_id=task_id, agent=agent, recovery_session_id=session_id,
-                        result_row_id=result_row_id, terminal_status=terminal_status)
-                await _await_root_worktree_batch(orch, root_transitions,
-                    teardown_incomplete=drain_failed or not current_owner)
+                startup = _startup_sweep_owner(orch)
+                try:
+                    # Do not shadow the closure's current_owner predicate.
+                    # A suppressed cold tail only merges its capture: no DB
+                    # ownership reread, report or cleanup executor escape.
+                    batch_owner_current = False
+                    if startup is None or startup.admission_open():
+                        if recovery_owner is not None:
+                            agent, session_id, result_row_id, terminal_status = recovery_owner
+                            batch_owner_current = db.consumed_task_completion_recovery_owner_is_current(
+                                task_id=task_id, agent=agent, recovery_session_id=session_id,
+                                result_row_id=result_row_id, terminal_status=terminal_status)
+                        else:
+                            with db._lock:
+                                batch_owner_current = current_owner is None or current_owner()
+                    await _await_root_worktree_batch(orch, root_transitions,
+                        teardown_incomplete=drain_failed or not batch_owner_current)
+                except BaseException as exc:
+                    if startup is None:
+                        raise
+                    startup.fail(exc)
+                    if not drain_failed:
+                        raise
 
+    startup = _startup_sweep_owner(orch)
+    if startup is not None:
+        return startup.start_tail(lambda: asyncio.run(_kill_and_backstop()))
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -5112,6 +5682,7 @@ def _advance_chain_for_completed_child(
     parent_task_id: str,
     child_task_id: str,
     report=None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> str:
     """Inspect the parent's active_chain against the just-completed subtask's
     report. Either spawn the next leg ("advance") or clear the chain so the
@@ -5141,7 +5712,10 @@ def _advance_chain_for_completed_child(
         compute_advance_action,
     )
 
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     parent = orch._db.get_task(parent_task_id)
+    validate()
     if parent is None or parent.active_chain is None:
         return "wake"
 
@@ -5151,12 +5725,14 @@ def _advance_chain_for_completed_child(
         # report is missing/unacceptable — fail closed.  Never consult the
         # task-wide newest-row read: a wrong-agent/wrong-session (or any
         # unrelated) row must not gate chain advancement.
-        orch._db.update_task_active_chain(parent_task_id, None)
+        with _followon_writer(orch, validate):
+            orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
-        orch._db.update_task_active_chain(parent_task_id, None)
+        with _followon_writer(orch, validate):
+            orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
     completed_child = orch._db.get_task(child_task_id)
@@ -5168,7 +5744,8 @@ def _advance_chain_for_completed_child(
         reviewer_agents=_reviewer_agents_for(orch),
     )
     if action.kind == "wake":
-        orch._db.update_task_active_chain(parent_task_id, None)
+        with _followon_writer(orch, validate):
+            orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
     # THR-109: validate attachments FIRST, before any state change.
@@ -5195,14 +5772,16 @@ def _advance_chain_for_completed_child(
         except ValueError:
             # Attachment validation failed — do NOT spawn the leg.
             # Clear the chain so the parent can wake and handle the failure.
-            orch._db.update_task_active_chain(parent_task_id, None)
+            with _followon_writer(orch, validate):
+                orch._db.update_task_active_chain(parent_task_id, None)
             return "wake"
 
     # Atomic chain advance: update parent active_chain + insert next child +
     # attachment links/audit in a single transaction. A crash or write failure
     # rolls back everything — no orphan chain state, no orphan child, no
     # orphan link/audit/claim, no queue side effect.
-    next_child_id = orch._db.next_task_id()
+    with _followon_writer(orch, validate):
+        next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
     chain_json = chain.serialize()
 
@@ -5216,26 +5795,32 @@ def _advance_chain_for_completed_child(
         session_timeout_seconds=parent.session_timeout_seconds,
         task_type="subtask",
     )
-    if not orch._db.try_advance_chain(
-        parent_id=parent_task_id,
-        active_chain_json=chain_json,
-        next_child=next_child,
-        attachments=chain_att_params,
-        uploaded_by="orchestrator",
-    ):
-        # Chain advance + child insert failed — transaction rolled back.
-        # No partial state remains; parent wakes normally.
-        return "wake"
+    with _followon_writer(orch, validate):
+        if not orch._db.try_advance_chain(
+            parent_id=parent_task_id,
+            active_chain_json=chain_json,
+            next_child=next_child,
+            attachments=chain_att_params,
+            uploaded_by="orchestrator", validate_admission=validate,
+        ):
+            # Chain advance + child insert failed — transaction rolled back.
+            # No partial state remains; parent wakes normally.
+            return "wake"
 
-    orch._audit.log_chain_auto_advance(
-        parent_task_id=parent_task_id,
-        leg_index=action.next_step_index,
-        spawned_child_id=next_child_id,
-        triggering_child_id=child_task_id,
-        triggering_verdict=report.verdict,
-        chain_origin_step_audit_id=chain.step_audit_id,
-    )
-    _enqueue_task_generation_aware(orch, next_child_id)
+    try:
+        with _followon_writer(orch, validate):
+            orch._audit.log_chain_auto_advance(
+                parent_task_id=parent_task_id,
+                leg_index=action.next_step_index,
+                spawned_child_id=next_child_id,
+                triggering_child_id=child_task_id,
+                triggering_verdict=report.verdict,
+                chain_origin_step_audit_id=chain.step_audit_id,
+            )
+        _publish_followon_task(orch, next_child_id, validate)
+    except BaseException as exc:
+        exc.add_note(f"Original chain child {next_child_id} committed; publication remains pending.")
+        raise
     return "advance"
 
 
@@ -5245,6 +5830,7 @@ from runtime.orchestrator.task_terminal_readers import _is_carrier
 def _carrier_fail_on_verdict_mismatch(
     orch: "Orchestrator", parent: "TaskRecord",
     child_task_id: str, chain_snapshot: str | None, report=None,
+    *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
     """After a carrier's chain leg completed but the chain did not advance
     (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
@@ -5259,6 +5845,8 @@ def _carrier_fail_on_verdict_mismatch(
     exact report) fails the carrier closed — an unverifiable leg outcome must
     never complete or advance a carrier on task-wide evidence.
     """
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     if chain_snapshot is None:
         return False
     if not _is_carrier(orch, parent):
@@ -5277,9 +5865,9 @@ def _carrier_fail_on_verdict_mismatch(
         )
         if expected is not None:
             note += f" (expected {expected!r})"
-        _fail(orch, parent.id, note=note)
+        _fail(orch, parent.id, note=note, validate_admission=validate)
         # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
         return True
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
@@ -5292,10 +5880,11 @@ def _carrier_fail_on_verdict_mismatch(
         _fail(
             orch, parent.id,
             note=f"carrier verdict mismatch: expected {expected!r}, got None",
+            validate_admission=validate,
         )
         # Feed carrier failure into the fan-out parent's barrier.  Returning
         # True without these side effects strands both carrier and parent.
-        _enqueue_parent_if_waiting(orch, parent.id)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
         return True
     completed_child = orch._db.get_task(child_task_id)
     completed_agent = completed_child.assigned_agent if completed_child is not None else None
@@ -5310,9 +5899,10 @@ def _carrier_fail_on_verdict_mismatch(
     # false success.
     if action.kind == "wake" and action.reason in ("verdict_mismatch", "reviewer_non_approve"):
         _fail(orch, parent.id,
-               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}")
+               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}",
+               validate_admission=validate)
         # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
         return True
     return False
 
@@ -5320,10 +5910,13 @@ def _carrier_fail_on_verdict_mismatch(
 def _carrier_fail_immediate(
     orch: "Orchestrator", parent: "TaskRecord",
     child_task_id: str,
+    *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
     """A carrier's chain leg failed: fail the whole carrier immediately
     (fail-closed at carrier).  Returns True if the carrier was failed,
     False for non-carriers."""
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     if not _is_carrier(orch, parent):
         return False
     child = orch._db.get_task(child_task_id)
@@ -5338,6 +5931,7 @@ def _carrier_fail_immediate(
     _fail(
         orch,
         parent.id,
+        validate_admission=validate,
         note=(
             f"carrier chain leg {child_task_id} failed; "
             f"causal_leaf_id={child_task_id}; causal_status="
@@ -5348,12 +5942,13 @@ def _carrier_fail_immediate(
         ),
     )
     # Feed carrier failure into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
+    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
     return True
 
 
 def _carrier_complete_on_chain_complete(
     orch: "Orchestrator", parent: "TaskRecord",
+    *, validate_admission: Callable[[], None] | None = None,
 ) -> bool:
     """After a carrier's chain completed successfully (all legs done,
     final leg verdict matched), complete the carrier DIRECTLY — NO
@@ -5362,13 +5957,15 @@ def _carrier_complete_on_chain_complete(
 
     Returns True if the carrier was completed, False for non-carriers.
     """
+    validate = validate_admission or _task_followon_validation(orch)
+    validate()
     if not _is_carrier(orch, parent):
         return False
     # Complete the carrier directly — it has no session of its own.
     _complete(orch, parent.id,
-              note="carrier chain complete")
+              note="carrier chain complete", validate_admission=validate)
     # Feed carrier completion into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
+    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
     return True
 
 
@@ -5542,12 +6139,143 @@ def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord")
     return _child_landed_terminal_report(orch, child) is not None
 
 
+def _task_followon_validation(orch: "Orchestrator") -> Callable[[], None]:
+    """Select ordinary admission or the SAME retained P2/P4/P6 native owner."""
+    from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+    from runtime.daemon.startup_publication import current_publication
+    sweep, publication = _startup_sweep_owner(orch), current_publication(orch)
+    if sweep is None and publication is None:
+        return ordinary_admission_validation(orch)
+    state, gate, org = orch._startup_state, orch._startup_recovery, orch._startup_org
+    epoch = None if gate is None else gate.epoch
+    loop, queue = None if gate is None else gate._loop, orch._queue
+    refs = None if org is None else org._startup_admission_refs
+
+    def validate() -> None:
+        if (orch._startup_state is not state or orch._startup_recovery is not gate
+                or orch._startup_org is not org
+                or org is not None and org._startup_admission_refs is not refs
+                or gate is not None and (gate.epoch != epoch or gate._loop is not loop)
+                or orch._queue is not queue):
+            raise StartupUnavailable("startup_attachment_changed")
+        if gate is not None:
+            gate.require_attachment(orch)
+        if sweep is not None:
+            if _startup_sweep_owner(orch) is not sweep or sweep.orch is not orch:
+                raise StartupUnavailable("startup_sweep_owner_changed")
+            with sweep._lock:
+                if not ((sweep._body_open and threading.get_ident() == sweep._body_thread)
+                        or threading.current_thread() in sweep._tails):
+                    raise StartupUnavailable("startup_sweep_owner_changed")
+                sweep.check()
+            if gate is not None:
+                with gate._lock:
+                    if (gate._sweep_owner is not sweep or gate._phase != "sweep"
+                            or gate._status != "recovering" or gate._first_cause is not None):
+                        raise StartupUnavailable("startup_sweep_owner_changed")
+        else:
+            if current_publication(orch) is not publication or publication.gate is not gate:
+                raise StartupUnavailable("startup_publication_owner_changed")
+            gate.require_publication_owner(orch)
+
+    validate()
+    return validate
+
+
+@contextmanager
+def _followon_writer(orch, validate):
+    """Only an original short DB effect, never file work or a native join."""
+    validate()
+    with orch._db._lock:
+        validate()
+        yield
+
+
+class _FollowonOwnerLost(RuntimeError):
+    pass
+
+
+def _publish_followon_task(orch, task_id, validate):
+    """Original generation-aware publication with exact P2/P4/P6 selection."""
+    validate()
+    from runtime.daemon.startup_publication import current_publication, _TaskPublication
+    publication, sweep = current_publication(orch), _startup_sweep_owner(orch)
+    queue = orch._queue
+    if queue is None:
+        return
+    selected = None
+    if publication is not None:
+        selected = _TaskPublication(publication.gate, orch, task_id,
+            "returned_parent" if publication.gate._phase == "returned" else "redelivery",
+            publication=publication)
+    elif sweep is not None and orch._startup_state is not None:
+        selected = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                    "sweep_parent", sweep_owner=sweep)
+    kwargs = {"_publication": selected} if selected is not None else {}
+    def observe(outcome):
+        if selected is not None and outcome not in ("ordinary", "published"):
+            raise RuntimeError("startup_parent_publication_" + outcome)
+    def publish():
+        validate()
+        _enqueue_task_generation_aware(orch, task_id,
+            **({"_observe": observe} if selected is not None else {}), **kwargs)
+    with publication.attempt(orch, "parent_attempted") if publication is not None else nullcontext():
+        validate()
+        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
+        if callable(enqueue_if_absent):
+            inserted = enqueue_if_absent(orch._slug, task_id, publisher=publish, **kwargs)
+        else:
+            if selected is not None:
+                raise RuntimeError("startup_parent_queue_owner_unavailable")
+            publish()  # Existing lightweight standalone adapters.
+            return
+        if selected is not None:
+            from runtime.daemon.queue import TaskQueue
+            if (not isinstance(queue, TaskQueue) or type(inserted) is not bool
+                    or queue.pending_publication(orch._slug, task_id) != "pending"):
+                raise RuntimeError("startup_parent_publication_unacknowledged")
+            if publication is not None:
+                publication.count("acknowledged")
+                publication.count("inserted" if inserted else "already_pending")
+
+
 def _enqueue_parent_if_waiting(
+    orch: "Orchestrator", task_id: str, *,
+    root_auto_revisit_spawned: bool = False,
+    current_owner: Callable[[], bool] | None = None,
+    validate_admission: Callable[[], None] | None = None,
+) -> None:
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    selected = _task_followon_validation(orch)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+    try:
+        with _startup_sweep_effect(orch):
+            return _enqueue_parent_if_waiting_owned(
+                orch, task_id, root_auto_revisit_spawned=root_auto_revisit_spawned,
+                current_owner=current_owner, validate_admission=validate,
+            )
+    except _FollowonOwnerLost as exc:
+        if publication is not None:
+            publication.fail(exc)
+            raise
+        return
+    except BaseException as exc:
+        if publication is not None:
+            publication.fail(exc)
+        raise
+
+
+def _enqueue_parent_if_waiting_owned(
     orch: "Orchestrator",
     task_id: str,
     *,
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
+    validate_admission: Callable[[], None] | None = None,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
@@ -5575,13 +6303,26 @@ def _enqueue_parent_if_waiting(
     to auto-advance as before; on mismatch it clears the chain and wakes
     the parent.
     """
-    if current_owner is not None and not current_owner():
-        return
+    selected_validation = validate_admission or _task_followon_validation(orch)
+    original_owner = current_owner
+    def validate():
+        selected_validation()
+        if original_owner is not None and not original_owner():
+            raise _FollowonOwnerLost("startup_parent_current_owner_lost")
+        selected_validation()
+    validate()
     task = orch._db.get_task(task_id)
+    validate()
     if task is None or task.parent_task_id is None:
         return
     from runtime.workflows.recovery import classify_task
+    validate()
     ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
+    validate()
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    if publication is not None and ownership.kind == 'reconciliation_required':
+        raise RuntimeError("startup_parent_source_ownership_unavailable")
     if ownership.kind != 'legacy':
         if ownership.kind != 'coding_source_waiting':
             return
@@ -5592,9 +6333,16 @@ def _enqueue_parent_if_waiting(
             entry = queued_storage(orch._db._conn, orch._slug).runs[ownership.intent_id]
             if not entry['native'].get('returned') or entry['source']['task_id'] != task_id:
                 return
-    if classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None)).kind != 'legacy':
+    validate()
+    parent_ownership = classify_task(orch._db, task.parent_task_id, org_slug=getattr(orch, "_slug", None))
+    validate()
+    if publication is not None and parent_ownership.kind == 'reconciliation_required':
+        raise RuntimeError("startup_parent_ownership_unavailable")
+    if parent_ownership.kind != 'legacy':
         return
+    validate()
     parent = orch._db.get_task(task.parent_task_id)
+    validate()
     # Path B: a delegating parent is in_progress(delegated). The non-cascading
     # failure-recovery contract (TASK-573/THR-028) below is otherwise unchanged.
     if parent is None or parent.status not in _PARKED_CARRIER_STATUSES:
@@ -5603,24 +6351,7 @@ def _enqueue_parent_if_waiting(
         return
 
     def enqueue_parent_once() -> None:
-        """Keep a restart-reconstructed wake from duplicating a live tail."""
-        if current_owner is not None and not current_owner():
-            return
-        queue = getattr(orch, "_queue", None)
-        if queue is None:
-            return
-        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
-        if callable(enqueue_if_absent):
-            enqueue_if_absent(
-                orch._slug,
-                parent.id,
-                publisher=lambda: _enqueue_task_generation_aware(orch, parent.id),
-            )
-            return
-        # Lightweight test adapters predate TaskQueue's atomic boundary. The
-        # production daemon always wires TaskQueue; retain adapter compatibility
-        # without reaching into either queue implementation's private storage.
-        _enqueue_task_generation_aware(orch, parent.id)
+        _publish_followon_task(orch, parent.id, validate)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
@@ -5630,7 +6361,9 @@ def _enqueue_parent_if_waiting(
     # Phase 2 carrier fail-closed: when the parent is a carrier (its own
     # parent has active_fanout), a verdict-mismatch or a failed leg fails
     # the whole carrier immediately — no partial-chain completion.
+    validate()
     child = orch._db.get_task(task_id)
+    validate()
     if child is not None and parent.active_chain is not None:
         # THR-211: a child whose current session has durably landed a
         # structured terminal report is dispatch-terminal even while its row
@@ -5672,19 +6405,19 @@ def _enqueue_parent_if_waiting(
                 chain_snapshot = parent.active_chain
                 outcome = _advance_chain_for_completed_child(
                     orch=orch, parent_task_id=parent.id, child_task_id=task_id,
-                    report=authenticated_report,
+                    report=authenticated_report, validate_admission=validate,
                 )
                 if outcome == "advance":
                     return  # next leg spawned; parent stays in_progress(delegated)
                 # outcome == "wake" → chain cleared; carrier fail-closed?
                 if _carrier_fail_on_verdict_mismatch(
                     orch, parent, task_id, chain_snapshot,
-                    report=authenticated_report,
+                    report=authenticated_report, validate_admission=validate,
                 ):
                     return  # carrier failed; outer _enqueue_parent_if_waiting skipped
                 # Chain complete + verdict matched → carrier auto-completes
                 # directly (no _run_agent session, no manager-wake).
-                if _carrier_complete_on_chain_complete(orch, parent):
+                if _carrier_complete_on_chain_complete(orch, parent, validate_admission=validate):
                     return  # carrier completed; outer _enqueue_parent_if_waiting skipped
             # Stale re-trigger for a leg the chain already advanced past, or a
             # non-newest child: fall through to sibling-check + parent-wake.
@@ -5722,17 +6455,16 @@ def _enqueue_parent_if_waiting(
             # (its own parent has active_fanout), fail the whole carrier
             # immediately — no partial-chain completion.
             if parent.active_chain is not None:
-                if current_owner is not None and not current_owner():
-                    return
-                orch._db.update_task_active_chain(parent.id, None)
+                validate()
+                with _followon_writer(orch, validate):
+                    orch._db.update_task_active_chain(parent.id, None)
             if _is_carrier(orch, parent):
                 causal_leaf = next(
                     (leaf for leaf in unresolved_leaves if leaf.id == task_id),
                     unresolved_leaves[-1],
                 )
-                if current_owner is not None and not current_owner():
-                    return
-                _carrier_fail_immediate(orch, parent, causal_leaf.id)
+                validate()
+                _carrier_fail_immediate(orch, parent, causal_leaf.id, validate_admission=validate)
                 return  # carrier failure feeds the fan-out parent's barrier
 
             # A linked historical retry remains truthful causal context in the
@@ -5763,6 +6495,69 @@ def _enqueue_parent_if_waiting(
 # these readers are preserved for historical compatibility — existing
 # auto_revisit_of audit rows must remain readable).
 # ---------------------------------------------------------------------------
+def _publish_redelivery_task(
+    orch: "Orchestrator", task_id: str, *, metadata: dict | None = None,
+    publisher: Callable[[], str | None] | None = None,
+    generation_aware: bool = True,
+):
+    """P6 selected original pointer: actual insertion/SAME pending ownership.
+
+    This is not ordinary admission. A pending/admitted v2 target remains with
+    its original generation owner (P3), without a second discovery/publish pass.
+    Deferred authenticated SAME-owner callbacks explicitly retain their raw
+    original metadata and do not seek fresh generation admission.
+    """
+    from runtime.daemon.startup_publication import current_publication
+    from runtime.daemon.startup_recovery import RecoveryOutcome
+    from runtime.daemon.queue import TaskQueue
+    publication = current_publication(orch)
+    if publication is None:
+        raise RuntimeError("startup_redelivery_publication_owner_missing")
+    org = publication.gate.state.orgs.get(orch._slug)
+    publication.gate.require_redelivery_owner(org)
+    queue = orch._queue
+    if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
+        raise RuntimeError("startup_redelivery_task_queue_unavailable")
+    with publication.attempt(orch, "task_attempted"):
+        from runtime.daemon.startup_publication import _TaskPublication
+        selected = _TaskPublication(publication.gate, orch, task_id, "redelivery",
+                                    metadata, publication=publication)
+        if generation_aware:
+            # Exact target-local read, not discovery or reconstruction. Unknown
+            # classification is never inferred to be an empty/held selection.
+            classification = orch._db.classify_authority_policy_v2_root_dispatch_for_enqueue(task_id)
+            if classification.kind in ("pending", "admitted"):
+                publication.count("held")
+                return RecoveryOutcome("local_hold", "startup_redelivery_generation_owned")
+            if classification.kind not in ("absent", "retired"):
+                raise RuntimeError("startup_redelivery_generation_unavailable")
+
+        def publish() -> None:
+            if publisher is not None:
+                result = publisher()
+            elif generation_aware:
+                result = None
+                def observe(value: str) -> None:
+                    nonlocal result
+                    result = value
+                _enqueue_task_generation_aware(orch, task_id, metadata=metadata,
+                                               legacy="enqueue", _observe=observe, _publication=selected)
+            else:
+                queue.enqueue(orch._slug, task_id, metadata=metadata, _publication=selected)
+                result = None
+            if generation_aware and result not in ("ordinary", "published"):
+                raise RuntimeError("startup_redelivery_task_publication_refused")
+
+        inserted = queue.enqueue_if_absent(orch._slug, task_id, metadata=metadata,
+                                           publisher=publish, _publication=selected)
+        if type(inserted) is not bool or queue.pending_publication(orch._slug, task_id) != "pending":
+            raise RuntimeError("startup_redelivery_task_unacknowledged")
+        publication.count("acknowledged")
+        publication.count("inserted" if inserted else "already_pending")
+        publication.gate.require_redelivery_owner(org)
+        return RecoveryOutcome("settled")
+
+
 def _maybe_resume_blocked_task(
     orch: "Orchestrator",
     task_id: str,
@@ -5782,43 +6577,73 @@ def _maybe_resume_blocked_task(
     """
     import json as _json
 
+    from runtime.daemon.startup_publication import current_publication
+    publication = current_publication(orch)
+    validate = _task_followon_validation(orch)
     db = orch._db
     audit = orch._audit
     task = db.get_task(task_id)
+    validate()
     if task is None:
+        if publication is not None:
+            raise RuntimeError("startup_blocked_task_missing")
         return False
     # Path B: a task parked on jobs is in_progress(blocked_on_job).
     if task.status not in _PARKED_CARRIER_STATUSES or task.block_kind != BlockKind.BLOCKED_ON_JOB:
+        if publication is not None:
+            publication.count("not_applicable")
         return False  # silent — steady state
 
     try:
         job_ids = _json.loads(task.blocked_on_job_ids or "[]")
     except _json.JSONDecodeError:
-        audit.log_task_resume_skipped(
-            task_id=task_id, reason="empty_job_list",
-            blocked_on_job_ids_raw=task.blocked_on_job_ids,
-        )
+        with _followon_writer(orch, validate):
+            audit.log_task_resume_skipped(
+                task_id=task_id, reason="empty_job_list",
+                blocked_on_job_ids_raw=task.blocked_on_job_ids,
+            )
+        if publication is not None:
+            raise RuntimeError("startup_blocked_job_list_invalid")
         return False
     if not job_ids:
-        audit.log_task_resume_skipped(
-            task_id=task_id, reason="empty_job_list",
-            blocked_on_job_ids_raw=task.blocked_on_job_ids,
-        )
+        with _followon_writer(orch, validate):
+            audit.log_task_resume_skipped(
+                task_id=task_id, reason="empty_job_list",
+                blocked_on_job_ids_raw=task.blocked_on_job_ids,
+            )
+        if publication is not None:
+            raise RuntimeError("startup_blocked_job_list_empty")
         return False
+    if publication is not None and (type(job_ids) is not list or any(type(jid) is not str for jid in job_ids)):
+        raise RuntimeError("startup_blocked_job_list_invalid")
 
     _TERMINAL = {"completed", "failed", "rejected"}
     for jid in job_ids:
-        if db.get_job_status(jid) not in _TERMINAL:
+        validate()
+        status = db.get_job_status(jid)
+        validate()
+        if status not in _TERMINAL:
+            if publication is not None:
+                if status is None:
+                    raise RuntimeError("startup_blocking_job_missing")
+                publication.count("held")
             return False  # silent — common steady state
 
+    validate()
     # All terminal — enqueue (trigger metadata preserved through the boundary).
     # This producer's legacy shape is ``queue.enqueue(..., metadata=...)``.
-    _enqueue_task_generation_aware(
-        orch, task_id,
-        metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
-        legacy="enqueue",
-    )
-    return True
+    if publication is not None:
+        _publish_redelivery_task(
+            orch, task_id,
+            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+        )
+    else:
+        _enqueue_task_generation_aware(
+            orch, task_id,
+            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+            legacy="enqueue",
+        )
+    return True  # Ordinary contract: qualifying attempt, never an ack by itself.
 
 
 from runtime.orchestrator.task_thread_posting import _append_followup_system_and_reinvoke
@@ -5842,6 +6667,8 @@ def _maybe_post_thread_escalation(
 
     Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
     """
+    from runtime.orchestrator.task_thread_posting import _require_thread_producer
+    _require_thread_producer(orch)
     if current_owner is not None and not current_owner():
         return
     db = orch._db
@@ -5992,6 +6819,8 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
+    from runtime.orchestrator.task_thread_posting import _require_thread_producer
+    publication = _require_thread_producer(orch)
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
@@ -6011,6 +6840,8 @@ def _maybe_post_thread_followup(
     audit = orch._audit
     terminal_task = db.get_task(task_id)
     if terminal_task is None:
+        if publication is not None:
+            raise RuntimeError("startup_thread_terminal_task_missing")
         return
 
     # Re-read the persisted status. Site D's caller passes COMPLETED, but
@@ -6058,6 +6889,8 @@ def _maybe_post_thread_followup(
     # Thread-state guard.
     thread = db.get_thread(thread_id)
     if thread is None:
+        if publication is not None:
+            raise RuntimeError("startup_thread_missing")
         audit.log_thread_followup_skipped(
             thread_id, original_task_id=original.id, terminal_task_id=task_id,
             reason="thread_not_open", thread_status="missing",
@@ -6082,6 +6915,8 @@ def _maybe_post_thread_followup(
         and _payload_dict(r).get("task_id") == original.id
     ]
     if not dispatch_rows:
+        if publication is not None:
+            raise RuntimeError("startup_thread_dispatcher_unresolved")
         audit.log_thread_followup_skipped(
             thread_id, original_task_id=original.id, terminal_task_id=task_id,
             reason="dispatcher_unresolved",

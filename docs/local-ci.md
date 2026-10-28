@@ -16,6 +16,22 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
+The separately allocated ROOT13137 startup checks use
+`uv run python scripts/verify_startup_recovery.py --root ABS_TASK_TMP --output ABS_TASK_OUTPUT`.
+The scratch parent must already exist under workspace `.happyranch/task-tmp`;
+each process exclusively creates and preserves its own fresh child and receipt.
+Optional `--web-dist ABS_TASK_BUILD --http-inventory ABS_ACCEPTED_HTTP_JSON --web`
+selects the existing built SPA, finite held-route inventory and affected Vitest
+keepers. `--case C12` selects only the canonical history fetch/hit assertions,
+with independent SQL/entry observations. Use the identical command for the
+single production-defect/restoration pair; each process consumes one of the
+original three cumulative maker invocations (QA has its separate allocation).
+No retry/reset or ordinary execution grant follows from this command's presence.
+Exit0 means its named assertions passed; the receipt's explicit NOT RUN rows,
+populated workflow/coding/native/browser gaps and excluded operator timing are
+separate. This driver is outside required CI, retired units, general integration
+and Product E2E. It never establishes the launcher-to-usable-API/UI under10s target.
+
 Fresh Product E2E keeps the daily `0 19 * * *` schedule (19:00 UTC /
 03:00 Asia/Shanghai) on immutable default-branch `github.sha`. Founder
 THR291seq277 authorizes engineering_manager under sole linked ROOT TASK-12445

@@ -537,20 +537,28 @@ class TeamMoveCoordinator:
             # authoritative if this process loses its notification copy.
             self._deferred.setdefault(task_id, metadata)
 
-    def redeliver_tasks(self, enqueue: Any) -> None:
+    def redeliver_tasks(self, enqueue: Any, *, validate_admission=None) -> None:
         """D calls AFTER durable release; callback is outside gate/DB locks.
 
         Existing generation-aware queue owner decides dedup/eligibility. No
         result token consumption, task allocation or release of the operation.
         """
+        if validate_admission is not None:
+            validate_admission()
         with self.gate, self.store.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             if self.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
             deferred = tuple(self._deferred.items())
         for task_id, metadata in deferred:
+            if validate_admission is not None:
+                validate_admission()
             if not enqueue(task_id, metadata):
                 continue  # Refused/pending publication retains its notification.
             with self.store.db._lock:
+                if validate_admission is not None:
+                    validate_admission()
                 if self._deferred.get(task_id) is metadata:
                     self._deferred.pop(task_id, None)
 

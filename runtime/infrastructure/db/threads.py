@@ -261,9 +261,14 @@ class ThreadsMixin:
                       "next_cursor": next_cursor, "sampled_at": sampled_at}
             self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             return result
-        except BaseException:
-            self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-            self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException as exc:
+            cleanup = getattr(self, "_startup_read_cleanup", None)
+            if cleanup is None:
+                # Ordinary Database transaction/cleanup behavior is unchanged.
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            else:
+                cleanup(savepoint, exc)
             raise
 
     @_synchronized
@@ -437,6 +442,7 @@ class ThreadsMixin:
         system_payload: dict | None = None,
         attachments: list[ThreadAttachment] | None = None,
         sent_from_task_id: str | None = None,
+        validate_admission=None,
     ) -> int:
         """Append a message and return its allocated seq.
 
@@ -444,8 +450,12 @@ class ThreadsMixin:
         insert happen under the connection's transaction, and the unique
         index on (thread_id, seq) guards against any race.
         """
+        if validate_admission is not None:
+            validate_admission()
         try:
-            self._conn.execute("BEGIN")
+            self._conn.execute("BEGIN IMMEDIATE" if validate_admission is not None else "BEGIN")
+            if validate_admission is not None:
+                validate_admission()
             next_seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
@@ -457,8 +467,15 @@ class ThreadsMixin:
                 sent_from_task_id=sent_from_task_id,
             )
             self._conn.commit()
-        except Exception:
-            self._conn.rollback()
+        except BaseException as exc:
+            if validate_admission is None and not isinstance(exc, Exception):
+                raise
+            try:
+                self._conn.rollback()
+            except BaseException as secondary:
+                if validate_admission is None:
+                    raise
+                exc.add_note(f"selected SYSTEM rollback also failed: {secondary!r}")
             raise
         return next_seq
 
@@ -476,6 +493,9 @@ class ThreadsMixin:
         )
         out: dict[int, list[ThreadAttachment]] = {seq: [] for seq in seqs}
         for row in cursor.fetchall():
+            budget = getattr(self, "_startup_read_budget", None)
+            if budget is not None:
+                budget.attachment()
             out.setdefault(row["message_seq"], []).append(
                 ThreadAttachment(
                     artifact_name=row["artifact_name"],
@@ -1003,6 +1023,7 @@ class ThreadsMixin:
         agent_name: str,
         triggering_seq: int,
         cap_delta_if_over: int = 1,
+        validate_admission=None,
     ) -> "tuple[ThreadInvocation, int | None]":
         """Atomically mint a TASK_FOLLOWUP invocation, auto-extending turn_cap
         by ``cap_delta_if_over`` if the projection (turns_used + pending + 1)
@@ -1020,51 +1041,75 @@ class ThreadsMixin:
         self.mint_thread_invocation from within this @_synchronized method is
         safe — the same thread can re-acquire the lock without deadlock.
         """
-        # Read thread state under the @_synchronized lock.
-        cur = self._conn.execute(
-            "SELECT turns_used, turn_cap FROM threads WHERE id = ?",
-            (thread_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            raise KeyError(f"thread {thread_id} not found")
-        turns_used = int(row["turns_used"])
-        turn_cap = int(row["turn_cap"])
-
-        counted = (
-            ThreadInvocationPurpose.REPLY.value,
-            ThreadInvocationPurpose.BOOTSTRAP.value,
-            ThreadInvocationPurpose.TASK_FOLLOWUP.value,
-        )
-        cur = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM thread_invocations "
-            "WHERE thread_id = ? AND status = ? AND purpose IN ({})".format(
-                ",".join("?" * len(counted))
-            ),
-            (thread_id, ThreadInvocationStatus.PENDING.value, *counted),
-        )
-        pending = int(cur.fetchone()["n"])
-
-        projected = turns_used + pending + 1
-        new_cap: int | None = None
-        if projected > turn_cap:
-            self._conn.execute(
-                "UPDATE threads SET turn_cap = turn_cap + ? WHERE id = ?",
-                (cap_delta_if_over, thread_id),
+        # Selected follow-up work owns SQL admission before projection/update.
+        # Defaults retain the original caller-owned implicit transaction contract.
+        began = False
+        if validate_admission is not None:
+            validate_admission()
+        try:
+            if validate_admission is not None:
+                if self._conn.in_transaction:
+                    raise RuntimeError("selected follow-up SQL owner unavailable")
+                self._conn.execute("BEGIN IMMEDIATE")
+                began = True
+            if validate_admission is not None:
+                validate_admission()
+            # Read thread state under the @_synchronized lock.
+            cur = self._conn.execute(
+                "SELECT turns_used, turn_cap FROM threads WHERE id = ?",
+                (thread_id,),
             )
-            new_cap = turn_cap + cap_delta_if_over
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"thread {thread_id} not found")
+            turns_used = int(row["turns_used"])
+            turn_cap = int(row["turn_cap"])
 
-        # Delegate to mint_thread_invocation — safe because RLock is re-entrant.
-        inv = self.mint_thread_invocation(
-            thread_id=thread_id,
-            agent_name=agent_name,
-            triggering_seq=triggering_seq,
-            purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
-        )
-        # No separate commit needed: mint_thread_invocation commits inside its
-        # own @_synchronized acquisition. The cap UPDATE above is committed by
-        # mint_thread_invocation's commit (SQLite commits all pending changes).
-        return inv, new_cap
+            counted = (
+                ThreadInvocationPurpose.REPLY.value,
+                ThreadInvocationPurpose.BOOTSTRAP.value,
+                ThreadInvocationPurpose.TASK_FOLLOWUP.value,
+            )
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM thread_invocations "
+                "WHERE thread_id = ? AND status = ? AND purpose IN ({})".format(
+                    ",".join("?" * len(counted))
+                ),
+                (thread_id, ThreadInvocationStatus.PENDING.value, *counted),
+            )
+            pending = int(cur.fetchone()["n"])
+
+            projected = turns_used + pending + 1
+            new_cap: int | None = None
+            if validate_admission is not None:
+                validate_admission()
+            if projected > turn_cap:
+                self._conn.execute(
+                    "UPDATE threads SET turn_cap = turn_cap + ? WHERE id = ?",
+                    (cap_delta_if_over, thread_id),
+                )
+                new_cap = turn_cap + cap_delta_if_over
+
+            # Delegate to mint_thread_invocation — safe because RLock is re-entrant.
+            if validate_admission is not None:
+                validate_admission()
+            inv = self.mint_thread_invocation(
+                thread_id=thread_id,
+                agent_name=agent_name,
+                triggering_seq=triggering_seq,
+                purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+            )
+            # No separate commit needed: mint_thread_invocation commits inside its
+            # own @_synchronized acquisition. The cap UPDATE above is committed by
+            # mint_thread_invocation's commit (SQLite commits all pending changes).
+            return inv, new_cap
+        except BaseException as exc:
+            if began:
+                try:
+                    self._conn.rollback()
+                except BaseException as secondary:
+                    exc.add_note(f"selected follow-up cap/mint rollback also failed: {secondary!r}")
+            raise
 
     @_synchronized
     def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:

@@ -570,8 +570,14 @@ passthrough, and test fakes). The bounded store:
   `recover_running`) instead of settling it. Thread-specific semantics are
   preserved: the Claude session-not-found eviction fallback and the THR-071
   no-callback nudge re-invoke run as additional supervised phases, each
-  publishing its own honest bounded receipt. The legacy uncontained path
-  remains when the supervisor is absent (tests / idle state).
+  publishing its own honest bounded receipt. Daemon-bound thread invocation
+  requires the supplied supervisor to be present and identical to its actual
+  bound daemon host, including direct calls with an omitted default; missing,
+  replaced or cross-owner hosts refuse before reservation/preparation, without
+  silently injecting a host. The legacy None/self-launch path remains only for
+  explicitly unbound standalone owners. The actual host's supported passthrough
+  backend retains host admission and ownership in all three phases. Independently
+  owed terminal/finish cleanup stays available after fresh readiness closes.
 - **C — bounded enforcement + receipt attribution (this PR):** the founder-
   approved fixed initial Linux policy above is applied to real session
   scopes (exact systemd-run properties, applied-verified, no CPUQuota),

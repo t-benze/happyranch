@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from runtime.infrastructure.startup_observation import V2_COUNTERS
+
 import json
 import sqlite3
 import sys
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -166,6 +169,9 @@ class _V2StartupReads:
 
     def __init__(self, db: Any) -> None:
         self.db = db
+        # Fixed scalar event counters participate in the existing retention
+        # accounting. No scan, payload serialization or telemetry root set.
+        self._statistics = dict.fromkeys(V2_COUNTERS, 0)
         # Values are (payload, charge); payload includes the actual root key,
         # complete raw scalar row tuples and private decoded history.
         # Accepted entries move to pending during a speculative closure; they
@@ -194,18 +200,40 @@ class _V2StartupReads:
 
     def __exit__(self, *_exc: Any) -> None:
         with self.db._lock:
-            self.invalidate()
+            self.invalidate("exit")
             self._closed = True
 
-    def invalidate(self) -> None:
+    def invalidate(self, cause: str = "explicit") -> None:
         """Drop accepted AND speculative references before effects or escape."""
         with self.db._lock:
+            self._statistics["invalidations"] += 1
+            self._observe_stat("invalidation_" + cause)
             self._memo.clear()
             self._pending.clear()
             self._epoch = None
             self._groups = ()
             self._position = -1
             self._window_end = 0
+
+    def _observe_stat(self, key: str, value: int = 1, *, maximum: bool = False) -> None:
+        try:
+            if key not in V2_COUNTERS:
+                key = "invalidation_explicit"
+            self._statistics[key] = max(self._statistics[key], value) if maximum else self._statistics[key] + value
+        except Exception:
+            try:
+                self._statistics["observation_failures"] += 1
+            except Exception:
+                pass  # Never stop actual invalidation/cleanup for telemetry.
+
+    def statistics(self) -> dict[str, int | None]:
+        """Actual performed work; characters are not claimed as UTF8 bytes."""
+        # Closed lifetime has one owner and no mutable cache or other users.
+        # Export after __exit__ without reacquiring the canonical DB mutex.
+        if self._closed:
+            return {**self._statistics, "history_payload_bytes": None}
+        with self.db._lock:
+            return {**self._statistics, "history_payload_bytes": None}
 
     def _retention_fits(
         self, pending: OrderedDict[str, _V2StartupEntry] | None = None,
@@ -252,9 +280,9 @@ class _V2StartupReads:
         # cleanup failures must keep their original ordering/escape boundary.
         try:
             if not self._retention_fits():
-                self.invalidate()
+                self.invalidate("accounting")
         except Exception:
-            self.invalidate()
+            self.invalidate("accounting")
 
     def _protected(self, root: str) -> bool:
         return any(
@@ -270,12 +298,14 @@ class _V2StartupReads:
         while True:
             if self._retention_fits(trial):
                 self._pending = trial
+                self._statistics["admissions"] += 1
                 return
             victim = next(
                 (key for key in trial if key != root and not self._protected(key)),
                 None,
             )
             if victim is None:
+                self._statistics["retention_rejections"] += 1
                 return
             del trial[victim]
 
@@ -328,7 +358,7 @@ class _V2StartupReads:
             self._position = position
             self._reconcile_retention()
         except Exception:
-            self.invalidate()
+            self.invalidate("accounting")
 
     def _clear_groups(self) -> None:
         self._groups = ()
@@ -337,7 +367,7 @@ class _V2StartupReads:
         self._reconcile_retention()
 
     def _abort(self, reason: str, *causes: BaseException) -> None:
-        self.invalidate()
+        self.invalidate("connection")
         if self.unsafe is None:
             self.unsafe = _V2StartupConnectionUnsafe(reason, *causes)
         else:
@@ -436,11 +466,13 @@ class _V2StartupReads:
             try:
                 opening = self._bookend()
                 if opening is None:
-                    self.invalidate()
+                    self._statistics["uncached_reads"] += 1
+                    self.invalidate("uncached")
                     with self._view():
                         return operation()
                 if opening != self._epoch:
-                    self.invalidate()
+                    self._statistics["epoch_changes"] += 1
+                    self.invalidate("epoch")
                     self._epoch = opening
                 # Keep the already-accounted equal epoch object on hits.
                 self._reconcile_retention()
@@ -455,36 +487,49 @@ class _V2StartupReads:
                     return result
                 # Never release a speculative target, anchor, absence or hit.
                 del result
-                self.invalidate()
+                self._statistics["moving_read_fallbacks"] += 1
+                self.invalidate("moving")
                 self.check()
                 # Exactly ONE uncached coherent fallback, after affirmative
                 # clean owned exit. Unsafe view cleanup always escapes above.
                 with self._view():
                     return operation()
             except BaseException:
-                self.invalidate()
+                self._statistics["failed_reads"] += 1
+                self.invalidate("failed_read")
                 raise
 
     def _history(self, root: str) -> list[dict]:
         # Only called by _project inside _read's locked coherent closure.
         if root in self._pending:
+            self._statistics["history_hits"] += 1
             history = self._pending[root][0][2]
             try:
                 self._pending.move_to_end(root)
                 self._reconcile_retention()
             except Exception:
-                self.invalidate()
+                self.invalidate("accounting")
             return history
+        self._statistics["history_misses"] += 1
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (root,),
         ).fetchall()
+        self._statistics["history_fetches"] += 1
+        self._statistics["history_rows"] += len(rows)
+        self._observe_stat("history_max_rows", len(rows), maximum=True)
         # Match get_audit_logs exactly, including truthy-payload decoding,
         # JSON scalar types, Unicode, empty payloads and malformed siblings.
         history = []
         for row in rows:
             item = dict(row)
             if item.get("payload"):
+                if isinstance(item["payload"], str):
+                    self._statistics["history_payload_characters"] += len(item["payload"])
+                else:
+                    self._statistics["history_payload_size_unavailable"] += 1
+                self._statistics["history_decode_attempts"] += 1
                 item["payload"] = json.loads(item["payload"])
+                self._statistics["history_decodes"] += 1
             history.append(item)
         if self._epoch is not None and rows and len(rows) <= _V2_STARTUP_ROW_CAP:
             try:
@@ -494,7 +539,7 @@ class _V2StartupReads:
                 self._admit(root, (payload, charge))
             except Exception:
                 # Unsupported/failed accounting never changes full evaluation.
-                self.invalidate()
+                self.invalidate("accounting")
         return history
 
     def _project(
@@ -533,11 +578,24 @@ class _V2StartupReads:
             except BaseException:
                 # Release immediately without doing new accounting while an
                 # evidence failure/interruption is already escaping.
-                self.invalidate()
+                self.invalidate("discovery")
                 raise
             self._clear_groups()
             return result
-        return self._read(project)
+        started = time.monotonic_ns()
+        self._statistics["discovery_calls"] += 1
+        try:
+            result = self._read(project)
+        except BaseException:
+            self._observe_stat("discovery_failed")
+            raise
+        else:
+            self._observe_stat("discovery_complete")
+            return result
+        finally:
+            elapsed = time.monotonic_ns() - started
+            self._statistics["discovery_ns"] += elapsed
+            self._observe_stat("discovery_max_ns", elapsed, maximum=True)
 
     def exact(
         self, target: AuthorityPolicyV2HousekeepingTarget,
@@ -551,11 +609,24 @@ class _V2StartupReads:
                  target.manager_session_id, target.result_id),
             ).fetchone()
             return (None, None) if row is None else self._project(row)
-        return self._read(project)
+        started = time.monotonic_ns()
+        self._statistics["exact_calls"] += 1
+        try:
+            result = self._read(project)
+        except BaseException:
+            self._observe_stat("exact_failed")
+            raise
+        else:
+            self._observe_stat("exact_complete")
+            return result
+        finally:
+            elapsed = time.monotonic_ns() - started
+            self._statistics["exact_ns"] += elapsed
+            self._observe_stat("exact_max_ns", elapsed, maximum=True)
 
     def refuse(self, **identity: Any) -> AuthorityPolicyV2HousekeepingOutcome:
         with self.db._lock:
-            self.invalidate()
+            self.invalidate("refusal")
             self.check()
             phases = _V2StartupRefusalPhases()
             error = None

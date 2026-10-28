@@ -21,6 +21,10 @@ import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
+import { seedReadyHealth, startupHealth, stubReadyHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+import { HEALTH_QUERY_KEY } from '@/lib/startup';
+import { translate } from '@/lib/i18n';
 
 const mermaidChunk = vi.hoisted(() => {
   let release!: () => void;
@@ -117,8 +121,10 @@ function composerErrorSlot(): HTMLElement | null {
 }
 
 function stubBase() {
+  stubReadyHealth();
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+    http.get(`/api/v1/orgs/${SLUG}/identities`, () => HttpResponse.json({ identities: [] })),
     http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -159,13 +165,15 @@ function stubDetail(
 }
 
 function mount(route: string, locale: 'en' | 'zh-CN') {
+  const client = makeQueryClient();
+  seedReadyHealth(client);
   return renderWithProviders(
     <>
       <AppRoutes />
       <LocaleTestSwitch to="zh-CN" />
       <LocaleTestSwitch to="en" />
     </>,
-    { route, i18n: { adapter: savedLocaleAdapter(locale) } },
+    { route, queryClient: client, i18n: { adapter: savedLocaleAdapter(locale) } },
   );
 }
 
@@ -418,6 +426,58 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
 });
 
 describe('ThreadsPage composer across a locale switch', () => {
+  test.each(['en', 'zh-CN'] as const)('held transitions preserve %s draft, focus, selection and attachment without replay', async (locale) => {
+    stubList([]);
+    stubDetail(mkThread('THR-1', 'Preserved recovery subject'), [mkMessage(1, 'founder', 'Original transcript bytes')]);
+    const client = makeQueryClient();
+    client.setQueryData(HEALTH_QUERY_KEY, startupHealth());
+    let sends = 0;
+    let uploads = 0;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/send`, () => {
+        sends++; return HttpResponse.json({ thread_id: 'THR-1', seq: 2 });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/artifacts`, () => {
+        uploads++; return HttpResponse.json({ name: 'held.txt', size_bytes: 3, modified_at: 'now' });
+      }),
+    );
+    const user = userEvent.setup();
+    const view = renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/threads/THR-1`, queryClient: client,
+      i18n: { adapter: savedLocaleAdapter(locale) },
+    });
+    try {
+      const input = await screen.findByRole('textbox', { name: locale === 'en' ? 'Compose follow-up' : '撰写跟进消息' }) as HTMLTextAreaElement;
+      await screen.findByText('Original transcript bytes');
+      await user.type(input, 'Retain this exact draft');
+      await user.upload(screen.getByLabelText(locale === 'en' ? 'Attach files' : '添加附件'), new File(['abc'], 'held.txt'));
+      input.focus();
+      input.setSelectionRange(2, 9);
+      const chip = screen.getByText('held.txt');
+      for (const state of ['recovering', 'recovery_failed'] as const) {
+        await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth(state)); });
+        await screen.findByText(translate(locale, state === 'recovering' ? 'startup.banner.recovering' : 'startup.banner.failed'));
+        expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeDisabled();
+        expect(input).toHaveValue('Retain this exact draft');
+        expect(input).toHaveFocus();
+        expect([input.selectionStart, input.selectionEnd]).toEqual([2, 9]);
+        expect(screen.getByText('held.txt')).toBe(chip);
+        expect(sends).toBe(0);
+        expect(uploads).toBe(0);
+      }
+      await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth()); });
+      await waitFor(() => expect(screen.getByRole('button', { name: locale === 'en' ? 'Send' : '发送' })).toBeEnabled());
+      expect(input).toHaveValue('Retain this exact draft');
+      expect(input).toHaveFocus();
+      expect([input.selectionStart, input.selectionEnd]).toEqual([2, 9]);
+      expect(sends).toBe(0);
+      expect(uploads).toBe(0);
+    } finally {
+      view.unmount();
+      client.clear();
+    }
+  });
+
   test('draft, selection, attachment chip and controls survive resize and en -> zh-CN -> en with zero requests; one send posts once', async () => {
     stubList([]);
     stubDetail(mkThread('THR-1', 'Composer subject'), [mkMessage(1, 'founder', 'hi')]);

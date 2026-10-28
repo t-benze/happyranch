@@ -14,7 +14,10 @@ that transitions the row.
 from __future__ import annotations
 
 from runtime.orchestrator.team_move import DeferredTeamMove
-from runtime.orchestrator.producer_move import producer_preparation_effects
+from runtime.orchestrator.producer_move import (
+    producer_preparation_effects, require_producer_admission, await_producer_worker,
+)
+from runtime.daemon.startup_recovery import StartupUnavailable
 
 import asyncio
 import time
@@ -177,6 +180,10 @@ async def _run_schedule(
     first-wins terminal protocol, bounded receipt publication, and exactly-once
     lease release; the executor and its per-provider throttle stay inside the
     launch body unchanged."""
+    require_producer_admission(org_state)
+    if (org_state._startup_state is not None
+            and host_supervisor is not org_state._startup_state.host_supervisor):
+        raise StartupUnavailable("startup_attachment_changed")
     store = org_state.db.schedules
     record = store.get(schedule_id)
     if record is None or record.status != ScheduleStatus.FIRING:
@@ -242,6 +249,7 @@ async def _run_schedule(
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock.
     try:
+        require_producer_admission(org_state)
         with producer_preparation_effects(_move_owner):
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
@@ -265,7 +273,7 @@ async def _run_schedule(
                 agent_name=record.agent_name,
                 task_id=schedule_id,
             )
-    except DeferredTeamMove:
+    except (StartupUnavailable, DeferredTeamMove):
         raise
     except Exception as e:
         _failure_transition(store, record, now, f"materialization_failed: {e}")
@@ -282,14 +290,17 @@ async def _run_schedule(
     # Await the joined offload BEFORE executor launch, inside the SAME native
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
-    repo_refresh_results = await refresh_workspace_repos_async(workspace,
+    require_producer_admission(org_state)
+    repo_refresh_results = await refresh_workspace_repos_async(workspace, org=org_state,
         preparation=_move_owner, host_supervisor=host_supervisor,
         materialization=(settings, expected_specs))
 
+    require_producer_admission(org_state)
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
+        require_producer_admission(org_state)
         with producer_preparation_effects(_move_owner):
             validate_workspace_skills_integrity(
                 workspace, expected_specs,
@@ -370,6 +381,7 @@ async def _run_schedule(
     spec_builder = getattr(executor, "build_launch_spec", None)
     if spec_builder is not None:
         try:
+            require_producer_admission(org_state)
             with producer_preparation_effects(_move_owner):
                 launch_spec = spec_builder(
                     workspace=workspace,
@@ -379,7 +391,7 @@ async def _run_schedule(
                     org_slug=org_state.slug,
                     timeout_seconds=settings.session_timeout_seconds,
                 )
-        except DeferredTeamMove:
+        except (StartupUnavailable, DeferredTeamMove):
             raise
         except Exception as exc:
             _failure_transition(
@@ -407,6 +419,15 @@ async def _run_schedule(
         # without capacity, and reacquires with the original enqueue age and
         # a fresh handle) — mirroring the task producer's passthrough seam.
         contained = running.process is not None
+        if not contained:
+            try:
+                if _move_owner is not None:
+                    _move_owner.require_admission()
+                require_producer_admission(org_state)
+            except StartupUnavailable as exc:
+                if _move_owner is not None:
+                    _move_owner.admission_refused(exc)
+                raise
         result = executor.run(
             workspace=workspace,
             prompt=prompt,
@@ -428,8 +449,7 @@ async def _run_schedule(
             payload=result,
         )
 
-    outcome = await loop.run_in_executor(
-        None,
+    outcome = await await_producer_worker(
         lambda: host_supervisor.run(
             AdmissionRequest(
                 org=org_state.slug,
@@ -446,6 +466,7 @@ async def _run_schedule(
             pre_launch_validator=_pre_launch_validator,
             final_prelaunch_validator=_move_owner,
         ),
+        org=org_state, preparation=_move_owner, loop=loop,
     )
     # ``outcome.payload`` is the launch body's LaunchResult; its own
     # ``payload`` is the executor's ExecutorResult. A pre-launch terminal
@@ -511,6 +532,10 @@ async def run_schedule(
     executor_factory: Callable | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
+    require_producer_admission(org_state)
+    if (org_state._startup_state is not None
+            and host_supervisor is not org_state._startup_state.host_supervisor):
+        raise StartupUnavailable("startup_attachment_changed")
     with org_state._runner_lifetime() as admitted:
         if not admitted:
             return

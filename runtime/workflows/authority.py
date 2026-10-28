@@ -20,7 +20,7 @@ import logging
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -421,22 +421,36 @@ class WorkflowAuthorityCoordinator:
         return [grouped[name] for name in sorted(grouped)]
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self, *, validate_admission: Callable[[], None] | None = None):
         """Own a short coordinator transaction without borrowing schema APIs."""
         with self._db._lock:
+            if validate_admission is not None:
+                validate_admission()
             conn = self._db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield conn
-            except BaseException:
-                conn.rollback()
+            except BaseException as primary:
+                try:
+                    conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    primary.add_note(f"selected authority transaction rollback also failed: {secondary!r}")
                 raise
             else:
                 try:
                     conn.commit()
-                except BaseException:
+                except BaseException as primary:
                     # This context owns the transaction; do not leak a failed commit.
-                    conn.rollback()
+                    try:
+                        conn.rollback()
+                    except BaseException as secondary:
+                        if validate_admission is None:
+                            raise
+                        primary.add_note(f"selected authority commit rollback also failed: {secondary!r}")
                     raise
 
     @staticmethod
@@ -482,8 +496,8 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_active_journal_invalid")
         return str(active["id"]), str(active["publisher_invocation"])
 
-    def _acquire_lease(self, owner: str) -> None:
-        with self._transaction() as conn:
+    def _acquire_lease(self, owner: str, *, validate_admission: Callable[[], None] | None = None) -> None:
+        with self._transaction(validate_admission=validate_admission) as conn:
             row = conn.execute(
                 "SELECT owner_token,owner_pid FROM workflow_publication_leases "
                 "WHERE namespace=?",
@@ -651,6 +665,7 @@ class WorkflowAuthorityCoordinator:
         reason: str,
         publisher_invocation: str,
         increment_profile_fence: bool = False,
+        validate_admission: Callable[[], None] | None = None,
     ) -> str:
         """Fence and durably bind it to one publication invocation.
 
@@ -662,7 +677,7 @@ class WorkflowAuthorityCoordinator:
         leave recovery to complete the already-started publication.
         """
         self._require_move_publication_owner(publisher_invocation)
-        with self._transaction() as conn:
+        with self._transaction(validate_admission=validate_admission) as conn:
             active = self._active_journal(conn, self.namespace)
             if active is not None:
                 if str(active["publisher_invocation"]).startswith(
@@ -752,6 +767,7 @@ class WorkflowAuthorityCoordinator:
         coordinator_invocation: str,
         resume: bool = False,
         expected_revision: tuple | None = None,
+        validate_admission: Callable[[], None] | None = None,
     ) -> Iterator[ProfileFenceBinding]:
         """Hold the org publisher gate for one machine-profile operation.
 
@@ -761,7 +777,11 @@ class WorkflowAuthorityCoordinator:
         only while the profile fence is created; the process gate stays held
         through the caller's store mutation and bound republish.
         """
+        if validate_admission is not None:
+            validate_admission()
         with self._publisher_lock:
+            if validate_admission is not None:
+                validate_admission()
             publisher_invocation = f"profile-coordinator:{coordinator_invocation}"
             if resume:
                 with self._db._lock:
@@ -783,7 +803,7 @@ class WorkflowAuthorityCoordinator:
                     yield existing_binding
                     return
             owner = f"{publisher_invocation}:{uuid.uuid4().hex}"
-            self._acquire_lease(owner)
+            self._acquire_lease(owner, validate_admission=validate_admission)
             try:
                 if expected_revision is None:
                     with self._db._lock:
@@ -801,6 +821,7 @@ class WorkflowAuthorityCoordinator:
                     reason=reason,
                     publisher_invocation=publisher_invocation,
                     increment_profile_fence=True,
+                    validate_admission=validate_admission,
                 )
                 with self._db._lock:
                     active = self._active_journal(self._db._conn, self.namespace)
@@ -1267,7 +1288,7 @@ class WorkflowAuthorityCoordinator:
         return AuthorityAdmissionCapture(ready, before, names, effective, mirror)
 
     @contextmanager
-    def _admission_transaction(self) -> Iterator[sqlite3.Connection]:
+    def _admission_transaction(self, *, validate_admission: Callable[[], None] | None = None) -> Iterator[sqlite3.Connection]:
         """Retain writer ownership through rollback of a failed admission commit.
 
         The shared publication transaction contract is unchanged. Activation
@@ -1275,17 +1296,27 @@ class WorkflowAuthorityCoordinator:
         publication lease can be released or another writer can observe it.
         """
         with self._db._lock:
+            if validate_admission is not None:
+                validate_admission()
             conn = self._db._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield conn
                 conn.commit()
-            except BaseException:
-                conn.rollback()
+            except BaseException as primary:
+                try:
+                    conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    primary.add_note(f"selected admission rollback also failed: {secondary!r}")
                 raise
 
     @contextmanager
-    def _admission_ownership(self, capture: AuthorityAdmissionCapture) -> Iterator[None]:
+    def _admission_ownership(self, capture: AuthorityAdmissionCapture, *,
+                             validate_admission: Callable[[], None] | None = None) -> Iterator[None]:
         """Own captured profile/publisher fences without a business writer.
 
         Lease acquisition and release each finish their own short transaction.
@@ -1295,16 +1326,33 @@ class WorkflowAuthorityCoordinator:
         coordinator = self._profile_coordinator
         if coordinator is None:
             raise WorkflowAuthorityError("authority_profile_coordinator_unavailable")
+        if validate_admission is not None:
+            validate_admission()
         with ExitStack() as stack:
             for name in capture.profile_names:
                 stack.enter_context(coordinator.profile_read(name))
+                if validate_admission is not None:
+                    validate_admission()
                 coordinator._assert_no_active_operation(name)
             stack.enter_context(self._publisher_lock)
+            if validate_admission is not None:
+                validate_admission()
             owner = f"workflow-admission:{uuid.uuid4().hex}"
-            self._acquire_lease(owner)
+            self._acquire_lease(owner, validate_admission=validate_admission)
             try:
+                if validate_admission is not None:
+                    validate_admission()
                 yield
-            finally:
+            except BaseException as primary:
+                if validate_admission is None:
+                    self._release_lease(owner)
+                else:
+                    try:
+                        self._release_lease(owner)
+                    except BaseException as secondary:
+                        primary.add_note(f"workflow admission lease release also failed: {secondary!r}")
+                raise
+            else:
                 self._release_lease(owner)
 
     def _validate_admission_uncommitted(
@@ -1342,7 +1390,8 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("workflow_activation_authority_stale")
 
     @contextmanager
-    def admission_writer(self, capture: AuthorityAdmissionCapture) -> Iterator[sqlite3.Connection]:
+    def admission_writer(self, capture: AuthorityAdmissionCapture, *,
+                         validate_admission: Callable[[], None] | None = None) -> Iterator[sqlite3.Connection]:
         """Consume captured bytes under the original admission ownership.
 
         Async consumers acquire their coroutine locks before entering. All
@@ -1350,8 +1399,8 @@ class WorkflowAuthorityCoordinator:
         connection is the sole admission transaction; no await or host work
         may occur until this context exits.
         """
-        with self._admission_ownership(capture):
-            with self._admission_transaction() as conn:
+        with self._admission_ownership(capture, validate_admission=validate_admission):
+            with self._admission_transaction(validate_admission=validate_admission) as conn:
                 self._validate_admission_uncommitted(conn, capture)
                 yield conn
 

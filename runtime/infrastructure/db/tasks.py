@@ -930,16 +930,25 @@ class TasksMixin:
 
     @_task_move_admission
     @_synchronized
-    def insert_task(self, task: TaskRecord) -> None:
+    def insert_task(self, task: TaskRecord, *, validate_admission=None) -> None:
+        if validate_admission is not None:
+            validate_admission()
         began = not self._conn.in_transaction
         if began:
             self._conn.execute("BEGIN IMMEDIATE")
         try:
+            if validate_admission is not None:
+                validate_admission()
             self._insert_task_uncommitted(task)
             self._conn.commit()
-        except BaseException:
+        except BaseException as exc:
             if began:
-                self._conn.rollback()
+                try:
+                    self._conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    exc.add_note(f"selected task insertion rollback also failed: {secondary!r}")
             raise
 
     def _insert_task_uncommitted(self, task: TaskRecord) -> None:
@@ -3038,6 +3047,7 @@ class TasksMixin:
         *,
         attachments: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
+        validate_admission=None,
     ) -> bool:
         """Atomically update parent active_chain + insert next child +
         attachment links/audit in a single explicit transaction.
@@ -3050,10 +3060,22 @@ class TasksMixin:
         attachments linked). Returns False and rolls back on any failure.
         """
         now_ts = datetime.now(timezone.utc).isoformat()
+        admission_error = None
+        def validate():
+            nonlocal admission_error
+            if validate_admission is not None:
+                try:
+                    validate_admission()
+                except BaseException as exc:
+                    admission_error = exc
+                    raise
+        validate()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            validate()
             self._check_team_move_task_uncommitted(parent_id, declared_chain=active_chain_json)
             self._check_team_move_task_uncommitted(next_child)
+            validate()
             self._conn.execute(
                 "UPDATE tasks SET active_chain = ? WHERE id = ?",
                 (active_chain_json, parent_id),
@@ -3097,8 +3119,14 @@ class TasksMixin:
             return True
         except Exception as exc:
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if isinstance(exc, DeferredTeamMove):
-                self._conn.rollback()
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if exc is admission_error or isinstance(exc, (DeferredTeamMove, StartupUnavailable)):
+                try:
+                    self._conn.rollback()
+                except BaseException as secondary:
+                    if validate_admission is None:
+                        raise
+                    exc.add_note(f"selected chain rollback also failed: {secondary!r}")
                 raise
             self._conn.rollback()
             return False

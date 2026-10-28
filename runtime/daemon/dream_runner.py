@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from runtime.orchestrator.team_move import DeferredTeamMove
-from runtime.orchestrator.producer_move import producer_preparation_effects
+from runtime.orchestrator.producer_move import (
+    producer_preparation_effects, require_producer_admission, await_producer_worker,
+)
+from runtime.daemon.startup_recovery import StartupUnavailable
 
 import asyncio
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
@@ -150,6 +153,10 @@ async def _run_dream(
     host_supervisor: HostSessionSupervisor | None = None,
     _move_owner=None,
 ) -> None:
+    require_producer_admission(org_state)
+    if (org_state._startup_state is not None
+            and host_supervisor is not org_state._startup_state.host_supervisor):
+        raise StartupUnavailable("startup_attachment_changed")
     dream = org_state.db.get_dream(dream_id)
     if dream is None or (dream.status != DreamStatus.PENDING and not (_move_owner is not None and dream.status == DreamStatus.RUNNING)):
         return
@@ -170,6 +177,7 @@ async def _run_dream(
 
     now = datetime.now(timezone.utc)
     async with org_state.teams_lock:
+        require_producer_admission(org_state)
         agent_def = _active_agent_def(paths, dream.agent_name)
         if agent_def is None:
             # Missing/terminated agent: terminal non-execution (SKIPPED).
@@ -244,6 +252,7 @@ async def _run_dream(
     # and return BEFORE executor spawn (REVISE TASK-2829).
     session_id = _move_owner.session_id if _move_owner is not None else f"sess-{uuid.uuid4().hex}"
     try:
+        require_producer_admission(org_state)
         with producer_preparation_effects(_move_owner):
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
@@ -267,7 +276,7 @@ async def _run_dream(
                 agent_name=dream.agent_name,
                 task_id=dream_id,
             )
-    except DeferredTeamMove:
+    except (StartupUnavailable, DeferredTeamMove):
         raise
     except Exception as e:
         org_state.db.update_dream(
@@ -287,14 +296,17 @@ async def _run_dream(
     # Await the joined offload BEFORE executor launch, inside the SAME native
     # effects scope. Failed/skipped refreshes warn of stale source; executed
     # failures retain uncertainty. Cancellation waits for worker completion.
-    repo_refresh_results = await refresh_workspace_repos_async(workspace,
+    require_producer_admission(org_state)
+    repo_refresh_results = await refresh_workspace_repos_async(workspace, org=org_state,
         preparation=_move_owner, host_supervisor=host_supervisor,
         materialization=(settings, expected_specs))
 
+    require_producer_admission(org_state)
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
+        require_producer_admission(org_state)
         with producer_preparation_effects(_move_owner):
             validate_workspace_skills_integrity(
                 workspace, expected_specs,
@@ -347,15 +359,20 @@ async def _run_dream(
     result = None
     if host_supervisor is None:
         # ── Legacy uncontained path (unchanged) ──
-        result = await loop.run_in_executor(None, lambda: executor.run(
-            workspace=workspace,
-            prompt=prompt,
-            session_id=session_id,
-            timeout_seconds=settings.session_timeout_seconds,
-            pre_launch_validator=_pre_launch_validator,
-            org_slug=org_state.slug,
-            model=model_name, reasoning_effort=reasoning_effort,
-        ))
+        def _run_uncontained() -> Any:
+            require_producer_admission(org_state)
+            return executor.run(
+                workspace=workspace,
+                prompt=prompt,
+                session_id=session_id,
+                timeout_seconds=settings.session_timeout_seconds,
+                pre_launch_validator=_pre_launch_validator,
+                org_slug=org_state.slug,
+                model=model_name, reasoning_effort=reasoning_effort,
+            )
+        result = await await_producer_worker(
+            _run_uncontained, org=org_state, preparation=_move_owner, loop=loop,
+        )
     else:
         # ── THR-207 supervised wiring: the dream session runs through the
         # daemon-wide HostSessionSupervisor (admission lease, atomic ownership
@@ -381,6 +398,7 @@ async def _run_dream(
             )
             return
         try:
+            require_producer_admission(org_state)
             with producer_preparation_effects(_move_owner):
                 launch_spec = spec_builder(
                     workspace=workspace,
@@ -390,7 +408,7 @@ async def _run_dream(
                     org_slug=org_state.slug,
                     timeout_seconds=settings.session_timeout_seconds,
                 )
-        except DeferredTeamMove:
+        except (StartupUnavailable, DeferredTeamMove):
             raise
         except Exception as exc:
             org_state.db.update_dream(
@@ -412,6 +430,15 @@ async def _run_dream(
             # internal 429 retry disabled so the supervisor owns the
             # finish/release/sleep/reacquire lifecycle.
             contained = running.process is not None
+            if not contained:
+                try:
+                    if _move_owner is not None:
+                        _move_owner.require_admission()
+                    require_producer_admission(org_state)
+                except StartupUnavailable as exc:
+                    if _move_owner is not None:
+                        _move_owner.admission_refused(exc)
+                    raise
             res = executor.run(
                 workspace=workspace,
                 prompt=prompt,
@@ -433,8 +460,7 @@ async def _run_dream(
                 payload=res,
             )
 
-        outcome = await loop.run_in_executor(
-            None,
+        outcome = await await_producer_worker(
             lambda: host_supervisor.run(
                 AdmissionRequest(
                     org=org_state.slug,
@@ -451,6 +477,7 @@ async def _run_dream(
                 pre_launch_validator=_pre_launch_validator,
                 final_prelaunch_validator=_move_owner,
             ),
+            org=org_state, preparation=_move_owner, loop=loop,
         )
         if outcome.terminal_reason in (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED):
             # Daemon drain / cancellation interrupted the invocation: leave the
@@ -557,6 +584,10 @@ async def run_dream(
     admission_gate: Callable[[], Awaitable[None]] | None = None,
     host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
+    require_producer_admission(org_state)
+    if (org_state._startup_state is not None
+            and host_supervisor is not org_state._startup_state.host_supervisor):
+        raise StartupUnavailable("startup_attachment_changed")
     with org_state._runner_lifetime() as admitted:
         if not admitted:
             return

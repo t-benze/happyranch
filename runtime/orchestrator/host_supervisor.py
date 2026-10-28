@@ -69,6 +69,7 @@ import logging
 from contextlib import contextmanager
 from types import MethodType
 import threading
+import sys
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -1355,6 +1356,9 @@ class HostSessionSupervisor:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._startup_state = None
+        self._startup_org = None
+        self._startup_recovery = None
         if max_retry_attempts < 0:
             raise ValueError("max_retry_attempts must be >= 0")
         self._backend = backend
@@ -1391,6 +1395,10 @@ class HostSessionSupervisor:
         # No separate active registry: the admission controller's ownership
         # registry IS the active set (created atomically at grant), so the
         # drain always sees every admitted attempt.
+
+    def _require_startup_ready(self) -> None:
+        from runtime.daemon.startup_recovery import _require_ordinary_ready
+        _require_ordinary_ready(self)
 
     # ── capability probing ────────────────────────────────────────
 
@@ -1479,7 +1487,9 @@ class HostSessionSupervisor:
         swallowed (logged) — they never replace the terminal reason and
         never break the exactly-once lease release."""
 
+        self._require_startup_ready()
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
+        from runtime.orchestrator.task_pause import TaskInvocation
         task_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_task_pause_commit") else None
         thread_invocation = final_prelaunch_validator if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) else None
         attempt = 0
@@ -1502,6 +1512,7 @@ class HostSessionSupervisor:
             attempt, retry_schedule = thread_invocation.retry_schedule("host", tuple(retry_schedule))
             retry_limit = len(retry_schedule)
         while True:
+            self._require_startup_ready()
             if request.move_reservation is not None:
                 reservation = request.move_reservation
                 if (request.org != reservation.identity.org_slug
@@ -1512,6 +1523,7 @@ class HostSessionSupervisor:
                     raise DeferredTeamMove("team_move_host_owner_mismatch")
                 # A held task never enters the host FIFO or spends a slot.
                 reservation.before_fifo()
+            self._require_startup_ready()
             lease = self._admission.acquire(request, timeout=timeout)
             if lease is None:
                 outcome = SessionOutcome(
@@ -1523,7 +1535,20 @@ class HostSessionSupervisor:
                 if on_terminal is not None:
                     self._invoke_terminal_hook(on_terminal, outcome, request.move_reservation)
                 return outcome
+            task_attempt = None
             try:
+                # Only an actual already-held task return can carry this
+                # original grant's observations to its independent outer owners.
+                if (isinstance(task_invocation, TaskInvocation) and task_invocation._held_recovery is not None
+                        and request.move_reservation is not None):
+                    held = task_invocation._held_recovery
+                    task_attempt = dict(invocation=task_invocation, held=held, host=self,
+                        backend=self._backend, admission=self._admission,
+                        request=request, lease=lease, ctx=lease.ctx, reservation=request.move_reservation,
+                        binding=(task_invocation.identity, task_invocation.task.id, task_invocation.agent,
+                                 task_invocation.session_id, task_invocation.refusal_attempt_id),
+                        attempt=attempt, terminal_hook=on_terminal, prepare_entered=False)
+                    held["host_attempt"] = task_attempt
                 outcome = self._execute_attempt(
                     request,
                     ctx=lease.ctx,
@@ -1533,12 +1558,20 @@ class HostSessionSupervisor:
                     attempt=attempt,
                     pre_launch_validator=pre_launch_validator,
                     final_prelaunch_validator=final_prelaunch_validator,
+                    _task_recovery_attempt=task_attempt,
                 )
             except BaseException as exc:
                 if request.move_reservation is not None:
                     from runtime.orchestrator.task_pause import DeferredRootPause
                     from runtime.orchestrator.team_move import DeferredTeamMove
-                    if not isinstance(exc, (DeferredRootPause, DeferredTeamMove)):
+                    from runtime.daemon.startup_recovery import StartupUnavailable
+                    native_refusal = (isinstance(exc, StartupUnavailable)
+                        and thread_invocation is request.move_reservation
+                        and getattr(exc, "native_admission_owner", None) is thread_invocation)
+                    task_refusal = task_attempt is not None and task_attempt.get("error") is exc
+                    # The original task observation is classified only AFTER
+                    # terminal work and lease retirement, never cleared later.
+                    if not isinstance(exc, (DeferredRootPause, DeferredTeamMove)) and not native_refusal and not task_refusal:
                         request.move_reservation.failed_cleanup()
                 # Unexpected exception: the lease still releases exactly
                 # once; run the caller's terminal hook (best-effort, with
@@ -1551,7 +1584,16 @@ class HostSessionSupervisor:
                         exc.add_note(f"thread terminal evidence failed: {settlement}")
                         logger.exception("Thread terminal evidence failed while preserving primary error")
                 if on_terminal is not None:
-                    self._invoke_terminal_hook(on_terminal, None, request.move_reservation)
+                    if task_attempt is not None and task_attempt.get("error") is exc:
+                        try:
+                            on_terminal(None)
+                        except BaseException as secondary:
+                            request.move_reservation.failed_cleanup()
+                            exc.add_note(f"Task host terminal also failed: {type(secondary).__name__}")
+                        else:
+                            task_attempt["terminal_settled"] = on_terminal
+                    else:
+                        self._invoke_terminal_hook(on_terminal, None, request.move_reservation)
                 raise
             else:
                 if thread_invocation is not None:
@@ -1567,7 +1609,26 @@ class HostSessionSupervisor:
                 ):
                     self._invoke_terminal_hook(on_terminal, outcome, request.move_reservation)
             finally:
-                lease.release()
+                primary = sys.exception()
+                try:
+                    lease.release()
+                except BaseException as secondary:
+                    if task_attempt is None or primary is None:
+                        raise
+                    request.move_reservation.failed_cleanup()
+                    primary.add_note(f"Task host lease release also failed: {type(secondary).__name__}")
+                else:
+                    if task_attempt is not None:
+                        task_attempt["lease_retired"] = lease
+                finally:
+                    if task_attempt is not None and task_attempt.get("error") is primary and primary is not None:
+                        try:
+                            settled = task_invocation._host_recovery_refusal(primary)
+                        except BaseException as secondary:
+                            settled = False
+                            primary.add_note(f"Task host refusal observation also failed: {type(secondary).__name__}")
+                        if not settled:
+                            request.move_reservation.failed_cleanup()
             if (
                 allow_retries and outcome.retry_worthy
                 and attempt < retry_limit
@@ -1624,6 +1685,7 @@ class HostSessionSupervisor:
         attempt: int,
         pre_launch_validator: Callable[[], None] | None = None,
         final_prelaunch_validator: Callable[[], None] | None = None,
+        _task_recovery_attempt: dict | None = None,
     ) -> SessionOutcome:
         """Run one granted attempt to a terminal outcome under its ownership
         record.
@@ -1636,11 +1698,47 @@ class HostSessionSupervisor:
         any window (grant→registration, registration→prepare, prepare→launch
         commitment, commitment→bind, after bind/body) is durably observed and
         drives idempotent containment before the lease releases."""
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        from runtime.orchestrator.thread_move import ThreadPreparation
+        from runtime.orchestrator.producer_move import ProducerPreparation
+        native_owner = (isinstance(final_prelaunch_validator, (ThreadPreparation, ProducerPreparation))
+            and request.move_reservation is final_prelaunch_validator)
+
+        def record_task_refusal(error: BaseException) -> None:
+            if _task_recovery_attempt is not None and isinstance(error, StartupUnavailable):
+                _task_recovery_attempt["error"] = error
+
+        def abandon_refused_task(error: BaseException) -> None:
+            if _task_recovery_attempt is None or not isinstance(error, StartupUnavailable):
+                self._safe_abandon(self._backend, pending, request.move_reservation)
+                return
+            # Observe the actual returned handle's abandonment. The generic
+            # best-effort helper's return alone supplies no positive evidence.
+            try:
+                self._backend.abandon(pending)
+            except BaseException as secondary:
+                request.move_reservation.failed_cleanup()
+                error.add_note(f"Task host abandonment also failed: {type(secondary).__name__}")
+            else:
+                _task_recovery_attempt["abandoned"] = pending
+
+        def require_fresh_startup() -> None:
+            try:
+                if native_owner:
+                    final_prelaunch_validator.require_admission()
+                self._require_startup_ready()
+            except StartupUnavailable as exc:
+                record_task_refusal(exc)
+                if native_owner:
+                    final_prelaunch_validator.admission_refused(exc)
+                raise
+
         # ── ownership gate (grant→registration) ──
         # A terminal winner (daemon shutdown drained at/after grant) already
         # froze on the ownership record: refuse before any handle exists.
         if ctx.terminal_reason() is not None:
             return self._outcome(request, ctx, attempt)
+        require_fresh_startup()
         # ── pre-launch integrity validation (per attempt, incl. 429 retries) ──
         # Runs BEFORE ``backend.prepare``/launch so a failing check never
         # creates a containment handle (fail-closed; the supervisor re-runs it
@@ -1652,14 +1750,23 @@ class HostSessionSupervisor:
             except Exception as exc:
                 from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
                 from runtime.orchestrator.team_move import DeferredTeamMove
-                if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                from runtime.daemon.startup_recovery import StartupUnavailable
+                if isinstance(exc, (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                    record_task_refusal(exc)
+                    if isinstance(exc, StartupUnavailable) and native_owner:
+                        final_prelaunch_validator.admission_refused(exc)
                     raise
                 ctx.freeze_terminal(TerminalReason.FAILURE)
                 ctx.set_error(f"pre-launch validation failed: {exc}")
                 return self._outcome(request, ctx, attempt)
+        require_fresh_startup()
         # ── prepare (never before admission) ──
+        if _task_recovery_attempt is not None:
+            _task_recovery_attempt["prepare_entered"] = True
         try:
             pending = self._backend.prepare(request, self._policy)
+            if _task_recovery_attempt is not None:
+                _task_recovery_attempt["pending"] = pending
         except BackendError as exc:
             ctx.freeze_terminal(TerminalReason.PREPARE_FAILURE)
             ctx.set_error(str(exc))
@@ -1681,6 +1788,11 @@ class HostSessionSupervisor:
         # replacement/cancellation. This hook deliberately runs after that
         # window, and immediately before the existing atomic commitment. It
         # is opt-in so ordinary callers do not re-run their validators here.
+        try:
+            require_fresh_startup()
+        except BaseException as exc:
+            abandon_refused_task(exc)
+            raise
         task_commit = getattr(final_prelaunch_validator, "_task_pause_commit", None)
         if task_commit is None:
             task_commit = getattr(final_prelaunch_validator, "_thread_move_commit", None)
@@ -1693,8 +1805,9 @@ class HostSessionSupervisor:
             except DeferredRootPause:
                 self._safe_abandon(self._backend, pending, request.move_reservation)
                 raise
-            except BaseException:
-                self._safe_abandon(self._backend, pending, request.move_reservation)
+            except BaseException as exc:
+                record_task_refusal(exc)
+                abandon_refused_task(exc)
                 raise
             if finalized is None:
                 self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
@@ -1707,7 +1820,8 @@ class HostSessionSupervisor:
                 except Exception as exc:
                     from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
                     from runtime.orchestrator.team_move import DeferredTeamMove
-                    if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
+                    from runtime.daemon.startup_recovery import StartupUnavailable
+                    if isinstance(exc, (StartupUnavailable, DeferredRootPause, DeferredTeamMove, PauseControlError)):
                         self._safe_abandon(self._backend, pending, request.move_reservation)
                         raise
                     ctx.freeze_terminal(TerminalReason.FAILURE)
@@ -1722,6 +1836,11 @@ class HostSessionSupervisor:
                 self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
                 return self._outcome(request, ctx, attempt)
         # ── launch ──
+        try:
+            require_fresh_startup()
+        except BaseException as exc:
+            abandon_refused_task(exc)
+            raise
         try:
             running = self._backend.launch(pending, launch_spec)
         except BackendError as exc:
@@ -1753,11 +1872,16 @@ class HostSessionSupervisor:
 
         # ── launch body ───────────────────────────────────────────
         deferred_thread_admission = None
+        startup_refusal = None
         try:
             result = launch_body(running)
         except Exception as exc:  # launch body never replaces terminal state
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable):
+                startup_refusal = exc
+                ctx.freeze_terminal(TerminalReason.CANCELLED)
+            elif (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
                 deferred_thread_admission = exc
                 ctx.freeze_terminal(TerminalReason.CANCELLED)
             else:
@@ -1770,6 +1894,10 @@ class HostSessionSupervisor:
 
         # ── finish + residue + publish (idempotent w/ cancel) ─
         self._finish_and_reconcile(ctx)
+        if startup_refusal is not None:
+            # Passthrough final validator refusal is never a provider failure.
+            # Original native finish/residue/receipt precede typed propagation.
+            raise startup_refusal
         if deferred_thread_admission is not None:
             # Cleanup/receipt publication still precedes lease release. Typed
             # deferral escapes without a provider failure or native callback.

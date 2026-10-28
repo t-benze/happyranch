@@ -470,6 +470,27 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'shell.error.body': '应用的其他部分仍可使用——请通过顶部栏前往其他页面，或重新加载以重试。',
   'shell.error.retry': '重试',
 
+  // --- THR-308：守护进程启动恢复状态 -------------------------------------------
+  'startup.banner.recovering': '正在恢复——可以阅读线程；新工作已暂停。',
+  'startup.banner.failed': '恢复失败——新工作仍处于暂停状态。请将启动错误代码发送给 engineering_manager。',
+  'startup.banner.checking': '正在检查守护进程状态——在其报告就绪之前，新工作已暂停。',
+  'startup.banner.unknown': '无法获取守护进程状态——在其报告就绪之前，新工作已暂停。',
+  'startup.banner.stopping': '守护进程正在停止——新工作已暂停。',
+  'startup.banner.code': '启动错误代码：{code}',
+  'startup.banner.aria': '守护进程启动状态',
+  'startup.held.title': '守护进程就绪后即可打开此页面',
+  'startup.held.body': '在启动恢复确认就绪之前，新工作和此页面均已暂停。在此期间线程仍可阅读；守护进程报告就绪后，此页面会自动打开。',
+  'startup.held.openThreads': '打开线程',
+  'startup.action.paused': '已暂停，等待守护进程报告就绪',
+  'startup.composer.held': '在守护进程报告就绪之前，发送已暂停。草稿会保留在此处。',
+  'startup.error.held': '守护进程恢复期间新工作已暂停。此请求未被接受；您的输入已保留。',
+  'startup.error.failed': '启动恢复失败，新工作已暂停。此请求未被接受；您的输入已保留。',
+  'startup.error.unavailable': '守护进程尚未就绪，新工作已暂停。此请求未被接受；您的输入已保留。',
+  'startup.error.reader': '恢复期间无法读取线程。请稍后重试。',
+  'startup.threads.recordedActivity': '重启前记录的回复活动：{agents}。恢复完成后将显示实时状态。',
+  'startup.threads.recordedStatus': '{status}（已记录）',
+  'startup.threads.recordedDelivery': '重启前记录；恢复完成后将显示实时状态。',
+
   // --- W2a: 新建组织对话框 ---------------------------------------------------
   'org.add.title': '新建组织',
   'org.add.slugLabel': '标识符',

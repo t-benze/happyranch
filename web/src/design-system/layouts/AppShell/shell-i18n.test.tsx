@@ -6,8 +6,8 @@
  * (`renderWithProviders`) and the test-only `savedLocaleAdapter` /
  * `LocaleTestSwitch` controls — never a public selector.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 
 import { AppRoutes } from '@/routes';
@@ -17,6 +17,11 @@ import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { orgs as orgsApi } from '@/lib/api';
 import { server } from '@/test/server';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
+import { startupHealth, stubReadyHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+import { HEALTH_QUERY_KEY } from '@/lib/startup';
+import { translate } from '@/lib/i18n';
+import { StartupStatusBanner } from './StartupStatusBanner';
 
 describe('AppBar.pageTitleFromPath (explicit locale)', () => {
   it('resolves English titles from the URL pathname', () => {
@@ -71,6 +76,10 @@ describe('ErrorBoundary localized copy (no remount, diagnostics untouched)', () 
 });
 
 describe('root fallback copy', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'fixture-token');
+    stubReadyHealth();
+  });
   it('renders the English loading copy while the orgs query is pending', () => {
     server.use(http.get('/api/v1/orgs', () => new Promise(() => undefined)));
     renderWithProviders(<AppRoutes />, { route: '/' });
@@ -103,6 +112,58 @@ describe('root fallback copy', () => {
     const link = await screen.findByRole('link', { name: '返回首页' });
     expect(link).toHaveAttribute('href', '/');
     expect(document.body.textContent).toContain('未找到。');
+  });
+});
+
+describe('startup banner locale and held route', () => {
+  it('translates recovering/failed/stopping without fetching or exposing a raw cause', async () => {
+    const client = makeQueryClient();
+    client.setQueryData(HEALTH_QUERY_KEY, startupHealth('recovering'));
+    const requests: string[] = [];
+    const record = ({ request }: { request: Request }) => requests.push(request.url);
+    server.events.on('request:start', record);
+    const view = renderWithProviders(<><StartupStatusBanner /><LocaleTestSwitch to="zh-CN" /></>, {
+      queryClient: client, i18n: { adapter: savedLocaleAdapter('en') },
+    });
+    try {
+      expect(screen.getByText(translate('en', 'startup.banner.recovering'))).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
+      expect(screen.getByText(translate('zh-CN', 'startup.banner.recovering'))).toBeInTheDocument();
+      await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth('recovery_failed')); });
+      await screen.findByText(translate('zh-CN', 'startup.banner.failed'));
+      expect(screen.getByText('daemon_recovery_failed')).toBeInTheDocument();
+      await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth('stopped')); });
+      await screen.findByText(translate('zh-CN', 'startup.banner.stopping'));
+      await act(async () => { client.setQueryData(HEALTH_QUERY_KEY, startupHealth()); });
+      await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+      expect(requests).toEqual([]);
+    } finally {
+      server.events.removeListener('request:start', record);
+      view.unmount();
+      client.clear();
+    }
+  });
+
+  it('keeps a held effectful page unmounted without eager data calls', async () => {
+    sessionStorage.setItem('happyranch.token', 'fixture-token');
+    const client = makeQueryClient();
+    client.setQueryData(HEALTH_QUERY_KEY, startupHealth('recovering'));
+    server.use(http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: 'demo', root: '/x' }] })));
+    const requests: string[] = [];
+    const record = ({ request }: { request: Request }) => requests.push(new URL(request.url).pathname);
+    server.events.on('request:start', record);
+    const view = renderWithProviders(<AppRoutes />, { route: '/orgs/demo/health', queryClient: client });
+    try {
+      expect(screen.getByText(translate('en', 'startup.banner.recovering'))).toBeInTheDocument();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(requests.filter((path) => path !== '/api/v1/orgs')).toEqual([]);
+      expect(requests).toContain('/api/v1/orgs');
+      expect(screen.queryByText('Live daemon metrics · all orgs')).not.toBeInTheDocument();
+    } finally {
+      server.events.removeListener('request:start', record);
+      view.unmount();
+      client.clear();
+    }
   });
 });
 

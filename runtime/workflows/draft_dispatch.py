@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 import asyncio
 import threading
@@ -11,11 +12,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from runtime.daemon.startup_recovery import document_admission_validation, require_document_admission
 from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION, validate_workflow_schema
 
 if TYPE_CHECKING:
     import sqlite3
     from runtime.daemon.org_state import OrgState
+    from runtime.daemon.startup_recovery import RecoveryOutcome
     from runtime.platform.session_backend import RunningHandle
     from runtime.workflows.authority import AuthorityAdmissionCapture
 
@@ -83,6 +86,7 @@ class WorkflowDraftDispatcher:
     def __init__(self, org: OrgState) -> None:
         self.org = org
         self.db = org.db
+        self._startup_state = self._startup_org = self._startup_recovery = None
         self._live_lock = threading.RLock()
         self._live: dict[str, tuple[str, str, object | None]] = {}
 
@@ -164,11 +168,15 @@ class WorkflowDraftDispatcher:
 
     async def claim(self, task_id: str) -> str | None:
         # Discovery and effective-profile reads precede all durable ownership.
+        require_document_admission(self)
         capture = self.org.workflow_authority.capture_admission()
         active_sessions = tuple(self.org.sessions.iter_active())
         async with self.org.workflow_authority._async_writer_lock:
+            require_document_admission(self)
             async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                require_document_admission(self)
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
+                    require_document_admission(self)
                     from runtime.infrastructure.team_move_store import validate_team_move_schema
                     from runtime.orchestrator.team_move import DeferredTeamMove
                     if validate_team_move_schema(conn, org_slug=self.org.slug):
@@ -195,6 +203,7 @@ class WorkflowDraftDispatcher:
         return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
 
     def dispatch(self, task_id: str) -> None:
+        require_document_admission(self)
         orch = self.org.orchestrator
         if orch._host_supervisor is None or orch._main_loop is None:
             return
@@ -206,44 +215,58 @@ class WorkflowDraftDispatcher:
                 return
             task = self.db.get_task(task_id)
             with self._live_lock:
+                require_document_admission(self)
                 self._live[task_id] = (claim, "", None)
             try:
                 # A bounded author has no generic manager decision consumer.
                 orch._run_agent(task_id, task.assigned_agent, task.brief)
             finally:
-                with self._live_lock:
-                    live = self._live.get(task_id)
-                if live is not None:
-                    # A returned/raised setup path with no reservation is
-                    # affirmative no-launch. Possible launch remains uncertain.
-                    self.terminal(task_id, task.assigned_agent, live[1], None)
-                with self._live_lock:
-                    self._live.pop(task_id, None)
-                self.reconcile(task_id)
+                import sys
+                primary = sys.exception()
+                try:
+                    with self._live_lock:
+                        live = self._live.get(task_id)
+                    if live is not None:
+                        # Owed original terminal settlement; stop grants no
+                        # reason to fabricate failure or abandon native proof.
+                        self.terminal(task_id, task.assigned_agent, live[1], None)
+                        self._reconcile_core(task_id, settlement=live)
+                except BaseException as exc:
+                    if primary is None:
+                        raise
+                    primary.add_note(f"document native settlement also failed: {exc!r}")
+                finally:
+                    with self._live_lock:
+                        self._live.pop(task_id, None)
         except DraftOwnershipError:
             # Ineligibility is a durable queued intent, not a fabricated run.
             return
 
     def _dispatch_pause_owned(self, task_id: str) -> None:
         """Prepare a queued intent; final host arbitration owns every mutation."""
+        require_document_admission(self)
         from runtime.orchestrator.task_pause import TaskInvocation, DeferredRootPause, _invocation
         from runtime.orchestrator.team_move import DeferredTeamMove
         from runtime.infrastructure.task_pause_controls import PauseControlError
         with self._live_lock:
+            require_document_admission(self)
             if task_id in self._live:
                 return
         with self.db._lock:
+            require_document_admission(self)
             intent = self._intent(self.db._conn, task_id)
             if intent["state"] != "queued":
                 return
             key = intent["host_execution_key"]
         task = self.db.get_task(task_id)
+        require_document_admission(self)
         invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
                                     self.org.orchestrator._build_session_id(), owner="draft")
         invocation.workflow_dispatcher = self
         invocation.draft_request_key = key
         try:
-            invocation.prepare()
+            require_document_admission(self)
+            invocation.prepare(validate_admission=document_admission_validation(self))
         except PauseControlError as exc:
             if exc.detail["code"] == "root_paused":
                 return
@@ -267,37 +290,48 @@ class WorkflowDraftDispatcher:
             from runtime.orchestrator.task_pause import release_live
             import sys
             failed = sys.exc_info()[0] is not None
+            primary = sys.exception()
             try:
-                _invocation.reset(token)
-                with self._live_lock:
-                    self._live.pop(task_id, None)
-                # Pause attribution remains durable through this late tail and
-                # the outer worker cleanup. release_live settles it last.
-                self.reconcile(task_id)
-            except BaseException:
+                # Keep the original invocation/current-context/live registration
+                # until its narrow no-launch/uncertain reconciliation finishes.
+                self._reconcile_core(task_id, settlement=invocation)
+            except BaseException as exc:
                 failed = True
-                raise
+                if primary is None:
+                    raise
+                primary.add_note(f"document reconciliation also failed: {exc!r}")
             finally:
-                release_live(invocation, failed=failed)
+                try:
+                    _invocation.reset(token)
+                    with self._live_lock:
+                        self._live.pop(task_id, None)
+                finally:
+                    release_live(invocation, failed=failed)
 
     async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
         # Capture every external read before synchronous ownership. Async locks
         # are acquired before entering the original synchronous fence interval;
         # no synchronous lock/lease crosses an event-loop wait.
+        validate = document_admission_validation(self)
         capture = self.org.workflow_authority.capture_admission()
         active_sessions = tuple(self.org.sessions.iter_active())
         with self._live_lock:
+            require_document_admission(self)
             if invocation.task.id in self._live:
                 raise DraftOwnershipError("workflow_claim_unavailable")
         async with self.org.workflow_authority._async_writer_lock:
+            require_document_admission(self)
             async with self.org.db_lock:
+                require_document_admission(self)
                 authority = self.org.workflow_authority
-                with authority._admission_ownership(capture):
+                with authority._admission_ownership(capture, validate_admission=validate):
+                    require_document_admission(self)
                     invocation.draft_capture = capture
                     invocation.draft_sessions = active_sessions
-                    committed = invocation._commit_local(ctx)
+                    committed = invocation._commit_local(ctx, validate_admission=validate)
         if committed:
             with self._live_lock:
+                validate()
                 if invocation.task.id in self._live:
                     raise DraftOwnershipError("workflow_claim_stale")
                 self._live[invocation.task.id] = (invocation.draft_claim, invocation.session_id, None)
@@ -305,6 +339,7 @@ class WorkflowDraftDispatcher:
 
     def _claim_launch_uncommitted(self, invocation: Any) -> None:
         """Reuse the original intent checks/events in the final task writer."""
+        require_document_admission(self)
         conn = self.db._conn
         capture = invocation.draft_capture
         self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
@@ -326,7 +361,7 @@ class WorkflowDraftDispatcher:
         validate_workflow_schema(conn, expected_org_slug=self.org.slug)
         invocation.draft_claim = claim
 
-    def notify_queued(self, task_id: str, queue: Any) -> None:
+    def notify_queued(self, task_id: str, queue: Any) -> RecoveryOutcome | None:
         """Rediscover eligible durable work on the periodic daemon sweep.
 
         A notification grants no claim or launch authority. Revalidate the
@@ -338,60 +373,100 @@ class WorkflowDraftDispatcher:
         from runtime.workflows.authority import WorkflowAuthorityError
         from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 
+        from runtime.daemon.startup_publication import current_publication
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        publication = current_publication(self.org.orchestrator)
+        validate = document_admission_validation(self, publication=publication)
+        if queue is not self._startup_state.queue:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_document_queue_changed")
+
+        def held(code):
+            if publication is not None:
+                publication.count("held")
+                return RecoveryOutcome("local_hold", code)
+            return None
+
         with self._live_lock:
+            require_document_admission(self, publication=publication)
             if task_id in self._live:
-                return
+                return held("startup_document_live_owner")
         try:
             with self.db._lock:
+                require_document_admission(self, publication=publication)
                 if self._intent(self.db._conn, task_id)["state"] != "queued":
-                    return
+                    return held("startup_document_not_queued")
             capture = self.org.workflow_authority.capture_admission()
             active_sessions = tuple(self.org.sessions.iter_active())
-            with self.org.workflow_authority.admission_writer(capture) as conn:
+            with self.org.workflow_authority.admission_writer(capture, validate_admission=validate) as conn:
+                require_document_admission(self, publication=publication)
                 intent = self._intent(conn, task_id)
                 if (intent["state"] != "queued" or intent["host_launch_started"]
                         or intent["session_id"] is not None
                         or intent["host_execution_id"] is not None
                         or intent["final_result_id"] is not None):
-                    return
+                    return held("startup_document_owner_ineligible")
                 store = getattr(self.db, "_task_pause_store", None)
                 if store is not None:
                     from runtime.infrastructure.task_pause_controls import PauseControlError
                     try:
                         store.held_uncommitted(task_id)
-                    except PauseControlError:
-                        return
+                    except PauseControlError as exc:
+                        if publication is not None and exc.detail["code"] != "root_paused":
+                            raise
+                        return held("root_paused")
                 self._eligible(conn, intent, capture, active_sessions)
         except (DraftOwnershipError, WorkflowActivationError,
-                WorkflowAuthorityError, ProfileCoordinatorError):
+                WorkflowAuthorityError, ProfileCoordinatorError) as exc:
+            if publication is not None:
+                from runtime.workflows.review_join import HOLDS
+                code = str(exc) if isinstance(exc, DraftOwnershipError) else exc.code
+                if code not in HOLDS | {"workflow_activation_author_pending"}:
+                    raise
+                return held(code)
             return
+        validate()
+        if publication is not None:
+            from runtime.orchestrator.run_step import _publish_redelivery_task
+            return _publish_redelivery_task(self.org.orchestrator, task_id,
+                                            generation_aware=False)
         queue.enqueue_if_absent(self.org.slug, task_id)
 
     def bind_session(self, task_id: str, agent: str, session_id: str) -> None:
+        require_document_admission(self)
         with self._live_lock:
+            require_document_admission(self)
             live = self._live.get(task_id)
             if live is None:
                 raise DraftOwnershipError("workflow_claim_unavailable")
-            with self._writer() as conn:
-                intent = self._intent(conn, task_id)
-                if (intent["claim_token"] != live[0] or intent["state"] != "claimed"
-                        or intent["cancellation_requested"] or intent["assigned_principal"] != agent
-                        or intent["host_launch_started"]):
-                    raise DraftOwnershipError("workflow_claim_stale")
-                # Session registration is not an observed launch and does not
-                # put a session identity in the queued/prelaunch intent.
-                conn.execute("UPDATE tasks SET current_session_id=? WHERE id=?", (session_id, task_id))
+            with self.db._lock:
+                require_document_admission(self)
+                with self._writer() as conn:
+                    require_document_admission(self)
+                    intent = self._intent(conn, task_id)
+                    if (intent["claim_token"] != live[0] or intent["state"] != "claimed"
+                            or intent["cancellation_requested"] or intent["assigned_principal"] != agent
+                            or intent["host_launch_started"]):
+                        raise DraftOwnershipError("workflow_claim_stale")
+                    # Session registration is not an observed launch and does not
+                    # put a session identity in the queued/prelaunch intent.
+                    conn.execute("UPDATE tasks SET current_session_id=? WHERE id=?", (session_id, task_id))
             self._live[task_id] = (live[0], session_id, None)
 
     async def _reserve_launch(self, task_id: str, agent: str, session_id: str) -> None:
+        require_document_admission(self)
         with self._live_lock:
+            require_document_admission(self)
             live = self._live.get(task_id)
         capture = self.org.workflow_authority.capture_admission()
         active_sessions = tuple(self.org.sessions.iter_active())
         refusal = None
         async with self.org.workflow_authority._async_writer_lock:
+            require_document_admission(self)
             async with self.org.db_lock:
-                with self.org.workflow_authority.admission_writer(capture) as conn:
+                require_document_admission(self)
+                with self.org.workflow_authority.admission_writer(capture, validate_admission=document_admission_validation(self)) as conn:
+                    require_document_admission(self)
                     intent = self._intent(conn, task_id)
                     if (live is None or live[:2] != (intent["claim_token"], session_id)
                             or intent["assigned_principal"] != agent or intent["state"] != "claimed"
@@ -417,6 +492,7 @@ class WorkflowDraftDispatcher:
             raise refusal
 
     def reserve_launch(self, task_id: str, agent: str, session_id: str) -> None:
+        require_document_admission(self)
         return self._on_loop(self._reserve_launch(task_id, agent, session_id))
 
     def host_request_key(self, task_id: str, agent: str, session_id: str) -> str:
@@ -600,18 +676,85 @@ class WorkflowDraftDispatcher:
                     reconciliation_required=intent["state"] == "uncertain",
                     execution_started=bool(intent["host_execution_id"]))
 
-    def reconcile(self, task_id: str) -> None:
+    def _check_dispatch_settlement(self, task_id: str, settlement: Any) -> None:
+        from runtime.daemon.startup_recovery import _document_attachment
+        from runtime.orchestrator.task_pause import current_invocation, TaskInvocation
+        _document_attachment(self)
+        if isinstance(settlement, TaskInvocation):
+            valid = (current_invocation() is settlement and settlement.orch is self.org.orchestrator
+                     and settlement.workflow_dispatcher is self and settlement.task.id == task_id
+                     and settlement.store is getattr(self.db, "_task_pause_store", None)
+                     and settlement.store._live.get(settlement.identity) is settlement)
+        else:
+            valid = (getattr(self.db, "_task_pause_store", None) is None
+                     and settlement is not None and self._live.get(task_id) is settlement)
+        if not valid:
+            raise DraftOwnershipError("workflow_native_settlement_owner_changed")
+
+    @contextmanager
+    def _completed_followup(self, task_id: str) -> Iterator[None]:
+        """Only hold downstream effects of an authentic retained native completion.
+
+        This grants no writer bypass. Ordinary callers still receive refusal;
+        native terminal/tracker/capacity/finally is not made to fail merely
+        because its committed receipt/graph delivery must wait for discovery.
+        """
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        from runtime.orchestrator.task_pause import current_invocation
         with self._live_lock:
-            live = task_id in self._live
-        with self._writer() as conn:
-            intent = self._intent(conn, task_id)
-            if intent["state"] not in {"claimed", "running"}:
-                return
-            # A live claim must not be recovered by a competing reaper.
-            if live:
-                return
-            if not intent["host_launch_started"]:
-                self._event(conn, intent, "requeued", changes={"state": "queued", "claim_token": None, "claim_owner": None})
-                conn.execute("UPDATE tasks SET status='pending',current_session_id=NULL WHERE id=?", (task_id,))
+            original = self._live.get(task_id)
+        invocation = current_invocation()
+        try:
+            yield
+        except StartupUnavailable as exc:
+            with self._live_lock:
+                with self.db._lock:
+                    if original is None or self._live.get(task_id) is not original:
+                        raise
+                    if getattr(self.db, "_task_pause_store", None) is not None:
+                        if invocation is None:
+                            raise
+                        self._check_dispatch_settlement(task_id, invocation)
+                    intent = self._intent(self.db._conn, task_id)
+                    result = self._accepted_result(self.db._conn, intent)
+                    if (intent["state"] != "completed" or original[2] is None
+                            or intent["session_id"] != original[1] or result is None
+                            or result["record"]["status"] != "completed"):
+                        raise
+            logging.getLogger(__name__).warning(
+                "Document native completion committed; dependent collection/publication pending: task=%s code=%s",
+                task_id, exc.code)
+
+    def reconcile(self, task_id: str, *, recovery: Any = None, startup_owner: Any = None) -> None:
+        require_document_admission(self, recovery=recovery, sweep_owner=startup_owner)
+        self._reconcile_core(task_id, recovery=recovery, startup_owner=startup_owner)
+
+    def _reconcile_core(self, task_id: str, *, recovery: Any = None,
+                        startup_owner: Any = None, settlement: Any = None) -> None:
+        def check() -> None:
+            if settlement is None:
+                require_document_admission(self, recovery=recovery, sweep_owner=startup_owner)
             else:
-                self._event(conn, intent, "uncertain", changes={"state": "uncertain", "last_error": "workflow_host_identity_unavailable"})
+                if recovery is not None or startup_owner is not None:
+                    raise DraftOwnershipError("workflow_native_settlement_owner_changed")
+                self._check_dispatch_settlement(task_id, settlement)
+
+        # Blocking locks renew before the original writer; native settlement
+        # retains its actual live invocation, never a generic readiness flag.
+        with self._live_lock:
+            with self.db._lock:
+                check()
+                live = settlement is None and task_id in self._live
+                with self._writer() as conn:
+                    check()
+                    intent = self._intent(conn, task_id)
+                    if intent["state"] not in {"claimed", "running"}:
+                        return
+                    # A live claim must not be recovered by a competing reaper.
+                    if live:
+                        return
+                    if not intent["host_launch_started"]:
+                        self._event(conn, intent, "requeued", changes={"state": "queued", "claim_token": None, "claim_owner": None})
+                        conn.execute("UPDATE tasks SET status='pending',current_session_id=NULL WHERE id=?", (task_id,))
+                    else:
+                        self._event(conn, intent, "uncertain", changes={"state": "uncertain", "last_error": "workflow_host_identity_unavailable"})

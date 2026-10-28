@@ -481,6 +481,8 @@ class Database(
         owner = cls.__new__(cls)
         owner.db_path = db_path
         owner._lock = threading.RLock()
+        owner._repository_refresh_pins = {}
+        owner._repository_refresh_close_started = False
         owner._lock_warn_threshold_seconds = 1.0
         owner._v2_live_attempt_owners = {}
         owner._v2_refusal_failed_owners = {}
@@ -524,6 +526,8 @@ class Database(
         # e.g. `walk_ancestors` → `get_task` and `get_recall_payload` → `get_task`
         # both re-enter public methods while already holding the lock.
         self._lock = threading.RLock()
+        self._repository_refresh_pins = {}
+        self._repository_refresh_close_started = False
         # THR-229 checkpoint C3b: process-local proof of an uninterrupted live
         # attempt owner.  The admission transaction registers the winning
         # ``(attempt_id, owner_attempt_id)`` here; the claim/claim-audit stages
@@ -3011,6 +3015,40 @@ class Database(
 
 
 
+    def _acquire_repository_refresh_pin(self, owner: object) -> object:
+        # Same short lock as close; no native wait, filesystem or foreign lock.
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError("repository_refresh_database_busy")
+        try:
+            pins = getattr(self, "_repository_refresh_pins", None)
+            if (type(pins) is not dict or getattr(self, "_repository_refresh_close_started", True) is not False
+                    or self._conn is None):
+                raise RuntimeError("repository_refresh_database_closed_or_unknown")
+            token = object()
+            pins[token] = owner
+            return token
+        finally:
+            self._lock.release()
+
+    def _release_repository_refresh_pin(self, token: object, owner: object) -> None:
+        # The original loop owner calls only after positive native/evidence/lease
+        # closure and acknowledgement. Identity, not a Boolean or slug, binds it.
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError("repository_refresh_database_busy")
+        try:
+            pins = getattr(self, "_repository_refresh_pins", None)
+            if type(pins) is not dict or token not in pins or pins[token] is not owner:
+                raise RuntimeError("repository_refresh_database_pin_changed")
+            del pins[token]
+        finally:
+            self._lock.release()
+
     @_synchronized
     def close(self) -> None:
+        pins = getattr(self, "_repository_refresh_pins", None)
+        if type(pins) is not dict or pins:
+            # Refusal does not touch or poison an otherwise owned connection.
+            raise RuntimeError("repository_refresh_database_in_flight_or_unknown")
+        # A failed/uncertain close also forbids a later refresh submission.
+        self._repository_refresh_close_started = True
         self._conn.close()

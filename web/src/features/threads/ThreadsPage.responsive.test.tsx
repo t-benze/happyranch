@@ -22,11 +22,12 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { stubReadyHealth } from '@/test/startup';
 
 const SLUG = 'alpha';
 
@@ -110,6 +111,7 @@ function stubList(threads: ReturnType<typeof mkThread>[]) {
 }
 
 beforeEach(() => {
+  stubReadyHealth();
   vi.stubGlobal('AbortController', function () { return transferableAbortController(); });
   vi.stubGlobal('IntersectionObserver', class {
     observe() {}

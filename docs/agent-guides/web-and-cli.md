@@ -1,5 +1,150 @@
 # Web And CLI
 
+## Startup clock limits
+
+The existing health/public startup inventory is unchanged. Internal boot records
+now distinguish actual module/late-exec/listener/native/ready owners; see
+[runtime observations](runtime-and-configuration.md#actual-owner-startup-observations--root13137).
+A shell late-exec marker is untrusted local telemetry, never original-parent or
+usable API/UI proof. Mac/direct launch has no shell provenance. Exact two-line
+stdout, strict parsers and null public launcher duration remain. Private phase/
+cache summaries are not included in public startup refusals. Under10s UNVERIFIED;
+no activation or new observation run is authorized by source delivery.
+
+## Startup health and finite thread API source — ROOT13137
+
+GET /api/v1/health remains liveness200, preserving status/active_runtime and the
+cached sanitized host_sessions block. Additive startup reports bounded state,
+phase, serving, recovery_ready, stopping, stable error_code/required_action,
+ready_commits, owner_to_serving_ns and null launcher_duration_ns. No raw cause,
+path, native handle or task/root collection is exposed. Owner-to-serving time
+is not launcher duration. Missing startup fields mean unknown on older daemons.
+GET /api/v1/health/ready returns200 only for the actual matching serving listener
+AND accepted recovery-ready epoch without stop/closed/failed/unbound ownership;
+otherwise503 reports unavailable with truthful startup/guidance. Liveness200
+alone grants neither readiness, setup acceptance nor launch permission. Native
+consumer release now uses that same BOTH-signals conjunction: recovery-first arms
+without blocking listener startup, listener-first waits for recovery, and the one
+ready commit/latch release admits work only while the original listener remains
+current. Listener failure/loss/replacement and stopped/failed epochs remain held.
+
+Daemon-bound thread runners also require the caller's supplied host to be the
+actual bound daemon host. Omitted/None, missing real or replaced/cross-owner hosts
+refuse before reservation or preparation; no host is silently injected. Only
+explicitly unbound standalone owners retain None/self-launch. The real host's
+passthrough backend and initial/fallback/nudge phases keep host admission and
+ownership; readiness closure never gates independently owed terminal/finish cleanup.
+
+Shell start/status preserve their process identity line and append exactly one
+`startup serving=YES recovery=STATE launches=DISPOSITION` line (actual values
+are lowercase). `serving` is `yes|no|unknown`; recovery is
+`ready|recovering|recovery_failed|stopping|unknown`; launches is `admitted` ONLY
+for serving=yes + recovery=ready, otherwise `held`. Admitted here reports startup
+readiness, never overrides original authorization/Pause/native controls. Only
+fresh exact Boolean serving/recovery_ready/not-stopping plus state=ready is ready;
+HTTP200/PID/port alone is insufficient. Missing/malformed/old-server data and
+failed probes are unknown. Start returns after observed HTTP serving and may
+report recovery held; its exit0 does not mean fully recovered. Status exit0
+means process alive only. No curl means start refuses before launching; status
+reports unknown. Timeout/failed recovery preserves the original process and
+uncertainty, with no automatic restart or second start/import.
+
+`happyranch web` opens the readable thread UI while recovery is held/failed and
+prints the actual disposition. Offline `doctor` remains an editable-pointer
+check with no daemon. Ordinary startup503 is explicitly not accepted/exit1;
+no queue/retry/replay or global client preflight is added, including callbacks.
+Setup accepts only the complete finite two-line output, authenticates the ORIGINAL
+wrapper/Python pair independently with the exact normal argv and ordered
+`--startup-clock`/`--startup-launch-id` pair before the guarded-start flag. The
+closed <=60-character clock token requires matching lowercase hex32 launch id,
+local linux domain and 1–20 positive decimal digits for nanoseconds, or the exact producer
+fallback unavailable/unavailable. A closed pair digest must match both processes
+and all original rereads; missing/partial/duplicate/reordered/foreign markers or
+extra arguments hold. Markers remain untrusted telemetry, with no boot/readiness/
+timing authority. Setup requires fresh positive recovery readiness
+before dependent reads/import and Settings handoff, alongside every existing
+source/native/schema/backup/cooperative-window fence. A held attempt keeps its
+receipts and original owner; it authorizes no second start or import.
+
+Add Org and onboarding use their shared locale-neutral error descriptor and the
+existing finite startup-refusal key owner before org/raw fallbacks. Operation-time
+client holds and genuine startup503s render existing translated guidance on each
+render, retaining input without retry. Read-specific refusals use the existing
+unavailable/input-kept key for creation. Unrelated org errors still substitute the
+submitted slug; 401, network, unknown503 and other raw messages keep their existing
+handling and exact text. Locale changes issue no request.
+
+Mac keeps HTTP/process ownership separate from its typed recovery observation.
+An alive recovering/failed/unknown daemon is never crashed/restarted for readiness;
+2xx can load the original WebView. One cancellable observation window (120s,
+2s spacing, each request/resource <=5s and body <=16KiB) checks original handle/
+PID/port/state/generation after suspension. Stop/exit/replacement invalidates it;
+failed observation clears prior ready. Ready/failure ends the window with labelled
+last observation; expiry/detachment is unknown. Daemon → Check Daemon Status
+explicitly renews it without launching. Labels/diagnostics distinguish liveness,
+serving and recovery; no raw private cause or credential is added.
+
+Source delivery is separate from activation. ROOT13137 retains isolated OpenAPI/test convergence, finite execution,
+full independent review/same-head QA, coherent PR/guarded merge/exact-main lints.
+All runtime/platform/race cases here are NOT RUN; maker0/3 QA0/3 unchanged;
+under10s remains UNVERIFIED. Before any separately authorized operator restart,
+use exact reviewed source and capture external parent monotonic time BEFORE the
+normal launcher, usable authenticated thread API AND real browser transcript,
+independent pre-ready launch refusal, later ready and separate recovery duration.
+Health, shell exit and bind alone are insufficient. Absent launcher duration stays
+unavailable; the later exec marker supplies no original parent clock or activation.
+
+The ordinary health API namespace exports getHealthReady and matching types;
+503 follows the ordinary ApiError boundary, retaining its response in detail.
+The mapping itself adds no polling, retry/replay or launcher behavior.
+
+Web consumer (TASK13273 source). `AppShell` is the sole poller of the shared
+`['health']` query (2s while unavailable, 30s once ready); `useStartupStatus`
+and provider guards read it without polling. `web/src/lib/startup.ts` admits
+only a fresh successful observation with state=ready, recovery_ready, serving
+and not stopping; checking, request error, malformed/missing startup, unknown,
+stopped/stopping, recovery_failed and a >90s-old observation are held. One
+expiry owner per QueryClient (shared by every `useStartupStatus` subscriber,
+never a second poller or cache write) arms one timer at the current ready
+observation's 90s deadline, so mounted routes, SSE and the banner turn held on
+expiry even while the next poll is pending or paused. A
+translated banner explains recovering ("threads can be read; new work is
+paused") or failed (stable error_code for engineering_manager); unknown/stopping
+never read as recovered. Threads routes stay mounted; every other org route and
+onboarding sit behind a pathless held-route gate that renders status plus a
+Threads action WITHOUT mounting the page (URL preserved; it mounts on ready).
+Root/org index go to Threads until ready. Held reads (dashboard summary,
+identities with canonical-ID fallback, agents, thread tasks, fresh tokens) are
+disabled and their queryFns recheck; inbox/tail SSE open only when admitted.
+Thread/identity/org mutations reject with StartupHeldError before network (pin
+before its optimistic write); pages also recheck before every effect and after
+each await. Controls, Enter-to-send and N/I/A/F shortcuts are inert while held;
+textarea drafts, attachment selections, focus/selection and selected org/thread
+remain mounted. Startup 503s map to "not accepted" copy and only invalidate
+`['health']` through one shared classifier (`classifyStartupRefusal`): the finite
+family is daemon_recovering/daemon_recovery_failed/daemon_stopped plus every
+`startup_*` code (gate, attachment/document/coding/jobs owner changes;
+`startup_reader_*` uses the reader copy). Other 503/`daemon_*`, 401 and network
+errors are not startup refusals. Nothing is queued, retried or replayed,
+and 401 bootstrap handling is unchanged. While held, persisted queued/working
+responder rows are labelled recorded history (no typing bubble, timer or abort)
+and attachment downloads are inert. Prototype sandbox reports a fixed ready
+fixture that is not daemon evidence. Source/static only; browser/backend
+behavior across both locales/viewports remains root-owned NOT RUN.
+Only original authenticated thread list/detail/messages are early content reads;
+SSE, task/workflow reads and attachment download stay held. Real DTOs, paging,
+totals, participants, attachments/responders and reply_delivery are preserved.
+Finite early negative limits refuse503 startup_reader_unbounded_request; ready
+legacy semantics stay. Missing/replaced production bindings refuse503 instead
+of canonical DB fallback. Explicit busy/deadline/budget/unavailable/primary-close
+failures preserve existing authenticated404/pagination/cursor/malformed errors.
+Captured actual route/static identities govern pre-body admission; query strings,
+encoded raw targets and slash redirects do not add authority. Original bearer,
+OrgDep and loopback bootstrap rules remain. Root owns final instrumentation assessment and
+finite API/browser/resource proof and isolated canonical OpenAPI synchronization;
+this source handoff changes no test/assertion/snapshot and proves no behavior.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each

@@ -518,6 +518,21 @@ THR307 seq62, never PASS. They are excluded from correction verification; do not
 execute them through cases3/6, the full driver or isolation flags on this waiver.
 
 
+The original disk supervisor consumes the SAME actual reap Task result even if
+its joined waiter preserves cancellation. Only successful actual reap permits
+leader-reaped/report completion and native retirement. Failed/cancelled/unproved
+reap marks maintenance_native_unsettled on the original primary, retains its
+traceback and actual secondary error, skips report success and blocks dependent
+destruction. Across the original spawn/reap/report joins, the actual first
+exception and its original traceback are latched once, with truthful first-event
+interruption attribution. An earlier post-spawn admission failure precedes later
+shutdown cancellation; an earlier spawn cancellation still stays primary. Later
+actual errors remain bounded, identity-deduplicated secondary evidence.
+Successful reap may publish its original report; only actual successful report
+completion attaches it before rethrowing the SAME first exception/traceback.
+Repeated cancellation cannot skip either join and supplies no reap proof or retry grant.
+This source correction has no behavioral/proof execution credit.
+
 ## C3 online-move composition (TASK11345 / Founder296seq135)
 
 The scheduled daemon disk worker reserves a global native writer per admitted

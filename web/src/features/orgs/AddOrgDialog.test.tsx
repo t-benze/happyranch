@@ -5,15 +5,24 @@ import { AddOrgDialog } from './AddOrgDialog';
 import { orgs as orgsApi } from '@/lib/api';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import type { Locale } from '@/lib/i18n';
+import { seedReadyHealth } from '@/test/startup';
+import { makeQueryClient } from '@/design-system/providers/AppProvider';
+
+function readyClient() {
+  const client = makeQueryClient();
+  seedReadyHealth(client);
+  return client;
+}
 
 function renderDialog(onClose = vi.fn()) {
-  return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, { route: '/' });
+  return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, { route: '/', queryClient: readyClient() });
 }
 
 /** Explicit zh-CN render for the bilingual W2a assertions. */
 function renderDialogZh(locale: Locale, onClose = vi.fn()) {
   return renderWithProviders(<AddOrgDialog open onOpenChange={onClose} />, {
     route: '/',
+    queryClient: readyClient(),
     i18n: { adapter: savedLocaleAdapter(locale) },
   });
 }
@@ -161,7 +170,7 @@ describe('AddOrgDialog', () => {
         <LocaleTestSwitch to="zh-CN" />
         <LocaleTestSwitch to="en" />
       </>,
-      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+      { route: '/', queryClient: readyClient(), i18n: { adapter: savedLocaleAdapter('en') } },
     );
 
     const input = screen.getByLabelText('Slug');
@@ -217,7 +226,7 @@ describe('AddOrgDialog', () => {
         <AddOrgDialog open onOpenChange={() => undefined} />
         <LocaleTestSwitch to="zh-CN" />
       </>,
-      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+      { route: '/', queryClient: readyClient(), i18n: { adapter: savedLocaleAdapter('en') } },
     );
     fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'my-org' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -235,7 +244,7 @@ describe('AddOrgDialog', () => {
         <AddOrgDialog open onOpenChange={() => undefined} />
         <LocaleTestSwitch to="zh-CN" />
       </>,
-      { route: '/', i18n: { adapter: savedLocaleAdapter('en') } },
+      { route: '/', queryClient: readyClient(), i18n: { adapter: savedLocaleAdapter('en') } },
     );
     fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'raw-slug' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
