@@ -7,8 +7,16 @@ recovery owner after move/Pause/cutover/naming/authority safety, outside early
 serving. Exactly four existing template rows carry closed system provenance
 `workflow-coding-builtin-registration@1`; there is no human import operation,
 admission or receipt. Package capture precedes locks. Native reservation,
-publisher/DB ownership, full source/target closure, the original cumulative budget
-and positive-COMMIT watermark remain mandatory. Active/unknown owners defer;
+publisher/DB ownership, full source/target closure and positive-COMMIT watermark
+remain mandatory. Complete native history/suffixes/state/live/fixed safety work
+share ONE 8192-row/16MiB/2097152-visit census, with 16384-byte native cells; separate
+release/source/target allowance remains 8192/16MiB/16384 without phase resets.
+Only local pure/admission refusal with successful cursor close, original rollback,
+both outer exits and identical usable connection/no notes may defer. After
+reservation, exact validation marking follows cleanup inside the native interval;
+warning follows actual settlement/exit. SQL/full-history, entry, cleanup, COMMIT
+and later publication uncertainty propagate without no-effect/retry claims.
+Active/unknown owners defer;
 partial/mixed/foreign state refuses without repair. Constructors/references and
 reads never initialize. Existing human imports remain unchanged no-ops.
 Saved history/replays/admitted work use saved bytes despite package loss; fresh

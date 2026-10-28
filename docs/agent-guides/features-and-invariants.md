@@ -11,8 +11,14 @@ foreign, malformed and orphan state; authentic bootstrap bindings are supported
 for either origin. No DDL/reference/history rewrite or old-reader downgrade.
 Registration runs once after the legitimate recovery/authority safety tail,
 never early serving, constructors or reads. Genuine native writer ownership,
-complete source/target validation, original budgets and positive-COMMIT watermark
-apply. Unknown owners and uncertain COMMIT remain owned, never retried/adopted.
+complete source/target validation and positive-COMMIT watermark apply. ONE local
+native census (all suffixes/state/live/fixed probes) shares 8192 rows/16MiB/2097152
+visits, separate from original source/release/target 8192/16MiB/16384; cells stay 16384.
+Pure optional refusal requires explicit cursor close, original rollback, both
+outer exits and unchanged usable connection without notes. After reservation,
+exact native validation marking follows that cleanup; warning follows actual
+native settlement/exit. SQL/full-history, entry, cleanup, COMMIT and publication
+uncertainty propagate. Unknown owners remain owned, never retried/adopted.
 Package loss gates new work without stranding saved replay/admitted continuation;
 unchanged Disabled-retain keeps its exact mapping. First-use metadata hydration
 sends nothing, preserves empty roles/repos and Disabled, and cannot clear an
