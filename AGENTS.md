@@ -201,6 +201,13 @@ worker, unsuccessful original-loop posting/acknowledgement, unclosed evidence/
 lease or failed settlement/retirement keeps custody unknown and destruction fenced.
 Fixed actual errors/tracebacks retain the first waiter cause and late secondary
 errors separately from bounded diagnostics; no absent-worker join or retry follows.
+Repository evidence revalidation/append/COMMIT failure retains its original
+exception and traceback; protected rollback retains its actual secondary and
+traceback separately on the same evidence. Uncertainty latches before rollback.
+The original preparation retains failed evidence even before opened registration;
+completion transfers these fixed errors to the original refresh owner after
+writer gates release, preserving any earlier winning cause. Ordinary/offline
+owners need no async attachment. Raw causes remain private, never diagnostics.
 This selected refresh also pins its actual Database connection under the same
 short RLock as direct close. Pin-first makes close refuse without touching or
 poisoning the connection; close-first (including failed/uncertain close) refuses

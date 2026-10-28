@@ -896,7 +896,16 @@ and finite SQL/work allowance, without a fresh lock-wait budget. After successfu
 COMMIT, the original gates still protect receipt/sequence and selected-obligation
 publication; clock expiry cannot turn committed closure into a no-write claim.
 Failure latches local uncertainty before bounded persistence admission; unavailable
-attribution retains UNKNOWN without claiming a persisted update. Human reconcile refuses
+attribution retains UNKNOWN without claiming a persisted update. Original evidence
+revalidation/append/COMMIT errors keep their actual exception and traceback even
+when rollback fails; the actual rollback exception/traceback occupies a separate
+fixed evidence slot. Uncertainty latches before rollback. The original preparation
+retains failed evidence even before opened registration, including ordinary and
+synchronous/offline calls without an async refresh owner. Completion transfers
+these errors to the original refresh owner only after writer gates release;
+earlier waiter/submission/cancellation causes keep precedence. Raw causes stay
+private, separate from sanitized publication; failure never proves closure.
+Human reconcile refuses
 known active workers/completion before resource admission and uses immediate
 resource/application-lease refusal on the serving loop, including tracker/root
 registry mutexes before lookup in their SAME persistent maps. Registry mutexes

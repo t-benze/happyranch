@@ -2268,8 +2268,22 @@ def _repo_preparation_writer(owner: Any, evidence: Any, *,
                     owner.admission.revalidate_uncommitted(owner)
                 yield
                 db._conn.commit()
-            except BaseException:
-                db._conn.rollback()
+            except BaseException as error:
+                # Latch locally before rollback or any fallible attribution.
+                # No refresh-owner mutex may be acquired under these gates.
+                evidence.uncertain = True
+                if evidence.write_error is None:
+                    evidence.write_error, evidence.write_traceback = error, error.__traceback__
+                if getattr(owner, "_repository_preparation_failure", None) is None:
+                    # Revalidation can fail before the opened obligation exists.
+                    # Retain that SAME evidence on its ordinary/offline owner too.
+                    owner._repository_preparation_failure = evidence
+                try:
+                    db._conn.rollback()
+                except BaseException as rollback:
+                    if evidence.rollback_error is None:
+                        evidence.rollback_error = rollback
+                        evidence.rollback_traceback = rollback.__traceback__
                 raise
             # No deadline/readback/reacquisition follows successful COMMIT.
             # Even a later context restoration error cannot erase these facts.
@@ -2428,6 +2442,8 @@ class _RepoPreparationEvidence:
         self.children = {}  # Original opaque handles/Popen objects stay private and owner-bound.
         self.opening_attempted = False
         self.finishing = False
+        self.write_error = self.write_traceback = None
+        self.rollback_error = self.rollback_traceback = None
 
     def active(self) -> bool:
         return (time.monotonic() < self.deadline and not self.cancellation.cancelled
@@ -2482,9 +2498,9 @@ class _RepoPreparationEvidence:
         # is no process-absence or timeout inference here.
         self.worker_returned = True
         if not self.opening_attempted and self.sequence == 0:
-            # Affirmative no child/audit admission, not missing child evidence.
-            # There is no new repository obligation to settle or clear.
-            self.closed = True
+            # No child/audit admission is affirmative only without a failed
+            # original writer; failed revalidation/COMMIT stays uncertain.
+            self.closed = not self.uncertain
             return
         self.emit("worker_returned", complete=not self.pending and not self.uncertain)
 
@@ -3275,10 +3291,21 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
 def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: list[dict], *, _owner=None) -> dict[str, bool]:
     """The original caller owns this tail AFTER actual worker return/join."""
     primary = None
+    primary_traceback = None
     for record in work:
         evidence, outcome = record["evidence"], record["outcome"]
         try:
             if evidence is not None:
+                if _owner is not None and evidence.write_error is not None:
+                    # Transfer only after the original writer released its gates.
+                    # Earlier waiter/submission/cancellation ownership still wins.
+                    _owner.fail("evidence_write", evidence.write_error,
+                        traceback=evidence.write_traceback)
+                    if evidence.rollback_error is not None:
+                        _owner.fail("evidence_rollback", evidence.rollback_error,
+                            traceback=evidence.rollback_traceback)
+                    if primary is None:
+                        primary, primary_traceback = evidence.write_error, evidence.write_traceback
                 evidence.returned()
                 if not evidence.settle():
                     if outcome is None:
@@ -3318,6 +3345,13 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
                     safe_error.add_note("repository preparation cause attribution failed; original failure retained")
             if primary is None:
                 primary = exc if _owner is not None else safe_error
+                primary_traceback = primary.__traceback__
+            if _owner is not None and evidence is not None and evidence.write_error is not None:
+                _owner.fail("evidence_write", evidence.write_error,
+                    traceback=evidence.write_traceback)
+                if evidence.rollback_error is not None:
+                    _owner.fail("evidence_rollback", evidence.rollback_error,
+                        traceback=evidence.rollback_traceback)
         finally:
             try:
                 record["lease"].__exit__(None, None, None)
@@ -3325,13 +3359,13 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
                 if _owner is not None:
                     _owner.fail("lease", error)
                     if primary is not None:
-                        raise primary
+                        raise primary.with_traceback(primary_traceback)
                 raise
             else:
                 if _owner is not None:
                     record["lease_closed"] = True
     if primary is not None:
-        raise primary from None
+        raise primary.with_traceback(primary_traceback) from None
     return results
 
 
@@ -3385,7 +3419,8 @@ class _RepositoryRefreshOwner:
         self.deferred = self.failed = False
         self.primary = self.traceback = self.diagnostic_error = None
         self.errors = dict.fromkeys(("submission", "wrapper", "batch", "completion",
-            "evidence", "attribution", "cause_attribution", "lease", "closure",
+            "evidence", "evidence_write", "evidence_rollback", "attribution",
+            "cause_attribution", "lease", "closure",
             "handoff", "settlement", "retirement"))
         self.error_tracebacks = self.errors.copy()
         self.error_order, self.noted = [], set()
@@ -3403,11 +3438,11 @@ class _RepositoryRefreshOwner:
         except BaseException as error:
             self.diagnostic_error = self.diagnostic_error or error
 
-    def fail(self, kind, error):
+    def fail(self, kind, error, *, traceback=None):
         with self.lock:
             if self.errors[kind] is None:
                 self.errors[kind] = error
-                self.error_tracebacks[kind] = error.__traceback__
+                self.error_tracebacks[kind] = error.__traceback__ if traceback is None else traceback
                 self.error_order.append(kind)  # Fixed actual errors cannot be evicted by cancellation.
             self._annotate_locked()
 
