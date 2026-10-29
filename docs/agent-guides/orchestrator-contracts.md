@@ -3537,13 +3537,22 @@ the root dispatch `admitted(G) -> retired(G)` and exactly one closed `spent`
 prior audit byte-for-byte, with NO consumer call, task-status effect, child
 creation or queue call. The consumed envelope carrying `spending_result_id` IS
 the result-keyed spending receipt (partial UNIQUE index), and `decision_state`
-is the closed forward-only `ready|claimed|applied|refused` receipt state; only
-the spend-to-`ready` writer ships here and the ordinary decision consumer
+is the closed forward-only `ready|claimed|applied|refused` receipt state. At this
+historical checkpoint only the spend-to-`ready` writer shipped and the consumer
 (`ready -> claimed -> applied/refused`, the ready->claimed CAS plus decision
-audits, and the common run_step/startup/reaper/shipping wiring) remains the NEXT
-serial unit. An exact same-R2 retry authenticates the consumed/retired/ready
-receipt read-only as `already_spent_exact` (including after a reopen) with no
-remint or dispatch, re-deriving `R2`'s normalized report digest from the
+audits, and the common run_step/startup/reaper/shipping wiring) remained the NEXT
+serial unit. An exact same-R2 retry authenticates the consumed/retired receipt
+read-only as `already_spent_exact` (including after a reopen) with no remint or
+dispatch. It independently proves ZERO potentially-related decision events for
+`ready`, exactly the original `decision_claimed` for `claimed`, claimed plus
+`decision_applied` for `applied`, or claimed plus
+`decision_dispatch_interrupted` for `refused`. Every payload must have exactly
+its closed keys, types, values and cardinality for the original cause/G/reserved
+session/R2/derived report digest. Missing, duplicated, mixed, opaque, extra or
+missing keys, Boolean/float identities, unknown stages and incompatible
+same-cause events refuse without repair; legitimate fully disjoint history stays
+valid. Replay also authenticates the original spending receipt, re-deriving
+`R2`'s normalized report digest from the
 persisted row so ANY material report-field drift (a syntactically valid changed
 decision body or any summary/status/confidence/verdict/output-path/risks/
 wait-ID/local-CI change) refuses; a causal-R replay, a foreign/wrong-session/
@@ -3553,18 +3562,26 @@ replaced or cancelled owner, a conflicting/malformed/opaque/duplicate/extra-key
 absent/null/mistyped/unknown (a non-`spent` row is skipped ONLY when it is a
 recognized other result stage carrying that stage's exact closed key set), a
 distinct later `R2` receipt and a stale-`A`-after-replacement-`B` pointer all
-refuse with the whole transaction rolled back (envelope active, dispatch
-admitted, `R2` retained, decision unapplied). Every distinct envelope
-UPDATE, dispatch UPDATE, audit-INSERT and COMMIT failure is proven to roll the
-transaction back before one safe exact retry, and two real connections with a
-deterministic `BEGIN IMMEDIATE` rendezvous prove ONE spend and ONE receipt/audit.
+refuse without repair. Successful OWNED PRECOMMIT rollback undoes only this
+transaction; a prior genuine spend and its original later decision state remain
+consumed/retired. COMMIT may take effect before raising; failed rollback or late
+synchronized clock/warning/return loss leaves committed or unknown effects.
+Non-success/lost return grants no consumer permission and proves no absence of
+spend. Current run-step commits the public spend before its separate decision
+claim; current coding-start composes the private spend core, claim, graph and
+acknowledgement in the ORIGINAL bootstrap writer. Neither boundary erases prior
+genuine results, preparation or native custody. The historical test attribution
+below covers the original precommit rollback/contention cases, not every COMMIT
+outcome or current behavioral proof.
 A later legitimate selector activation never invalidates the pinned generation,
 and a post-spend late acknowledgement carrying the ACTUAL retained publication
 attempt/boot refuses as bounded `stale_claim` while a post-spend invalidation is
 exactly `not_invalidatable`, both with the complete durable residue preserved and
 no pointer/task regression. The
-method is deliberately DARK (no automatic caller) and produces no launch
-authority; `tests/test_authority_v2_envelope_spend.py` drives the healthy,
+method was deliberately DARK (no automatic caller) at the historical C3d3c1
+checkpoint; current callers are described above and the spend outcome itself
+still supplies no launch authority. Historical
+`tests/test_authority_v2_envelope_spend.py` attribution covers the healthy,
 replay, refusal, boundary, contention and post-spend matrix at the real
 Database/store seam, and `tests/test_authority_v2_shipping.py` extends the fresh
 AND full historical-migrated owned-RuntimeDir/two-agent subprocess CLI -> HTTP

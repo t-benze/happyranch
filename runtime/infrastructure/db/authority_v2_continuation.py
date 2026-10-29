@@ -4576,7 +4576,7 @@ class AuthorityV2ContinuationMixin:
         ):
             return _pending("identity_mismatch", **base)
         # ------------------------------------------------------------------
-        # Exact same-R2 replay: an authenticated consumed READY receipt is read
+        # Exact same-R2 replay: an authenticated consumed decision receipt is read
         # back without any write, remint or dispatch.  Consumed/retired states
         # are authenticated WITHOUT requiring an impossible active pre-state.
         # ------------------------------------------------------------------
@@ -4597,6 +4597,41 @@ class AuthorityV2ContinuationMixin:
                 expected=expected_spent,
             ):
                 return _pending("receipt_conflict", **base)
+            # Closed other-stage classification above establishes relevance,
+            # not decision authority. Prove the COMPLETE retained decision set
+            # for this original G/SID/R2 and its re-derived report identity.
+            # Ready requires independently proven absence, never a failed
+            # authentication treated as permission. These readers do not
+            # re-enter spend or spent-receipt authentication.
+            if envelope.decision_state == "ready":
+                if not self._v2_decision_events_absent_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    **base,
+                ):
+                    return _pending("receipt_conflict", **base)
+            else:
+                stages = {
+                    "claimed": (
+                        AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                    ),
+                    "applied": (
+                        AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                        AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
+                    ),
+                    "refused": (
+                        AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                        AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+                    ),
+                }.get(envelope.decision_state)
+                if stages is None or not self._authenticate_v2_decision_event_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    expected_events={
+                        stage: self._v2_decision_event_payload(
+                            stage=stage, **base, report_digest=report_digest,
+                        ) for stage in stages
+                    },
+                ):
+                    return _pending("receipt_conflict", **base)
             return AuthorityPolicyV2SpendOutcome(
                 status="already_spent_exact", **base,
                 decision_state=envelope.decision_state,
@@ -4680,11 +4715,23 @@ class AuthorityV2ContinuationMixin:
         atomically CASes E ``active`` -> ``consumed`` with
         ``spending_result_id=R2`` + ``decision_state='ready'``, D ``admitted``
         -> ``retired`` and exactly one closed ``spent`` audit.  An exact same-R2
-        retry is a read-only ``already_spent_exact``; everything missing/null/
-        mistyped/conflicting/malformed refuses (``spend_pending``) with the whole
-        transaction rolled back, E active, D admitted, R2 retained and the
-        decision unapplied.  This method performs NO consumer call, NO queue
-        call, NO child creation and NO task-status effect.
+        retry is a read-only ``already_spent_exact`` only after proving the
+        complete original decision evidence: zero related events for ready,
+        exactly claimed for claimed, claimed+applied for applied, or
+        claimed+interrupted for refused, all bound to the original G/SID/R2
+        and derived report_digest. Missing/null/mistyped/conflicting/malformed
+        evidence refuses (``spend_pending``), without repairing history.
+
+        A successful OWNED PRECOMMIT rollback undoes only this transaction;
+        prior spends and later decision states remain intact. COMMIT may take
+        effect before raising; rollback failure or a late synchronized clock,
+        warning or lost return leaves committed or unknown effects. Non-success
+        or a lost return grants no consumer permission and proves no absence.
+        Run-step commits this public spend before its separate decision claim;
+        coding-start composes the private core, claim, graph and acknowledgement
+        in its original bootstrap writer. Neither composition erases prior
+        genuine results, preparation or native custody. This method performs
+        NO consumer call, queue call, child creation or task-status effect.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2SpendOutcome(

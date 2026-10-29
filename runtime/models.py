@@ -2962,13 +2962,24 @@ class AuthorityPolicyV2AdmissionSettlementOutcome(BaseModel):
 class AuthorityPolicyV2SpendOutcome(BaseModel):
     """Bounded outcome of the ONE atomic next-result spend-to-ready transaction.
 
-    ``spent`` just committed the receipt (E active -> consumed with the exact
-    spending result + ``decision_state=ready``, D admitted -> retired); the
-    caller may then let the ordinary decision consumer process the SAME result.
+    ``spent`` identifies the new receipt (E active -> consumed with the exact
+    spending result + ``decision_state=ready``, D admitted -> retired). The public
+    writer commits before returning it; the private core's outcome remains
+    provisional until its original composing writer commits. The caller must
+    still win the decision claim before consumer entry.
     ``already_spent_exact`` is a read-only exact retry of an authenticated
-    consumed/ready receipt and performs NO write, remint or dispatch.
-    ``spend_pending`` means no spend occurred and E stayed active / D admitted
-    with the decision unapplied.  A committed outcome additionally carries
+    consumed receipt with complete original state-required decision evidence:
+    zero related events for ready, exactly claimed for claimed, claimed+applied
+    for applied, or claimed+interrupted for refused. It performs NO write,
+    remint or dispatch. ``spend_pending`` grants no consumer permission and
+    proves no absence of spend: prior consumed/retired receipts and their later
+    decision states remain intact. Only successful OWNED PRECOMMIT rollback
+    undoes this transaction; COMMIT-before-error, failed rollback or late
+    clock/warning/return loss leaves committed or unknown effects.
+    Run-step commits the public spend before a separate decision claim;
+    coding-start composes the private core, claim, graph and acknowledgement
+    in its original bootstrap writer. Prior genuine results, preparation and
+    native custody survive either boundary. A successful outcome also carries
     ``report_digest``: the exact normalized report identity of the retained
     spending result bound into the durable receipt.  None of these statuses is
     launch authority.

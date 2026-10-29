@@ -101,6 +101,24 @@ writes or replay success. A model-valid result FK is not spend proof. Generic
 post-final evidence still supports genuine later consumed E and settled N/retired
 D (or a distinct B) through the ORIGINAL full R2/report/binding/spent/decision proof.
 
+Exact next-result spend replay also proves the COMPLETE retained decision-family
+set for the original cause/G/reserved session/R2 and re-derived report digest:
+independent ZERO potentially-related decision events for ready, exactly the
+original claimed event for claimed, claimed+applied for applied, and
+claimed+interrupted for refused. Closed other-stage shape is relevance, not
+state authority. Missing, duplicate, mixed, opaque, extra/missing-key, mistyped
+(including Boolean/float identities), unknown-stage or incompatible same-cause
+evidence refuses read-only; legitimate fully disjoint history remains valid.
+Only successful OWNED PRECOMMIT rollback undoes that transaction. Wrong-G/SID/R2
+or distinct-B refusals preserve prior consumed/retired receipts and their
+original later decision state. COMMIT-before-error, failed rollback and late
+clock/warning/return loss leave committed or unknown effects; non-success/lost
+return supplies no consumer permission and proves no absence of spend.
+Run-step commits the public spend before its separate decision claim; current
+coding-start composes the private spend core, claim, graph and acknowledgement
+within the ORIGINAL bootstrap writer. Both preserve prior genuine results,
+preparation and native custody, with no new retry rule or consumer authority.
+
 Generation invalidation classifies its complete relevant event set before any
 first N/D/audit write and requires coherent absence plus supported source-stage
 proof. Exact invalidated replay requires one authentic closed type-exact event
