@@ -9,7 +9,11 @@ idle-runner refusal and the ordinary tuple shape are unchanged.
 """
 from __future__ import annotations
 
+import logging
+
 from runtime.daemon.state import DaemonState
+
+logger = logging.getLogger("happyranch.daemon.runner")
 
 
 def enqueue_task(
@@ -44,6 +48,13 @@ def enqueue_task(
     if ownership.kind != "legacy":
         if ownership.kind in ("draft", "f5"):
             state.queue.enqueue(slug, task_id)
+        elif ownership.kind == "reconciliation_required":
+            # Not enqueued: the task stays pending until reconciled. Say so,
+            # so a classifier refusal is never a silent stall.
+            logger.warning(
+                "task %s/%s not enqueued: ownership reconciliation_required (%s)",
+                slug, task_id, ownership.state or "no detail",
+            )
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware
     enqueue_task_generation_aware(
