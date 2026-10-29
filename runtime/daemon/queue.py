@@ -118,44 +118,52 @@ class TaskQueue:
                              publication: object,
                              coding_validation: Callable[[], None] | None = None,
                              ) -> tuple[Callable[[], None], Callable[[], None] | None]:
-        from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
-        if coding_validation is not None:
-            coding_validation()
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, require_ready, StartupUnavailable
         # Select before any ordinary/publication check can wait on its owners.
         # Those checks must not turn a replacement into this operation's owner.
         try:
             state, gate, queue_org = self._startup_state, self._startup_recovery, self._startup_org
-            org = None if state is None else state.orgs.get(slug)
+            orgs = None if state is None else state.orgs
+            org = None if orgs is None else orgs.get(slug)
             refs = None if org is None else org._startup_admission_refs
             epoch, loop, phase = (None, None, None) if gate is None else (gate.epoch, gate._loop, gate._phase)
         except AttributeError as exc:
             raise StartupUnavailable("startup_attachment_changed") from exc
 
         def validate_selection() -> None:
-            if (self._startup_state is not state or self._startup_recovery is not gate
-                    or self._startup_org is not queue_org
-                    or state is not None and (gate.state is not state or state.queue is not self
-                                              or state.orgs.get(slug) is not org)
-                    or org is not None and org._startup_admission_refs is not refs
-                    or gate is not None and (gate.epoch != epoch or gate._loop is not loop
-                                              or gate._phase != phase)):
-                raise StartupUnavailable("startup_attachment_changed")
+            try:
+                if (self._startup_state is not state or self._startup_recovery is not gate
+                        or self._startup_org is not queue_org
+                        or state is not None and (gate.state is not state or state.queue is not self
+                                                  or state.orgs is not orgs or orgs.get(slug) is not org
+                                                  or org is None or org._startup_state is not state
+                                                  or org._startup_recovery is not gate or org._startup_org is not org)
+                        or org is not None and org._startup_admission_refs is not refs
+                        or gate is not None and (gate.epoch != epoch or gate._loop is not loop
+                                                  or gate._phase != phase)):
+                    raise StartupUnavailable("startup_attachment_changed")
+                if state is not None:
+                    gate.require_attachment(org)
+            except AttributeError as exc:
+                raise StartupUnavailable("startup_attachment_changed") from exc
+
+        validate_selection()
+        if coding_validation is not None:
+            coding_validation()
 
         if publication is None:
             validate_queue = ordinary_admission_validation(self)
-            validate_org = None
             if state is not None:
-                if org is None:
-                    raise StartupUnavailable("startup_attachment_changed")
-                validate_org = ordinary_admission_validation(org)
+                require_ready(org)
 
             def validate() -> None:
                 validate_selection()
                 validate_queue()
-                if validate_org is not None:
-                    validate_org()
+                if state is not None:
+                    require_ready(org)
                 if coding_validation is not None:
                     coding_validation()
+                validate_selection()
         else:
             from runtime.daemon.startup_publication import _TaskPublication
             if type(publication) is not _TaskPublication or self._startup_recovery is not publication.gate:
@@ -172,6 +180,7 @@ class TaskQueue:
                 # Includes the exact kind/task/metadata, sweep/publication and
                 # native-owner predicates, plus coding's original V0 if any.
                 publication.check(self, slug, task_id, metadata)
+                validate_selection()
         # General renewal is reference/phase-only, never DB/authority discovery.
         # Keep coding's supplied V0 separate: a composite is not an authentic V0.
         validate_selection()

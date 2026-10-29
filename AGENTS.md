@@ -350,11 +350,18 @@ metadata, queue, attachment, phase and epoch object through queue/generation
 adapters. P2 uses its retained sweep/body-or-native-tail owner; workflow P2/P3 uses
 its original workflow owner; P4/P6 requires the existing active publication owner.
 Authenticated generation raw put still follows its genuine claim and exact ack.
-Queue admission captures the original queue/state/gate/epoch/loop and target
-org/reference selection before waiting. Ordinary and authentic noncoding recovery
-publications renew it after each admission-mutex acquisition before reservation,
-raw insertion or positive pending acknowledgement; a replacement ready owner
-cannot satisfy that selection. Coding's supplied V0 remains separate and unchanged
+Queue admission captures the original queue/state/gate/epoch/loop/phase, org-map
+object and target org/reference selection before owner checks or waits. A bound
+queue authenticates its target against that SAME state/gate and complete original
+attachment on entry and renewal; ordinary production targets also require strict
+readiness. A target cannot select standalone admission or a foreign ready gate.
+Only an explicitly all-None standalone QUEUE retains its offline contract.
+Replacing the org map refuses even when it contains the same target/references;
+legitimate in-place changes for unrelated orgs remain allowed. Ordinary and
+authentic noncoding recovery publications renew the selection after each
+admission-mutex acquisition before reservation, raw insertion or positive pending
+acknowledgement; a replacement ready owner cannot satisfy that selection.
+Coding's supplied V0 remains separate and unchanged
 through nested enqueue/generation. DB-aware publishers stay outside the mutex;
 late refusal preserves actual inserted/committed prefixes and finally unreserves.
 Stopping cannot acknowledge delivery, and owed native/terminal drains stay ungated.
