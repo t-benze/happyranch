@@ -3239,6 +3239,42 @@ class AuthorityV2ContinuationMixin:
         )
         if related_invalidated is None:
             return _pending("evidence_drift", **base)
+        if notification.state == "settled":
+            return _pending("not_invalidatable", **base)
+        # Invalidation preserves the ORIGINAL publication/reservation fields.
+        # Authenticate their complete supported history before either replay
+        # success or first writes; canonical N/body agreement is not a receipt.
+        # The caller below separately owns invalidated-event cardinality.
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, envelope=envelope, dispatch=dispatch,
+            generation_id=generation_id,
+            allowed_states=(
+                "needed", "publishing", "published", "admitted", "invalidated",
+            ),
+            allow_cleared_failure=True,
+        ):
+            return _pending("evidence_drift", **base)
+        expected_owner_session = candidate.manager_session_id
+        if notification.next_session_id is not None:
+            # The real claim reserves nextSID, retained unchanged by the
+            # invalidation writer. Authenticate it even after retirement; the
+            # old causal SID cannot replace missing original claim evidence.
+            if not self._authenticate_v2_admission_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id,
+                expected=self._v2_admission_event_payload(
+                    stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+                    attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                    result_id=result_id, envelope_id=envelope.envelope_id,
+                    notification_id=notification_id, generation_id=generation_id,
+                    next_session_id=notification.next_session_id,
+                ),
+            ):
+                return _pending("evidence_drift", **base)
+            expected_owner_session = notification.next_session_id
         same_generation = dispatch.generation_id == generation_id
         if notification.state == "invalidated":
             if (
@@ -3260,8 +3296,6 @@ class AuthorityV2ContinuationMixin:
                 status="already_invalidated", notification_state="invalidated",
                 dispatch_state=dispatch.state, **base,
             )
-        if notification.state == "settled":
-            return _pending("not_invalidatable", **base)
         if related_invalidated:
             return _pending("evidence_drift", **base)
         # Authenticate the supported source stage, not merely model-valid N/D.
@@ -3278,34 +3312,6 @@ class AuthorityV2ContinuationMixin:
             )
         ):
             return _pending("evidence_drift", **base)
-        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
-            root_task_id=root_task_id, manager_agent=manager_agent,
-            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
-            result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
-            generation_id=generation_id,
-            allowed_states=("needed", "publishing", "published", "admitted"),
-            allow_cleared_failure=True,
-        ):
-            return _pending("evidence_drift", **base)
-        expected_owner_session = candidate.manager_session_id
-        if notification.state == "admitted":
-            # The real claim reserves nextSID; the old causal SID is no longer
-            # the current owner.  Authenticate that exact original reservation
-            # before using it to classify a purported replacement.
-            if not self._authenticate_v2_admission_event_uncommitted(
-                root_task_id=root_task_id, manager_agent=manager_agent,
-                attempt_id=attempt.attempt_id,
-                expected=self._v2_admission_event_payload(
-                    stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
-                    attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
-                    result_id=result_id, envelope_id=envelope.envelope_id,
-                    notification_id=notification_id, generation_id=generation_id,
-                    next_session_id=notification.next_session_id,
-                ),
-            ):
-                return _pending("evidence_drift", **base)
-            expected_owner_session = notification.next_session_id
         # Invalidate only on an ESTABLISHED cancellation/replacement cause read
         # from CURRENT durable state under this same owned transaction: a
         # cancelled/replaced stage owner, or a stale generation
@@ -3400,8 +3406,10 @@ class AuthorityV2ContinuationMixin:
         authenticated reserved SID after it) with the pointer still naming G
         refuses unchanged.  Before first writes the complete invalidation-event
         set must be coherently absent and the source N/D/publication/claim stage
-        must authenticate.  Exact replay requires one closed authentic event and
-        retired same-G D; a distinct replacement B remains untouched.
+        must authenticate.  Replay also authenticates the original retained
+        publication/reservation and incompatible-stage absence before success,
+        with one closed authentic event and retired same-G D; a distinct
+        replacement B remains untouched.
         It never mutates a
         cancelled/terminal/replacement task, retires a replacement generation,
         resets N to needed, spends the envelope or creates any
@@ -3528,12 +3536,19 @@ class AuthorityV2ContinuationMixin:
         invalidation; admission and its downstream readers require a bound boot.
         Pre-admission or a same-G admitted D requires active E with NULL spend/
         decision, including settlement/replay and consumer-outran acknowledgement.
+        Invalidation alone also accepts invalidated N: its unchanged P/boot/
+        nextSID must prove a supported original publication/reservation prefix,
+        with no settlement/spend/decision history. Its caller authenticates the
+        sole invalidated event and any retained generation claim separately.
         """
         state = notification.state
         if state not in allowed_states:
             return False
         publication_attempt = notification.publication_attempt
-        pre_admission = state in ("needed", "publishing", "published")
+        invalidated = state == "invalidated"
+        pre_admission = state in ("needed", "publishing", "published") or (
+            invalidated and notification.next_session_id is None
+        )
         admitted_dispatch = (
             dispatch.generation_id == notification.notification_id
             and dispatch.state == "admitted"
@@ -3543,7 +3558,7 @@ class AuthorityV2ContinuationMixin:
         # on a genuine later spent generation whose D is retired or replaced;
         # its caller must authenticate the independent complete spend proof.
         if (
-            pre_admission or state == "admitted" or admitted_dispatch
+            pre_admission or state == "admitted" or admitted_dispatch or invalidated
         ) and (
             envelope.lifecycle_state != "active"
             or envelope.spending_result_id is not None
@@ -3552,16 +3567,19 @@ class AuthorityV2ContinuationMixin:
             return False
         if pre_admission and notification.next_session_id is not None:
             return False
-        # An invalidated event is incompatible with every accepted state here.
+        # Only the invalidation caller accepts invalidated N, and authenticates
+        # its own complete event set before writes or replay success.
         # Admission/settlement/spend/decision cannot precede their state either.
         # Settled readers deliberately retain real later spend/decision history.
-        absent_stages = (AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,)
+        absent_stages = (
+            () if invalidated else (AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,)
+        )
         if pre_admission:
             absent_stages += (
                 AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
                 AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
             )
-        elif state == "admitted":
+        elif state == "admitted" or invalidated:
             absent_stages += (AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,)
         # Even settled N cannot carry spend/decision history while the SAME-G
         # D is still admitted.  Real later spend retires D in its own writer.
@@ -3582,11 +3600,12 @@ class AuthorityV2ContinuationMixin:
                 generation_id=generation_id,
             ):
                 return False
-        if state == "needed":
+        if state == "needed" or (invalidated and publication_attempt == 0):
             if (
                 not self._v2_is_int(publication_attempt) or publication_attempt != 0
                 or notification.publisher_boot_id is not None
                 or notification.lease_deadline is not None
+                or notification.next_session_id is not None
             ):
                 return False
             # P0 has no retained publication event of ANY publication stage.
@@ -3621,12 +3640,12 @@ class AuthorityV2ContinuationMixin:
         current_claim = claims[publication_attempt]
         boot = notification.publisher_boot_id
         cleared_failure = (
-            state == "publishing" and boot is None
+            (state == "publishing" or (invalidated and pre_admission)) and boot is None
             and notification.lease_deadline is None
         )
-        # Only publication reclaim/failure bookkeeping may accept an audited
-        # cleared lease.  Admission and every other existing reader still
-        # require a bound publisher; a recorded queue failure cannot admit G.
+        # Only publication reclaim/failure bookkeeping and invalidation may
+        # accept an audited cleared lease. Admission and its downstream readers
+        # still require a bound publisher; a recorded queue failure cannot admit G.
         if cleared_failure and not allow_cleared_failure:
             return False
         if not cleared_failure and (
@@ -3687,6 +3706,12 @@ class AuthorityV2ContinuationMixin:
             return publication_attempt in published and not returned
         if state == "publishing":
             return publication_attempt not in published and not returned
+        if invalidated:
+            # P/boot and all observations above authenticate the original
+            # bound publishing/published prefix. A returned acknowledgement
+            # requires an original reservation; the caller proves its claim.
+            # Cleared failure was accepted only with its actual audit above.
+            return notification.next_session_id is not None or not returned
         # admitted/settled: the real consumer may have outrun the published
         # acknowledgement.  Its callers still require actual reservation/G/SID
         # and state-required admission/settlement proof before any observation.

@@ -3394,7 +3394,14 @@ unchanged, and only the exact old G may be retired. Before first writes the
 complete relevant invalidation-event set must be coherently absent, with authentic
 supported N/D/publication/claim source state. Exact invalidated replay requires
 one closed type-exact authentic event and retired same-G D; a distinct B stays
-untouched. Cause classification uses the causal SID before admission and the
+untouched. Before replay success as well as first writes, the unchanged original
+P/boot/nextSID must authenticate needed/P0 absence, bound publishing/published
+claims and observations, actual audited cleared failure, or the exact original
+admitted reservation/claim. Settlement/spend/decision history is incompatible
+with invalidated N. Canonical N/body agreement and closed other-stage payloads
+do not authenticate that proof; missing/incompatible evidence refuses read-only
+without repair or fresh readiness/owner-liveness gates.
+Cause classification uses the causal SID before admission and the
 original authenticated reserved nextSID after it, so healthy admitted G is not
 replacement evidence. Genuine cancellation, well-typed nonempty actual replacement
 and displaced G remain supported; null/partial/malformed identity proves neither.

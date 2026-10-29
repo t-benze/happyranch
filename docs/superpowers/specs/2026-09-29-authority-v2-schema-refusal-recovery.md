@@ -104,8 +104,15 @@ D (or a distinct B) through the ORIGINAL full R2/report/binding/spent/decision p
 Generation invalidation classifies its complete relevant event set before any
 first N/D/audit write and requires coherent absence plus supported source-stage
 proof. Exact invalidated replay requires one authentic closed type-exact event
-and retired same-G D; a distinct B is untouched. Healthy causal pre-admission
-ownership and authentic admitted reserved-nextSID ownership both refuse unchanged.
+and retired same-G D; a distinct B is untouched. Before replay success as well
+as first writes, unchanged original P/boot/nextSID must authenticate needed/P0
+absence, bound publishing/published claims and observations, actual audited
+cleared failure, or the exact original admitted reservation/claim. Invalidated N
+requires absent settlement/spend/decision history. Canonical N/body agreement
+and closed other-stage payloads are not evidence authority; missing/incompatible
+proof refuses read-only without repair or fresh readiness/owner-liveness gates.
+Healthy causal pre-admission ownership and authentic admitted reserved-nextSID
+ownership both refuse unchanged.
 Only actual cancellation, well-typed nonempty replacement or displaced G supplies
 a cause; null/partial/malformed identity never does. Independently owed native
 cleanup retains its original owner without a new readiness prerequisite.
