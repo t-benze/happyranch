@@ -919,6 +919,23 @@ validator default and explicit standalone owners retain their contract. Pre-fenc
 committed source/audit intent and owed terminal/native cleanup remain. This is
 after-wait renewal, not atomic exclusion across SQLite I/O or COMMIT.
 
+Ordinary job launch and deferred job redelivery capture their original producer
+validator before the first job-readiness wait. A selected native job owner carries
+that SAME validator through source/Pause writes, registration and retained
+callback handoff. Fresh runner output-directory creation and each output-file
+truncation renew it after the preceding checks or I/O. Scratch and environment
+preparation renew it after entering their actual preparation intervals. The
+actual process-creation coroutine renews it after its scheduling turn, existing
+job/registration checks and cancellation fence, immediately before native spawn.
+No new reservation, attempt or retry budget is created, and no DB/move lock spans
+filesystem or process creation. These are boundary checks, not atomic exclusion
+across I/O or cancellation of creation already underway. A later refusal retains
+committed prefixes, the original callback until renewed real registration, and
+any actual Process. Process observation, signals, output pumping, on_started,
+terminal/finish and cleanup remain independently owed; uncertain ownership keeps
+the original native-user/DB-close barrier. Native-absent and standalone defaults
+retain their existing downstream contract.
+
 The shared Database synchronization decorator protects all post-acquire timing
 and warning work with the same lock-release finally as the method body. A timing
 or warning exception escapes after releasing exactly that acquired RLock level;

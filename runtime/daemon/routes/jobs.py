@@ -1028,6 +1028,8 @@ async def _run_job_core_impl(
       coherent. ``trigger_actor`` is required when trigger="agent".
     """
     require_job_admission(org)
+    if _move_owner is not None:
+        _move_owner.require_admission()
     job_db, job_slug = org.db, org.slug
     from runtime.daemon.jobs_runner import _require_job_attachment
 
@@ -1095,7 +1097,8 @@ async def _run_job_core_impl(
             lease = org.sessions.binding_lease(record.task_id, record.agent_name) if trigger == "agent" else nullcontext()
             with lease:
                 require_job_admission(org)
-                with store.writer(record.task_id) as (root, control):
+                with store.writer(record.task_id, validate_admission=(
+                        None if _move_owner is None else _move_owner.require_admission)) as (root, control):
                     require_job_admission(org)
                     require_attachment()
                     current = job_db.get_job(job_id)
@@ -1126,6 +1129,8 @@ async def _run_job_core_impl(
                             and not org.sessions.is_recovery_session(record.task_id, record.agent_name, sid)
                         if not exact or (effective and not exception):
                             return {"id": job_id, "status": "pending", "deferred": True, "code": "root_paused" if effective else "job_owner_unavailable"}
+                    if _move_owner is not None:
+                        _move_owner.require_admission()
                     if preflight_error is not None:
                         # Only authenticated, never-launched automatic work may fail here.
                         # Retain unknown/possible launch evidence and every race winner.
@@ -1145,8 +1150,12 @@ async def _run_job_core_impl(
                                 "code": "not_pending", "job_id": job_id,
                                 "status": winner.status.value if winner else None,
                             })
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         control["journal"]["entries"].remove(job_entry)
                         store.save_journal_uncommitted(control)
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         job_db.insert_audit_log_uncommitted(current.task_id, current.agent_name,
                             "job_run_failed", {"script_request_id": job_id, "exit_code": None,
                                 "duration_ms": 0, "reason": "spawn_failed"})
@@ -1169,6 +1178,8 @@ async def _run_job_core_impl(
                                 cwd_resolved=str(cwd_resolved), max_runtime_seconds=timeout,
                                 stdout_path=str(stdout_path), stderr_path=str(stderr_path)):
                             raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         if job_entry is not None:
                             job_entry["phase"] = "possible_launch"
                             job_entry["captured_generation"] = control["generation"] if effective else None
@@ -1179,6 +1190,8 @@ async def _run_job_core_impl(
                             payload.update(agent=reviewer, persistent=record.persistent)
                         else:
                             payload.update(reviewer=reviewer)
+                        if _move_owner is not None:
+                            _move_owner.require_admission()
                         job_db.insert_audit_log_uncommitted(record.task_id, reviewer,
                             "job_auto_started" if trigger == "agent" else "job_run_started", payload)
         if preflight_error is not None:
@@ -1207,6 +1220,8 @@ async def _run_job_core_impl(
         now = _now_iso()
         require_job_admission(org)
         require_attachment()
+        if _move_owner is not None:
+            _move_owner.require_admission()
         try:
             job_db.transition_job_to_running(
                 job_id,
@@ -1222,6 +1237,8 @@ async def _run_job_core_impl(
             raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
         audit = AuditLogger(job_db)
+        if _move_owner is not None:
+            _move_owner.require_admission()
         if trigger == "agent":
             audit.log_job_auto_started(
                 task_id=record.task_id, job_id=job_id, agent=reviewer,
@@ -1286,8 +1303,14 @@ async def _run_job_core_impl(
         _validate_registration(registration, running_task=True)
         require_job_admission(org)
         try:
+            if registration.owner is not None:
+                registration.owner.require_admission()
             jobs_dir.mkdir(parents=True, exist_ok=True)
+            if registration.owner is not None:
+                registration.owner.require_admission()
             stdout_path.write_bytes(b'')
+            if registration.owner is not None:
+                registration.owner.require_admission()
             stderr_path.write_bytes(b'')
             result = await _spawn_job(job_id=job_id, registration=registration,
                 script_text=record.script_text, interpreter=record.interpreter.value,
@@ -1371,6 +1394,8 @@ async def _run_job_core_impl(
         return await _run_and_persist(registration)
 
     require_job_admission(org)
+    if _move_owner is not None:
+        _move_owner.require_admission()
     task = asyncio.create_task(owned_run(_move_owner))
     if _move_owner is not None:
         _move_owner.detached = True  # a registration refusal retains this original owner
@@ -1488,9 +1513,9 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
 async def _run_job_core(org, *, job_id: str, cwd_override: str | None,
     timeout_override: int | None, trigger: str = 'founder',
     trigger_actor: str | None = None, submit_session_id: str | None = None) -> dict:
-    require_job_admission(org)
     from runtime.orchestrator.producer_move import producer_admission_validation
     validate_admission = producer_admission_validation(org)
+    require_job_admission(org)
     admission = owner_for(org.db)
     owner = None
     from runtime.orchestrator.producer_move import NativeWriterDisposition

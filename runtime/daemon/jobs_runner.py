@@ -378,6 +378,8 @@ def _require_runner_admission(registration, job_id, task_id, move_owner) -> None
         raise StartupUnavailable("startup_jobs_binding_changed")
     _validate_registration(registration, running_task=True)
     require_job_admission(db=registration.db, org_slug=registration.org_slug)
+    if move_owner is not None:
+        move_owner.require_admission()
 
 
 def attach_jobs_resume_main_loop(
@@ -487,13 +489,19 @@ def register_runner_task(job_id: str, task: asyncio.Task, *, db, org_slug, move_
         r = _JobRegistration(db, org_slug, job_id, record.task_id, record.agent_name,
                              task, move_owner, identity, startup_binding=_JOBS_STARTUP,
                              attempt=None if move_owner is None else _attempt_identity(move_owner))
+        if move_owner is not None:
+            move_owner.require_admission()
         if _JOBS_STARTUP is not None:
             r.org_attachment = db._jobs_startup_refs[2]
             if not r.org_attachment._acquire_native_task(r):
                 raise DeferredTeamMove('job_registration_unavailable')
+        if move_owner is not None:
+            move_owner.require_admission()
         _RUNNER_TASKS[key] = r
         _validate_registration(r)
         require_job_admission(db=db, org_slug=org_slug)
+        if move_owner is not None:
+            move_owner.require_admission()
     except BaseException:
         task.cancel()  # registration refusal must never leave an unregistered launch
         if 'r' in locals():
@@ -681,6 +689,8 @@ async def run_job(
         from runtime.orchestrator.producer_move import producer_preparation_effects
         if task_id is not None and workspace_root is not None:
             with producer_preparation_effects(move_owner):
+                if move_owner is not None:
+                    move_owner.require_admission()
                 scratch = prepare_task_scratch(
                     workspace=Path(workspace_root), task_id=task_id,
                     producer_kind="job", producer_id=job_id or "anonymous",
@@ -688,6 +698,8 @@ async def run_job(
                 scratch_token = activate_task_scratch(scratch)
         try:
             with producer_preparation_effects(move_owner):
+                if move_owner is not None:
+                    move_owner.require_admission()
                 child_env = _sanitize_child_env(dict(os.environ))
                 if scratch_token is not None:
                     # A daemon launched by an agent inherits that parent session's
@@ -696,6 +708,8 @@ async def run_job(
                     # TMPDIR/TMP/TEMP retain unexpected-steering refusal.
                     child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
                     child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
+                if move_owner is not None:
+                    move_owner.require_admission()
                 child_env = apply_task_scratch_environment(child_env)
             if move_owner is not None:
                 move_owner.executor = interpreter
@@ -724,6 +738,9 @@ async def run_job(
                     require_job_admission()
                 if runner_task.cancelling():
                     raise asyncio.CancelledError()
+                if move_owner is not None:
+                    # Retain the reservation's selection after this Task turn.
+                    move_owner.require_admission()
                 return await asyncio.create_subprocess_exec(
                     binary,
                     "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
