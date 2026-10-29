@@ -489,10 +489,10 @@ class AuthorityV2ContinuationMixin:
     def _v2_closed_audit_matches(self, rows, expected: dict) -> bool:
         if rows is None or len(rows) != 1:
             return False
-        payload = rows[0]["payload"]
-        if set(payload.keys()) != set(expected.keys()):
-            return False
-        return all(payload.get(key) == value for key, value in expected.items())
+        payload = rows[0].get("payload") if isinstance(rows[0], dict) else None
+        return isinstance(payload, dict) and self._v2_json_type_sensitive_equal(
+            payload, expected,
+        )
 
     @staticmethod
     def _v2_is_int(value) -> bool:
@@ -526,6 +526,87 @@ class AuthorityV2ContinuationMixin:
             )
         return left == right
 
+    def _v2_related_final_audits_uncommitted(
+        self, attempt_row, action: str, expected: dict,
+    ) -> list[dict] | None:
+        """Keep conflicting final evidence before any attempt/stage filtering.
+
+        Only closed, typed history can be independently unrelated. A different
+        attempt alone never vetoes another matching or malformed causal field.
+        Recognized other result stages must also agree with the current tuple
+        on every shared immutable field before they are legitimate history.
+        Their own state-specific readers still authenticate their authority.
+        """
+        rows = self._v2_identity_scoped_audits(
+            attempt_row["root_task_id"], attempt_row["manager_agent"], action,
+            attempt_id=None, include_opaque=True,
+        )
+        if rows is None:
+            return None
+        causal_fields = (
+            "attempt_id", "candidate_id", "result_id", "envelope_id",
+            "notification_id", "generation_id",
+        )
+        result_stage = action == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+        related = []
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                return None
+            stage = payload.get("stage")
+            closed = (
+                self._v2_result_stage_shape_is_closed(stage, payload)
+                if result_stage else set(payload) == set(expected)
+            )
+            # The existing stage payloads are scalar-only. A closed key set
+            # with a null/list/bool/float identity is not authentic history.
+            typed = closed and all(
+                self._v2_is_int(value) and value > 0
+                if field in (
+                    "result_id", "activation_epoch", "publication_attempt",
+                    "spending_result_id",
+                ) else isinstance(value, str) and bool(value)
+                for field, value in payload.items()
+            )
+            if typed and "finalization_state" in payload:
+                if stage == AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED:
+                    typed = payload["finalization_state"] == "continued"
+                elif stage == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED:
+                    typed = payload["finalization_state"] in ("refused", "owner_lost")
+                else:
+                    typed = payload["finalization_state"] == "unfinalized"
+            if typed and not result_stage:
+                typed = all(
+                    self._v2_json_type_sensitive_equal(payload[field], value)
+                    for field, value in expected.items()
+                    if field not in causal_fields
+                )
+            states = [
+                self._v2_identity_observation(
+                    payload, field, expected[field],
+                    "int" if field == "result_id" else "str",
+                )
+                for field in causal_fields if field in payload
+            ]
+            if typed and states and all(state == "distinct" for state in states):
+                continue
+            if (
+                typed and result_stage
+                and stage not in (
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
+                )
+                and all(state == "match" for state in states)
+                and all(
+                    self._v2_json_type_sensitive_equal(value, expected[field])
+                    for field, value in payload.items()
+                    if field in expected and field not in ("stage", "finalization_state")
+                )
+            ):
+                continue
+            related.append(row)
+        return related
+
     def _authenticate_v2_final_result_stage_uncommitted(
         self, attempt_row, candidate_id: str, envelope_id: str,
         notification_id: str, generation_id: str,
@@ -533,18 +614,10 @@ class AuthorityV2ContinuationMixin:
         expected = self._v2_final_result_stage_payload(
             attempt_row, candidate_id, envelope_id, notification_id, generation_id,
         )
-        rows = self._v2_identity_scoped_audits(
-            attempt_row["root_task_id"], attempt_row["manager_agent"],
-            AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
-            attempt_id=attempt_row["attempt_id"],
+        rows = self._v2_related_final_audits_uncommitted(
+            attempt_row, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION, expected,
         )
-        if rows is None:
-            return False
-        continued = [
-            row for row in rows
-            if row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED
-        ]
-        return self._v2_closed_audit_matches(continued, expected)
+        return self._v2_closed_audit_matches(rows, expected)
 
     def _authenticate_v2_final_task_audit_uncommitted(
         self, attempt_row, candidate_id: str, envelope_id: str,
@@ -553,10 +626,8 @@ class AuthorityV2ContinuationMixin:
         expected = self._v2_final_task_payload(
             attempt_row, candidate_id, envelope_id, notification_id, generation_id,
         )
-        rows = self._v2_identity_scoped_audits(
-            attempt_row["root_task_id"], attempt_row["manager_agent"],
-            AUTHORITY_POLICY_V2_FINAL_TASK_AUDIT_ACTION,
-            attempt_id=attempt_row["attempt_id"],
+        rows = self._v2_related_final_audits_uncommitted(
+            attempt_row, AUTHORITY_POLICY_V2_FINAL_TASK_AUDIT_ACTION, expected,
         )
         return self._v2_closed_audit_matches(rows, expected)
 
@@ -567,10 +638,8 @@ class AuthorityV2ContinuationMixin:
         expected = self._v2_final_hook_payload(
             attempt_row, candidate_id, envelope_id, notification_id, generation_id,
         )
-        rows = self._v2_identity_scoped_audits(
-            attempt_row["root_task_id"], attempt_row["manager_agent"],
-            AUTHORITY_POLICY_V2_FINAL_HOOK_AUDIT_ACTION,
-            attempt_id=attempt_row["attempt_id"],
+        rows = self._v2_related_final_audits_uncommitted(
+            attempt_row, AUTHORITY_POLICY_V2_FINAL_HOOK_AUDIT_ACTION, expected,
         )
         return self._v2_closed_audit_matches(rows, expected)
 
