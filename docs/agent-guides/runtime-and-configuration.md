@@ -793,16 +793,36 @@ legitimate in-place changes for unrelated orgs remain allowed. Ordinary and
 authentic noncoding recovery publications renew the selection after each
 admission-mutex acquisition before reservation, raw insertion or positive pending
 acknowledgement; a replacement ready owner cannot satisfy that selection.
-Custom publishers retain that SAME original general validator in a queue-local,
-thread-local stack for their synchronous call, keyed by slug/task. Nested raw
-enqueue renews every matching original validator after its mutex wait and before
-insertion, including after generation-classifier DB waits; it also retains its
-own validation. Concurrent threads, other queues and unrelated keys do not inherit
-that selection; reentrant calls restore the previous stack in finally. This adds
-checks only and grants no recovery admission. Coding's supplied V0 remains
-separate and unchanged through nested enqueue/generation. DB-aware publishers
-stay outside the mutex;
-late refusal preserves actual inserted/committed prefixes and finally unreserves.
+Direct runner and generation entries select that original domain before readiness,
+Pause, ownership or classifier waits; private sweep/workflow/returned/redelivery
+adapters select it before their owner checks too. Custom publishers retain their
+SAME original general validator in a queue-local, thread-local stack for their
+synchronous call, keyed by slug/task. Nested raw enqueue renews every matching
+original validator after its mutex wait and before insertion; it also retains its
+own validation. Multi-target notification and team-move discovery select the
+producer domain/map/attachment before discovery, then bind each authenticated
+actual target key to that original selection before raw publication. No wildcard
+selection leaks into unrelated keys. Concurrent threads and other queues do not
+inherit; reentrant calls restore every previous stack in finally. Coding's supplied
+V0 remains separate and unchanged through generation/default/custom adapters.
+These checks grant no recovery admission and leave DB discovery, claim, failure
+bookkeeping, exact acknowledgement and publishers outside the queue mutex.
+
+While the queue mutex is held, existing gate, sweep, publication and original
+completion-condition locks are attempted once without blocking. Contention raises
+the existing startup-owner refusal; it does not retry or pass. Successful renewal
+retains the complete readiness/listener/preparation/latch, native/phase/attachment,
+sweep and active publication predicates under their original locks. The original
+completion Future's condition is reserved nonblockingly before its done/result
+checks reenter that same RLock; no Future wait occurs under queue admission.
+Sweep admission reads only its original recovering/stopping predicate under the
+gate lock, without diagnostic publication/read/observation snapshots. Publication
+failure owners and refusal-status projections run after the outermost reentrant
+queue mutex has released, as do stopping logs. Other callers keep their existing
+blocking owner checks and settlement behavior. Renewal does not serialize org-map
+writers or make the DB and queue atomic; no arbitrary cross-thread, crash or
+exactly-once guarantee follows. Late refusal preserves actual inserted/committed
+prefixes and finally unreserves.
 Stopping cannot acknowledge delivery, and owed native/terminal drains stay ungated.
 No generic recovery-thread or metadata bypass grants queue/session/provider use.
 For original unheld non-v2 retry/recovery-deferred Pause tasks during P6,

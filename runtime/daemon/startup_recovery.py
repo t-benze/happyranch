@@ -41,6 +41,85 @@ class StartupUnavailable(RuntimeError):
                        _ACTION if code == "daemon_recovering" else _FAILED_ACTION}
 
 
+_QUEUE_RENEWAL = threading.local()
+
+
+@contextmanager
+def _queue_admission_renewal() -> Iterator[None]:
+    """Only synchronous queue renewal; run failure owners AFTER its mutex exits.
+
+    Reentrant queue operations share the outer scope, so an inner rejection
+    cannot run diagnostics/failure recording while an ancestor holds a mutex.
+    This changes neither ordinary owner locking nor native settlement.
+    """
+    if getattr(_QUEUE_RENEWAL, "failures", None) is not None:
+        yield
+        return
+    failures: list[Callable[[], None]] = []
+    _QUEUE_RENEWAL.failures = failures
+    primary: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        del _QUEUE_RENEWAL.failures
+        tail_error: BaseException | None = None
+        for action in failures:
+            try:
+                action()
+            except BaseException as secondary:
+                original = primary if primary is not None else tail_error
+                if original is None:
+                    tail_error = secondary
+                else:
+                    original.add_note("queue owner/diagnostic tail also failed: " + type(secondary).__name__)
+        if isinstance(primary, StartupUnavailable):
+            gate = getattr(primary, "_status_owner", None)
+            if gate is not None:
+                try:
+                    primary.detail["startup"] = public_startup_status(gate.state, gate.app)
+                except BaseException as secondary:
+                    primary.add_note("queue refusal status unavailable: " + type(secondary).__name__)
+        if primary is None and tail_error is not None:
+            raise tail_error
+
+
+@contextmanager
+def _queue_owner_lock(lock: Any) -> Iterator[None]:
+    """Existing owner lock, with a single nonblocking attempt under queue renewal."""
+    queue_held = getattr(_QUEUE_RENEWAL, "failures", None) is not None
+    if not lock.acquire(blocking=not queue_held):
+        raise StartupUnavailable("startup_owner_unavailable")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _defer_queue_publication_failure(owner: Any, cause: BaseException) -> bool:
+    return _defer_queue_diagnostic(lambda: owner.fail(cause))
+
+
+def _defer_queue_diagnostic(action: Callable[[], None]) -> bool:
+    failures = getattr(_QUEUE_RENEWAL, "failures", None)
+    if failures is None:
+        return False
+    failures.append(action)
+    return True
+
+
+def _owner_refusal(gate: Any, code: str) -> StartupUnavailable:
+    if getattr(_QUEUE_RENEWAL, "failures", None) is None:
+        return StartupUnavailable(code, public_startup_status(gate.state, gate.app))
+    # The same status projection is owed outside the queue mutex, including
+    # on private native-owner refusals. Never snapshot a foreign owner here.
+    error = StartupUnavailable(code)
+    error._status_owner = gate
+    return error
+
+
 @dataclass(frozen=True)
 class RecoveryOutcome:
     disposition: Literal["settled", "local_hold", "unavailable", "unknown"]
@@ -209,7 +288,7 @@ class StartupRecovery:
     def require_publication_owner(self, orch: Any) -> None:
         """The native returned/P6 owner, after cold sweep/workflow closure."""
         self.require_native_owner()
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             allowed = (self._phase in ("returned", "redelivery", "producers")
                        and self._phases["sweep"].outcome in ("settled", "local_hold")
                        and self._phases["workflows"].outcome in ("settled", "local_hold"))
@@ -241,7 +320,7 @@ class StartupRecovery:
         guard: the binding coroutine must authenticate on the real loop too.
         """
         self.state._assert_attachments_unchanged(self._attachments)
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             allowed = (self._phase == phase and self._phases[phase].outcome == "incomplete"
                        and self._status == "recovering" and self._first_cause is None
                        and not self._closed and not self._stop.is_set()
@@ -316,16 +395,20 @@ class StartupRecovery:
         self._require_later_native("producers", org)
 
     def _assert_binding_complete(self, *, required: bool = False) -> None:
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             binding = self._binding
         if binding is None:
             if required:
                 raise RuntimeError("startup_binding_missing")
             return
-        if (not binding.completion.done() or not binding.observed
-                or binding.completion.result() is not True or binding.error is not None
-                or binding.orgs_bound != len(self._redelivery_queues[1]) or not binding.jobs_bound):
-            raise RuntimeError("startup_binding_incomplete")
+        # This is our original concurrent.futures.Future (its Condition uses
+        # an RLock). Reserve that condition nonblockingly during queue renewal;
+        # done/result below only reenter our held condition and never wait.
+        with _queue_owner_lock(binding.completion._condition):
+            if (not binding.completion.done() or not binding.observed
+                    or binding.completion.result() is not True or binding.error is not None
+                    or binding.orgs_bound != len(self._redelivery_queues[1]) or not binding.jobs_bound):
+                raise RuntimeError("startup_binding_incomplete")
         self._assert_reference_attachments(binding)
 
     def _assert_binding_idle(self) -> None:
@@ -622,18 +705,28 @@ class StartupRecovery:
         result["reads"] = None if reads is None else reads.snapshot()
         return result
 
+    def _sweep_admission_open(self) -> bool:
+        if getattr(_QUEUE_RENEWAL, "failures", None) is None:
+            current = self.snapshot()
+            return current["state"] == "recovering" and not current["stopping"]
+        # Queue renewal consumes the same two admission scalars without the
+        # diagnostic snapshot's publication/read/observation owners. Other
+        # callers retain the complete existing snapshot and its errors.
+        with _queue_owner_lock(self._lock):
+            return self._status == "recovering" and not self._stop.is_set()
+
     def require_ready(self) -> None:
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             allowed = (self._status == "ready" and not self._stop.is_set() and not self._closed
                        and self._first_cause is None and self._serving
                        and self._ready_commits == 1 and self._preparation_complete
                        and self._latch is not None and self._latch.is_set()
                        and self._listener_current())
         if not allowed:
-            with self._lock:
+            with _queue_owner_lock(self._lock):
                 recovering = self._status == "recovering" and not self._stop.is_set()
             code = "daemon_recovering" if recovering else "daemon_recovery_failed"
-            raise StartupUnavailable(code, public_startup_status(self.state, self.app))
+            raise _owner_refusal(self, code)
 
     def require_attachment(self, owner: Any) -> None:
         """Authenticate the actual current production owner without DB work."""
@@ -682,12 +775,12 @@ class StartupRecovery:
             raise StartupUnavailable("startup_attachment_changed")
 
     def require_native_owner(self) -> None:
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             allowed = (self._native_thread == threading.get_ident()
                        and self._status == "recovering" and not self._stop.is_set()
                        and self._first_cause is None)
         if not allowed:
-            raise StartupUnavailable("startup_owner_unavailable", public_startup_status(self.state, self.app))
+            raise _owner_refusal(self, "startup_owner_unavailable")
 
     def require_workflow_owner(self, org: Any, *, sweep_owner: Any = None) -> None:
         """P2/P3 only: original native operation, attachment and cold sweep.
@@ -704,7 +797,7 @@ class StartupRecovery:
         else:
             raise RuntimeError("startup_workflow_requires_native_thread")
         self.state._assert_attachments_unchanged(self._attachments)
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             allowed = ((sweep_owner is not None and self._phase == "sweep"
                         and self._sweep_owner is sweep_owner)
                        or (sweep_owner is None and self._phase == "workflows"
@@ -737,7 +830,7 @@ class StartupRecovery:
         self.state._assert_attachments_unchanged(self._attachments)
         self._require_phase_attachments("redelivery")
         self._assert_binding_complete(required=True)
-        with self._lock:
+        with _queue_owner_lock(self._lock):
             allowed = (self._phase == "redelivery"
                        and self._phases["compatibility"].outcome in ("settled", "local_hold"))
         if not allowed or self._redelivery_queues is None:
@@ -770,24 +863,26 @@ class StartupRecovery:
         pointer. Keep their original raw publication shape and pending identity;
         no generation is minted and no committed graph is rolled back on loss.
         """
-        self.require_workflow_owner(org, sweep_owner=sweep_owner)
+        from contextlib import nullcontext
         from runtime.daemon.queue import TaskQueue
         queue = self.state.queue
-        if not isinstance(queue, TaskQueue):
-            raise RuntimeError("startup_workflow_queue_unavailable")
-        from runtime.daemon.startup_publication import _TaskPublication
-        publication = _TaskPublication(self, org.orchestrator, task_id, "workflow",
-                                       sweep_owner=sweep_owner, validate_admission=validate_admission)
-        inserted = queue.enqueue_if_absent(org.slug, task_id, _publication=publication)
-        if type(inserted) is not bool:
-            raise RuntimeError("startup_workflow_queue_outcome_unknown")
-        if queue.pending_publication(org.slug, task_id) != "pending":
-            raise RuntimeError("startup_workflow_task_unacknowledged")
-        if validate_admission is not None:
-            validate_admission()
-        self.require_workflow_owner(org, sweep_owner=sweep_owner)
-        return RecoveryOutcome("settled", "startup_workflow_task_inserted" if inserted
-                               else "startup_workflow_task_already_pending")
+        with queue._publication_scope(org.slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+            self.require_workflow_owner(org, sweep_owner=sweep_owner)
+            if not isinstance(queue, TaskQueue):
+                raise RuntimeError("startup_workflow_queue_unavailable")
+            from runtime.daemon.startup_publication import _TaskPublication
+            publication = _TaskPublication(self, org.orchestrator, task_id, "workflow",
+                                           sweep_owner=sweep_owner, validate_admission=validate_admission)
+            inserted = queue.enqueue_if_absent(org.slug, task_id, _publication=publication)
+            if type(inserted) is not bool:
+                raise RuntimeError("startup_workflow_queue_outcome_unknown")
+            if queue.pending_publication(org.slug, task_id) != "pending":
+                raise RuntimeError("startup_workflow_task_unacknowledged")
+            if validate_admission is not None:
+                validate_admission()
+            self.require_workflow_owner(org, sweep_owner=sweep_owner)
+            return RecoveryOutcome("settled", "startup_workflow_task_inserted" if inserted
+                                   else "startup_workflow_task_already_pending")
 
     def _retain_secondary(self, cause: BaseException) -> None:
         """Bounded local evidence without changing a dashboard waiter's policy."""

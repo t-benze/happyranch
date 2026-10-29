@@ -251,12 +251,12 @@ class _StartupSweepOwner:
     def observe_gate(self) -> None:
         gate = getattr(self.orch, '_startup_recovery', None)
         if gate is not None:
-            snapshot = gate.snapshot()
-            if snapshot['stopping'] or snapshot['state'] != 'recovering':
+            if not gate._sweep_admission_open():
                 self.negative('startup_sweep_admission_closed')
 
     def check(self) -> None:
-        with self._lock:
+        from runtime.daemon.startup_recovery import _queue_owner_lock
+        with _queue_owner_lock(self._lock):
             self.observe_gate()
             if self._first is not None:
                 raise _StartupSweepUnavailable('startup_sweep_unsettled') from self._first
@@ -1532,30 +1532,32 @@ def _enqueue_task_generation_aware(
     ``enqueue(slug, task_id, metadata=...)`` (the blocked-job resume producer).
     The boundary's publish/refuse decisions are identical either way.
     """
+    from runtime.daemon.queue import TaskQueue
     queue = getattr(orch, "_queue", None)
-    if queue is None:
-        return
-    from runtime.orchestrator.authority import enqueue_task_generation_aware
-    if _publication is None:
-        startup = _startup_sweep_owner(orch)
-        if startup is not None and orch._startup_state is not None:
-            from runtime.daemon.startup_publication import _TaskPublication
-            _publication = _TaskPublication(orch._startup_recovery, orch, task_id,
-                                            "sweep", metadata, sweep_owner=startup)
-    kwargs = {"_publication": _publication} if _publication is not None else {}
-    if legacy == "enqueue":
-        if metadata is None:
-            raw = lambda: queue.enqueue(orch._slug, task_id, **kwargs)
+    with queue._publication_scope(orch._slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        if queue is None:
+            return
+        from runtime.orchestrator.authority import enqueue_task_generation_aware
+        if _publication is None:
+            startup = _startup_sweep_owner(orch)
+            if startup is not None and orch._startup_state is not None:
+                from runtime.daemon.startup_publication import _TaskPublication
+                _publication = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                                "sweep", metadata, sweep_owner=startup)
+        kwargs = {"_publication": _publication} if _publication is not None else {}
+        if legacy == "enqueue":
+            if metadata is None:
+                raw = lambda: queue.enqueue(orch._slug, task_id, **kwargs)
+            else:
+                raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata, **kwargs)
         else:
-            raw = lambda: queue.enqueue(orch._slug, task_id, metadata=metadata, **kwargs)
-    else:
-        raw = lambda: queue.put_nowait(orch._slug, task_id, **kwargs)
-    outcome = enqueue_task_generation_aware(
-        orch, queue, orch._slug, task_id, metadata=metadata,
-        ordinary_enqueue=raw, _publication=_publication,
-    )
-    if _observe is not None:
-        _observe(outcome)
+            raw = lambda: queue.put_nowait(orch._slug, task_id, **kwargs)
+        outcome = enqueue_task_generation_aware(
+            orch, queue, orch._slug, task_id, metadata=metadata,
+            ordinary_enqueue=raw, _publication=_publication,
+        )
+        if _observe is not None:
+            _observe(outcome)
 
 
 def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
@@ -4445,15 +4447,17 @@ def _attachment_owned_effect(
 
 
 def _publish_retry_feedback_task(orch: "Orchestrator", task_id: str) -> None:
-    queue = orch._queue
-    startup = _startup_sweep_owner(orch)
-    kwargs = {}
-    if startup is not None and orch._startup_state is not None:
-        from runtime.daemon.startup_publication import _TaskPublication
-        selected = _TaskPublication(orch._startup_recovery, orch, task_id,
-                                    "sweep", sweep_owner=startup)
-        kwargs["_publication"] = selected
-    queue.put_nowait(orch._slug, task_id, **kwargs)
+    from runtime.daemon.queue import TaskQueue
+    queue = getattr(orch, "_queue", None)
+    with queue._publication_scope(orch._slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        startup = _startup_sweep_owner(orch)
+        kwargs = {}
+        if startup is not None and orch._startup_state is not None:
+            from runtime.daemon.startup_publication import _TaskPublication
+            selected = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                        "sweep", sweep_owner=startup)
+            kwargs["_publication"] = selected
+        queue.put_nowait(orch._slug, task_id, **kwargs)
 
 
 def _attachment_feedback_and_reenqueue(
@@ -6145,46 +6149,48 @@ class _FollowonOwnerLost(RuntimeError):
 
 def _publish_followon_task(orch, task_id, validate):
     """Original generation-aware publication with exact P2/P4/P6 selection."""
-    validate()
-    from runtime.daemon.startup_publication import current_publication, _TaskPublication
-    publication, sweep = current_publication(orch), _startup_sweep_owner(orch)
-    queue = orch._queue
-    if queue is None:
-        return
-    selected = None
-    if publication is not None:
-        selected = _TaskPublication(publication.gate, orch, task_id,
-            "returned_parent" if publication.gate._phase == "returned" else "redelivery",
-            publication=publication)
-    elif sweep is not None and orch._startup_state is not None:
-        selected = _TaskPublication(orch._startup_recovery, orch, task_id,
-                                    "sweep_parent", sweep_owner=sweep)
-    kwargs = {"_publication": selected} if selected is not None else {}
-    def observe(outcome):
-        if selected is not None and outcome not in ("ordinary", "published"):
-            raise RuntimeError("startup_parent_publication_" + outcome)
-    def publish():
+    from runtime.daemon.queue import TaskQueue
+    queue = getattr(orch, "_queue", None)
+    with queue._publication_scope(orch._slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
         validate()
-        _enqueue_task_generation_aware(orch, task_id,
-            **({"_observe": observe} if selected is not None else {}), **kwargs)
-    with publication.attempt(orch, "parent_attempted") if publication is not None else nullcontext():
-        validate()
-        enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
-        if callable(enqueue_if_absent):
-            inserted = enqueue_if_absent(orch._slug, task_id, publisher=publish, **kwargs)
-        else:
-            if selected is not None:
-                raise RuntimeError("startup_parent_queue_owner_unavailable")
-            publish()  # Existing lightweight standalone adapters.
+        from runtime.daemon.startup_publication import current_publication, _TaskPublication
+        publication, sweep = current_publication(orch), _startup_sweep_owner(orch)
+        if queue is None:
             return
-        if selected is not None:
-            from runtime.daemon.queue import TaskQueue
-            if (not isinstance(queue, TaskQueue) or type(inserted) is not bool
-                    or queue.pending_publication(orch._slug, task_id) != "pending"):
-                raise RuntimeError("startup_parent_publication_unacknowledged")
-            if publication is not None:
-                publication.count("acknowledged")
-                publication.count("inserted" if inserted else "already_pending")
+        selected = None
+        if publication is not None:
+            selected = _TaskPublication(publication.gate, orch, task_id,
+                "returned_parent" if publication.gate._phase == "returned" else "redelivery",
+                publication=publication)
+        elif sweep is not None and orch._startup_state is not None:
+            selected = _TaskPublication(orch._startup_recovery, orch, task_id,
+                                        "sweep_parent", sweep_owner=sweep)
+        kwargs = {"_publication": selected} if selected is not None else {}
+        def observe(outcome):
+            if selected is not None and outcome not in ("ordinary", "published"):
+                raise RuntimeError("startup_parent_publication_" + outcome)
+        def publish():
+            validate()
+            _enqueue_task_generation_aware(orch, task_id,
+                **({"_observe": observe} if selected is not None else {}), **kwargs)
+        with publication.attempt(orch, "parent_attempted") if publication is not None else nullcontext():
+            validate()
+            enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
+            if callable(enqueue_if_absent):
+                inserted = enqueue_if_absent(orch._slug, task_id, publisher=publish, **kwargs)
+            else:
+                if selected is not None:
+                    raise RuntimeError("startup_parent_queue_owner_unavailable")
+                publish()  # Existing lightweight standalone adapters.
+                return
+            if selected is not None:
+                from runtime.daemon.queue import TaskQueue
+                if (not isinstance(queue, TaskQueue) or type(inserted) is not bool
+                        or queue.pending_publication(orch._slug, task_id) != "pending"):
+                    raise RuntimeError("startup_parent_publication_unacknowledged")
+                if publication is not None:
+                    publication.count("acknowledged")
+                    publication.count("inserted" if inserted else "already_pending")
 
 
 def _enqueue_parent_if_waiting(
@@ -6449,57 +6455,58 @@ def _publish_redelivery_task(
     Deferred authenticated SAME-owner callbacks explicitly retain their raw
     original metadata and do not seek fresh generation admission.
     """
-    from runtime.daemon.startup_publication import current_publication
-    from runtime.daemon.startup_recovery import RecoveryOutcome
     from runtime.daemon.queue import TaskQueue
-    publication = current_publication(orch)
-    if publication is None:
-        raise RuntimeError("startup_redelivery_publication_owner_missing")
-    org = publication.gate.state.orgs.get(orch._slug)
-    publication.gate.require_redelivery_owner(org)
-    queue = orch._queue
-    if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
-        raise RuntimeError("startup_redelivery_task_queue_unavailable")
-    with publication.attempt(orch, "task_attempted"):
-        from runtime.daemon.startup_publication import _TaskPublication
-        selected = _TaskPublication(publication.gate, orch, task_id, "redelivery",
-                                    metadata, publication=publication, validate_admission=validate_admission)
-        if generation_aware:
-            # Exact target-local read, not discovery or reconstruction. Unknown
-            # classification is never inferred to be an empty/held selection.
-            classification = orch._db.classify_authority_policy_v2_root_dispatch_for_enqueue(task_id)
-            if classification.kind in ("pending", "admitted"):
-                publication.count("held")
-                return RecoveryOutcome("local_hold", "startup_redelivery_generation_owned")
-            if classification.kind not in ("absent", "retired"):
-                raise RuntimeError("startup_redelivery_generation_unavailable")
-
-        def publish() -> None:
-            if publisher is not None:
-                result = publisher()
-            elif generation_aware:
-                result = None
-                def observe(value: str) -> None:
-                    nonlocal result
-                    result = value
-                _enqueue_task_generation_aware(orch, task_id, metadata=metadata,
-                                               legacy="enqueue", _observe=observe, _publication=selected)
-            else:
-                queue.enqueue(orch._slug, task_id, metadata=metadata, _publication=selected)
-                result = None
-            if generation_aware and result not in ("ordinary", "published"):
-                raise RuntimeError("startup_redelivery_task_publication_refused")
-
-        inserted = queue.enqueue_if_absent(orch._slug, task_id, metadata=metadata,
-                                           publisher=publish, _publication=selected)
-        if type(inserted) is not bool or queue.pending_publication(orch._slug, task_id) != "pending":
-            raise RuntimeError("startup_redelivery_task_unacknowledged")
-        publication.count("acknowledged")
-        publication.count("inserted" if inserted else "already_pending")
-        if validate_admission is not None:
-            validate_admission()
+    queue = getattr(orch, "_queue", None)
+    with queue._publication_scope(orch._slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        from runtime.daemon.startup_publication import current_publication
+        from runtime.daemon.startup_recovery import RecoveryOutcome
+        publication = current_publication(orch)
+        if publication is None:
+            raise RuntimeError("startup_redelivery_publication_owner_missing")
+        org = publication.gate.state.orgs.get(orch._slug)
         publication.gate.require_redelivery_owner(org)
-        return RecoveryOutcome("settled")
+        if not isinstance(queue, TaskQueue) or queue is not publication.gate.state.queue:
+            raise RuntimeError("startup_redelivery_task_queue_unavailable")
+        with publication.attempt(orch, "task_attempted"):
+            from runtime.daemon.startup_publication import _TaskPublication
+            selected = _TaskPublication(publication.gate, orch, task_id, "redelivery",
+                                        metadata, publication=publication, validate_admission=validate_admission)
+            if generation_aware:
+                # Exact target-local read, not discovery or reconstruction. Unknown
+                # classification is never inferred to be an empty/held selection.
+                classification = orch._db.classify_authority_policy_v2_root_dispatch_for_enqueue(task_id)
+                if classification.kind in ("pending", "admitted"):
+                    publication.count("held")
+                    return RecoveryOutcome("local_hold", "startup_redelivery_generation_owned")
+                if classification.kind not in ("absent", "retired"):
+                    raise RuntimeError("startup_redelivery_generation_unavailable")
+
+            def publish() -> None:
+                if publisher is not None:
+                    result = publisher()
+                elif generation_aware:
+                    result = None
+                    def observe(value: str) -> None:
+                        nonlocal result
+                        result = value
+                    _enqueue_task_generation_aware(orch, task_id, metadata=metadata,
+                                                   legacy="enqueue", _observe=observe, _publication=selected)
+                else:
+                    queue.enqueue(orch._slug, task_id, metadata=metadata, _publication=selected)
+                    result = None
+                if generation_aware and result not in ("ordinary", "published"):
+                    raise RuntimeError("startup_redelivery_task_publication_refused")
+
+            inserted = queue.enqueue_if_absent(orch._slug, task_id, metadata=metadata,
+                                               publisher=publish, _publication=selected)
+            if type(inserted) is not bool or queue.pending_publication(orch._slug, task_id) != "pending":
+                raise RuntimeError("startup_redelivery_task_unacknowledged")
+            publication.count("acknowledged")
+            publication.count("inserted" if inserted else "already_pending")
+            if validate_admission is not None:
+                validate_admission()
+            publication.gate.require_redelivery_owner(org)
+            return RecoveryOutcome("settled")
 
 
 def _maybe_resume_blocked_task(

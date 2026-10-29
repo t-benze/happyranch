@@ -4729,6 +4729,9 @@ def publish_authority_policy_v2_notifications(
     This function performs no evaluation, no remint and no task mutation, and
     returns bounded per-target receipts for the caller.
     """
+    from contextlib import nullcontext
+    from runtime.daemon.queue import TaskQueue
+    selection = queue._publication_selection(orch._slug) if isinstance(queue, TaskQueue) else None
     if _publication is not None:
         _publication.check(queue, orch._slug, _publication.task_id, _publication.metadata)
     elif _startup_recovery is not None:
@@ -4795,17 +4798,19 @@ def publish_authority_policy_v2_notifications(
             })
             continue
         try:
-            metadata = {"authority_v2_generation": claim.generation_id,
-                        "publication_attempt": claim.publication_attempt}
-            raw_publication = None
-            if _publication is not None:
-                raw_publication = _publication.generation(target.root_task_id, metadata)
-            elif _startup_recovery is not None:
-                from runtime.daemon.startup_publication import _TaskPublication
-                raw_publication = _TaskPublication(_startup_recovery, orch,
-                                                   target.root_task_id, "v2", metadata)
-            queue.put_nowait(orch._slug, target.root_task_id, metadata=metadata,
-                             **({"_publication": raw_publication} if raw_publication is not None else {}))
+            with (queue._publication_scope(orch._slug, target.root_task_id, _selection=selection)
+                  if selection is not None else nullcontext()):
+                metadata = {"authority_v2_generation": claim.generation_id,
+                            "publication_attempt": claim.publication_attempt}
+                raw_publication = None
+                if _publication is not None:
+                    raw_publication = _publication.generation(target.root_task_id, metadata)
+                elif _startup_recovery is not None:
+                    from runtime.daemon.startup_publication import _TaskPublication
+                    raw_publication = _TaskPublication(_startup_recovery, orch,
+                                                       target.root_task_id, "v2", metadata)
+                queue.put_nowait(orch._slug, target.root_task_id, metadata=metadata,
+                                 **({"_publication": raw_publication} if raw_publication is not None else {}))
         except Exception as exc:
             try:
                 failure = (
@@ -5124,58 +5129,61 @@ def enqueue_task_generation_aware(
     original call so the tuple/metadata shape and any queue-double contract are
     unchanged; the default uses the shared legacy ``enqueue`` shape.
     """
-    if _publication is not None:
-        _publication.check(queue, slug, task_id, metadata)
-    else:
-        from runtime.daemon.startup_recovery import _require_ordinary_ready
-        _require_ordinary_ready(orch)
-    if queue is None:
-        return ENQUEUE_DISPATCH_NO_QUEUE
-
-    def _ordinary() -> None:
-        if ordinary_enqueue is not None:
-            ordinary_enqueue()
+    from contextlib import nullcontext
+    from runtime.daemon.queue import TaskQueue
+    with queue._publication_scope(slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        if _publication is not None:
+            _publication.check(queue, slug, task_id, metadata)
         else:
-            _ordinary_enqueue(queue, slug, task_id, metadata, _publication=_publication)
+            from runtime.daemon.startup_recovery import _require_ordinary_ready
+            _require_ordinary_ready(orch)
+        if queue is None:
+            return ENQUEUE_DISPATCH_NO_QUEUE
 
-    db = getattr(orch, "_db", None)
-    # Only a genuine durable ``Database`` carries the classification read.  A
-    # duck-typed/mock orchestrator (a test double or an org with no durable
-    # authority state) is NOT permission to consult or bypass durable v2 state,
-    # so it keeps the unchanged ordinary path.
-    classifier = _durable_dispatch_classifier(db)
-    if classifier is None:
+        def _ordinary() -> None:
+            if ordinary_enqueue is not None:
+                ordinary_enqueue()
+            else:
+                _ordinary_enqueue(queue, slug, task_id, metadata, _publication=_publication)
+
+        db = getattr(orch, "_db", None)
+        # Only a genuine durable ``Database`` carries the classification read.  A
+        # duck-typed/mock orchestrator (a test double or an org with no durable
+        # authority state) is NOT permission to consult or bypass durable v2 state,
+        # so it keeps the unchanged ordinary path.
+        classifier = _durable_dispatch_classifier(db)
+        if classifier is None:
+            _ordinary()
+            return ENQUEUE_DISPATCH_ORDINARY
+        try:
+            classification = classifier(task_id)
+        except Exception:
+            logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+            return ENQUEUE_DISPATCH_REFUSED
+        kind = getattr(classification, "kind", None)
+        if kind == "pending":
+            # Route the EXACT pending generation through the authenticated publisher.
+            # The publisher performs the claim -> raw put -> ack itself; a refusal or
+            # an empty target set means NO queue call and NO ordinary fallback.
+            receipts = publish_authority_policy_v2_notifications(
+                orch, queue, root_task_id=task_id, _publication=_publication,
+            )
+            published = any(
+                isinstance(r, dict) and r.get("status") in ("published", "published_exact")
+                for r in receipts
+            )
+            return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+        if kind in ("admitted", "malformed", "unreadable"):
+            logger.warning(
+                "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
+            )
+            return ENQUEUE_DISPATCH_REFUSED
+        # ``absent`` and ``retired`` keep the unchanged ordinary path; an unexpected
+        # kind can never become ordinary permission.
+        if kind != "absent" and kind != "retired":
+            return ENQUEUE_DISPATCH_REFUSED
         _ordinary()
         return ENQUEUE_DISPATCH_ORDINARY
-    try:
-        classification = classifier(task_id)
-    except Exception:
-        logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
-        return ENQUEUE_DISPATCH_REFUSED
-    kind = getattr(classification, "kind", None)
-    if kind == "pending":
-        # Route the EXACT pending generation through the authenticated publisher.
-        # The publisher performs the claim -> raw put -> ack itself; a refusal or
-        # an empty target set means NO queue call and NO ordinary fallback.
-        receipts = publish_authority_policy_v2_notifications(
-            orch, queue, root_task_id=task_id, _publication=_publication,
-        )
-        published = any(
-            isinstance(r, dict) and r.get("status") in ("published", "published_exact")
-            for r in receipts
-        )
-        return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
-    if kind in ("admitted", "malformed", "unreadable"):
-        logger.warning(
-            "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
-        )
-        return ENQUEUE_DISPATCH_REFUSED
-    # ``absent`` and ``retired`` keep the unchanged ordinary path; an unexpected
-    # kind can never become ordinary permission.
-    if kind != "absent" and kind != "retired":
-        return ENQUEUE_DISPATCH_REFUSED
-    _ordinary()
-    return ENQUEUE_DISPATCH_ORDINARY
 
 
 def _durable_dispatch_classifier(db):

@@ -211,6 +211,10 @@ class Orchestrator:
 
     def redeliver_team_move_tasks(self) -> None:
         """Task-only release seam for D; no operation release or startup owner."""
+        from contextlib import nullcontext
+        from runtime.daemon.queue import TaskQueue
+        queue = self._queue
+        selection = queue._publication_selection(self._slug) if isinstance(queue, TaskQueue) else None
         from runtime.orchestrator.authority import enqueue_task_generation_aware
         from runtime.orchestrator.run_step import _task_followon_validation
         selected = _task_followon_validation(self)
@@ -220,18 +224,22 @@ class Orchestrator:
             if self._team_moves is not moves or moves.store.db is not self._db:
                 from runtime.daemon.startup_recovery import StartupUnavailable
                 raise StartupUnavailable("startup_move_attachment_changed")
-        if self._queue is None:
+        if queue is None:
             from runtime.orchestrator.team_move import DeferredTeamMove
             raise DeferredTeamMove("team_move_task_queue_unavailable")
         def publish(task_id: str, metadata: dict | None) -> bool:
+            with (queue._publication_scope(self._slug, task_id, _selection=selection)
+                  if selection is not None else nullcontext()):
+                return publish_selected(task_id, metadata)
+        def publish_selected(task_id: str, metadata: dict | None) -> bool:
             validate()
             from runtime.daemon.startup_publication import current_publication
             if current_publication(self) is not None:
                 from runtime.orchestrator.run_step import _publish_redelivery_task
                 outcome = _publish_redelivery_task(self, task_id, metadata=metadata)
                 return outcome.disposition == "settled"
-            return self._queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
-                publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
+            return queue.enqueue_if_absent(self._slug, task_id, metadata=metadata,
+                publisher=lambda: enqueue_task_generation_aware(self, queue, self._slug,
                     task_id, metadata=metadata))
         moves.redeliver_tasks(publish, validate_admission=validate)
 

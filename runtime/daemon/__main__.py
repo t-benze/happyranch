@@ -74,24 +74,26 @@ def _sweep_enqueue(
     there is no durable classifier to consult and the unchanged ordinary enqueue
     is preserved.
     """
-    publication = None
-    if orchestrator is not None and orchestrator._startup_state is not None:
-        from runtime.daemon.startup_publication import _TaskPublication
-        from runtime.orchestrator.run_step import _startup_sweep_owner
-        publication = _TaskPublication(orchestrator._startup_recovery, orchestrator,
-            task_id, "sweep", sweep_owner=_startup_sweep_owner(orchestrator))
-    kwargs = {"_publication": publication} if publication is not None else {}
-    def publish() -> None:
-        if orchestrator is None:
-            queue.enqueue(slug, task_id)
-            return
-        from runtime.orchestrator.authority import enqueue_task_generation_aware
-        enqueue_task_generation_aware(orchestrator, queue, slug, task_id, **kwargs)
+    from contextlib import nullcontext
+    with queue._publication_scope(slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        publication = None
+        if orchestrator is not None and orchestrator._startup_state is not None:
+            from runtime.daemon.startup_publication import _TaskPublication
+            from runtime.orchestrator.run_step import _startup_sweep_owner
+            publication = _TaskPublication(orchestrator._startup_recovery, orchestrator,
+                task_id, "sweep", sweep_owner=_startup_sweep_owner(orchestrator))
+        kwargs = {"_publication": publication} if publication is not None else {}
+        def publish() -> None:
+            if orchestrator is None:
+                queue.enqueue(slug, task_id)
+                return
+            from runtime.orchestrator.authority import enqueue_task_generation_aware
+            enqueue_task_generation_aware(orchestrator, queue, slug, task_id, **kwargs)
 
-    if pending_once:
-        queue.enqueue_if_absent(slug, task_id, publisher=publish, **kwargs)
-    else:
-        publish()
+        if pending_once:
+            queue.enqueue_if_absent(slug, task_id, publisher=publish, **kwargs)
+        else:
+            publish()
 
 
 async def discover_completed_workflow_handoffs(state: DaemonState) -> None:

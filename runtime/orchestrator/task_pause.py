@@ -1365,12 +1365,19 @@ def restore_pause_preparations(orch: Any) -> None:
 
 def _discover_pause_roots(org: Any, queue: Any, *, validate_admission=None):
     """Bounded durable rediscovery through the existing owner publishers."""
+    from contextlib import nullcontext
+    from runtime.daemon.queue import TaskQueue
+    queue_selection = queue._publication_selection(org.slug) if isinstance(queue, TaskQueue) else None
     from runtime.orchestrator.run_step import _task_followon_validation
     selected = _task_followon_validation(org.orchestrator)
     def validate():
+        if queue_selection is not None:
+            queue_selection()
         selected()
         if validate_admission is not None:
             validate_admission()
+        if queue_selection is not None:
+            queue_selection()
     if queue is not org.orchestrator._queue:
         from runtime.daemon.startup_recovery import StartupUnavailable
         raise StartupUnavailable("startup_attachment_changed")
@@ -1441,77 +1448,81 @@ def _discover_pause_roots(org: Any, queue: Any, *, validate_admission=None):
             and e["phase"] in {"retry_deferred", "recovery_deferred"}}
         if held:
             for entry in deferred_callbacks.values():
-                task = org.db.get_task(entry["task_id"])
-                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
-                    continue
-                sid = (entry["context"]["recovery_return"]["origin_session_id"]
-                       if entry["phase"] == "recovery_deferred" else entry["session_id"])
-                result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
-                if result is not None and type(result["id"]) is int:
-                    if "authority_v2_generation" in entry["owner_identity"]:
-                        try:
-                            with org.db.coherent_read_view():
-                                _authenticate_deferred_v2(store, entry)
-                        except DeferredRootPause:
-                            if publication is not None:
-                                raise  # Unproved original v2 owner is not delivery.
-                            continue
-                    validate()
-                    _publish_pause_task(org, queue, entry["task_id"], metadata=dict(entry["owner_identity"]),
-                                        generation_aware=False)
+                with (queue._publication_scope(org.slug, entry["task_id"], _selection=queue_selection)
+                      if queue_selection is not None else nullcontext()):
+                    task = org.db.get_task(entry["task_id"])
+                    if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                        continue
+                    sid = (entry["context"]["recovery_return"]["origin_session_id"]
+                           if entry["phase"] == "recovery_deferred" else entry["session_id"])
+                    result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
+                    if result is not None and type(result["id"]) is int:
+                        if "authority_v2_generation" in entry["owner_identity"]:
+                            try:
+                                with org.db.coherent_read_view():
+                                    _authenticate_deferred_v2(store, entry)
+                            except DeferredRootPause:
+                                if publication is not None:
+                                    raise  # Unproved original v2 owner is not delivery.
+                                continue
+                        validate()
+                        _publish_pause_task(org, queue, entry["task_id"], metadata=dict(entry["owner_identity"]),
+                                            generation_aware=False)
         else:
             deferred = {e["task_id"]: e for e in entries if e["owner"] != "job"
                         and not e["context"].get("producer_settled")
                         and e["phase"] in {"retry_deferred", "recovery_deferred"}}
             for (task_id,) in task_rows:
-                validate()
-                task = org.db.get_task(task_id)
-                # Retain unknown evidence, but terminal owners cannot launch
-                # or replay consumed callbacks through the deferred branch.
-                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
-                    continue
-                if task_id in deferred:
-                    entry = deferred[task_id]
-                    if "authority_v2_generation" in entry["owner_identity"]:
-                        try:
-                            with org.db.coherent_read_view():
-                                _authenticate_deferred_v2(store, entry)
-                        except DeferredRootPause:
-                            if publication is not None:
-                                raise  # Unproved original v2 owner is not delivery.
-                            continue
-                        # This is delivery for the already admitted SAME
-                        # owner, not publication/admission of a pending G.
-                        _publish_pause_task(org, queue, task_id, metadata=dict(entry["owner_identity"]),
-                                            generation_aware=False)
-                    else:
-                        if publication is not None:
-                            _publish_pause_task(org, queue, task_id,
-                                                metadata=dict(entry["owner_identity"]))
-                        else:
-                            _publish_pause_task(org, queue, task_id,
-                                publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
-                                    org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
-                elif task is not None and eligible(org.orchestrator, task):
-                    ownership = classify_task(org.db, task_id, org_slug=org.slug)
-                    if ownership.kind == "draft":
-                        _pause_workflow_notification(org.workflow_drafts, task_id, queue, publication)
-                    elif ownership.kind == "f5":
-                        _pause_workflow_notification(org.workflow_reviews, task_id, queue, publication)
-                    elif ownership.kind == 'coding_attempt':
-                        _pause_workflow_notification(org.workflow_coding_dispatch, task_id, queue, publication)
-                    elif ownership.kind.startswith('coding_'):
-                        if publication is not None:
-                            publication.count("held")
+                with (queue._publication_scope(org.slug, task_id, _selection=queue_selection)
+                      if queue_selection is not None else nullcontext()):
+                    validate()
+                    task = org.db.get_task(task_id)
+                    # Retain unknown evidence, but terminal owners cannot launch
+                    # or replay consumed callbacks through the deferred branch.
+                    if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
                         continue
-                    elif ownership.kind == "legacy":
-                        if publication is not None:
-                            from runtime.orchestrator.run_step import _publish_redelivery_task
-                            _publish_redelivery_task(org.orchestrator, task_id)
+                    if task_id in deferred:
+                        entry = deferred[task_id]
+                        if "authority_v2_generation" in entry["owner_identity"]:
+                            try:
+                                with org.db.coherent_read_view():
+                                    _authenticate_deferred_v2(store, entry)
+                            except DeferredRootPause:
+                                if publication is not None:
+                                    raise  # Unproved original v2 owner is not delivery.
+                                continue
+                            # This is delivery for the already admitted SAME
+                            # owner, not publication/admission of a pending G.
+                            _publish_pause_task(org, queue, task_id, metadata=dict(entry["owner_identity"]),
+                                                generation_aware=False)
                         else:
-                            enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
-                    elif publication is not None:
-                        raise RuntimeError("startup_pause_task_ownership_unavailable")
+                            if publication is not None:
+                                _publish_pause_task(org, queue, task_id,
+                                                    metadata=dict(entry["owner_identity"]))
+                            else:
+                                _publish_pause_task(org, queue, task_id,
+                                    publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
+                                        org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
+                    elif task is not None and eligible(org.orchestrator, task):
+                        ownership = classify_task(org.db, task_id, org_slug=org.slug)
+                        if ownership.kind == "draft":
+                            _pause_workflow_notification(org.workflow_drafts, task_id, queue, publication)
+                        elif ownership.kind == "f5":
+                            _pause_workflow_notification(org.workflow_reviews, task_id, queue, publication)
+                        elif ownership.kind == 'coding_attempt':
+                            _pause_workflow_notification(org.workflow_coding_dispatch, task_id, queue, publication)
+                        elif ownership.kind.startswith('coding_'):
+                            if publication is not None:
+                                publication.count("held")
+                            continue
+                        elif ownership.kind == "legacy":
+                            if publication is not None:
+                                from runtime.orchestrator.run_step import _publish_redelivery_task
+                                _publish_redelivery_task(org.orchestrator, task_id)
+                            else:
+                                enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
+                        elif publication is not None:
+                            raise RuntimeError("startup_pause_task_ownership_unavailable")
         validate()
         if publication is not None and root_unknown:
             publication.count("held")  # Authenticated retained root-local uncertainty.
@@ -1521,14 +1532,17 @@ def _discover_pause_roots(org: Any, queue: Any, *, validate_admission=None):
 
 def _publish_pause_task(org, queue, task_id, *, metadata=None, publisher=None,
                         generation_aware=True):
-    from runtime.daemon.startup_publication import current_publication
-    if current_publication(org.orchestrator) is not None:
-        from runtime.orchestrator.run_step import _publish_redelivery_task
-        if queue is not org.orchestrator._queue:
-            raise RuntimeError("startup_pause_queue_changed")
-        return _publish_redelivery_task(org.orchestrator, task_id, metadata=metadata,
-            publisher=publisher, generation_aware=generation_aware)
-    return queue.enqueue_if_absent(org.slug, task_id, metadata=metadata, publisher=publisher)
+    from contextlib import nullcontext
+    from runtime.daemon.queue import TaskQueue
+    with queue._publication_scope(org.slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
+        from runtime.daemon.startup_publication import current_publication
+        if current_publication(org.orchestrator) is not None:
+            from runtime.orchestrator.run_step import _publish_redelivery_task
+            if queue is not org.orchestrator._queue:
+                raise RuntimeError("startup_pause_queue_changed")
+            return _publish_redelivery_task(org.orchestrator, task_id, metadata=metadata,
+                publisher=publisher, generation_aware=generation_aware)
+        return queue.enqueue_if_absent(org.slug, task_id, metadata=metadata, publisher=publisher)
 
 
 def _pause_workflow_notification(dispatcher, task_id, queue, publication):

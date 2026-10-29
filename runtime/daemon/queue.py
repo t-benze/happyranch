@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 import logging
@@ -115,11 +116,8 @@ class TaskQueue:
         from runtime.daemon.startup_recovery import _require_ordinary_ready
         _require_ordinary_ready(self)
 
-    def _require_publication(self, slug: str, task_id: str, metadata: dict | None,
-                             publication: object,
-                             coding_validation: Callable[[], None] | None = None,
-                             ) -> tuple[Callable[[], None], Callable[[], None] | None]:
-        from runtime.daemon.startup_recovery import ordinary_admission_validation, require_ready, StartupUnavailable
+    def _publication_selection(self, slug: str) -> Callable[[], None]:
+        from runtime.daemon.startup_recovery import StartupUnavailable
         # Select before any ordinary/publication check can wait on its owners.
         # Those checks must not turn a replacement into this operation's owner.
         try:
@@ -148,6 +146,52 @@ class TaskQueue:
             except AttributeError as exc:
                 raise StartupUnavailable("startup_attachment_changed") from exc
 
+        validate_selection()
+        return validate_selection
+
+    @contextmanager
+    def _publication_scope(self, slug: str, task_id: str, *, _selection=None):
+        """Retain this producer's domain before owner/DB discovery waits.
+
+        A multi-target producer supplies its originally selected org domain
+        when it binds each discovered target key. It never captures a replacement
+        map at discovery return. Only this queue/thread inherits; finally
+        restores all ancestors.
+        """
+        validate = self._publication_selection(slug) if _selection is None else _selection
+        validate()
+        previous = getattr(self._publisher_validations, "stack", ())
+        self._publisher_validations.stack = (*previous, (slug, task_id, validate))
+        try:
+            yield
+        finally:
+            self._publisher_validations.stack = previous
+
+    @contextmanager
+    def _admission(self):
+        from runtime.daemon.startup_recovery import _queue_admission_renewal
+        # Renewal's exception/failure/status tail runs after the mutex exits.
+        with _queue_admission_renewal():
+            with self._admission_lock:
+                yield
+
+    def _log_stopping(self, slug: str, task_id: str) -> None:
+        from runtime.daemon.startup_recovery import _defer_queue_diagnostic
+        def log() -> None:
+            logger.warning("task queue is stopping; refusing %s/%s", slug, task_id)
+        # Our own mutex has exited, but a reentrant ancestor may still own
+        # admission. Its outermost renewal also owns this diagnostic tail.
+        if not _defer_queue_diagnostic(log):
+            log()
+
+    def _require_publication(self, slug: str, task_id: str, metadata: dict | None,
+                             publication: object,
+                             coding_validation: Callable[[], None] | None = None,
+                             ) -> tuple[Callable[[], None], Callable[[], None] | None]:
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, require_ready, StartupUnavailable
+        validate_selection = self._publication_selection(slug)
+        state = self._startup_state
+        org = None if state is None else state.orgs.get(slug)
         validate_selection()
         if coding_validation is not None:
             coding_validation()
@@ -201,7 +245,7 @@ class TaskQueue:
                 _queue_validation: Callable[[], None] | None = None) -> None:
         publisher_validations = getattr(self._publisher_validations, "stack", ())
         validate, _ = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
-        with self._admission_lock:
+        with self._admission():
             # A nested enqueue also owes its caller's ORIGINAL selection.
             # This additional check cannot replace this entry's validation.
             for selected_slug, selected_task, selected_validate in publisher_validations:
@@ -210,13 +254,12 @@ class TaskQueue:
             if _queue_validation is not None:
                 _queue_validation()
             validate()
-            if self._stopping:
-                logger.warning(
-                    "task queue is stopping; refusing %s/%s", slug, task_id,
-                )
-                return
-            self._queue.put_nowait((slug, task_id, metadata))
-            self._pending_counts[(slug, task_id)] += 1
+            stopping = self._stopping
+            if not stopping:
+                self._queue.put_nowait((slug, task_id, metadata))
+                self._pending_counts[(slug, task_id)] += 1
+        if stopping:
+            self._log_stopping(slug, task_id)
 
     def put_nowait(self, slug: str, task_id: str, *, metadata: dict | None = None,
                    _publication: object = None) -> None:
@@ -250,16 +293,16 @@ class TaskQueue:
             slug, task_id, metadata, _publication, _coding_validation,
         )
         key = slug, task_id
-        with self._admission_lock:
+        with self._admission():
             validate()
-            if self._stopping:
-                logger.warning(
-                    "task queue is stopping; refusing %s/%s", slug, task_id,
-                )
-                return False
-            if self._pending_counts[key] or key in self._admission_reservations:
-                return False
-            self._admission_reservations.add(key)
+            stopping = self._stopping
+            if not stopping:
+                if self._pending_counts[key] or key in self._admission_reservations:
+                    return False
+                self._admission_reservations.add(key)
+        if stopping:
+            self._log_stopping(slug, task_id)
+            return False
         try:
             if publisher is None:
                 self.enqueue(slug, task_id, metadata=metadata, _publication=_publication,
@@ -277,7 +320,7 @@ class TaskQueue:
                     publisher()
                 finally:
                     self._publisher_validations.stack = previous
-            with self._admission_lock:
+            with self._admission():
                 validate()
                 return not self._stopping and self._pending_counts[key] > 0
         finally:

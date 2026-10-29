@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 import threading
 from typing import Any, Callable, Iterator
 
+from runtime.daemon.startup_recovery import (
+    _defer_queue_publication_failure, _queue_owner_lock,
+)
+
 
 _CURRENT: ContextVar[tuple[StartupPublications, Any] | None] = ContextVar(
     "startup_publication", default=None,
@@ -92,8 +96,7 @@ class _TaskPublication:
                         and threading.current_thread() not in owner._tails)):
                 raise RuntimeError("startup_task_sweep_owner_changed")
             owner.check()
-            current = gate.snapshot()
-            if current["state"] != "recovering" or current["stopping"]:
+            if not gate._sweep_admission_open():
                 raise RuntimeError("startup_task_sweep_closed")
         elif self.kind == "v2":
             gate.require_native_owner()
@@ -167,7 +170,7 @@ class StartupPublications:
             if current is None or current[0] is not self or current[1] is not orch:
                 raise RuntimeError("startup_publication_context_unavailable")
             self.gate.require_publication_owner(orch)
-            with self._lock:
+            with _queue_owner_lock(self._lock):
                 if (not self._active or self._closed or self.epoch != self.gate.epoch
                         or self._thread != threading.get_ident()):
                     raise RuntimeError("startup_publication_owner_unavailable")
@@ -180,6 +183,8 @@ class StartupPublications:
             self._closed = True
 
     def fail(self, cause: BaseException) -> None:
+        if _defer_queue_publication_failure(self, cause):
+            return
         with self._lock:
             if self._first_cause is None:
                 self._first_cause = cause
