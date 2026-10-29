@@ -6,13 +6,39 @@ cannot enforce these controls; rollback requires a compatible reader.
 """
 from __future__ import annotations
 
+from runtime.infrastructure._workflow_reader import (
+    _encode as _reader_encode,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _add as _reader_add,
+    _put as _reader_put,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _any_true as _reader_any_true,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _dict as _reader_dict,
+    _list as _reader_list,
+    _set as _reader_set,
+    _tuple as _reader_tuple,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
+    _json as _reader_json, _json_work as _reader_json_work,
+    _reserve as _reader_reserve, _work as _reader_work,
+)
+
 import json
 import math
 import re
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
@@ -87,26 +113,28 @@ class PauseControlError(Exception):
             self.detail["generation"] = generation
 
 
-def decode_journal(raw: str) -> dict[str, Any]:
+def decode_journal(raw: str, *, budget=None) -> dict[str, Any]:
+    _reader_work((_reader_reserve(budget, 80) or (raw,)), budget, copies=2)
     try:
-        if len(raw.encode()) > MAX_JOURNAL_BYTES:
+        _reader_reserve(budget, 144)
+        if len(_reader_encode(raw, budget=budget)) > MAX_JOURNAL_BYTES:
             raise ValueError("journal overflow")
         def unique_object(pairs):
-            result = {}
+            result = (_reader_reserve(budget, 64) or {})
             for key, value in pairs:
                 if key in result:
                     raise ValueError("duplicate journal key")
-                result[key] = value
+                _reader_put(value, result, key, budget=budget)
             return result
-        journal = json.loads(raw, object_pairs_hook=unique_object)
-        if (not isinstance(journal, dict) or set(journal) != {"version", "entries"}
+        journal = _reader_json(raw, object_pairs_hook=unique_object, budget=budget)
+        if (not isinstance(journal, dict) or _reader_set(journal, budget=budget) != _reader_set((_reader_reserve(budget, 96) or ("version", "entries")), budget=budget)
                 or type(journal["version"]) is not int or journal["version"] != 1
                 or not isinstance(journal["entries"], list)
                 or len(journal["entries"]) > MAX_ENTRIES):
             raise ValueError("journal shape")
-        identities = set()
+        identities = _reader_set(budget=budget)
         for e in journal["entries"]:
-            if not isinstance(e, dict) or set(e) != ENTRY_KEYS:
+            if not isinstance(e, dict) or _reader_set(e, budget=budget) != ENTRY_KEYS:
                 raise ValueError("entry shape")
             for key in ("id", "org", "root_task_id", "task_id", "agent", "session_id"):
                 if key == "session_id" and e.get("owner") == "job" and e[key] is None:
@@ -115,7 +143,7 @@ def decode_journal(raw: str) -> dict[str, Any]:
                     raise ValueError("entry identity")
             if e["id"] in identities:
                 raise ValueError("duplicate identity")
-            identities.add(e["id"])
+            _reader_add(identities, e["id"], budget=budget)
             if (e["phase"] not in PHASES or e["owner"] not in OWNERS
                     or type(e["generation"]) is not int or e["generation"] < 0
                     or not isinstance(e["fingerprint"], dict)
@@ -130,37 +158,37 @@ def decode_journal(raw: str) -> dict[str, Any]:
                 if datetime.fromisoformat(e["started_at"]).tzinfo is None:
                     raise ValueError("naive running time")
             f = e["fingerprint"]
-            if (set(f) != FINGERPRINT_KEYS or f["status"] not in TERMINAL | {"pending", "in_progress", "escalated"}
+            if (_reader_set(f, budget=budget) != FINGERPRINT_KEYS or f["status"] not in TERMINAL | _reader_set((_reader_reserve(budget, 112) or ("pending", "in_progress", "escalated")), budget=budget)
                     or f["block_kind"] not in (None, "delegated", "blocked_on_job")
                     or type(f["count"]) is not int or f["count"] < 0
                     or not isinstance(f["brief_digest"], str) or re.fullmatch(r"[0-9a-f]{64}", f["brief_digest"]) is None
-                    or any(f[k] is not None and (not isinstance(f[k], str) or len(f[k]) > MAX_JOURNAL_BYTES)
-                           for k in ("session_id", "agent", "fanout", "jobs", "parent"))):
+                    or _reader_any_true((f[k] is not None and (not isinstance(f[k], str) or len(f[k]) > MAX_JOURNAL_BYTES)
+                           for k in ("session_id", "agent", "fanout", "jobs", "parent")), budget=budget)):
                 raise ValueError("fingerprint shape")
-            if not set(e["owner_identity"]) <= OWNER_IDENTITY_KEYS:
+            if not _reader_set(e["owner_identity"], budget=budget) <= OWNER_IDENTITY_KEYS:
                 raise ValueError("owner identity shape")
-            if any(v is not None and not isinstance(v, str) for v in e["owner_identity"].values()):
+            if _reader_any_true((v is not None and not isinstance(v, str) for v in e["owner_identity"].values()), budget=budget):
                 raise ValueError("owner identity value")
             retry = e["retry"]
             if retry:
-                if (set(retry) != RETRY_KEYS or retry["boundary"] not in {"host", "provider"}
+                if (_reader_set(retry, budget=budget) != RETRY_KEYS or retry["boundary"] not in _reader_set((_reader_reserve(budget, 96) or ("host", "provider")), budget=budget)
                         or type(retry["ordinal"]) is not int or type(retry["budget"]) is not int
                         or not 0 <= retry["ordinal"] <= retry["budget"]):
                     raise ValueError("retry shape")
                 if (not isinstance(retry["schedule"], list) or len(retry["schedule"]) > 256
-                        or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in retry["schedule"])
+                        or _reader_any_true((type(v) not in (_reader_reserve(budget, 96) or (int, float)) or not math.isfinite(v) or v < 0 for v in retry["schedule"]), budget=budget)
                         or retry["budget"] != len(retry["schedule"])
                         or datetime.fromisoformat(retry["enqueued_at"]).tzinfo is None
                         or datetime.fromisoformat(retry["not_before"]).tzinfo is None
-                        or e["owner"] in {"draft", "recovery", "job"}):
+                        or e["owner"] in _reader_set((_reader_reserve(budget, 112) or ("draft", "recovery", "job")), budget=budget)):
                     raise ValueError("retry owner/time")
             context = e["context"]
-            if not set(context) <= {"audit_ids", "cleanup", "recovery_return", "execution_unknown", "producer_settled", "job_submission"}:
+            if not _reader_set(context, budget=budget) <= _reader_set((_reader_reserve(budget, 160) or ("audit_ids", "cleanup", "recovery_return", "execution_unknown", "producer_settled", "job_submission")), budget=budget):
                 raise ValueError("context shape")
             if "job_submission" in context:
                 proof = context["job_submission"]
                 if (e["owner"] != "job" or not isinstance(proof, dict)
-                        or set(proof) != {"audit_id", "digest"}
+                        or _reader_set(proof, budget=budget) != _reader_set((_reader_reserve(budget, 96) or ("audit_id", "digest")), budget=budget)
                         or type(proof["audit_id"]) is not int or proof["audit_id"] <= 0
                         or not isinstance(proof["digest"], str)
                         or re.fullmatch(r"[0-9a-f]{64}", proof["digest"]) is None):
@@ -170,60 +198,59 @@ def decode_journal(raw: str) -> dict[str, Any]:
             if "execution_unknown" in context and context["execution_unknown"] is not True:
                 raise ValueError("execution uncertainty")
             if "audit_ids" in context and (not isinstance(context["audit_ids"], list)
-                    or any(type(i) is not int or i <= 0 for i in context["audit_ids"])):
+                    or _reader_any_true((type(i) is not int or i <= 0 for i in context["audit_ids"]), budget=budget)):
                 raise ValueError("context audit identity")
             if "recovery_return" in context:
                 proof = context["recovery_return"]
                 if (not isinstance(proof, dict)
-                        or set(proof) != {"origin_session_id", "provider_session_id", "duration_seconds", "recovery_session_id", "deadline_at"}
+                        or _reader_set(proof, budget=budget) != _reader_set((_reader_reserve(budget, 144) or ("origin_session_id", "provider_session_id", "duration_seconds", "recovery_session_id", "deadline_at")), budget=budget)
                         or e["owner"] != "recovery"
-                        or (proof["deadline_at"] is None and e["phase"] in {"possible_launch", "running"})
-                        or any(not isinstance(proof[k], str) or not proof[k] or len(proof[k]) > 1024
-                               for k in ("origin_session_id", "provider_session_id", "recovery_session_id"))
+                        or (proof["deadline_at"] is None and e["phase"] in _reader_set((_reader_reserve(budget, 96) or ("possible_launch", "running")), budget=budget))
+                        or _reader_any_true((not isinstance(proof[k], str) or not proof[k] or len(proof[k]) > 1024
+                               for k in ("origin_session_id", "provider_session_id", "recovery_session_id")), budget=budget)
                         or (proof["deadline_at"] is not None and
                             (not isinstance(proof["deadline_at"], str)
                              or datetime.fromisoformat(proof["deadline_at"]).tzinfo is None))
-                        or type(proof["duration_seconds"]) not in (int, float)
+                        or type(proof["duration_seconds"]) not in (_reader_reserve(budget, 96) or (int, float))
                         or not math.isfinite(proof["duration_seconds"]) or proof["duration_seconds"] < 0):
                     raise ValueError("recovery return proof")
             if "cleanup" in context:
                 cleanup = context["cleanup"]
-                if (not isinstance(cleanup, dict) or set(cleanup) != {"suffix_lines"}
+                if (not isinstance(cleanup, dict) or _reader_set(cleanup, budget=budget) != _reader_set((_reader_reserve(budget, 80) or ("suffix_lines",)), budget=budget)
                         or not isinstance(cleanup["suffix_lines"], list)
-                        or any(not isinstance(line, str) for line in cleanup["suffix_lines"])
-                        or sum(len(line.encode()) for line in cleanup["suffix_lines"]) > 65536):
+                        or _reader_any_true((not isinstance(line, str) for line in cleanup["suffix_lines"]), budget=budget)
+                        or sum(len(_reader_encode(line, budget=budget)) for line in cleanup["suffix_lines"]) > 65536):
                     raise ValueError("cleanup facts")
         return journal
-    except (ValueError, TypeError, KeyError, OverflowError, RecursionError) as exc:
+    except ((ValueError, TypeError, KeyError, OverflowError, RecursionError)) as exc:
         raise PauseControlError("pause_control_unavailable") from exc
 
 
 def validate_pause_schema(conn: sqlite3.Connection, *, org_slug: str | None = None,
-                          allow_absent: bool = False) -> bool:
+                          allow_absent: bool = False, budget=None) -> bool:
     """Compare the entire owned layout to independently constructed literals."""
-    objects = conn.execute(
-        "SELECT type,name,tbl_name,sql FROM sqlite_master "
-        "WHERE tbl_name='task_pause_controls' OR name='task_pause_controls' ORDER BY name"
-    ).fetchall()
+    _reader_work((_reader_reserve(budget, 96) or (org_slug,allow_absent)), budget, copies=2)
+    objects = _reader_all(conn, "SELECT type,name,tbl_name,sql FROM sqlite_master "
+        "WHERE tbl_name='task_pause_controls' OR name='task_pause_controls' ORDER BY name", budget=budget)
     if not objects and allow_absent:
         return False
-    with sqlite3.connect(":memory:") as reference:
+    with closing(sqlite3.connect(":memory:")) as reference:
         reference.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY)")
         reference.execute(PAUSE_SCHEMA_SQL)
-        expected = reference.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master "
-            "WHERE tbl_name='task_pause_controls' ORDER BY name"
-        ).fetchall()
-        if [tuple(r) for r in objects] != expected:
+        if budget is not None:
+            reference.execute('BEGIN')
+        expected = _reader_all(reference, "SELECT type,name,tbl_name,sql FROM sqlite_master "
+            "WHERE tbl_name='task_pause_controls' ORDER BY name", budget=budget)
+        if _reader_list((_reader_tuple(r, budget=budget) for r in objects), budget=budget) != expected:
             raise PauseControlError("pause_control_unavailable")
         for pragma in ("table_xinfo", "foreign_key_list", "index_list"):
-            actual = [tuple(r) for r in conn.execute(f"PRAGMA {pragma}(task_pause_controls)")]
-            wanted = reference.execute(f"PRAGMA {pragma}(task_pause_controls)").fetchall()
+            actual = _reader_list((_reader_tuple(r, budget=budget) for r in _reader_rows(conn, f"PRAGMA {pragma}(task_pause_controls)", budget=budget)), budget=budget)
+            wanted = _reader_all(reference, f"PRAGMA {pragma}(task_pause_controls)", budget=budget)
             if actual != wanted:
                 raise PauseControlError("pause_control_unavailable")
-    for row in conn.execute("SELECT * FROM task_pause_controls"):
-        d = dict(row)
-        root = conn.execute("SELECT parent_task_id FROM tasks WHERE id=?", (d["root_task_id"],)).fetchone()
+    for row in _reader_rows(conn, "SELECT * FROM task_pause_controls", budget=budget):
+        d = _reader_dict(row, budget=budget)
+        root = _reader_one(conn, "SELECT parent_task_id FROM tasks WHERE id=?", (_reader_reserve(budget, 80) or (d["root_task_id"],)), budget=budget)
         if (root is None or root[0] is not None or d["schema_version"] != 1
                 or d["held"] not in (0, 1) or type(d["generation"]) is not int
                 or not 0 <= d["generation"] <= MAX_GENERATION or not isinstance(d["actor"], str) or not d["actor"]
@@ -233,13 +260,14 @@ def validate_pause_schema(conn: sqlite3.Connection, *, org_slug: str | None = No
                 or (d["generation"] > 1 and d["resumed_at"] is None)):
 
             raise PauseControlError("pause_control_unavailable")
-        journal = decode_journal(d["admission_journal_json"])
+        journal = decode_journal(d["admission_journal_json"], budget=budget)
         for key in ("paused_at", "resumed_at", "updated_at"):
             if d[key] is not None:
                 try:
+                    _reader_reserve(budget, 96)
                     if datetime.fromisoformat(d[key]).tzinfo is None:
                         raise ValueError("naive timestamp")
-                except (ValueError, TypeError) as exc:
+                except ((ValueError, TypeError)) as exc:
                     raise PauseControlError("pause_control_unavailable") from exc
         release = d["release_pending_generation"]
         if release is not None and (type(release) is not int or release != d["generation"] or d["held"]):
@@ -250,12 +278,12 @@ def validate_pause_schema(conn: sqlite3.Connection, *, org_slug: str | None = No
                     or entry["generation"] > d["generation"]):
                 raise PauseControlError("pause_control_unavailable")
             task_id = entry["task_id"]
-            seen: set[str] = set()
+            seen: set[str] = _reader_set(budget=budget)
             for _ in range(1024):
                 if task_id in seen:
                     raise PauseControlError("pause_control_unavailable")
-                seen.add(task_id)
-                task = conn.execute("SELECT parent_task_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+                _reader_add(seen, task_id, budget=budget)
+                task = _reader_one(conn, "SELECT parent_task_id FROM tasks WHERE id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
                 if task is None:
                     raise PauseControlError("pause_control_unavailable")
                 if task[0] is None:
@@ -268,18 +296,22 @@ def validate_pause_schema(conn: sqlite3.Connection, *, org_slug: str | None = No
     return True
 
 
-def install_pause_schema(db: Any, *, org_slug: str) -> None:
+def install_pause_schema(db: Any, *, org_slug: str, budget=None) -> None:
     with db._lock:
         if db._conn.in_transaction:
             raise PauseControlError("pause_control_unavailable")
         db._conn.execute("BEGIN IMMEDIATE")
         try:
-            if not validate_pause_schema(db._conn, org_slug=org_slug, allow_absent=True):
+            if not validate_pause_schema(db._conn, org_slug=org_slug, allow_absent=True, budget=budget):
+                _reader_work(PAUSE_SCHEMA_SQL, budget)
                 db._conn.execute(PAUSE_SCHEMA_SQL)
-            validate_pause_schema(db._conn, org_slug=org_slug)
+            validate_pause_schema(db._conn, org_slug=org_slug, budget=budget)
             db._conn.commit()
-        except BaseException:
-            db._conn.rollback()
+        except BaseException as primary:
+            try:
+                db._conn.rollback()
+            except BaseException as cleanup:
+                primary.add_note('pause installer rollback failed: ' + type(cleanup).__name__)
             raise
 
 

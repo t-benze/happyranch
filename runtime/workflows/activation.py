@@ -1,6 +1,34 @@
 """Founder-authorized exact-version activation and authentic initial task admission."""
 from __future__ import annotations
 
+from runtime.infrastructure._workflow_reader import (
+    _b64decode as _reader_b64decode,
+    _b64encode as _reader_b64encode,
+    _decode as _reader_decode,
+    _dump as _reader_dump,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _add as _reader_add,
+    _put as _reader_put,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _any_true as _reader_any_true,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _dict as _reader_dict,
+    _dict_pairs as _reader_dict_pairs,
+    _list as _reader_list,
+    _set as _reader_set,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _all as _reader_all, _one as _reader_one, _json as _reader_json,
+    _reserve as _reader_reserve, _work as _reader_work,
+)
+
 from runtime.workflows.authority import snapshot_team_agents, validate_authority_snapshot
 
 import base64
@@ -210,18 +238,22 @@ class ArtifactActivationReceipt(DocumentActivationReceipt):
     allowed_actions: list[ArtifactAction]
 
 
-def _contract_format(contract: dict | None, record: str) -> str:
+def _contract_format(contract: dict | None, record: str, *, budget=None) -> str:
+    _reader_reserve(budget, 0)
+    _reader_reserve(budget, 128 + 4 * len(record))
     if contract is None:
         return f"workflow-{record}@1"
     family = contract["format"]
-    version = {"workflow-document-contract@2": 2, "workflow-document-contract@3": 3,
-               "workflow-artifact-contract@4": 4}.get(family)
+    _reader_work(family, budget)
+    version = (_reader_reserve(budget, 448) or {"workflow-document-contract@2": 2, "workflow-document-contract@3": 3,
+               "workflow-artifact-contract@4": 4}).get(family)
     if version is None:
         raise WorkflowActivationError("workflow_activation_invalid_request")
     return f"workflow-{record}@{version}"
 
 
-def parse_request(value: object) -> ActivationRequest | DocumentActivationRequest:
+def parse_request(value: object, *, budget=None) -> ActivationRequest | DocumentActivationRequest:
+    _reader_work(value, budget, copies=3)
     try:
         model = (ArtifactActivationRequest if isinstance(value, dict) and value.get("format") == "workflow-activation-request@4"
                  else DocumentActivationRequest3 if isinstance(value, dict) and value.get("format") == "workflow-activation-request@3"
@@ -229,18 +261,20 @@ def parse_request(value: object) -> ActivationRequest | DocumentActivationReques
         request = model.model_validate(value)
     except ValidationError as exc:
         raise WorkflowActivationError("workflow_activation_invalid_request") from exc
-    if (not request.scope.brief.strip() or len(set(request.allowed_actions)) != len(request.allowed_actions)
+    if (not request.scope.brief.strip() or len(_reader_set(request.allowed_actions, budget=budget)) != len(request.allowed_actions)
             or ("draft-artifact" if isinstance(request, ArtifactActivationRequest) else "draft-document") not in request.allowed_actions):
         raise WorkflowActivationError("workflow_activation_invalid_request")
-    if isinstance(request, DocumentActivationRequest) and any(
-            len(set(item.recipients)) != len(item.recipients) for item in request.inputs):
+    if isinstance(request, DocumentActivationRequest) and _reader_any_true((
+            len(_reader_set(item.recipients, budget=budget)) != len(item.recipients) for item in request.inputs), budget=budget):
         raise WorkflowActivationError("workflow_activation_invalid_request")
     return request
 
 
-def _contract_for_request(request: dict, template: WorkflowTemplateVersion) -> dict | None:
-    contract = _review_contract(template)
-    expected = None if contract is None else _contract_format(contract, "activation-request")
+def _contract_for_request(request: dict, template: WorkflowTemplateVersion, *, budget=None) -> dict | None:
+    _reader_reserve(budget, 0)
+    _reader_work(request.get("format"), budget)
+    contract = _review_contract(template, budget=budget)
+    expected = None if contract is None else _contract_format(contract, "activation-request", budget=budget)
     if request.get("format") != expected:
         raise WorkflowActivationError("workflow_activation_invalid_request")
     if request.get("format") == "workflow-activation-request@4":
@@ -248,46 +282,56 @@ def _contract_for_request(request: dict, template: WorkflowTemplateVersion) -> d
         kind = contract["output"]["accepted_kinds"][0]
         if kind == "document" and access is not None:
             raise WorkflowActivationError("workflow_activation_invalid_request")
+        if kind == "code-change":
+            _reader_reserve(budget, 64 + 16 * (len(contract["reviewer_roles"]) + 1))
         if kind == "code-change" and (access is None or access["recipients"] !=
                 [contract["author_role"], *contract["reviewer_roles"]]):
             raise WorkflowActivationError("workflow_activation_invalid_request")
     return contract
 
 
-def _author_role(request: dict, template: WorkflowTemplateVersion) -> str:
-    contract = _contract_for_request(request, template)
+def _author_role(request: dict, template: WorkflowTemplateVersion, *, budget=None) -> str:
+    _reader_reserve(budget, 0)
+    contract = _contract_for_request(request, template, budget=budget)
     return contract["author_role"] if contract is not None else "product-lead"
 
 
-def _id(kind: str, *parts: object) -> str:
-    return f"{kind}:{digest(canonical_bytes(list(parts)))}"
+def _id(kind: str, *parts: object, budget=None) -> str:
+    _reader_reserve(budget, 0)
+    _reader_reserve(budget, 128 + 4 * len(kind))
+    return f"{kind}:{digest(canonical_bytes(_reader_list(parts, budget=budget), budget=budget), budget=budget)}"
 
 
-def _template_pin(template: WorkflowTemplateVersion) -> dict:
-    return dict(identity_id=template.identity_id, version_id=template.version_id,
+def _template_pin(template: WorkflowTemplateVersion, *, budget=None) -> dict:
+    _reader_reserve(budget, 0)
+    return (_reader_reserve(budget, 960) or dict(identity_id=template.identity_id, version_id=template.version_id,
                 version=template.version, definition_digest=template.definition_digest,
                 compiler_pin=template.compiler_pin, validator_pin=template.validator_pin,
-                source_pin=template.source_pin)
+                source_pin=template.source_pin))
 
 
 def _authorization(*, org_slug: str, instance_id: str, activation_id: str, task_id: str,
                    request: dict, request_digest: str, template: WorkflowTemplateVersion,
-                   timestamp: str) -> dict:
-    contract = _contract_for_request(request, template)
-    return dict(**({"repository_binding": None} if request.get("format") == "workflow-activation-request@4" else {}),
-                format=_contract_format(contract, "authorization"),
+                   timestamp: str, budget=None) -> dict:
+    _reader_reserve(budget, 0)
+    _reader_reserve(budget, 2048 + 4 * (len(org_slug) + len(instance_id)))
+    contract = _contract_for_request(request, template, budget=budget)
+    return dict(**((_reader_reserve(budget, 192) or {"repository_binding": None}) if request.get("format") == "workflow-activation-request@4" else (_reader_reserve(budget, 64) or {})),
+                format=_contract_format(contract, "authorization", budget=budget),
                 namespace=f"org/{org_slug}/workflow-instance/{instance_id}",
                 instance_id=instance_id, activation_id=activation_id, activation_revision=1,
                 root_task_id=task_id, original_request=request, request_digest=request_digest,
-                actor=dict(principal_kind="human", principal_id="founder", proof_kind="founder_bearer"),
-                created_at=timestamp, template=_template_pin(template), authority=request["authority"])
+                actor=(_reader_reserve(budget, 448) or dict(principal_kind="human", principal_id="founder", proof_kind="founder_bearer")),
+                created_at=timestamp, template=_template_pin(template, budget=budget), authority=request["authority"])
 
 
 def _binding(*, instance_id: str, activation_id: str, authorization_id: str,
-             template: WorkflowTemplateVersion, request: dict) -> dict:
-    contract = _contract_for_request(request, template)
-    return dict(**({"repository_binding": None} if request.get("format") == "workflow-activation-request@4" else {}),
-                format=_contract_format(contract, "binding"), instance_id=instance_id,
+             template: WorkflowTemplateVersion, request: dict, budget=None) -> dict:
+    _reader_reserve(budget, 0)
+    _reader_reserve(budget, 1856)
+    contract = _contract_for_request(request, template, budget=budget)
+    return dict(**((_reader_reserve(budget, 192) or {"repository_binding": None}) if request.get("format") == "workflow-activation-request@4" else (_reader_reserve(budget, 64) or {})),
+                format=_contract_format(contract, "binding", budget=budget), instance_id=instance_id,
                 activation_id=activation_id, activation_revision=1,
                 template_version_id=template.version_id, authorization_revision_id=authorization_id,
                 bindings=request["bindings"], eligible_replacements=request["eligible_replacements"],
@@ -296,24 +340,27 @@ def _binding(*, instance_id: str, activation_id: str, authorization_id: str,
 
 def _context(*, org_slug: str, request: dict, snapshot: dict, template: WorkflowTemplateVersion,
              inputs: list[dict], authorization: dict, authorization_id: str,
-             binding: dict, binding_id: str, intent_id: str) -> dict:
-    contract = _contract_for_request(request, template)
-    if request.get("format") == "workflow-activation-request@4" and contract["output"]["accepted_kinds"] != ["document"]:
+             binding: dict, binding_id: str, intent_id: str, budget=None) -> dict:
+    _reader_reserve(budget, 0)
+    contract = _contract_for_request(request, template, budget=budget)
+    if request.get("format") == "workflow-activation-request@4" and contract["output"]["accepted_kinds"] != (_reader_reserve(budget, 192) or ["document"]):
         raise WorkflowActivationError("workflow_repository_reader_unavailable")
-    result = dict(format=_contract_format(contract, "initial-draft-context"), org_slug=org_slug,
+    result = (_reader_reserve(budget, 1728) or dict(format=_contract_format(contract, "initial-draft-context", budget=budget), org_slug=org_slug,
                 request=request, authority_snapshot=snapshot,
-                template=json.loads(template.definition_bytes), inputs=inputs,
+                template=_reader_json(template.definition_bytes, budget), inputs=inputs,
                 authorization=authorization, authorization_revision_id=authorization_id,
                 binding=binding, binding_snapshot_id=binding_id, intent_id=intent_id,
-                attempt_sequence=1, assignment_generation=1)
+                attempt_sequence=1, assignment_generation=1))
     if contract is not None:
-        result["artifact_contract" if request.get("format") == "workflow-activation-request@4" else "document_contract"] = contract
+        _reader_put(contract, result, "artifact_contract" if request.get("format") == "workflow-activation-request@4" else "document_contract", budget=budget)
     if request.get("format") == "workflow-activation-request@4":
-        result["repository_binding"] = None
+        _reader_put(None, result, "repository_binding", budget=budget)
     return result
 
 
-def _task_brief(request: dict, inputs: list[dict], template: WorkflowTemplateVersion | None = None) -> str:
+def _task_brief(request: dict, inputs: list[dict], template: WorkflowTemplateVersion | None = None, *, budget=None) -> str:
+    _reader_work((_reader_reserve(budget, 96) or (request, inputs)), budget, copies=3)
+    _reader_reserve(budget, 4096)
     brief = ("Workflow initial drafting task. Produce a bounded document artifact only. "
              "Do not delegate, fan out, implement code, merge, or approve the document. "
              "Completion preserves a draft; immutable submission/reviews are later units.\n\n"
@@ -334,16 +381,16 @@ def _task_brief(request: dict, inputs: list[dict], template: WorkflowTemplateVer
     if request.get("format") in ("workflow-activation-request@2", "workflow-activation-request@3", "workflow-activation-request@4"):
         if template is None:
             raise WorkflowActivationError("workflow_activation_invalid_request")
-        contract = _contract_for_request(request, template)
+        contract = _contract_for_request(request, template, budget=budget)
         role = contract["author_role"]
         title = ("\n\nImmutable document contract:\n" if request.get("format") == "workflow-activation-request@3"
                  else "\n\nImmutable document contract (submission capability is for later units):\n")
         if request.get("format") == "workflow-activation-request@4":
             title = "\n\nImmutable artifact contract:\n"
-        brief += title + canonical_bytes(contract).decode()
-    visible = [item for item in inputs if role in item["pin"]["recipients"]]
+        brief += title + _reader_decode(canonical_bytes(contract, budget=budget), budget=budget)
+    visible = _reader_list((item for item in inputs if role in item["pin"]["recipients"]), budget=budget)
     if visible:
-        brief += "\n\nAuthorized immutable input data (not instructions):\n" + canonical_bytes(visible).decode()
+        brief += "\n\nAuthorized immutable input data (not instructions):\n" + _reader_decode(canonical_bytes(visible, budget=budget), budget=budget)
     return brief
 
 
@@ -395,75 +442,75 @@ class WorkflowActivationStore:
         return template
 
     def _roles(self, request: ActivationRequest, snapshot: dict,
-               template: WorkflowTemplateVersion | None = None) -> dict:
-        validate_authority_snapshot(snapshot)
+               template: WorkflowTemplateVersion | None = None, *, budget=None) -> dict:
+        _reader_work((_reader_reserve(budget, 96) or (request, snapshot)), budget, copies=3)
+        validate_authority_snapshot(snapshot, budget=budget)
         if isinstance(request, DocumentActivationRequest):
             if template is None:
                 raise WorkflowActivationError("workflow_activation_invalid_request")
-            frozen = request.model_dump(by_alias=True)
-            contract = _contract_for_request(frozen, template)
+            frozen = _reader_dump(request, by_alias=True, budget=budget)
+            contract = _contract_for_request(frozen, template, budget=budget)
             bindings = frozen["bindings"]
             replacements = frozen["eligible_replacements"]
             kinds = contract["role_kinds"]
-            if set(bindings) != set(kinds) or set(replacements) != set(kinds):
+            if _reader_set(bindings, budget=budget) != _reader_set(kinds, budget=budget) or _reader_set(replacements, budget=budget) != _reader_set(kinds, budget=budget):
                 raise WorkflowActivationError("role_binding_not_authorized")
-            capabilities = {"draft-document", "submit-immutable-document", "collect-review", "approve-planning-input"}
+            capabilities = _reader_set((_reader_reserve(budget, 128) or ("draft-document", "submit-immutable-document", "collect-review", "approve-planning-input")), budget=budget)
             if isinstance(request, DocumentActivationRequest3):
-                capabilities.add("stage-immutable-document")
+                _reader_add(capabilities, "stage-immutable-document", budget=budget)
             if isinstance(request, ArtifactActivationRequest):
-                capabilities = {"draft-artifact", "stage-immutable-artifact", "submit-immutable-artifact",
-                                "collect-review", "approve-planning-input"}
+                capabilities = _reader_set((_reader_reserve(budget, 144) or ("draft-artifact", "stage-immutable-artifact", "submit-immutable-artifact", "collect-review", "approve-planning-input")), budget=budget)
             if contract["request_changes"] is not None:
-                capabilities.add("return-to-author")
-            if not set(request.allowed_actions) <= capabilities:
+                _reader_add(capabilities, "return-to-author", budget=budget)
+            if not _reader_set(request.allowed_actions, budget=budget) <= capabilities:
                 raise WorkflowActivationError("role_binding_not_authorized")
-            if any(not set(item.recipients) <= set(kinds) for item in request.inputs):
+            if _reader_any_true((not _reader_set(item.recipients, budget=budget) <= _reader_set(kinds, budget=budget) for item in request.inputs), budget=budget):
                 raise WorkflowActivationError("workflow_activation_invalid_request")
-            agents = {item["name"]: item for item in snapshot["agents"] if item["status"] == "active"}
-            teams = {item["name"]: item for item in snapshot["teams"]}
-            if len({item["principal"] for item in bindings.values()}) != len(bindings):
+            agents = _reader_dict_pairs(((_reader_reserve(budget, 96) or (item["name"],  item )) for item in snapshot["agents"] if item["status"] == "active"), budget=budget)
+            teams = _reader_dict_pairs(((_reader_reserve(budget, 96) or (item["name"],  item )) for item in snapshot["teams"]), budget=budget)
+            if len(_reader_set((item["principal"] for item in bindings.values()), budget=budget)) != len(bindings):
                 raise WorkflowActivationError("role_binding_not_authorized")
             for role, kind in kinds.items():
                 if kind == "human":
-                    if (bindings[role] != {"kind": "human", "principal": "founder", "team": None}
+                    if (bindings[role] != (_reader_reserve(budget, 448) or {"kind": "human", "principal": "founder", "team": None})
                             or replacements[role]):
                         raise WorkflowActivationError("role_binding_not_authorized")
                     continue
                 candidates = [bindings[role], *replacements[role]]
-                if len({candidate["principal"] for candidate in candidates}) != len(candidates):
+                if len(_reader_set((candidate["principal"] for candidate in candidates), budget=budget)) != len(candidates):
                     raise WorkflowActivationError("role_binding_not_authorized")
                 for candidate in candidates:
                     agent = agents.get(candidate["principal"])
                     team = teams.get(candidate["team"])
                     if (candidate["kind"] != "agent" or agent is None or team is None
                             or agent["team"] != candidate["team"]
-                            or candidate["principal"] not in snapshot_team_agents(snapshot, team)
-                            or candidate["principal"] in [bindings[key]["principal"] for key in kinds if key != role]):
+                            or candidate["principal"] not in snapshot_team_agents(snapshot, team, budget=budget)
+                            or candidate["principal"] in _reader_list((bindings[key]["principal"] for key in kinds if key != role), budget=budget)):
                         raise WorkflowActivationError("role_binding_not_authorized")
             return bindings
-        bindings = request.bindings.model_dump(by_alias=True)
-        replacements = request.eligible_replacements.model_dump(by_alias=True)
-        agents = {item["name"]: item for item in snapshot["agents"] if item["status"] == "active"}
-        teams = {item["name"]: item for item in snapshot["teams"]}
-        if bindings["founder"] != {"kind": "human", "principal": "founder", "team": None}:
+        bindings = _reader_dump(request.bindings, by_alias=True, budget=budget)
+        replacements = _reader_dump(request.eligible_replacements, by_alias=True, budget=budget)
+        agents = _reader_dict_pairs(((_reader_reserve(budget, 96) or (item["name"],  item )) for item in snapshot["agents"] if item["status"] == "active"), budget=budget)
+        teams = _reader_dict_pairs(((_reader_reserve(budget, 96) or (item["name"],  item )) for item in snapshot["teams"]), budget=budget)
+        if bindings["founder"] != (_reader_reserve(budget, 448) or {"kind": "human", "principal": "founder", "team": None}):
             raise WorkflowActivationError("role_binding_not_authorized")
-        selected = [bindings[role]["principal"] for role in ("product-lead", "implementer", "tester")]
-        if len(set(selected)) != 3:
+        selected = _reader_list((bindings[role]["principal"] for role in ("product-lead", "implementer", "tester")), budget=budget)
+        if len(_reader_set(selected, budget=budget)) != 3:
             raise WorkflowActivationError("role_binding_not_authorized")
         for role in ("product-lead", "implementer", "tester"):
             candidates = [bindings[role], *replacements[role]]
-            if len({candidate["principal"] for candidate in candidates}) != len(candidates):
+            if len(_reader_set((candidate["principal"] for candidate in candidates), budget=budget)) != len(candidates):
                 raise WorkflowActivationError("role_binding_not_authorized")
             for candidate in candidates:
                 agent = agents.get(candidate["principal"])
                 team = teams.get(candidate["team"])
                 if (candidate["kind"] != "agent" or agent is None or team is None
                         or agent["team"] != candidate["team"]
-                        or candidate["principal"] not in snapshot_team_agents(snapshot, team)):
+                        or candidate["principal"] not in snapshot_team_agents(snapshot, team, budget=budget)):
                     raise WorkflowActivationError("role_binding_not_authorized")
                 # A replacement cannot erase contributor independence. Later
                 # replacement admission remains a separate U4/U5 operation.
-                other = [bindings[key]["principal"] for key in bindings if key != role]
+                other = _reader_list((bindings[key]["principal"] for key in bindings if key != role), budget=budget)
                 if candidate["principal"] in other:
                     raise WorkflowActivationError("role_binding_not_authorized")
         return bindings
@@ -638,21 +685,21 @@ class WorkflowActivationStore:
                         receipt = self._closure(conn, activation_id, actor=actor)
         return self._project(receipt)
 
-    def _closure(self, conn: sqlite3.Connection, activation_id: str, *, actor: str) -> dict:
+    def _closure(self, conn: sqlite3.Connection, activation_id: str, *, actor: str, budget=None) -> dict:
         """Standalone complete validation and semantic closure in one snapshot."""
         with _schema_snapshot(conn):
             # Preserve the private lookup boundary before complete validation.
-            operation = conn.execute("SELECT * FROM workflow_activation_operations WHERE activation_id=? AND org_slug=? AND principal=?",
-                                     (activation_id, self.org.slug, actor)).fetchone()
+            operation = _reader_one(conn, "SELECT * FROM workflow_activation_operations WHERE activation_id=? AND org_slug=? AND principal=?", (_reader_reserve(budget, 112) or (activation_id, self.org.slug, actor)), budget=budget)
             if operation is None:
                 raise WorkflowActivationError("workflow_activation_not_found")
             try:
-                validate_workflow_schema(conn, expected_org_slug=self.org.slug)
-                return self._closure_from_validated_schema(conn, activation_id, actor=actor)
-            except (ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError) as exc:
+                _reader_reserve(budget, 144)
+                validate_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
+                return self._closure_from_validated_schema(conn, activation_id, actor=actor, budget=budget)
+            except ((ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError)) as exc:
                 raise WorkflowActivationError("workflow_activation_storage_corrupt") from exc
 
-    def _closure_from_validated_schema(self, conn: sqlite3.Connection, activation_id: str, *, actor: str) -> dict:
+    def _closure_from_validated_schema(self, conn: sqlite3.Connection, activation_id: str, *, actor: str, budget=None) -> dict:
         """Semantic core; caller owns complete validation in this exact snapshot.
 
         Only the standalone wrapper and recovery's immediate, write-free
@@ -662,23 +709,24 @@ class WorkflowActivationStore:
             raise WorkflowActivationError("workflow_activation_storage_corrupt")
         # Caller authenticated before any receipt lookup. A foreign actor/org
         # receives no private record, even if it guesses an activation ID.
-        operation = conn.execute("SELECT * FROM workflow_activation_operations WHERE activation_id=? AND org_slug=? AND principal=?",
-                                 (activation_id, self.org.slug, actor)).fetchone()
+        operation = _reader_one(conn, "SELECT * FROM workflow_activation_operations WHERE activation_id=? AND org_slug=? AND principal=?", (_reader_reserve(budget, 112) or (activation_id, self.org.slug, actor)), budget=budget)
         if operation is None:
             raise WorkflowActivationError("workflow_activation_not_found")
         try:
-            activation = dict(conn.execute("SELECT * FROM workflow_activations WHERE id=?", (activation_id,)).fetchone())
-            instance = dict(conn.execute("SELECT * FROM workflow_instances WHERE id=?", (activation["instance_id"],)).fetchone())
-            intent = dict(conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE activation_id=? AND attempt_sequence=1", (activation_id,)).fetchone())
-            binding = dict(conn.execute("SELECT * FROM workflow_binding_snapshots WHERE id=?", (intent["binding_snapshot_id"],)).fetchone())
-            authorization = dict(conn.execute("SELECT * FROM workflow_authorization_revisions WHERE id=?", (binding["authorization_revision_id"],)).fetchone())
-            context = dict(conn.execute("SELECT * FROM workflow_contexts WHERE id=?", (intent["context_id"],)).fetchone())
-            grant = json.loads(authorization["authority_bytes"])
-            request = parse_request(json.loads(intent["request_bytes"]))
-            frozen = request.model_dump(by_alias=True)
+            _reader_reserve(budget, 144)
+            activation = _reader_dict(_reader_one(conn, "SELECT * FROM workflow_activations WHERE id=?", (_reader_reserve(budget, 80) or (activation_id,)), budget=budget), budget=budget)
+            instance = _reader_dict(_reader_one(conn, "SELECT * FROM workflow_instances WHERE id=?", (_reader_reserve(budget, 80) or (activation["instance_id"],)), budget=budget), budget=budget)
+            intent = _reader_dict(_reader_one(conn, "SELECT * FROM workflow_draft_dispatch_intents WHERE activation_id=? AND attempt_sequence=1", (_reader_reserve(budget, 80) or (activation_id,)), budget=budget), budget=budget)
+            binding = _reader_dict(_reader_one(conn, "SELECT * FROM workflow_binding_snapshots WHERE id=?", (_reader_reserve(budget, 80) or (intent["binding_snapshot_id"],)), budget=budget), budget=budget)
+            authorization = _reader_dict(_reader_one(conn, "SELECT * FROM workflow_authorization_revisions WHERE id=?", (_reader_reserve(budget, 80) or (binding["authorization_revision_id"],)), budget=budget), budget=budget)
+            context = _reader_dict(_reader_one(conn, "SELECT * FROM workflow_contexts WHERE id=?", (_reader_reserve(budget, 80) or (intent["context_id"],)), budget=budget), budget=budget)
+            grant = _reader_json(authorization["authority_bytes"], budget)
+            request = parse_request(_reader_json(intent["request_bytes"], budget), budget=budget)
+            _reader_work(request, budget, copies=2)
+            frozen = _reader_dump(request, by_alias=True, budget=budget)
             namespace = f"org/{self.org.slug}/workflow-instance/{instance['id']}"
             template = WorkflowTemplateStore._read_version(conn, identity_id=request.template.identity_id,
-                                                          version=request.template.version, expected_version_id=activation["template_version_id"])
+                                                          version=request.template.version, expected_version_id=activation["template_version_id"], budget=budget)
             timestamp = datetime.fromisoformat(activation["created_at"])
             if (operation["request_digest"] != intent["request_digest"] or intent["request_digest"] != activation["request_digest"]
                     or activation["activated_by"] != actor or intent["admission_principal"] != actor
@@ -693,8 +741,8 @@ class WorkflowActivationStore:
                     or intent["admission_kind"] != "initial" or intent["attempt_sequence"] != 1
                     or intent["assignment_generation"] != 1 or intent["predecessor_intent_id"] is not None
                     or context["source_kind"] != "founder-activation" or context["source_id"] != instance["id"]
-                    or instance["id"] != _id("workflow-instance", self.org.slug, request.instance_id)
-                    or activation_id != _id("workflow-activation", instance["id"], 1, operation["request_digest"])
+                    or instance["id"] != _id("workflow-instance", self.org.slug, request.instance_id, budget=budget)
+                    or activation_id != _id("workflow-activation", instance["id"], 1, operation["request_digest"], budget=budget)
                     or template.definition_digest != request.template.definition_digest
                     or template.identity_id != activation["template_identity_id"]
                     or template.namespace != intent["authority_namespace"]
@@ -702,65 +750,66 @@ class WorkflowActivationStore:
                     or request.authority.namespace != f"org/{self.org.slug}"
                     or request.authority.generation != intent["authority_generation"]
                     or request.authority.snapshot_digest != intent["authority_digest"]
-                    or digest(intent["request_bytes"]) != operation["request_digest"]
-                    or canonical_bytes(frozen) != intent["request_bytes"]):
+                    or digest(intent["request_bytes"], budget=budget) != operation["request_digest"]
+                    or canonical_bytes(frozen, budget=budget) != intent["request_bytes"]):
                 raise ValueError("closure")
             expected_grant = _authorization(org_slug=self.org.slug, instance_id=instance["id"],
                 activation_id=activation_id, task_id=instance["root_task_id"], request=frozen,
-                request_digest=operation["request_digest"], template=template, timestamp=activation["created_at"])
+                request_digest=operation["request_digest"], template=template, timestamp=activation["created_at"], budget=budget)
             bound = _binding(instance_id=instance["id"], activation_id=activation_id,
-                authorization_id=authorization["id"], template=template, request=frozen)
-            stored_context = json.loads(context["context_bytes"])
+                authorization_id=authorization["id"], template=template, request=frozen, budget=budget)
+            stored_context = _reader_json(context["context_bytes"], budget)
             # Compare the historical snapshot to its retained publication, not
             # to current readiness or a fresh roster/profile/source discovery.
-            journal = conn.execute("SELECT snapshot_bytes FROM workflow_publication_journals "
-                "WHERE namespace=? AND generation=? AND snapshot_digest=?",
-                (request.authority.namespace, request.authority.generation, request.authority.snapshot_digest)).fetchall()
-            snapshot_bytes = canonical_bytes(stored_context["authority_snapshot"])
+            journal = _reader_all(conn, "SELECT snapshot_bytes FROM workflow_publication_journals "
+                "WHERE namespace=? AND generation=? AND snapshot_digest=?", (_reader_reserve(budget, 112) or (request.authority.namespace, request.authority.generation, request.authority.snapshot_digest)), budget=budget)
+            snapshot_bytes = canonical_bytes(stored_context["authority_snapshot"], budget=budget)
             if (len(journal) != 1 or bytes(journal[0][0]) != snapshot_bytes
-                    or digest(snapshot_bytes) != request.authority.snapshot_digest):
+                    or digest(snapshot_bytes, budget=budget) != request.authority.snapshot_digest):
                 raise ValueError("closure")
-            self._roles(request, stored_context["authority_snapshot"], template)
+            self._roles(request, stored_context["authority_snapshot"], template, budget=budget)
             inputs = stored_context["inputs"]
             if not isinstance(inputs, list) or len(inputs) != len(request.inputs):
                 raise ValueError("closure")
             for item, source in zip(inputs, request.inputs, strict=True):
-                if (not isinstance(item, dict) or set(item) != {"pin", "bytes_base64"}
-                        or item["pin"] != source.model_dump()
-                        or not set(source.recipients) <= set(frozen["bindings"])
-                        or len(set(source.recipients)) != len(source.recipients)):
+                _reader_work((_reader_reserve(budget, 96) or (item, source)), budget, copies=3)
+                if (not isinstance(item, dict) or _reader_set(item, budget=budget) != _reader_set((_reader_reserve(budget, 96) or ("pin", "bytes_base64")), budget=budget)
+                        or item["pin"] != _reader_dump(source, budget=budget)
+                        or not _reader_set(source.recipients, budget=budget) <= _reader_set(frozen["bindings"], budget=budget)
+                        or len(_reader_set(source.recipients, budget=budget)) != len(source.recipients)):
                     raise ValueError("closure")
-                content = base64.b64decode(item["bytes_base64"], validate=True)
-                if (digest(content) != source.sha256
-                        or base64.b64encode(content).decode("ascii") != item["bytes_base64"]):
+                content = _reader_b64decode(item["bytes_base64"], validate=True, budget=budget)
+                if (digest(content, budget=budget) != source.sha256
+                        or _reader_decode(_reader_b64encode(content, budget=budget), "ascii", budget=budget) != item["bytes_base64"]):
                     raise ValueError("closure")
             expected_context = _context(org_slug=self.org.slug, request=frozen,
                 snapshot=stored_context["authority_snapshot"], template=template, inputs=inputs,
                 authorization=expected_grant, authorization_id=authorization["id"],
-                binding=bound, binding_id=binding["id"], intent_id=intent["id"])
-            author_role = _author_role(frozen, template)
-            task_scope = dict(assigned_agent=frozen["bindings"][author_role]["principal"],
-                team=frozen["bindings"][author_role]["team"], brief=_task_brief(frozen, inputs, template))
-            if (canonical_bytes(expected_grant) != authorization["authority_bytes"]
-                    or canonical_bytes(bound) != binding["binding_bytes"]
-                    or canonical_bytes(expected_context) != context["context_bytes"]
+                binding=bound, binding_id=binding["id"], intent_id=intent["id"], budget=budget)
+            author_role = _author_role(frozen, template, budget=budget)
+            task_scope = (_reader_reserve(budget, 448) or dict(assigned_agent=frozen["bindings"][author_role]["principal"],
+                team=frozen["bindings"][author_role]["team"], brief=_task_brief(frozen, inputs, template, budget=budget)))
+            if (canonical_bytes(expected_grant, budget=budget) != authorization["authority_bytes"]
+                    or canonical_bytes(bound, budget=budget) != binding["binding_bytes"]
+                    or canonical_bytes(expected_context, budget=budget) != context["context_bytes"]
                     or len(context["context_bytes"]) > CONTEXT_LIMIT
-                    or canonical_bytes(task_scope) != intent["task_scope_bytes"]
-                    or binding["id"] != _id("workflow-binding", instance["id"], digest(binding["binding_bytes"]))
-                    or context["id"] != _id("workflow-context", instance["id"], digest(context["context_bytes"]))
-                    or authorization["id"] != _id("workflow-authorization", instance["id"], 1, digest(authorization["authority_bytes"]))):
+                    or canonical_bytes(task_scope, budget=budget) != intent["task_scope_bytes"]
+                    or binding["id"] != _id("workflow-binding", instance["id"], digest(binding["binding_bytes"], budget=budget), budget=budget)
+                    or context["id"] != _id("workflow-context", instance["id"], digest(context["context_bytes"], budget=budget), budget=budget)
+                    or authorization["id"] != _id("workflow-authorization", instance["id"], 1, digest(authorization["authority_bytes"], budget=budget), budget=budget)):
                 raise ValueError("closure")
-            receipt = dict(activation_id=activation_id, instance_id=instance["id"], instance_reference=request.instance_id,
+            _reader_work((_reader_reserve(budget, 96) or (frozen, grant)), budget)
+            receipt = (_reader_reserve(budget, 2240) or dict(activation_id=activation_id, instance_id=instance["id"], instance_reference=request.instance_id,
                         activation_revision=activation["activation_revision"], root_task_id=instance["root_task_id"],
                         intent_id=intent["id"], template=grant["template"], authority=grant["authority"],
                         bindings=frozen["bindings"], eligible_replacements=frozen["eligible_replacements"],
-                        allowed_actions=frozen["allowed_actions"], scope_digest=digest(canonical_bytes(frozen["scope"])),
+                        allowed_actions=frozen["allowed_actions"], scope_digest=digest(canonical_bytes(frozen["scope"], budget=budget), budget=budget),
                         context_digest=context["context_digest"], activated_by=grant["actor"], created_at=grant["created_at"],
-                        original_request_digest=operation["request_digest"], replayed=False)
+                        original_request_digest=operation["request_digest"], replayed=False))
             if isinstance(request, DocumentActivationRequest):
-                receipt["format"] = frozen["format"].replace("activation-request", "activation-receipt")
+                _reader_put(frozen["format"].replace("activation-request", "activation-receipt"), receipt, "format", budget=budget)
             return receipt
-        except (ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError) as exc:
+        except ((ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError)) as exc:
             raise WorkflowActivationError("workflow_activation_storage_corrupt") from exc
 
     def _project(self, receipt: dict) -> dict:
