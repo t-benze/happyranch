@@ -435,28 +435,241 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=12)
-def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *, coding_extension: bool = False) -> tuple[object, ...]:
-    expected = sqlite3.connect(":memory:")
+def _candidate_reserve(budget: _Budget, size: int) -> None:
+    """Local candidate work envelope; does not change the baseline Budget API."""
+    from runtime.workflows.coding_authority_history import _check
+    budget.step()
+    _check(type(size) is int and size >= 0)
+    budget.consumed += size
+    _check(budget.remaining_bytes >= 0)
+
+
+def _structure_cells(conn: sqlite3.Connection, source: str, columns: tuple[str, ...], keys: tuple[str, ...], budget: _Budget, args: tuple=()) -> list[tuple]:
+    """Gate complete native metadata before fetching any text/SQL into Python.
+
+    Every selected metadata row has at most eight cells and two key cells.
+    Reserve that fixed row's slices, checks, decode/copy containers and later
+    SQL normalization together BEFORE their work. Repeated acquisition still
+    consumes the original allowance; no row, reference or validator is trusted.
+    SQLite preparation/internal allocation is not hard-RSS/time bounded.
+    """
+    from runtime.workflows.coding_authority_history import _check, _VALUE_LIMIT
+    _check(0 < len(columns) <= 8 and 0 < len(keys) <= 2)
+    _candidate_reserve(budget, 4096)
+    quote = lambda name: '"' + name.replace('"', '""') + '"'
+    scalar = ','.join((*map(quote, keys), *(f'typeof({quote(c)}),length(CAST({quote(c)} AS BLOB))' for c in columns)))
+    projection = ','.join((f"CASE WHEN typeof({quote(c)})='text' THEN CAST({quote(c)} AS BLOB) ELSE {quote(c)} END" for c in columns))
+    predicate = ' AND '.join((f'{quote(k)}=?' for k in keys))
+    payload_sql = f'SELECT {projection} FROM ({source}) WHERE {predicate}'
+    result = []
+    cursor = conn.cursor()
+    cursor.row_factory = None
+    primary = None
     try:
-        expected.execute("PRAGMA foreign_keys=ON")
-        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H", "I", "J") else CANONICAL_WORKFLOW_DDL)
-        if layout in ("E", "G", "H", "I", "J"):
-            _execute_ddl(expected, _revision_draft_ddl() if layout in ("I", "J") else CANONICAL_WORKFLOW_DRAFT_DDL)
-        elif layout != "F":
-            raise ValueError("unsupported_workflow_layout")
-        if layout in ("G", "H", "I", "J"):
+        cursor.execute(f'SELECT {scalar} FROM ({source})', args)
+        while True:
+            if budget.accepted_rows >= 8192:
+                raise ValueError('workflow_owner_budget_exhausted')
+            _candidate_reserve(budget, 128 * (len(keys) + 2 * len(columns)) + 64)
+            row = cursor.fetchone()
+            if row is None:
+                break
+            budget.candidate()
+            identity, cells = (row[:len(keys)], row[len(keys):])
+            _check(all((type(value) is int for value in identity)))
+            types, sizes = (cells[::2], cells[1::2])
+            _check(all((t in ('text', 'integer', 'null') for t in types)))
+            _check(all((s is None or (type(s) is int and 0 <= s <= _VALUE_LIMIT) for s in sizes)))
+            size = sum((s or 0 for s in sizes))
+            if budget.accepted_rows >= 8192:
+                raise ValueError('workflow_owner_budget_exhausted')
+            _candidate_reserve(budget, size * 24 + 256 * len(columns) + 512)
+            payload = conn.execute(payload_sql, args + identity)
+            payload_failure = None
+            try:
+                value = payload.fetchone()
+                _check(value is not None)
+                budget.candidate()
+                if budget.accepted_rows >= 8192:
+                    raise ValueError('workflow_owner_budget_exhausted')
+                _candidate_reserve(budget, 128 * len(columns) + 64)
+                extra = payload.fetchone()
+                if extra is not None:
+                    budget.candidate()
+                    _check(False)
+                decoded = []
+                for cell, storage, length in zip(value, types, sizes, strict=True):
+                    if storage == 'text':
+                        _check(type(cell) is bytes and len(cell) == length)
+                        decoded.append(cell.decode('utf8'))
+                    else:
+                        _check(type(cell) is (int if storage == 'integer' else type(None)))
+                        decoded.append(cell)
+                result.append(tuple(decoded))
+            except BaseException as exc:
+                payload_failure = exc
+                raise
+            finally:
+                try:
+                    payload.close()
+                except BaseException as exc:
+                    if payload_failure is None:
+                        raise
+                    payload_failure.add_note('workflow structure payload close failed: ' + type(exc).__name__)
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            cursor.close()
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note('workflow structure cursor close failed: ' + type(exc).__name__)
+    return result
+
+def _candidate_structure(conn: sqlite3.Connection, budget: _Budget) -> tuple[tuple, dict, tuple]:
+    """Complete bounded observation, including unrelated examined object kinds.
+
+    No DATA, physical integrity, FK data or complete-owner reader is entered.
+    The independent old/new canonical comparator remains exact.
+    """
+    objects = _structure_cells(conn, 'SELECT rowid,type,name,tbl_name,sql FROM sqlite_schema', ('type', 'name', 'tbl_name', 'sql'), ('rowid',), budget)
+    _candidate_reserve(budget, 128 * len(objects))
+    for _ in range(len(objects) * max(1, len(objects).bit_length())):
+        budget.step()
+    objects.sort(key=lambda row: row[:3])
+    selected = list((row for row in objects if any((name.casefold().startswith('workflow_') for name in row[1:3]))))
+    selected_names = set((row[1] for row in selected))
+    normalized = tuple(((kind, name, table, None if sql is None else ' '.join(sql.split())) for kind, name, table, sql in selected))
+    native_names = set(('tasks', 'task_results', 'audit_log', 'task_pause_controls'))
+    tables, indexes, native = ([], [], {})
+    for kind, name, _, _ in objects:
+        if kind != 'table' or not (name in native_names or name in selected_names):
+            continue
+        columns = tuple(_structure_cells(conn, 'SELECT * FROM pragma_table_xinfo(?)', ('cid', 'name', 'type', 'notnull', 'dflt_value', 'pk', 'hidden'), ('cid',), budget, (name,)))
+        foreign = tuple(_structure_cells(conn, 'SELECT * FROM pragma_foreign_key_list(?)', ('id', 'seq', 'table', 'from', 'to', 'on_update', 'on_delete', 'match'), ('id', 'seq'), budget, (name,)))
+        table_indexes = []
+        for index in _structure_cells(conn, 'SELECT * FROM pragma_index_list(?)', ('seq', 'name', 'unique', 'origin', 'partial'), ('seq',), budget, (name,)):
+            detail = tuple(_structure_cells(conn, 'SELECT * FROM pragma_index_xinfo(?)', ('seqno', 'cid', 'name', 'desc', 'coll', 'key'), ('seqno',), budget, (index[1],)))
+            table_indexes.append((name, index, detail))
+        if name in native_names:
+            native.__setitem__(name, (columns, foreign, tuple(table_indexes)))
+        else:
+            tables.append((name, columns, foreign))
+            indexes.extend(table_indexes)
+    return ((normalized, tuple(tables), tuple(indexes)), native, tuple(objects))
+
+_OWNER_INDEX_COLUMNS = (
+    ('workflow_contexts', 'source_id'),
+    ('workflow_instance_tasks', 'task_id'),
+    ('workflow_task_results', 'task_id'),
+    ('workflow_current_assignments', 'task_id'),
+    ('workflow_receipt_evidence', 'task_id'),
+    ('workflow_submissions', 'source_task_id'),
+    ('workflow_submission_contributors', 'source_task_id'),
+    ('workflow_instance_contributors', 'source_task_id'),
+    ('workflow_dispatch_callbacks', 'task_id'),
+    ('workflow_dispatch_effects', 'task_id'),
+    ('workflow_request_task_bridges', 'result_id'),
+    ('workflow_submissions', 'source_result_id'),
+    ('workflow_submission_contributors', 'source_result_id'),
+    ('workflow_instance_contributors', 'source_result_id'),
+    ('workflow_receipt_evidence', 'result_id'),
+    ('workflow_receipt_evidence', 'context_id'),
+    ('workflow_receipt_evidence', 'binding_snapshot_id'),
+    ('workflow_contexts', 'binding_snapshot_id'),
+    ('workflow_instances', 'binding_snapshot_id'),
+    ('workflow_instances', 'context_id'),
+    ('workflow_activation_operations', 'activation_id'),
+    ('workflow_operation_replays', 'instance_id'),
+    ('workflow_dispatch_operations', 'instance_id'),
+    ('workflow_request_task_bridges', 'instance_id'),
+    ('workflow_dispatch_effects', 'outbox_id'),
+    ('workflow_rounds', 'submission_id'),
+    ('workflow_operation_replays', 'effect_id'),
+    ('workflow_review_requests', 'supersedes_request_id'),
+    ('workflow_review_receipts', 'supersedes_receipt_id'),
+    ('workflow_draft_dispatch_intents', 'context_id'),
+    ('workflow_draft_dispatch_intents', 'binding_snapshot_id'),
+    ('workflow_draft_dispatch_intents', 'final_result_id'),
+    ('workflow_submission_operations', 'source_task_id'),
+    ('workflow_submission_result_links', 'source_task_id'),
+    ('workflow_author_handoffs', 'source_task_id'),
+    ('workflow_document_revision_operations', 'binding_snapshot_id'),
+    ('workflow_document_revision_operations', 'activation_id'),
+    ('workflow_coding_attempts', 'submission_id'),
+    ('workflow_review_receipts', 'submission_id'),
+    ('workflow_current_assignments', 'result_id'),
+)
+
+def _owner_index_statements(layout: str, *, coding_extension: bool) -> tuple[str, ...]:
+    absent = set()
+    if layout == 'F':
+        absent.add('workflow_draft_dispatch_intents')
+    if layout in ('F', 'E'):
+        absent.update(('workflow_submission_operations', 'workflow_submission_result_links'))
+    if layout in ('F', 'E', 'G'):
+        absent.add('workflow_author_handoffs')
+    if layout not in ('I', 'J'):
+        absent.add('workflow_document_revision_operations')
+    if not coding_extension and layout != 'J':
+        absent.add('workflow_coding_attempts')
+    return tuple((f"CREATE INDEX workflow_owner_{table.removeprefix('workflow_')}_{column}_idx ON {table}({column});" for table, column in _OWNER_INDEX_COLUMNS if table not in absent))
+
+def _install_owner_indexes(conn: sqlite3.Connection, layout: str, *, coding_extension: bool, existing: frozenset[str]=frozenset()) -> None:
+    """DDL only for a previously fully validated source in its owning writer."""
+    for statement in _owner_index_statements(layout, coding_extension=coding_extension):
+        name = statement.split()[2]
+        if name not in existing:
+            conn.execute(statement)
+
+@contextmanager
+def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed: bool):
+    """Independent literal schema; callers choose complete or bounded metadata."""
+    expected = sqlite3.connect(':memory:')
+    primary = None
+    try:
+        expected.execute('PRAGMA foreign_keys=ON')
+        _execute_ddl(expected, _g_foundation_ddl() if layout in ('G', 'H', 'I', 'J') else CANONICAL_WORKFLOW_DDL)
+        if layout in ('E', 'G', 'H', 'I', 'J'):
+            _execute_ddl(expected, _revision_draft_ddl() if layout in ('I', 'J') else CANONICAL_WORKFLOW_DRAFT_DDL)
+        elif layout != 'F':
+            raise ValueError('unsupported_workflow_layout')
+        if layout in ('G', 'H', 'I', 'J'):
             _execute_ddl(expected, _g_additions_ddl())
-        if layout in ("H", "I", "J"):
+        if layout in ('H', 'I', 'J'):
             _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
-        if layout in ("I", "J"):
+        if layout in ('I', 'J'):
             _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
-        if layout == "J" or coding_extension:
+        if layout == 'J' or coding_extension:
             from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
             _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
-        return _layout(expected)
+        if owner_indexed:
+            _install_owner_indexes(expected, layout, coding_extension=coding_extension)
+        yield expected
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        expected.close()
+        try:
+            expected.close()
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note('workflow reference close failed: ' + type(exc).__name__)
+
+@lru_cache(maxsize=24)
+def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *,
+                      coding_extension: bool = False, owner_indexed: bool = False) -> tuple[object, ...]:
+    with _canonical_connection(layout, coding_extension=coding_extension,
+                               owner_indexed=owner_indexed) as expected:
+        return _layout(expected)
+
+
+def _candidate_reference(layout: str, *, coding_extension: bool, owner_indexed: bool, budget: _Budget) -> tuple:
+    with _canonical_connection(layout, coding_extension=coding_extension, owner_indexed=owner_indexed) as expected:
+        return _candidate_structure(expected, budget)[0]
 
 
 def _object_keys(layout: tuple[object, ...]) -> set[tuple[object, ...]]:
@@ -629,12 +842,20 @@ def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H
     # I plus the canonical extension IS the original J object set/identity.
     if coding and layout == 'I':
         layout = 'J'
-    expected = _canonical_layout(layout, coding_extension=coding)
+    expected = _canonical_layout(layout, coding_extension=coding,
+                                 owner_indexed=bool(_owner_indexes_present(conn)))
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError('workflow_schema_object_set_mismatch')
     if actual != expected:
         raise ValueError('workflow_schema_layout_mismatch')
     return layout, coding
+
+
+def _owner_indexes_present(conn: sqlite3.Connection) -> frozenset[str]:
+    # Structural observation only. Full old/indexed comparison rejects every
+    # partial, extra, wrong-kind, differently cased or noncanonical object.
+    return frozenset(row[1] for row in _layout(conn)[0]
+                     if row[1].casefold().startswith('workflow_owner_'))
 
 
 def _coding_document_exclusions(conn: sqlite3.Connection) -> frozenset[str]:
@@ -737,21 +958,40 @@ class WorkflowCompatibilityStore:
                 coding_present = has_coding_schema_objects(conn)
                 actual = _layout(conn)
                 if actual[0] or coding_present:
-                    _validate_installed(conn, expected_org_slug=expected_org_slug,
-                                        advances=advances)
+                    layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
+                                                   advances=advances)[0]
                     result = "reopened"
                 else:
                     _validate_coding_dependencies(conn)
                     _install_foundation(conn, expected_org_slug=expected_org_slug,
                                         advances=advances)
+                    layout = 'F'
                     result = "installed_legacy_only"
                 if not coding_present:
                     _validate_coding_dependencies(conn)
+                    source_indexes = _owner_indexes_present(conn)
+                    source_layout = layout
+                    advances.clear()
                     _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+                    if source_indexes:
+                        _install_owner_indexes(conn, source_layout, coding_extension=True,
+                                               existing=source_indexes)
                     _validate_installed(conn, expected_org_slug=expected_org_slug,
                                         advances=advances)
+                layout = _read_workflow_schema(conn, expected_org_slug=expected_org_slug,
+                                               advances=advances)[0]
+                indexes = _owner_indexes_present(conn)
+                required = _owner_index_statements(layout, coding_extension=True)
+                if any(statement.split()[2] not in indexes for statement in required):
+                    advances.clear()
+                    _install_owner_indexes(conn, layout, coding_extension=True, existing=indexes)
+                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug, advances=advances)
                 if before_commit is not None and result == "installed_legacy_only":
                     before_commit()
+                    if not conn.in_transaction:
+                        raise ValueError('workflow_install_transaction_lost')
+                    advances.clear()
+                    _read_workflow_schema(conn, expected_org_slug=expected_org_slug, advances=advances)
             # No exception/interruption/failed COMMIT reaches publication.
             from runtime.infrastructure.workflow_coding_schema import _advance_audit_log_watermark
             for file_key, last_id in advances:
@@ -1118,6 +1358,7 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     if not conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_draft_migration_requires_writer_and_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    owner_indexed = bool(_owner_indexes_present(conn))
     from runtime.identities.schema import validate_names
     validate_names(conn, org_slug=expected_org_slug)
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
@@ -1125,13 +1366,18 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
         return 'ready'
     _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
+    from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
+    if owner_indexed:
+        _install_owner_indexes(conn, 'E', coding_extension=has_coding_schema_objects(conn),
+                               existing=_owner_indexes_present(conn))
     validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     _validate_release_database(conn, 'E', expected_org_slug=expected_org_slug)
     return 'migrated'
 
 
 def initialize_complete_org_schema(database: Database, *, expected_org_slug: str,
-                                   layout: Literal["G", "H", "I", "J"] = "G") -> None:
+                                   layout: Literal["G", "H", "I", "J"] = "G",
+                                   owner_indexed: bool = True) -> None:
     """Deliberate creation only; the POST owner proves the skeleton is fresh."""
     if layout not in ("G", "H", "I", "J"):
         raise ValueError("unsupported_workflow_layout")
@@ -1178,6 +1424,8 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
         if layout == "J":
             from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
             _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+        if owner_indexed:
+            _install_owner_indexes(conn, layout, coding_extension=layout == "J")
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
 
 
@@ -1698,6 +1946,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_author_handoff_migration_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    owner_indexed = bool(_owner_indexes_present(conn))
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout in ('H', 'I', 'J'):
         return 'ready'
@@ -1716,6 +1965,10 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         _validate_coding_source_idle(conn, expected_org_slug=expected_org_slug, layout=layout)
         retained = _retained_rows(conn)
         _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
+        from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
+        if owner_indexed:
+            _install_owner_indexes(conn, 'H', coding_extension=has_coding_schema_objects(conn),
+                                   existing=_owner_indexes_present(conn))
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
@@ -1743,7 +1996,7 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expecte
     if observed_layout != layout:
         raise ValueError('workflow_release_layout_mismatch')
     expected = tuple(_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout,
-                                                     coding_extension=coding)
+                                                     coding_extension=coding, owner_indexed=bool(_owner_indexes_present(conn)))
                      for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')
@@ -1786,6 +2039,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_submission_migration_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    owner_indexed = bool(_owner_indexes_present(conn))
     from runtime.identities.schema import validate_names
     validate_names(conn, org_slug=expected_org_slug)
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
@@ -1826,6 +2080,10 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
             conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
         _execute_ddl(conn, additions)
         conn.execute('INSERT INTO workflow_submission_schema_versions VALUES (1)')
+        from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
+        if owner_indexed:
+            _install_owner_indexes(conn, 'G', coding_extension=has_coding_schema_objects(conn),
+                                   existing=_owner_indexes_present(conn))
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, 'G', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
@@ -1867,6 +2125,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_document_revision_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    owner_indexed = bool(_owner_indexes_present(conn))
     _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout in ('I', 'J'):
         return 'ready'
@@ -1894,6 +2153,10 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         columns = ','.join(r[1] for r in conn.execute('PRAGMA table_info(workflow_draft_dispatch_intents)'))
         conn.execute(f'INSERT INTO workflow_draft_dispatch_intents(rowid,{columns}) SELECT * FROM revision_intents')
         _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+        from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
+        if owner_indexed:
+            _install_owner_indexes(conn, 'I', coding_extension=has_coding_schema_objects(conn),
+                                   existing=_owner_indexes_present(conn))
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
@@ -2123,6 +2386,7 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
     try:
         conn.execute('BEGIN')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+        owner_indexed = bool(_owner_indexes_present(conn))
         _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
         if layout == 'J':
             offline_check()
@@ -2148,6 +2412,10 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
             raise ValueError('workflow_coding_migration_source_changed')
         from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL, CODING_TABLES
         _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+        from runtime.infrastructure.workflow_coding_schema import has_coding_schema_objects
+        if owner_indexed:
+            _install_owner_indexes(conn, 'J', coding_extension=has_coding_schema_objects(conn),
+                                   existing=_owner_indexes_present(conn))
         if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'J':
             raise ValueError('workflow_coding_migration_target_mismatch')
         _validate_release_database(conn, 'J', expected_org_slug=expected_org_slug)
