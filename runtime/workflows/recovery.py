@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sqlite3
-from runtime.infrastructure.task_pause_controls import PauseControlError
 from dataclasses import dataclass
 from typing import Literal, Any
 
@@ -37,8 +36,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None,
             try:
                 result = _classify_task_in_snapshot(db, conn, task_id, org_slug=org_slug,
                                                     budget=budget, advances=advances)
-            except (ValueError, TypeError, KeyError, AttributeError, UnicodeError,
-                    RecursionError, PauseControlError, sqlite3.DatabaseError):
+            except (ValueError, TypeError, sqlite3.DatabaseError):
                 result = WorkflowTaskOwnership("reconciliation_required")
         # The complete classification, including document semantic closure,
         # must succeed before the owner's snapshot exit can authorize progress.
@@ -53,30 +51,6 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None,
 
 
 def _classify_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, *,
-                               org_slug: str | None, budget: _Budget | None,
-                               advances: list[tuple[tuple[int, int], int]],
-                               ) -> WorkflowTaskOwnership:
-    """Candidate proof publishes no full-reader advance; owners enter baseline."""
-    from runtime.workflows._candidate_history import _Candidate, _OwnerIndexesRequired
-    if budget is not None and type(budget) is not _Budget:
-        raise ValueError('workflow_coding_data_invalid_budget')
-    candidate_budget = _Budget() if budget is None else budget
-    try:
-        candidate = _Candidate(conn, task_id, org_slug, candidate_budget)
-    except _OwnerIndexesRequired:
-        return WorkflowTaskOwnership('reconciliation_required', state=(
-            'workflow_owner_indexes_required: normal org recovery with compatible source is required'))
-    owned, instances = candidate.entry()
-    if not owned:
-        candidate.historical(instances)
-        return WorkflowTaskOwnership('legacy')
-    result = _classify_full_task_in_snapshot(db, conn, task_id, org_slug=org_slug,
-                                            budget=budget, advances=advances)
-    # Positive retained/orphan evidence cannot disappear into an empty projection.
-    return (WorkflowTaskOwnership('reconciliation_required') if result.kind == 'legacy' else result)
-
-
-def _classify_full_task_in_snapshot(db: Any, conn: sqlite3.Connection, task_id: str, *,
                                org_slug: str | None, budget: _Budget | None,
                                advances: list[tuple[tuple[int, int], int]],
                                ) -> WorkflowTaskOwnership:

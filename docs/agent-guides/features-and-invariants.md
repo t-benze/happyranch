@@ -1,42 +1,5 @@
 # Features And Invariants
 
-## Task-local ownership delivery — Founder THR320 seq385
-
-Ordinary task classification follows its own persisted task/result/root/source/
-bridge relations and required indexed reverse ranges. It validates reached
-historical relations, including retained document and F5 proof, without acquiring
-unassociated foreign DATA or running complete integrity/FK/history readers.
-Foreign payload-only claims stay at their own workflow/native boundary. Missing,
-malformed, orphan, dual or contradictory reached relations and exhausted local
-acquisition refuse; a miss is ordinary only after all applicable ranges close.
-Candidate success publishes no complete-reader watermark. Source-derived indexed
-access is not a measured query plan or a latency/RSS/SQLite-I/O guarantee.
-
-Workflow-owned tasks enter the pre-split complete classifier/readers, including
-both global agent and human replay-key assertions, original dispatchers and
-budget/error/cleanup/publication behavior. Reader-budget accounting changes are
-excluded here and remain a separate dependent DRAFT/HELD subject for Founder.
-The local lookup uses the existing _Budget and native type/size fences; it does
-not expand budget plumbing into complete readers. All five final native consumers
-observe in their own writer or legitimate caller transaction. Reconciliation
-precedes effects; PID retains exact task/agent/SID/status/not-cancelled CAS, and
-coding record_pid retains its independent writer. PID refusal proves no launch
-or process cleanup. No producer permission, audit shape or lifecycle changes.
-
-Exact old/indexed structure is independently recognized. Normal org compatibility
-installation adds only the final query-required index set after complete source
-validation and before complete target validation and the original owning COMMIT.
-Fresh creation and supported migrations preserve exact variant recognition;
-SELECT/classification/generic Database never install. Partial/wrong/case/extra
-structures refuse without repair. Existing predecessor UNIQUE stays unchanged.
-
-This is source delivery only: behavior/scale NOT RUN; fault/native/performance
-PROOF NOT RUN or EXPECTED-UNMEASURED. Units RETIRED, all general integration
-SKIPPED24342/211270–271, daily19UTC E2E remains separate/nonblocking. No live
-host/deploy/restart/DB/settings/import/admission/grants/cleanup/schedule/scratch
-authority follows. Ordinary coding remains HELD; original scratch is UNSTARTED.
-
-
 ## Built-in coding definition invariant — ROOT13509 / THR320seq304
 
 System-owned availability registers the fixed v1 definition in exactly four
