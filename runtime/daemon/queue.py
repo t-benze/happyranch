@@ -116,30 +116,66 @@ class TaskQueue:
 
     def _require_publication(self, slug: str, task_id: str, metadata: dict | None,
                              publication: object,
-                             coding_validation: Callable[[], None] | None = None) -> Callable[[], None] | None:
+                             coding_validation: Callable[[], None] | None = None,
+                             ) -> tuple[Callable[[], None], Callable[[], None] | None]:
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
         if coding_validation is not None:
             coding_validation()
+        # Select before any ordinary/publication check can wait on its owners.
+        # Those checks must not turn a replacement into this operation's owner.
+        try:
+            state, gate, queue_org = self._startup_state, self._startup_recovery, self._startup_org
+            org = None if state is None else state.orgs.get(slug)
+            refs = None if org is None else org._startup_admission_refs
+            epoch, loop, phase = (None, None, None) if gate is None else (gate.epoch, gate._loop, gate._phase)
+        except AttributeError as exc:
+            raise StartupUnavailable("startup_attachment_changed") from exc
+
+        def validate_selection() -> None:
+            if (self._startup_state is not state or self._startup_recovery is not gate
+                    or self._startup_org is not queue_org
+                    or state is not None and (gate.state is not state or state.queue is not self
+                                              or state.orgs.get(slug) is not org)
+                    or org is not None and org._startup_admission_refs is not refs
+                    or gate is not None and (gate.epoch != epoch or gate._loop is not loop
+                                              or gate._phase != phase)):
+                raise StartupUnavailable("startup_attachment_changed")
+
         if publication is None:
-            self._require_ready()
-            if self._startup_state is not None:
-                from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
-                org = self._startup_state.orgs.get(slug)
+            validate_queue = ordinary_admission_validation(self)
+            validate_org = None
+            if state is not None:
                 if org is None:
                     raise StartupUnavailable("startup_attachment_changed")
-                require_ready(org)
+                validate_org = ordinary_admission_validation(org)
+
+            def validate() -> None:
+                validate_selection()
+                validate_queue()
+                if validate_org is not None:
+                    validate_org()
+                if coding_validation is not None:
+                    coding_validation()
         else:
             from runtime.daemon.startup_publication import _TaskPublication
             if type(publication) is not _TaskPublication or self._startup_recovery is not publication.gate:
-                from runtime.daemon.startup_recovery import StartupUnavailable
                 raise StartupUnavailable("startup_task_publication_unbound")
             publication.check(self, slug, task_id, metadata)
             if coding_validation is not None and coding_validation is not publication.validate_admission:
-                from runtime.daemon.startup_recovery import StartupUnavailable
                 raise StartupUnavailable("startup_coding_queue_selection_changed")
             coding_validation = publication.validate_admission
-        # Coding's supplied validator checks only captured references and the
-        # original gate/phase; it never discovers authority or acquires the DB.
-        return coding_validation
+            if org is None:
+                raise StartupUnavailable("startup_attachment_changed")
+
+            def validate() -> None:
+                validate_selection()
+                # Includes the exact kind/task/metadata, sweep/publication and
+                # native-owner predicates, plus coding's original V0 if any.
+                publication.check(self, slug, task_id, metadata)
+        # General renewal is reference/phase-only, never DB/authority discovery.
+        # Keep coding's supplied V0 separate: a composite is not an authentic V0.
+        validate_selection()
+        return validate, coding_validation
 
     def _record_dequeue(self, item: _QueueItem) -> None:
         key = item[0], item[1]
@@ -151,11 +187,15 @@ class TaskQueue:
 
     def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None,
                 _publication: object = None,
-                _coding_validation: Callable[[], None] | None = None) -> None:
-        validate = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
+                _coding_validation: Callable[[], None] | None = None,
+                _queue_validation: Callable[[], None] | None = None) -> None:
+        validate, _ = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
         with self._admission_lock:
-            if validate is not None:
-                validate()
+            # A nested enqueue also owes its caller's ORIGINAL selection.
+            # This additional check cannot replace this entry's validation.
+            if _queue_validation is not None:
+                _queue_validation()
+            validate()
             if self._stopping:
                 logger.warning(
                     "task queue is stopping; refusing %s/%s", slug, task_id,
@@ -192,11 +232,12 @@ class TaskQueue:
         by the pending count until the same locked dequeue operation, so a
         later qualifying wake is admitted.
         """
-        validate = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
+        validate, coding_validation = self._require_publication(
+            slug, task_id, metadata, _publication, _coding_validation,
+        )
         key = slug, task_id
         with self._admission_lock:
-            if validate is not None:
-                validate()
+            validate()
             if self._stopping:
                 logger.warning(
                     "task queue is stopping; refusing %s/%s", slug, task_id,
@@ -208,15 +249,13 @@ class TaskQueue:
         try:
             if publisher is None:
                 self.enqueue(slug, task_id, metadata=metadata, _publication=_publication,
-                             _coding_validation=validate)
+                             _coding_validation=coding_validation, _queue_validation=validate)
             else:
-                if validate is not None:
-                    validate()
+                validate()
                 publisher()
             with self._admission_lock:
-                if validate is not None:
-                    validate()
-                return self._pending_counts[key] > 0
+                validate()
+                return not self._stopping and self._pending_counts[key] > 0
         finally:
             with self._admission_lock:
                 self._admission_reservations.discard(key)

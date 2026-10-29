@@ -350,6 +350,14 @@ metadata, queue, attachment, phase and epoch object through queue/generation
 adapters. P2 uses its retained sweep/body-or-native-tail owner; workflow P2/P3 uses
 its original workflow owner; P4/P6 requires the existing active publication owner.
 Authenticated generation raw put still follows its genuine claim and exact ack.
+Queue admission captures the original queue/state/gate/epoch/loop and target
+org/reference selection before waiting. Ordinary and authentic noncoding recovery
+publications renew it after each admission-mutex acquisition before reservation,
+raw insertion or positive pending acknowledgement; a replacement ready owner
+cannot satisfy that selection. Coding's supplied V0 remains separate and unchanged
+through nested enqueue/generation. DB-aware publishers stay outside the mutex;
+late refusal preserves actual inserted/committed prefixes and finally unreserves.
+Stopping cannot acknowledge delivery, and owed native/terminal drains stay ungated.
 No generic recovery-thread or metadata bypass grants queue/session/provider use.
 For original unheld non-v2 retry/recovery-deferred Pause tasks during P6,
 task_pause._discover_pause_roots passes the journal owner_identity metadata through
