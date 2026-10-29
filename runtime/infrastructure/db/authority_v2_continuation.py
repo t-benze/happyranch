@@ -2334,10 +2334,11 @@ class AuthorityV2ContinuationMixin:
         so an appended duplicate whose ``attempt_id`` is null/missing/distinct
         -- or whose candidate/result/envelope/notification/generation reference
         is wrong or malformed -- can never be discarded before classification.
-        A row is independently unrelated ONLY when every present causal
-        reference is well-typed and provably DIFFERENT; an opaque (non-object)
-        body is never unrelated, and a row carrying the expected stage with no
-        causal reference at all cannot be established as unrelated.
+        Only a closed typed row with every present causal reference provably
+        DIFFERENT is disjoint; a same-tuple closed typed other stage is merely
+        classified as other history, never proof of state authority.  Opaque,
+        unknown-stage, malformed, mixed or extra-key rows cannot hide behind a
+        discriminator, and no causal reference means no disjointness proof.
 
         ``None`` means the enumeration was unreadable or contained an opaque
         body: the caller must fail closed.  A returned list is every row that is
@@ -2364,17 +2365,38 @@ class AuthorityV2ContinuationMixin:
             payload = row["payload"]
             if not isinstance(payload, dict):
                 return None
-            if payload.get("stage") != stage:
-                # A different closed stage is legitimate distinct history.
-                continue
+            # Classify the causal tuple BEFORE stage/P filtering.  Only a
+            # recognized closed, typed event can be genuine disjoint history
+            # or a legitimate other stage of this same causal generation.
+            payload_stage = payload.get("stage")
+            closed = self._v2_result_stage_shape_is_closed(payload_stage, payload)
+            typed = closed and all(
+                self._v2_is_int(value) and value > 0
+                if field in (
+                    "result_id", "activation_epoch", "publication_attempt",
+                    "spending_result_id",
+                ) else isinstance(value, str) and bool(value)
+                for field, value in payload.items()
+            )
+            if typed and "finalization_state" in payload:
+                if payload_stage == AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED:
+                    typed = payload["finalization_state"] == "continued"
+                elif payload_stage == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED:
+                    typed = payload["finalization_state"] in ("refused", "owner_lost")
+                else:
+                    typed = payload["finalization_state"] == "unfinalized"
             states = [
                 self._v2_identity_observation(payload, field, value, kind)
-                for field, value, kind in identities
+                for field, value, kind in identities if field in payload
             ]
-            if all(state == "distinct" for state in states):
-                # Every present causal reference is well-typed and provably
-                # different from this exact generation.
+            if typed and states and all(state == "distinct" for state in states):
                 continue
+            if payload_stage != stage:
+                if typed and states and all(state == "match" for state in states):
+                    # Relevance only: the other stage's own reader must still
+                    # establish its presence/absence and state-specific proof.
+                    continue
+                return None
             related.append(payload)
         return related
 
@@ -2512,6 +2534,15 @@ class AuthorityV2ContinuationMixin:
             "generation_id": generation_id,
         }
         state = notification.state
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=generation_id,
+            allowed_states=("needed", "publishing", "published"),
+            allow_cleared_failure=True,
+        ):
+            return _pending("evidence_drift", **base)
         now_iso = now_dt.isoformat()
         if state == "publishing" or state == "published":
             # Reclaim only after verified publisher process death/restart (the
@@ -2526,38 +2557,6 @@ class AuthorityV2ContinuationMixin:
                 return _pending("lease_live", **base)
             if notification.publication_attempt >= 2147483647:
                 return _pending("attempt_overflow", **base)
-            # The exact retained prior claim -- and its state-required published/
-            # failure evidence -- must authenticate before any reclaim allocates
-            # a new P or changes the bound boot.  A null lease alone is not proof
-            # of a genuine audited failure, and missing/damaged claim evidence is
-            # refused, never repaired by reinsertion.
-            retained_boot = self._authenticate_v2_retained_claim_boot_uncommitted(
-                root_task_id=root_task_id, manager_agent=manager_agent,
-                attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
-                result_id=result_id, envelope_id=envelope.envelope_id,
-                notification_id=notification_id, generation_id=generation_id,
-                publication_attempt=notification.publication_attempt,
-                expected_boot=notification.publisher_boot_id,
-            )
-            if retained_boot is None:
-                return _pending("evidence_drift", **base)
-            state_stage = None
-            if state == "published":
-                state_stage = AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED
-            elif notification.publisher_boot_id is None:
-                state_stage = AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED
-            if state_stage is not None and not (
-                self._authenticate_v2_publication_stage_evidence_uncommitted(
-                    root_task_id=root_task_id, manager_agent=manager_agent,
-                    attempt_id=attempt.attempt_id,
-                    candidate_id=candidate.candidate_id, result_id=result_id,
-                    envelope_id=envelope.envelope_id,
-                    notification_id=notification_id, generation_id=generation_id,
-                    publication_attempt=notification.publication_attempt,
-                    publisher_boot_id=retained_boot, stage=state_stage,
-                )
-            ):
-                return _pending("evidence_drift", **base)
         elif state != "needed":
             return _pending("not_publishable", **base)
         prior_attempt = notification.publication_attempt
@@ -2678,6 +2677,11 @@ class AuthorityV2ContinuationMixin:
             "notification_id": notification_id,
             "generation_id": generation_id,
         }
+        if (
+            not self._v2_is_int(publication_attempt) or publication_attempt < 1
+            or not isinstance(publisher_boot_id, str) or not publisher_boot_id
+        ):
+            return _pending("stale_claim", **base)
         if notification_id != dispatch.generation_id:
             return _pending("stale_claim", **base)
         state = notification.state
@@ -2835,6 +2839,14 @@ class AuthorityV2ContinuationMixin:
             or notification.publisher_boot_id != publisher_boot_id
         ):
             return _pending("stale_claim", **base)
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=generation_id,
+            allowed_states=("publishing", "published"),
+        ):
+            return _pending("evidence_drift", **base)
         if not self._authenticate_v2_publication_event_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id,
@@ -2967,6 +2979,11 @@ class AuthorityV2ContinuationMixin:
             "notification_id": notification_id,
             "generation_id": generation_id,
         }
+        if (
+            not self._v2_is_int(publication_attempt) or publication_attempt < 1
+            or not isinstance(publisher_boot_id, str) or not publisher_boot_id
+        ):
+            return _pending("stale_claim", **base)
         if notification.publication_attempt != publication_attempt:
             return _pending("stale_claim", **base)
         if notification.state != "publishing":
@@ -2977,6 +2994,14 @@ class AuthorityV2ContinuationMixin:
         )
         if not replay and notification.publisher_boot_id != publisher_boot_id:
             return _pending("stale_claim", **base)
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=generation_id,
+            allowed_states=("publishing",), allow_cleared_failure=True,
+        ):
+            return _pending("evidence_drift", **base)
         # Authenticate the exact retained prior claim BEFORE either the read-only
         # replay or the initial recording.  A cleared lease/boot is not itself
         # proof of a genuine audited failure: the retained claim and the exact
@@ -3336,27 +3361,86 @@ class AuthorityV2ContinuationMixin:
         self, *, root_task_id: str, manager_agent: str, attempt_id: str,
         candidate_id: str, result_id: int, envelope_id: str,
         notification, generation_id: str, allowed_states: tuple[str, ...],
+        allow_cleared_failure: bool = False,
     ) -> bool:
         """The complete retained publication evidence for one exact generation.
 
-        Requires the state-required bounded contiguous ``{1..P}`` claim history,
-        the exact bound ``P``/publisher boot, and every retained
+        Needed/P0 requires no related publication or downstream admission
+        residue.  Later states require bounded contiguous ``{1..P}`` claims,
+        the exact bound boot (or exact audited cleared failure), and every retained
         ``published``/``publish_failed``/``publish_returned`` observation as a
-        duplicate-free closed event set with a well-typed in-range ``P``.  Every
-        row is classified before any discriminator filtering, so missing,
+        duplicate-free closed event set with a well-typed in-range ``P`` and
+        the boot of that same-P claim.  Every row is classified before any
+        discriminator filtering, so missing,
         null/mistyped, wrong/distinct, conflicting, duplicate, foreign, opaque or
         extra-key evidence refuses with no repair; a genuine earlier attempt
         remains valid prior history after a real reclaim.  This is an
-        UNCOMMITTED read-only reader: it performs no write.
+        UNCOMMITTED read-only reader: it performs no write.  Cleared-failure
+        evidence is allowed only by the reclaim/failure bookkeeping callers;
+        admission and all existing downstream readers require a bound boot.
         """
         state = notification.state
         if state not in allowed_states:
             return False
         publication_attempt = notification.publication_attempt
-        if not self._v2_is_int(publication_attempt) or publication_attempt < 1:
+        pre_admission = state in ("needed", "publishing", "published")
+        if pre_admission and notification.next_session_id is not None:
             return False
-        boot = notification.publisher_boot_id
-        if not isinstance(boot, str) or not boot:
+        # An invalidated event is incompatible with every accepted state here.
+        # Admission/settlement/spend/decision cannot precede their state either.
+        # Settled readers deliberately retain real later spend/decision history.
+        absent_stages = (AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,)
+        if pre_admission:
+            absent_stages += (
+                AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+            )
+        elif state == "admitted":
+            absent_stages += (AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,)
+        if state != "settled":
+            absent_stages += (
+                AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_APPLIED,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_DISPATCH_INTERRUPTED,
+            )
+        for absent_stage in absent_stages:
+            if not self._v2_related_result_stage_events_absent_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt_id, stage=absent_stage,
+                candidate_id=candidate_id, result_id=result_id,
+                envelope_id=envelope_id,
+                notification_id=notification.notification_id,
+                generation_id=generation_id,
+            ):
+                return False
+        if state == "needed":
+            if (
+                not self._v2_is_int(publication_attempt) or publication_attempt != 0
+                or notification.publisher_boot_id is not None
+                or notification.lease_deadline is not None
+            ):
+                return False
+            # P0 has no retained publication event of ANY publication stage.
+            # In particular, a preexisting P1 claim is a conflict, not permission
+            # to recreate that claim and expose another raw queue prefix.
+            for absent_stage in (
+                AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_CLAIMED,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED,
+                AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
+            ):
+                if not self._v2_related_result_stage_events_absent_uncommitted(
+                    root_task_id=root_task_id, manager_agent=manager_agent,
+                    attempt_id=attempt_id, stage=absent_stage,
+                    candidate_id=candidate_id, result_id=result_id,
+                    envelope_id=envelope_id,
+                    notification_id=notification.notification_id,
+                    generation_id=generation_id,
+                ):
+                    return False
+            return True
+        if not self._v2_is_int(publication_attempt) or publication_attempt < 1:
             return False
         claims = self._v2_authenticate_publication_claim_history_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
@@ -3366,10 +3450,24 @@ class AuthorityV2ContinuationMixin:
         )
         if claims is None:
             return False
-        current_claim = claims.get(publication_attempt)
-        if current_claim is None:
+        current_claim = claims[publication_attempt]
+        boot = notification.publisher_boot_id
+        cleared_failure = (
+            state == "publishing" and boot is None
+            and notification.lease_deadline is None
+        )
+        # Only publication reclaim/failure bookkeeping may accept an audited
+        # cleared lease.  Admission and every other existing reader still
+        # require a bound publisher; a recorded queue failure cannot admit G.
+        if cleared_failure and not allow_cleared_failure:
             return False
-        if current_claim.get("publisher_boot_id") != boot:
+        if not cleared_failure and (
+            not isinstance(boot, str) or not boot
+            or notification.lease_deadline is None
+            or not self._v2_json_type_sensitive_equal(
+                current_claim["publisher_boot_id"], boot,
+            )
+        ):
             return False
         observations: dict[str, dict[int, dict] | None] = {}
         for stage in (
@@ -3389,34 +3487,42 @@ class AuthorityV2ContinuationMixin:
             )
             if authenticated is None:
                 return False
+            # Join every observation to its OWN retained same-P claim.  Earlier
+            # publishers may differ from today's boot, but no observation may
+            # contradict the boot that actually claimed its attempt.  This uses
+            # the one already authenticated map, never a history read per P.
+            for observed_attempt, observation in authenticated.items():
+                if not self._v2_json_type_sensitive_equal(
+                    observation["publisher_boot_id"],
+                    claims[observed_attempt]["publisher_boot_id"],
+                ):
+                    return False
             observations[stage] = authenticated
         published = observations[AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED] or {}
         failed = observations[AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_FAILED] or {}
         returned = observations[AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED] or {}
-        # A recorded failure at the CURRENT attempt clears the publisher lease and
-        # boot, so it can never coexist with a bound current boot; a failure at an
-        # EARLIER attempt remains legitimate reclaim history.
+        if any(prior in failed for prior in published):
+            return False
+        # Admission never regresses to allow another publication claim, so a
+        # returned observation can only belong to the final current attempt.
+        if any(prior != publication_attempt for prior in returned):
+            return False
+        if cleared_failure:
+            return (
+                publication_attempt in failed
+                and publication_attempt not in published and not returned
+            )
+        # A bound current claim has not recorded a lease-clearing failure.
         if publication_attempt in failed:
             return False
         if state == "published":
-            if publication_attempt not in published:
-                return False
-            if returned:
-                return False
-        elif state == "publishing":
-            # A live bound claim can never coexist with a ``published`` event at
-            # the same attempt, and a ``publish_returned`` observation implies a
-            # prior admission that this pre-admission reader must never accept.
-            if publication_attempt in published:
-                return False
-            if returned:
-                return False
-        else:
-            # admitted/settled: a genuine consumer may have admitted from the live
-            # publishing claim or from the acknowledged published state; a
-            # ``publish_returned`` observation may legitimately exist afterwards.
-            pass
-        return True
+            return publication_attempt in published and not returned
+        if state == "publishing":
+            return publication_attempt not in published and not returned
+        # admitted/settled: the real consumer may have outrun the published
+        # acknowledgement.  Its callers still require actual reservation/G/SID
+        # and state-required admission/settlement proof before any observation.
+        return state in ("admitted", "settled")
 
     def _authenticate_v2_admission_ready_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
