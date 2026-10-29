@@ -71,8 +71,32 @@ genuine final E/N/D/Jcontinued and task Pending after a post-COMMIT return loss.
 Both common-wrapper branches propagate the negative without acknowledging an
 admitted decision as applied. Accepted recovery forwards it before receipt
 settlement; the cold owner records recovery failure and suppresses the whole
-final batch. This supersedes the original issue #918 ordinary-escalation fallback
-while retaining its historical attribution. Genuine legacy escalation is unchanged.
+final batch. The causal accepted-recovery caller and both v2 hook post-final
+branches require the actual `POST_FINAL_RECONCILED` result before successful
+None/continued bookkeeping. Settlement refusal, a not-finalized/unexpected result
+in these already-final contexts or a reconciliation exception propagates the same
+`v2_pending`; missing/corrupt N/D and hidden/empty discovery cannot erase it. A
+real authenticated settled prefix remains positive when later queue publication
+is pending. A newly finalized v2 continuation is classified before the v1-only
+continued-root receipt bridge and never uses that bridge or repeats reconciliation
+to settle v2. Owed native/host/Pause/move/cancel/DB/shutdown cleanup retains its
+original owner and sticky failure regardless of the returned negative.
+
+Before first accepted-Q settlement or exact consumed-Q replay, the owned
+transaction classifies the COMPLETE root/permanent-agent Q set and requires the
+sole relevant row to be the genuine asserted recovery/accepted INTEGER/session
+identity. True explicit absence is `receipt_missing`, never ordinary fallback.
+Only closed disjoint terminal history with nonempty origin/recovery sessions and
+a coherent accepted positive SQLite-range INTEGER/nonempty-session pair is
+nonblocking; consumed Q requires that pair, while genuine unaccepted
+superseded/expired/restart-settled history retains both NULLs. Partial/malformed
+identity or a second potentially related row refuses before Q/audit mutation.
+Transition settlement requires active E with NULL spend/decision beside needed N
+and pending D, as does shared proof for pre-admission publication/generation
+claim. Generic post-final evidence still supports genuine later consumed E and
+settled N/retired D lifetimes. This supersedes the original issue #918
+ordinary-escalation fallback while retaining its historical attribution. Genuine
+legacy escalation is unchanged; no schema or history repair follows.
 
 Every completion-consumer entry checks the persisted orchestration-step audit
 before appending a decision audit. Startup, zombie, accepted-recovery and

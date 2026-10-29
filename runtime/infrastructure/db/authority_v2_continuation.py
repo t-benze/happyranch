@@ -1434,7 +1434,14 @@ class AuthorityV2ContinuationMixin:
             # evidence, never a new settlement).
             return ("evidence_drift" if code == "evidence_drift" else "identity_mismatch"), None
         assert ctx is not None
-        if ctx["notification"].state != "needed" or ctx["dispatch"].state != "pending":
+        envelope = ctx["envelope"]
+        if (
+            ctx["notification"].state != "needed"
+            or ctx["dispatch"].state != "pending"
+            or envelope.lifecycle_state != "active"
+            or envelope.spending_result_id is not None
+            or envelope.decision_state is not None
+        ):
             return "identity_mismatch", None
         if not self._authenticate_v2_post_final_task_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
@@ -1715,6 +1722,29 @@ class AuthorityV2ContinuationMixin:
         "callback_consumed", "superseded", "expired", "restart_settled",
     })
 
+    def _v2_receipt_identity_is_well_formed(self, receipt) -> bool:
+        """Validate stored identity values before disjoint or exact-Q use.
+
+        Unaccepted expired/restart-settled/superseded histories legitimately
+        retain a NULL accepted pair.  Acceptance and consumption require the
+        complete pair; a partial pair or an impossible INTEGER is never history
+        that can establish absence.  This is shape validation, not a new lookup.
+        """
+        if any(
+            not isinstance(receipt[field], str) or not receipt[field]
+            for field in ("origin_session_id", "recovery_session_id")
+        ):
+            return False
+        accepted_result = receipt["accepted_result_id"]
+        accepted_session = receipt["accepted_result_session_id"]
+        if accepted_result is None and accepted_session is None:
+            return receipt["state"] not in ("callback_accepted", "callback_consumed")
+        return (
+            self._v2_is_int(accepted_result)
+            and 1 <= accepted_result <= 9223372036854775807
+            and isinstance(accepted_session, str) and bool(accepted_session)
+        )
+
     def _v2_receipt_blocks_ordinary(
         self, receipt, *, result_id: int, manager_session_id: str,
     ) -> bool:
@@ -1731,20 +1761,16 @@ class AuthorityV2ContinuationMixin:
         state = receipt["state"]
         if not isinstance(state, str) or state not in self._V2_TERMINAL_RECEIPT_STATES:
             return True
+        if not self._v2_receipt_identity_is_well_formed(receipt):
+            return True
         origin = receipt["origin_session_id"]
         recovery = receipt["recovery_session_id"]
-        if not isinstance(origin, str) or not isinstance(recovery, str):
-            return True
         if origin == manager_session_id or recovery == manager_session_id:
             return True
-        accepted_session = receipt["accepted_result_session_id"]
-        if accepted_session is not None:
-            if not isinstance(accepted_session, str) or accepted_session == manager_session_id:
-                return True
-        accepted_result = receipt["accepted_result_id"]
-        if accepted_result is not None:
-            if not self._v2_is_int(accepted_result) or accepted_result == result_id:
-                return True
+        if receipt["accepted_result_session_id"] == manager_session_id:
+            return True
+        if receipt["accepted_result_id"] == result_id:
+            return True
         return False
 
     @_synchronized
@@ -1811,18 +1837,28 @@ class AuthorityV2ContinuationMixin:
             ).fetchall()
 
             if recovery_session_id is not None:
-                exact = [
+                # Renew the COMPLETE potentially-related set inside this owned
+                # transaction.  An earlier reader projection is not authority;
+                # a different recovery SID can still conflict on R or be unsafe
+                # malformed/nonterminal history, even beside a consumed replay.
+                blocking = [
                     receipt for receipt in receipts
-                    if receipt["recovery_session_id"] == manager_session_id
+                    if self._v2_receipt_blocks_ordinary(
+                        receipt, result_id=result_id,
+                        manager_session_id=manager_session_id,
+                    )
                 ]
-                if len(exact) != 1:
+                if len(blocking) != 1:
                     self._conn.rollback()
                     return _pending(
-                        "receipt_missing" if not exact else "identity_mismatch", **base,
+                        "receipt_missing" if not blocking else "identity_mismatch", **base,
                     )
-                receipt = exact[0]
+                receipt = blocking[0]
                 if (
-                    accepted_result_id != result_id
+                    not self._v2_receipt_identity_is_well_formed(receipt)
+                    or receipt["recovery_session_id"] != manager_session_id
+                    or not self._v2_is_int(accepted_result_id)
+                    or accepted_result_id != result_id
                     or accepted_result_session_id != manager_session_id
                     or receipt["accepted_result_id"] != result_id
                     or receipt["accepted_result_session_id"] != manager_session_id
@@ -2001,7 +2037,9 @@ class AuthorityV2ContinuationMixin:
             return None
         exact = [
             receipt for receipt in blocking
-            if receipt["recovery_session_id"] == manager_session_id
+            if self._v2_receipt_identity_is_well_formed(receipt)
+            and receipt["state"] in ("callback_accepted", "callback_consumed")
+            and receipt["recovery_session_id"] == manager_session_id
             and receipt["accepted_result_id"] == result_id
             and receipt["accepted_result_session_id"] == manager_session_id
         ]
@@ -2101,6 +2139,16 @@ class AuthorityV2ContinuationMixin:
         stays non-blocking).  This seam performs no settlement write and never
         calls a transaction-owning public settlement method or transitions Q.
         """
+        # Before admission, E must still be unspent.  Keep the generic final
+        # reader and legitimate later settled/spend/decision lifetimes usable;
+        # only needed/publishing/published proof (including publication and the
+        # generation claim) is constrained to this active pre-admission stage.
+        if notification.state in ("needed", "publishing", "published") and (
+            envelope.lifecycle_state != "active"
+            or envelope.spending_result_id is not None
+            or envelope.decision_state is not None
+        ):
+            return False
         receipts = self._conn.execute(
             "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
             (root_task_id, manager_agent),
@@ -2129,6 +2177,8 @@ class AuthorityV2ContinuationMixin:
         if len(blocking) != 1:
             return False
         receipt = blocking[0]
+        if not self._v2_receipt_identity_is_well_formed(receipt):
+            return False
         if receipt["recovery_session_id"] != manager_session_id:
             return False
         if receipt["state"] != "callback_consumed":

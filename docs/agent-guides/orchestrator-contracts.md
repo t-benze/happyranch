@@ -3268,6 +3268,30 @@ vetoes ordinary completion and remains byte-for-byte unchanged. Explicit
 recovery without an exact Q still fails `receipt_missing`/`identity_mismatch`;
 no Q, audit, synthetic settlement or historical row is rewritten.
 
+The current settlement writer renews this classification over the COMPLETE
+root/permanent-agent receipt set inside its own `BEGIN IMMEDIATE`, before either
+accepted-Q settlement or consumed-Q replay. Exactly one potentially related row
+must be the genuine asserted recovery/accepted INTEGER/result-session Q; a
+sibling with another recovery session but the same accepted result, or malformed,
+nonterminal or unknown history, refuses before the CAS or either audit. A stale
+discovery projection never substitutes for this check. Genuine explicit absence
+remains `receipt_missing` and never falls back to ordinary completion. Required
+origin/recovery sessions are nonempty strings. The accepted result/session pair
+is either wholly absent in supported unaccepted terminal history
+(`superseded`, `expired`, `restart_settled`) or a positive SQLite-range genuine
+INTEGER and nonempty session; `callback_accepted`/`callback_consumed` require the
+complete pair. Bool/float/string/zero/negative/overflow, empty sessions and partial
+pairs cannot establish disjoint history. Discovery, ordinary settlement,
+transaction-level recovery settlement and publication proof share these rules.
+
+Transition settlement additionally requires E `active` with NULL
+`spending_result_id`/`decision_state`, alongside N `needed` and D `pending`.
+The shared settlement proof applies that same unspent requirement to
+pre-admission N `needed`/`publishing`/`published`, including publication and the
+actual generation claim. This stage check leaves the generic post-final reader
+and genuine later consumed-E/settled-N/retired-D spend and decision lifetimes
+available; no later history is repaired or rejected merely for consuming E.
+
 Checkpoint C3d3a lands the accepted R4 publish step-3 storage seams on the same
 unmerged draft PR: callable, Database-owned authenticated notification discovery,
 publication claim, acknowledgement, bounded queue-failure bookkeeping and
@@ -3972,6 +3996,23 @@ corrupt admitted/settled generation refuses unchanged. Actual success where the
 exact settlement committed but the external queue failed is preserved (the
 writer outcome is already `settled`/`already_settled_exact`), and is now
 distinguished from settlement that was never authenticated.
+
+The genuine causal accepted-recovery caller and both v2 hook post-final branches
+consume that bounded outcome. Only `POST_FINAL_RECONCILED` keeps their successful
+None/`v2_continued` result; `settlement_refused`, unexpected/not-finalized results
+in these already-final contexts, and reconciliation exceptions return the
+existing explicit `v2_pending` negative. Both common-wrapper branches forward it
+before admitted-decision acknowledgement, accepted recovery forwards it before
+receipt/effect settlement, and the cold owner records recovery failure and
+suppresses the ENTIRE final worktree batch. Missing/corrupt N/D or hidden/empty
+discovery cannot become successful None. A successful hook that just finalized
+v2 is distinguished through the existing causal dispatch classification before
+the v1-only continued-root receipt bridge; it neither calls that bridge for v2
+nor repeats reconciliation and loses an already authenticated settled prefix
+because queue publication remains pending. Genuine blocked/terminal/human/no-v2
+and legacy continued-root paths retain their own outcomes. Native/host/Pause/
+move/cancel/DB/shutdown cleanup duties and the sticky original failure remain
+owned despite the pending return; none of these outcomes proves cleanup.
 
 `tests/test_authority_v2_post_final_reconciliation.py` drives the REAL
 `_consume_accepted_completion_recovery` and `_sweep_on_startup` callers across

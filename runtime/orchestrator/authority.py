@@ -3911,9 +3911,12 @@ def _run_authority_hook_v2(
         # Already-final causal replay: existing exact post-final reconciliation,
         # never a stage replay or a second mint.
         try:
-            reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
+            post_final = reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
         except Exception:
             logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+            return HOOK_V2_PENDING
+        if post_final != POST_FINAL_RECONCILED:
+            return HOOK_V2_PENDING
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
         )
@@ -4003,9 +4006,15 @@ def _run_authority_hook_v2(
     # because settlement/publication remains pending.  The existing C3d4b
     # post-final seam owns exact settlement and authenticated publication.
     try:
-        reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
+        post_final = reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
     except Exception:
         logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        return HOOK_V2_PENDING
+    # This context asserts a committed final continuation.  Not-finalized,
+    # refused or unexpected outcomes cannot turn it into successful None at
+    # the common consumer, nor authorize ordinary escalation or receipt work.
+    if post_final != POST_FINAL_RECONCILED:
+        return HOOK_V2_PENDING
     _record_hook_outcome(
         db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
     )

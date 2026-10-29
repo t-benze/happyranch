@@ -2731,9 +2731,16 @@ def _consume_accepted_completion_recovery(
         # effect; the causal R never spends, remints, evaluates or re-enters the
         # ordinary effect path.
         from runtime.orchestrator.authority import (
+            HOOK_V2_PENDING, POST_FINAL_RECONCILED,
             reconcile_authority_policy_v2_post_final,
         )
-        reconcile_authority_policy_v2_post_final(orch, root_task_id=task_id)
+        try:
+            post_final = reconcile_authority_policy_v2_post_final(orch, root_task_id=task_id)
+        except Exception:
+            logger.exception("run_step %s: v2 post-final recovery failed", task_id)
+            return HOOK_V2_PENDING
+        if post_final != POST_FINAL_RECONCILED:
+            return HOOK_V2_PENDING
         return
     if _recovery_kind != "no_v2":
         return _consume_completion_report(
@@ -2891,6 +2898,23 @@ def _consume_accepted_completion_recovery(
             and _recovery_action == "escalate" and continued is not None
             and continued.status is TaskStatus.PENDING
         ):
+            # The common hook may have JUST finalized v2 from a no-v2 entry.
+            # Its actual pending negative was forwarded above.  A successful
+            # causal continuation is already reconciled by that hook: do not
+            # run the v1-only receipt bridge, or repeat post-final work and lose
+            # a genuine settled prefix merely because publication is pending.
+            try:
+                continued_context = db.authority_policy_v2_completion_dispatch_context(
+                    root_task_id=task_id, result_row_id=_resolved_recovery_row,
+                )
+                continued_kind = getattr(continued_context, "kind", None)
+            except Exception:
+                logger.exception("run_step %s: continued recovery classification failed", task_id)
+                return "v2_pending"
+            if continued_kind == "causal":
+                return
+            if continued_kind != "no_v2":
+                return "v2_pending"
             db.reconcile_accepted_recovery_continued_same_root(
                 task_id=task_id, agent=agent, session_id=session_id,
                 result_row_id=result_row_id,
@@ -3597,8 +3621,9 @@ def _consume_completion_report_body(
             # re-enqueued. The escalation is NOT committed.
             return
         if hook_outcome == "v2_continued":
-            # The v2 final continuation committed (post-final settlement or
-            # publication may still be pending); no ordinary escalation runs.
+            # The v2 final continuation and exact post-final settlement were
+            # authenticated. Queue publication may still be pending after that
+            # genuine settled prefix; no ordinary escalation runs.
             return
         if hook_outcome == "v2_refused":
             refusal_status = getattr(hook_outcome, "status", None)
