@@ -143,14 +143,15 @@ OUTCOME_CAPTURE_FAILURE = "capture_failure"
 # consumer that the authoritative v2 path handled the result so ordinary
 # escalation/notification must NOT run:
 #   * ``v2_continued`` -- the final continuation committed (or was exactly
-#     replayed) and post-final settlement/publication was attempted;
+#     replayed) and the real post-final outcome was reconciled; a genuine
+#     settled prefix stays positive when later queue publication is pending;
 #   * ``v2_refused``   -- refusal housekeeping returned a bounded structured
 #     result.  Its string value preserves this vocabulary while ``status`` and
 #     ``task_disposition`` identify a fresh terminal writer versus owner loss
 #     or an exact replay;
-#   * ``v2_pending``   -- the attempt/stage identity could not be safely
-#     finalized and refusal itself could not commit; the prior durable state is
-#     preserved as a bounded housekeeping obligation (later discovery unit).
+#   * ``v2_pending``   -- pre-final refusal could not safely settle, or the
+#     already-final reconciliation remains unresolved/refused/exceptional;
+#     the greatest durable prefix remains a bounded housekeeping obligation.
 HOOK_ESCALATE = "escalate"
 HOOK_CONTINUE_SAME_ROOT = "continue_same_root"
 HOOK_V2_CONTINUED = "v2_continued"

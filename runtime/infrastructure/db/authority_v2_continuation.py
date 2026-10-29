@@ -1788,6 +1788,8 @@ class AuthorityV2ContinuationMixin:
         the required completion/recovery-settled audits.  An already
         ``callback_consumed`` exact Q authenticates the complete existing
         settlement/final evidence read-only and returns ``already_settled_exact``.
+        Inside this owned transaction the complete root/agent receipt set must
+        have exactly one relevant, well-formed Q matching that asserted tuple.
         Explicit recovery without a matching Q refuses.  Ordinary absence stays
         ordinary and requires real ordinary completion evidence at the accepted
         completion-consumer seam.  A failed settlement retains Pending/E/N/D/J
