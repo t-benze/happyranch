@@ -116,8 +116,23 @@ clock/warning/return loss leave committed or unknown effects; non-success/lost
 return supplies no consumer permission and proves no absence of spend.
 Run-step commits the public spend before its separate decision claim; current
 coding-start composes the private spend core, claim, graph and acknowledgement
-within the ORIGINAL bootstrap writer. Both preserve prior genuine results,
-preparation and native custody, with no new retry rule or consumer authority.
+within the ORIGINAL bootstrap `admission_writer`: private claim/ack outcomes
+and graph/claim/ack writes remain provisional until that writer's COMMIT.
+Successful public OWNED decision outcomes follow their own COMMIT; only an actual
+successful authorizing claimed return at its real owner boundary permits one
+ordinary consumer entry, never a lost return. Only successful OWNED PRECOMMIT
+rollback restores that transaction. Failed rollback may escape and retains
+uncertainty; COMMIT-before-error or late synchronized clock/warning/return loss
+can leave claim, applied+audit, or refused+interruption audit+optional task
+escalation durable. `ack_pending` and `refusal_pending` are nonauthorizing and
+prove neither claimed/ready nor absence of writes: ready -> ack `not_claimed`
+stays ready; refused -> ack `already_refused` stays refused. Public caller
+BEGIN/SAVEPOINT refuses `transaction_owned` before owned BEGIN/rollback,
+preserving caller writes. Exact replay remains authenticated and read-only;
+negative/lost returns grant no replay, consumer reentry, repair, remint or new
+authority. Both paths preserve prior genuine spends/claims/results/task-child/
+preparation/native effects and historical A/B/cancel/terminal duties, with no
+new retry rule, readiness gate on owed cleanup or consumer authority.
 
 Generation invalidation classifies its complete relevant event set before any
 first N/D/audit write and requires coherent absence plus supported source-stage

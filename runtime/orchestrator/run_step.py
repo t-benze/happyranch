@@ -3363,8 +3363,11 @@ def _consume_completion_report(
         # A retained pending obligation is not an applied decision. Forward the
         # explicit negative to recovery without acknowledging or adding effects.
         return body_outcome
-    # A bounded ack/audit failure leaves the receipt ``claimed``; a later restart
-    # performs refusal housekeeping and never re-runs the consumer.
+    # Pending/lost ack proves neither claimed nor absence of applied+audit.
+    # Only successful owned PRECOMMIT rollback restores this transaction; prior
+    # effects survive. Failed rollback or COMMIT/late wrapper failure can leave
+    # committed/unknown effects. No negative/lost return permits consumer reentry;
+    # restart bookkeeping authenticates the actual receipt, not the failed return.
     try:
         ack = db.acknowledge_authority_policy_v2_decision_dispatch(
             root_task_id=task_id, manager_agent=manager_agent,

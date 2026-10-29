@@ -3631,16 +3631,26 @@ the ABSENCE of any potentially-related prior decision event, and CASes
 winning return authorizes exactly ONE ordinary consumer entry; a
 duplicate/restarted `claimed`, an `applied`/`refused` receipt, a conflicting/
 opaque/malformed/missing identity or a replaced/cancelled owner returns bounded
-`decision_pending` and never authorizes the consumer, and a failed claim/audit
-rolls back to `ready` for one exact retry without spending or evaluating again.
+`decision_pending` and never authorizes the consumer. A negative/lost return
+proves neither `ready` nor absence of claim and grants no retry, repair or remint.
+Only successful OWNED PRECOMMIT rollback restores this transaction; prior genuine
+spend/result/claim/task-child/native/preparation effects survive. Failed rollback
+may escape and retains uncertainty; COMMIT-before-error or late synchronized
+clock/warning/return loss can leave the claim durable. Public successful OWNED
+outcomes follow COMMIT; private coding claim/ack outcomes remain provisional with
+graph until the ORIGINAL `admission_writer` COMMIT. Caller BEGIN/SAVEPOINT returns
+`transaction_owned` before owned BEGIN/rollback and preserves caller writes.
 `Database.acknowledge_authority_policy_v2_decision_dispatch` re-authenticates the
 complete spent receipt plus the single closed historical `decision_claimed` event
 and CASes `claimed -> applied` with exactly one closed `decision_applied` audit;
 it deliberately does NOT require, restore or regress the old task/owner/blocked
 projection (the consumer's independently committed task/child/effect rows and any
 generation `B` are preserved byte-for-byte), an exact applied replay is read-only
-`already_applied_exact` and never a second consumer call, and a failure leaves the
-receipt `claimed`. `Database.refuse_authority_policy_v2_decision_dispatch` is the
+`already_applied_exact` and never a second consumer call. `ack_pending` proves
+neither claimed nor absence of an acknowledgement: ready -> `not_claimed` stays
+ready, refused -> `already_refused` stays refused. COMMIT-before-error or late
+synchronized clock/warning/return loss can leave applied and its audit durable;
+failed rollback retains uncertainty and may escape. `Database.refuse_authority_policy_v2_decision_dispatch` is the
 audited `decision_dispatch_interrupted` refusal for an exception/restart after a
 committed claim (before the effect, after an independently committed task/child
 effect, or after a failed acknowledgement): it preserves the spent envelope, the
@@ -3649,9 +3659,14 @@ still-current nonterminal reserved invocation (a cancelled/terminal/replaced tas
 and any generation `B` are preserved exactly, with no task mutation), retires/
 settles only the exact owned obligation and never mutates a replacement pointer,
 and CASes `claimed -> refused` with exactly one closed
-`decision_dispatch_interrupted` audit; a failed refusal transaction rolls back
-only itself, retaining the discoverable `claimed` state and a bounded pending
-outcome. `Database.get_authority_policy_v2_decision_receipt_for_result` is the read-only
+`decision_dispatch_interrupted` audit. Only successful OWNED PRECOMMIT rollback
+restores this refusal transaction; prior genuine effects survive. Failed rollback
+may escape and retains uncertainty; COMMIT-before-error or late synchronized
+clock/warning/return loss can leave refused/interruption audit/optional task
+escalation durable. `refusal_pending` or lost return proves neither claimed nor
+absence of refusal; private core writes/outcomes remain provisional until their
+original owning writer COMMIT. Pending/lost returns grant no consumer reentry,
+replay, repair, remint or new authority. `Database.get_authority_policy_v2_decision_receipt_for_result` is the read-only
 receipt lookup (`None` only when no consumed envelope carries that exact
 spending result; a corrupt canonical body returns `{"corrupt": true}`), and
 `Database.authority_policy_v2_decision_result_report_binds` normalizes BOTH sides
@@ -3697,16 +3712,18 @@ identity is a fail-closed skip, never ordinary permission, with a classification
 read failure also fail-closed. The winning caller retains the exact CAUSAL receipt identity from
 `AuthorityPolicyV2CompletionDispatchContext` and acknowledges/refuses with THAT
 identity (never the reserved spending result id and never post-effect
-task/owner/pointer state); a bounded pending writer outcome leaves the receipt
-recoverable and never permits a second consumer. Every first-write/replay
+task/owner/pointer state); a bounded pending/lost writer return is nonauthorizing,
+proves neither a recoverable claimed state nor absence of writes, and never
+permits a second consumer. Every first-write/replay
 authenticates the COMPLETE closed decision-event set, so a mutated preceding
 `decision_claimed` refuses exactly like a mutated final event, and a historical
 acknowledgement/refusal still settles generation A after the consumer legitimately
 advanced the root pointer to generation B (A's retirement is proven by the exact
 `spent` audit, not by a still-current `D`). An exception raised by the normal body
 after the claim triggers the refusal bookkeeping and is re-raised, and an
-acknowledgement/audit failure leaves the receipt `claimed` and never re-runs the
-consumer. The accepted-recovery special branches classify against the same
+acknowledgement/audit failure can leave claimed, applied or uncertain effects and
+never authorizes consumer reentry. Owed historical A/B/cancel/terminal/native
+duties retain their original owners without a new readiness gate. The accepted-recovery special branches classify against the same
 persisted lineage before ANY special effect (including a read failure, which is
 routed fail-closed) so they cannot bypass it: a `later` result routes through the
 same guarded common entry (never a special branch). The automatic v2 authority

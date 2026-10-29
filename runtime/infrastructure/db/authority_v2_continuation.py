@@ -5134,6 +5134,8 @@ class AuthorityV2ContinuationMixin:
             return _pending("owner_lost", **base)
         # The FIRST claim must be the ONLY one: prove ABSENCE of any related
         # decision event separately from a false/malformed authentication.
+        # This private core's claim/outcome remains provisional: coding composes
+        # graph/claim/ack until its ORIGINAL admission_writer COMMIT.
         if not self._v2_decision_events_absent_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=receipt["attempt"].attempt_id,
@@ -5167,13 +5169,22 @@ class AuthorityV2ContinuationMixin:
         generation-admission events, R2 and its bound ``report_digest``, and the
         exact ``spent`` audit), the still-current nonterminal reserved
         invocation, then CASes ``decision_state ready -> claimed`` with exactly
-        one closed ``decision_claimed`` audit.  ONLY a ``claimed`` return
-        authorizes exactly one ordinary consumer entry.  A duplicate/restarted
+        one closed ``decision_claimed`` audit.  ONLY an actual successful public
+        OWNED ``claimed`` return after COMMIT authorizes one ordinary consumer
+        entry.  A duplicate/restarted
         ``claimed``, or an ``applied``/``refused`` receipt, returns bounded
-        ``decision_pending`` and never authorizes the consumer.  A failed
-        claim/audit rolls back to ``ready`` and permits an exact retry without
-        spending or evaluating again.  This method performs NO consumer call,
-        queue call, child creation or task-status effect.
+        ``decision_pending`` and never authorizes the consumer.  Only successful
+        OWNED PRECOMMIT rollback restores this claim transaction after a failed
+        claim/audit; prior genuine spend/result/preparation/native effects
+        survive.  Failed rollback may escape and retains uncertainty.
+        COMMIT-before-error or late synchronized clock/warning/return loss can
+        leave the claim durable; pending/lost return proves neither ``ready``
+        nor absence of claim and permits no retry, repair or remint.  Caller
+        BEGIN/SAVEPOINT returns ``transaction_owned`` before owned BEGIN/rollback,
+        preserving caller writes.  Private composing claim/ack outcomes remain
+        provisional with graph until the ORIGINAL coding ``admission_writer``
+        COMMIT.  This method performs NO consumer call, queue call, child
+        creation or task-status effect.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2DecisionClaimOutcome(
@@ -5259,7 +5270,9 @@ class AuthorityV2ContinuationMixin:
             return _pending("evidence_drift", **base)
         # The ordinary consumer may legitimately have completed, replaced or
         # blocked the task: acknowledgement is bookkeeping and never requires
-        # or restores the old in_progress projection.
+        # or restores the old in_progress projection.  This private outcome and
+        # graph/claim/ack writes remain provisional until the ORIGINAL coding
+        # admission_writer COMMIT when composed there.
         self._set_v2_decision_state_uncommitted(envelope, "applied")
         self.insert_audit_log_uncommitted(
             root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
@@ -5282,8 +5295,18 @@ class AuthorityV2ContinuationMixin:
         requires, restores or regresses the old task/owner/blocked projection
         (the consumer's independently committed effects and any generation B are
         preserved byte-for-byte).  An exact applied replay is read-only
-        ``already_applied_exact`` and NEVER authorizes a second consumer call; a
-        failure leaves the receipt ``claimed``.
+        ``already_applied_exact`` and NEVER authorizes a second consumer call.
+        A successful public OWNED ``applied`` return follows COMMIT; private
+        composition stays provisional with graph/claim until the ORIGINAL coding
+        ``admission_writer`` COMMIT.  ``ack_pending/not_claimed`` on ready leaves
+        ready; ``ack_pending/already_refused`` on refused leaves refused.  Pending
+        or lost return proves neither ``claimed`` nor absence of acknowledgement
+        and grants no consumer reentry, replay, repair or remint.  Only successful
+        OWNED PRECOMMIT rollback restores this transaction; prior genuine effects
+        survive.  Failed rollback may escape and retains uncertainty;
+        COMMIT-before-error or late synchronized clock/warning/return loss can
+        leave applied and its audit durable.  Caller BEGIN/SAVEPOINT returns
+        ``transaction_owned`` before owned BEGIN/rollback, preserving caller writes.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2DecisionAckOutcome(
@@ -5361,8 +5384,9 @@ class AuthorityV2ContinuationMixin:
         if decision_state == "applied":
             return _pending("already_applied", **base)
         if decision_state != "claimed":
-            # Only a committed claim may be interrupted; ``ready`` is not yet
-            # consumer-authorized and ``applied`` is terminal.
+            # Only an authentic claimed receipt may be interrupted; ``ready``
+            # is not consumer-authorized and ``applied`` is terminal.  Private
+            # core writes/outcomes remain provisional until the owning COMMIT.
             return _pending("not_claimable", **base)
         if not self._authenticate_v2_decision_event_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
@@ -5425,10 +5449,17 @@ class AuthorityV2ContinuationMixin:
         the closed ``decision_dispatch_interrupted`` diagnostic, preserves a
         cancelled/terminal/replaced task and any replacement generation B
         exactly, and retires/settles only the exact owned obligation (never a
-        replacement-pointer mutation).  A failed refusal audit/commit rolls
-        back only this transaction, leaving the discoverable ``claimed`` state
-        and a bounded truthful pending outcome.  An exact refused replay is
-        read-only.
+        replacement-pointer mutation).  A successful public OWNED ``refused``
+        return follows COMMIT; private core outcomes/writes are provisional until
+        their original owning writer COMMIT.  Only successful OWNED PRECOMMIT
+        rollback restores this transaction, preserving prior genuine effects.
+        Failed rollback may escape and retains uncertainty; COMMIT-before-error
+        or late synchronized clock/warning/return loss can leave refused, its
+        interruption audit and optional task escalation durable.  Pending/lost
+        return proves neither ``claimed`` nor absence of refusal and grants no
+        consumer reentry, replay, repair, remint or new authority.  Caller
+        BEGIN/SAVEPOINT returns ``transaction_owned`` before owned BEGIN/rollback,
+        preserving caller writes.  An exact refused replay is read-only.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2DecisionRefusalOutcome(
