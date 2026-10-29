@@ -39,16 +39,17 @@ def _synchronized(method):
         _time = sys.modules["runtime.infrastructure.database"]._time
         threshold = getattr(self, '_lock_warn_threshold_seconds', 1.0)
         t_wait_start = _time.monotonic()
-        self._lock.acquire(blocking=True)
-        wait_sec = _time.monotonic() - t_wait_start
-        if wait_sec > threshold:
-            _db_logger.warning(
-                "Database._lock wait %.3fs > threshold %.3fs "
-                "for %s.%s (lock convoy may stall other routes)",
-                wait_sec, threshold,
-                type(self).__name__, method.__name__,
-            )
+        lock = self._lock
+        lock.acquire(blocking=True)
         try:
+            wait_sec = _time.monotonic() - t_wait_start
+            if wait_sec > threshold:
+                _db_logger.warning(
+                    "Database._lock wait %.3fs > threshold %.3fs "
+                    "for %s.%s (lock convoy may stall other routes)",
+                    wait_sec, threshold,
+                    type(self).__name__, method.__name__,
+                )
             t_hold_start = _time.monotonic()
             result = method(self, *args, **kwargs)
             hold_sec = _time.monotonic() - t_hold_start
@@ -61,7 +62,7 @@ def _synchronized(method):
                 )
             return result
         finally:
-            self._lock.release()
+            lock.release()
     return wrapper
 
 

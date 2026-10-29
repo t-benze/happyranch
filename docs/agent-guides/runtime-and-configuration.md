@@ -905,6 +905,20 @@ Explicit standalone construction keeps its existing contract; missing production
 references refuse. Existing cadence, catch-up/startup_deferred, due/expiry,
 recurrence, Pause/move, agent/team and native eligibility remain independent.
 
+Dream and wake scheduling capture one original producer admission validator before
+owner/config/DB waits. Both pending and skipped source inserts renew that SAME
+validator after acquiring the original DB lock, immediately before INSERT, without
+releasing it between renewal and the write. Other insert callers retain the optional
+validator default. Routine/config/filesystem work stays outside this short section;
+pre-fence committed source/audit intent and owed terminal/native cleanup remain.
+This is after-wait renewal, not atomic exclusion across SQLite I/O or COMMIT.
+
+The shared Database synchronization decorator protects all post-acquire timing
+and warning work with the same lock-release finally as the method body. A timing
+or warning exception escapes after releasing exactly that acquired RLock level;
+late-bound facade timing, healthy wait/hold warnings and method results retain
+their existing semantics. This repair supplies no whole-database behavior proof.
+
 Only original P6 dream/wake/schedule handoffs may insert during recovery. The
 retained registered-before-submit owner authenticates exact phase/kind/source,
 queue/org/orchestrator/epoch and actual loop/Task/coroutine/Future under the active

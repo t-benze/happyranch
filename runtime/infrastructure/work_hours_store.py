@@ -15,6 +15,7 @@ from runtime.infrastructure.producer_admission import native_owner_uncommitted
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from runtime.models import WorkHourRecord, WorkHourStatus
@@ -83,11 +84,13 @@ class WorkHoursStore:
             created_at=_parse_dt(row["created_at"]),
         )
 
-    def insert(self, record: WorkHourRecord) -> None:
+    def insert(self, record: WorkHourRecord, *, validate_admission: Callable[[], None] | None = None) -> None:
         with self._lock:
             admission = native_owner_uncommitted(self._db)
             if admission is not None:
                 admission.check_uncommitted(agents=(record.agent_name,))
+            if validate_admission is not None:
+                validate_admission()
             self._conn.execute(
                 """INSERT INTO work_hours (
                     id, agent_name, local_date, slot, mode, scheduled_for,

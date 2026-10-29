@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from runtime.orchestrator.producer_move import (
     native_writer, native_claim, owner_for, require_producer_admission, producer_admission_writer,
+    producer_admission_validation,
 )
 from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 from runtime.orchestrator.team_move import DeferredTeamMove
@@ -292,7 +293,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
     the steady-state loop won't re-pick the slot today).
     """
     # THR-095 F2: resolve working_hours from DB (override) → dataclass defaults.
-    require_producer_admission(org)
+    validate_admission = producer_admission_validation(org)
     admission = owner_for(org.db)
     if admission is not None:
         try:
@@ -340,7 +341,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
                             status=WorkHourStatus.SKIPPED,
                             routine_count=len(parsed.routines),
                             dropped_count=parsed.dropped,
-                        ))
+                        ), validate_admission=validate_admission)
                     continue
 
                 require_producer_admission(org)
@@ -355,7 +356,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
                     status=WorkHourStatus.PENDING,
                     routine_count=len(parsed.routines),
                     dropped_count=parsed.dropped,
-                ))
+                ), validate_admission=validate_admission)
                 AuditLogger(org.db).log_work_hour_scheduled(
                     work_hour_id, agent, local_date=local_date, slot=slot, mode=schedule.mode,
                     dropped=parsed.dropped,

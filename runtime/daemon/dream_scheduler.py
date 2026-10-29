@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from runtime.orchestrator.producer_move import (
     native_writer, native_claim, owner_for, require_producer_admission, producer_admission_writer,
+    producer_admission_validation,
 )
 from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 from runtime.orchestrator.team_move import DeferredTeamMove
@@ -152,7 +153,7 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
     recorded so the steady-state loop will not pick it up later the same day.
     The steady-state loop (``startup=False``) always enqueues due dreams.
     """
-    require_producer_admission(org)
+    validate_admission = producer_admission_validation(org)
     admission = owner_for(org.db)
     if admission is not None:
         try:
@@ -200,9 +201,12 @@ def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
                     # Missed run at startup, catch-up disabled: record a skipped row so
                     # the steady-state loop's existing-row guard suppresses re-scheduling
                     # today. Not enqueued, not counted.
-                    org.db.insert_dream(DreamRecord(status=DreamStatus.SKIPPED, **base))
+                    org.db.insert_dream(
+                        DreamRecord(status=DreamStatus.SKIPPED, **base),
+                        validate_admission=validate_admission,
+                    )
                     continue
-                org.db.insert_dream(DreamRecord(**base))
+                org.db.insert_dream(DreamRecord(**base), validate_admission=validate_admission)
                 AuditLogger(org.db).log_dream_scheduled(dream_id, agent, local_date=decision.local_date)
                 try:
                     loop = asyncio.get_running_loop()

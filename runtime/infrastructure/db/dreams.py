@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from runtime.infrastructure.producer_admission import native_owner_uncommitted
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _parse_dt, _synchronized
@@ -41,10 +43,12 @@ class DreamsMixin:
         )
 
     @_synchronized
-    def insert_dream(self, dream: DreamRecord) -> None:
+    def insert_dream(self, dream: DreamRecord, *, validate_admission: Callable[[], None] | None = None) -> None:
         admission = native_owner_uncommitted(self)
         if admission is not None:
             admission.check_uncommitted(agents=(dream.agent_name,))
+        if validate_admission is not None:
+            validate_admission()
         self._conn.execute(
             """INSERT INTO dreams (
                 id, agent_name, local_date, scheduled_for, window_start, window_end,
