@@ -38,9 +38,13 @@ new endpoint or loaded-object attestation follows. Source is not host acceptance
 Normal `OrgState.load` installs the unchanged four coding tables beside each
 normally admitted org's supported document foundation. Fresh F plus coding is
 one `Database.workflow_schema_transaction`; existing complete storage is
-validation-only. Before any workflow DDL, the entire reserved coding family is
-observed. Partial, extra, case-changed, wrong-kind or malformed objects and real
-shared dependency failures refuse without repair or adoption. Body/interruption
+validation-only except for the retained org-owned installation of the complete
+canonical `workflow_owner_*` index set after full source validation. Complete
+unindexed and indexed layouts are both recognized; partial or noncanonical index
+sets refuse. The owning writer validates the complete target before COMMIT.
+Before any workflow DDL, the entire reserved coding family is observed. Partial,
+extra, case-changed, wrong-kind or malformed objects and real shared dependency
+failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Audit-watermark advances
 publish only after positive COMMIT under the same lock. Failed unpublished org
@@ -61,9 +65,9 @@ full validation and actual conflict queries. SQL/read/lock errors never mean
 absence. Mandatory F request bridges and other owners remain required.
 
 Historical F/E whole-reference constructors use literal foundation primitives,
-not operational startup. Independent coding companions and a private extension
-cache distinction reach both generic whole-reference consumers. Raw whole
-nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
+not operational startup. Independent coding companions and separate coding and
+owner-index cache dimensions reach both generic whole-reference consumers. Raw
+whole nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
 histories even after workflow's fifth-history cache fill, and authority-v2 stays
 observed-only. No reference preimage or saved pin is rewritten. Generic Database
 and runtime-audit remain workflow-free. Even empty F+coding requires compatible
@@ -3586,14 +3590,23 @@ is comparison only, never constructor input. Both old preimages remain literal.
 Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
 name before shared cache lookup even after workflow cache fill. Generic workflow reference consumers retain their whole-reference helper;
 coding import uses scoped storage validation. Cache identity includes
-`(layout,history,naming,Pause,team_move,coding_extension)`; ANY unavailable reference refuses
+`(layout,history,naming,Pause,team_move,coding_extension,owner_indexed)`; ANY unavailable reference refuses
 even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
 name participates, without normalization or object filtering. Authority-v2 stays
 observed-only; generic Database/runtime-audit remain workflow-free.
 
+Every reference first constructs the complete unindexed final layout, including
+coding where requested, then optionally adds ALL canonical owner indexes on that
+disposable reference and validates the final composition. Index counts without/with
+coding are F31/32, E34/35, G36/37, H37/38; I document-only has 39, I+coding is J
+with 40, and direct J has 40. Both wrappers default `owner_indexed=False` and reject
+non-Booleans before cache lookup. Live variant selection follows complete validation
+inside the same coherent read view; it never installs indexes on the live DB.
+
 Only fifth-history J uses whole seed → current Database → unchanged complete-I
-initializer → shipped canonical coding DDL in workflow_schema_transaction →
-require full validator J → unchanged Pause/team-move/naming order → raw digest.
+initializer with `owner_indexed=False` → shipped canonical coding DDL in
+workflow_schema_transaction → require full validator J → optional complete J
+owner indexes and full J validation → unchanged Pause/team-move/naming order → raw digest.
 Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
 retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
