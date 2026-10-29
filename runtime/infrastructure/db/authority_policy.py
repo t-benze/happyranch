@@ -683,6 +683,7 @@ class AuthorityPolicyMixin:
             raise ValueError("authority v2 release column/preimage mismatch")
         return release
 
+    @_synchronized
     def get_authority_policy_v2_release(self, release_id: str) -> AuthorityPolicyV2Release | None:
         row = self._conn.execute(
             "SELECT * FROM authority_policy_v2_releases WHERE id=?", (release_id,)
