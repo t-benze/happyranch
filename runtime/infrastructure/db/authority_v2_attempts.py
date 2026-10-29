@@ -40,6 +40,7 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES,
     AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
     AuthorityPolicyV2Attempt,
     AuthorityPolicyV2Candidate,
@@ -793,6 +794,85 @@ class AuthorityV2AttemptsMixin:
             require_unfinalized=True,
         )
 
+    def _v2_result_stage_is_other_history(
+        self, payload: Any, attempt_row: dict, expected: dict,
+    ) -> bool:
+        """Exclude only closed typed disjoint or legitimate other-stage history.
+
+        A different attempt/stage alone never hides a conflicting causal row.
+        This classifies history, not authority: other stages retain their own
+        authenticators, and no not-yet-created event is required here.
+        """
+        if not isinstance(payload, dict):
+            return False
+        stage = payload.get("stage")
+        if not self._v2_result_stage_shape_is_closed(stage, payload):
+            return False
+        if not all(
+            self._v2_is_int(value) and value > 0
+            if key in (
+                "result_id", "activation_epoch", "publication_attempt",
+                "spending_result_id",
+            ) else isinstance(value, str) and bool(value)
+            for key, value in payload.items()
+        ):
+            return False
+        if "finalization_state" in payload:
+            if stage == AUTHORITY_POLICY_V2_RESULT_STAGE_CONTINUED:
+                if payload["finalization_state"] != "continued":
+                    return False
+            elif stage == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED:
+                if (
+                    payload["finalization_state"] not in ("refused", "owner_lost")
+                    or payload["refusal_code"] not in AUTHORITY_POLICY_V2_HOUSEKEEPING_REFUSAL_CODES
+                ):
+                    return False
+            elif payload["finalization_state"] != "unfinalized":
+                return False
+        causal = ("attempt_id", "result_id", "candidate_id")
+        states = [
+            self._v2_identity_observation(
+                payload, key, expected[key], "int" if key == "result_id" else "str",
+            )
+            for key in causal if key in payload and key in expected
+        ]
+        if states and all(state == "distinct" for state in states):
+            return True
+        if (
+            stage == expected["stage"]
+            or not states or not all(state == "match" for state in states)
+            or not all(
+                self._v2_json_type_sensitive_equal(value, expected[key])
+                for key, value in payload.items()
+                if key in expected and key not in ("stage", "finalization_state")
+            )
+        ):
+            return False
+        if stage in (
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+            AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+        ):
+            # Only stages reached by this J are legitimate history. Missing
+            # later events remain optional; a forged future event is not a0.
+            reached = AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED
+            for _ in range(len(AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS) + 1):
+                if reached == stage:
+                    return True
+                if reached == attempt_row["stage"]:
+                    return False
+                reached = AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS.get(reached)
+            return False
+        if stage == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED:
+            return (
+                payload["finalization_state"] == attempt_row["finalization_state"]
+                and payload["refusal_code"] == attempt_row["refusal_code"]
+            )
+        # Continued/publication/admission/spend/decision history belongs only
+        # to a continued J; refusal-only or unfinalized evidence cannot mint it.
+        return attempt_row["finalization_state"] == "continued"
+
     def _authenticate_v2_result_stage_audit_uncommitted(
         self, attempt_row: dict, stage: str, *, candidate_id: str | None = None,
         require_finalization: bool = False,
@@ -809,29 +889,18 @@ class AuthorityV2AttemptsMixin:
         candidate identity), and — where the stage persists it — the required
         ``unfinalized`` finalization marker.  A missing, duplicated, mutated,
         foreign-candidate or malformed/extra-key event refuses.  Events
-        belonging to a different stage are ignored, so a later legitimate stage
-        never invalidates an earlier one and a not-yet-created stage is never
-        required.
+        belonging to a genuinely independent attempt or a legitimate other
+        stage are classified before selecting the required stage. Partial or
+        conflicting evidence never disappears behind a discriminator, while
+        a not-yet-created stage is never required.
         """
         root_task_id = attempt_row["root_task_id"]
         manager_agent = attempt_row["manager_agent"]
         attempt_id = attempt_row["attempt_id"]
         try:
-            candidates = [
-                row for row in (
-                    self.get_audit_logs(root_task_id) if _history is None else _history
-                )
-                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
-                and row.get("agent") == manager_agent
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_id
-                and row["payload"].get("stage") == stage
-            ]
+            history = self.get_audit_logs(root_task_id) if _history is None else _history
         except Exception:
             return False
-        if len(candidates) != 1:
-            return False
-        payload = candidates[0]["payload"]
         expected = {
             "stage": stage,
             "attempt_id": attempt_id,
@@ -852,9 +921,22 @@ class AuthorityV2AttemptsMixin:
             expected["candidate_id"] = candidate_id
         if require_finalization:
             expected["finalization_state"] = "unfinalized"
-        if set(payload.keys()) != set(expected.keys()):
+        try:
+            candidates = []
+            for row in history:
+                if (
+                    row.get("action") != AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                    or row.get("agent") != manager_agent
+                ):
+                    continue
+                payload = row.get("payload")
+                if not self._v2_result_stage_is_other_history(payload, attempt_row, expected):
+                    candidates.append(payload)
+            return len(candidates) == 1 and self._v2_json_type_sensitive_equal(
+                candidates[0], expected,
+            )
+        except Exception:
             return False
-        return all(payload.get(key) == value for key, value in expected.items())
 
     def _authenticate_v2_attempt_stage_audit_uncommitted(
         self, attempt_row: dict, stage: str, *, require_unfinalized: bool = False,
@@ -863,8 +945,8 @@ class AuthorityV2AttemptsMixin:
 
         Every needed later stage is authenticated independently; a missing,
         duplicated, mutated, foreign-candidate or closed-key/malformed event for
-        the requested stage refuses.  Events belonging to a different stage are
-        ignored.
+        the requested stage refuses. Authentic events belonging to legitimate
+        other stages are ignored.
         """
         return self._authenticate_v2_result_stage_audit_uncommitted(
             attempt_row, stage, require_finalization=require_unfinalized,
