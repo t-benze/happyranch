@@ -67,19 +67,30 @@ def producer_admission_validation(org: Any = None, *, db: Any = None):
     keep their existing default writer and may settle after admission closes.
     """
     from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
-    require_producer_admission(org, db=db)
     db = org.db if org is not None else db
     refs = getattr(db, "_jobs_startup_refs", None)
+    state = (getattr(org, "_startup_state", None) if org is not None else
+             (refs[0] if isinstance(refs, tuple) and len(refs) == 3 else None))
+    # Pin selection before readiness can wait. Membership in a replacement map
+    # cannot authenticate this operation, even with the SAME org and DB refs.
+    orgs = None if state is None else getattr(state, "orgs", None)
+    require_producer_admission(org, db=db)
+    if getattr(db, "_jobs_startup_refs", None) is not refs:
+        raise StartupUnavailable("startup_attachment_changed")
     original = org if org is not None else (None if refs is None else refs[2])
     validate_org = None if original is None else ordinary_admission_validation(original)
 
     def validate():
         if (getattr(db, "_jobs_startup_refs", None) is not refs
+                or state is not None and state.orgs is not orgs
                 or original is not None and original.db is not db):
             raise StartupUnavailable("startup_attachment_changed")
         if validate_org is not None:
             validate_org()
         require_producer_admission(original, db=db)
+        # Readiness renewal above may itself wait on the original gate.
+        if state is not None and state.orgs is not orgs:
+            raise StartupUnavailable("startup_attachment_changed")
 
     validate()
     return validate

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from runtime.orchestrator.producer_move import (
     native_writer, native_claim, owner_for, require_producer_admission, producer_admission_writer,
+    producer_admission_validation,
 )
 from runtime.daemon.startup_recovery import require_ready, StartupUnavailable
 from runtime.orchestrator.team_move import DeferredTeamMove
@@ -83,18 +84,18 @@ def schedule_due_schedules(
     are recovered first via ``ScheduleStore.recover_firing()``, so the scheduler
     never re-fires an already-claimed row.
     """
-    require_producer_admission(org)
+    validate_admission = producer_admission_validation(org)
     admission = owner_for(org.db)
     if admission is not None:
         try:
             admission.redeliver_after_release(org)
         except DeferredTeamMove:
             pass
-    require_producer_admission(org)
+    validate_admission()
     if startup:
         with org.db._lock:
-            require_producer_admission(org)
-            recovered = org.db.schedules.recover_firing()
+            validate_admission()
+            recovered = org.db.schedules.recover_firing(validate_admission=validate_admission)
         for schedule_id, agent_name in recovered:
             org.db.insert_audit_log(
                 task_id=schedule_id,
@@ -109,7 +110,7 @@ def schedule_due_schedules(
     for record in due_records:
         try:
             with producer_admission_writer(org, native_claim(org.db, record.agent_name)):
-                require_producer_admission(org)
+                validate_admission()
                 # Weekly no-replay/backfill: if fire_at is stale (missed during
                 # daemon downtime), advance to the next occurrence without firing.
                 if (
@@ -118,56 +119,63 @@ def schedule_due_schedules(
                 ):
                     recurrence = record.recurrence
                     next_fire = next_schedule_occurrence(record.kind.value, recurrence, after=now)
-                    if next_fire is None and recurrence_until_exhausted(recurrence):
-                        store.update(
-                            record.id, status=ScheduleStatus.FIRED, active=0,
-                            end_reason="date_ended",
-                        )
-                        org.db.insert_audit_log(
-                            task_id=record.id, agent=record.agent_name,
-                            action="schedule_fired", payload={"end_reason": "date_ended"},
-                        )
-                    elif (
-                        next_fire is not None
-                        and record.expires_at is not None
-                        and record.indefinite != 1
-                        and next_fire > record.expires_at
-                    ):
-                        org.db.insert_audit_log(
-                            task_id=record.id,
-                            agent=record.agent_name,
-                            action="schedule_expired",
-                            payload={"kind": record.kind.value},
-                        )
-                        store.update(
-                            record.id,
-                            status=ScheduleStatus.EXPIRED,
-                            active=0,
-                        )
-                    elif next_fire is None:
-                        store.update(
-                            record.id, status=ScheduleStatus.FAILED, active=0,
-                            error="recurrence_no_candidate",
-                        )
-                        org.db.insert_audit_log(
-                            task_id=record.id, agent=record.agent_name,
-                            action="schedule_failed", payload={"reason": "recurrence_no_candidate"},
-                        )
-                    else:
-                        store.update(
-                            record.id, fire_at=next_fire, status=ScheduleStatus.ARMED, active=1,
-                        )
-                        org.db.insert_audit_log(
-                            task_id=record.id, agent=record.agent_name,
-                            action="occurrence_missed", payload={"kind": record.kind.value},
-                        )
+                    exhausted = next_fire is None and recurrence_until_exhausted(recurrence)
+                    # native_claim retains the lock only with a native owner.
+                    # Renew after the real store wait in the absent-owner path too.
+                    with org.db._lock:
+                        validate_admission()
+                        if exhausted:
+                            store.update(
+                                record.id, status=ScheduleStatus.FIRED, active=0,
+                                end_reason="date_ended",
+                            )
+                            org.db.insert_audit_log(
+                                task_id=record.id, agent=record.agent_name,
+                                action="schedule_fired", payload={"end_reason": "date_ended"},
+                            )
+                        elif (
+                            next_fire is not None
+                            and record.expires_at is not None
+                            and record.indefinite != 1
+                            and next_fire > record.expires_at
+                        ):
+                            org.db.insert_audit_log(
+                                task_id=record.id,
+                                agent=record.agent_name,
+                                action="schedule_expired",
+                                payload={"kind": record.kind.value},
+                            )
+                            store.update(
+                                record.id,
+                                status=ScheduleStatus.EXPIRED,
+                                active=0,
+                            )
+                        elif next_fire is None:
+                            store.update(
+                                record.id, status=ScheduleStatus.FAILED, active=0,
+                                error="recurrence_no_candidate",
+                            )
+                            org.db.insert_audit_log(
+                                task_id=record.id, agent=record.agent_name,
+                                action="schedule_failed", payload={"reason": "recurrence_no_candidate"},
+                            )
+                        else:
+                            store.update(
+                                record.id, fire_at=next_fire, status=ScheduleStatus.ARMED, active=1,
+                            )
+                            org.db.insert_audit_log(
+                                task_id=record.id, agent=record.agent_name,
+                                action="occurrence_missed", payload={"kind": record.kind.value},
+                            )
                     continue
 
                 # Claim the row: armed → firing. A concurrent winner changes the
                 # status first, so this caller skips the row without side effects.
                 try:
-                    if not store.claim_firing(record.id):
-                        continue
+                    with org.db._lock:
+                        validate_admission()
+                        if not store.claim_firing(record.id):
+                            continue
                 except DeferredTeamMove:
                     raise
                 except StartupUnavailable:

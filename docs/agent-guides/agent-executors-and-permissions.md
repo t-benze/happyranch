@@ -1453,13 +1453,19 @@ committed source/tasks and reports the original scope without a new allocation.
 This producer SOURCE stage is incomplete whole-feature integration, with runtime
 and proof NOT RUN, maker0/3 QA0/3 unchanged and under10s UNVERIFIED.
 
-Dream and wake scheduling capture one original producer admission validator before
-owner/config/DB waits. Both pending and skipped source inserts renew that SAME
-validator after acquiring the original DB lock, immediately before INSERT, without
-releasing it between renewal and the write. Other insert callers retain the optional
-validator default. Routine/config/filesystem work stays outside this short section;
-pre-fence committed source/audit intent and owed terminal/native cleanup remain.
-This is after-wait renewal, not atomic exclusion across SQLite I/O or COMMIT.
+Dream, wake and schedule capture one original producer admission validator before
+readiness/owner/config/DB waits. It pins the original production org-map object as
+well as the org/DB/attachment/epoch/loop selection. Replacing that map refuses even
+with the SAME org and references; unrelated in-place map changes remain allowed.
+Both pending and skipped dream/wake inserts renew that SAME validator after the
+original DB lock and move check, immediately before INSERT without releasing the
+lock. Schedule retains it through recovery/list_due and renews inside the actual
+DB lock before each fresh recovery, claim or stale recurrence effect, including
+when no native claim owner exists. Recurrence/config/filesystem work stays outside
+the added short write sections. Other insert/recovery callers retain the optional
+validator default and explicit standalone owners retain their contract. Pre-fence
+committed source/audit intent and owed terminal/native cleanup remain. This is
+after-wait renewal, not atomic exclusion across SQLite I/O or COMMIT.
 
 Contained builtin and custom-envelope communication shares the host supervisor
 lifecycle. Under THR307seq117, its process-group backend uses the factory-wired

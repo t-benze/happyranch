@@ -15,6 +15,7 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from typing import Callable
 
 from runtime.models import ScheduleKind, ScheduleRecord, ScheduleStatus
 
@@ -317,7 +318,7 @@ class ScheduleStore:
             )
             self._conn.commit()
 
-    def recover_firing(self) -> list[tuple[str, str]]:
+    def recover_firing(self, *, validate_admission: Callable[[], None] | None = None) -> list[tuple[str, str]]:
         """Mark stale ``firing`` rows ``failed`` after a daemon restart.
 
         Mirrors ``WorkHoursStore.recover_running``: a schedule left ``firing``
@@ -335,6 +336,8 @@ class ScheduleStore:
                         if admission.preserve_uncommitted('schedule', record.id, record.agent_name):
                             continue
                 if record.status == ScheduleStatus.FIRING:
+                    if validate_admission is not None:
+                        validate_admission()
                     self.update(
                         record.id,
                         status=ScheduleStatus.FAILED,
