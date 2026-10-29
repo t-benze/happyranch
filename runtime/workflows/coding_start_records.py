@@ -1,27 +1,6 @@
 """Closed K3a commands and agent-read pins; no repository or execution grant."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _put as _reader_put,
-)
-
-from runtime.infrastructure._workflow_reader import _reserve as _reader_reserve
-
-from runtime.infrastructure._workflow_reader import (
-    _dict_pairs as _reader_dict_pairs,
-    _list as _reader_list,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _decode as _reader_decode,
-    _dump as _reader_dump,
-    _encode as _reader_encode,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _work as _reader_work, _json as _reader_json,
-)
-
 import json
 import re
 from datetime import datetime
@@ -110,33 +89,31 @@ class CodingRevisionStageOutput(CodingStageOutput):
     revision: Annotated[StrictInt, Field(ge=2, le=3)]
 
 
-def stage_output(value: dict, *, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 80) or (value,)), budget)
+def stage_output(value: dict) -> dict:
     model = CodingRevisionStageOutput if value.get('format') == 'workflow-coding-stage-output@2' else CodingStageOutput
-    return _reader_dump(_model(model, value, reader_budget=budget), budget=budget)
+    return _model(model, value).model_dump()
 
 
 def parse_stage_output(result: dict, *, instance: str, attempt: dict,
-                       work: dict, subject: dict | None = None, budget=None) -> dict:
+                       work: dict, subject: dict | None = None) -> dict:
     """Validate content against an already authenticated native result row.
 
     Envelope IDs and commit syntax do not prove assignment or object existence.
     Failed/blocked and unusable callbacks remain their original native evidence.
     """
-    _reader_work((_reader_reserve(budget, 144) or (result, instance, attempt, work, subject,)), budget)
     _check(type(result['id']) is int and result['id'] > 0
            and result['id'] == attempt['result_id']
-           and (_reader_reserve(budget, 112) or (result['task_id'], result['session_id'], result['agent'])) ==
-               (_reader_reserve(budget, 112) or (attempt['task_id'], attempt['session_id'], attempt['principal']))
+           and (result['task_id'], result['session_id'], result['agent']) ==
+               (attempt['task_id'], attempt['session_id'], attempt['principal'])
            and result['status'] == 'completed' and result['decision_json'] is None
            and result['waiting_on_job_ids'] is None and type(result['output_summary']) is str)
-    output = stage_output(_json(_reader_encode(result['output_summary'], 'utf8', budget=budget), 65536, reader_budget=budget), budget=budget)
+    output = stage_output(_json(result['output_summary'].encode('utf8'), 65536))
     _check((output['format'] == 'workflow-coding-stage-output@2') is (attempt['revision'] > 1))
-    _check((_reader_reserve(budget, 128) or (output['instance_id'], output['attempt_id'], output['revision'], output['stage'])) ==
-           (_reader_reserve(budget, 128) or (instance, attempt['id'], attempt['revision'], attempt['stage'])))
+    _check((output['instance_id'], output['attempt_id'], output['revision'], output['stage']) ==
+           (instance, attempt['id'], attempt['revision'], attempt['stage']))
     descriptor = output['subject']
-    _check((_reader_reserve(budget, 112) or (descriptor['repository']['id'], descriptor['object_format'], descriptor['comparison']['base'])) ==
-           (_reader_reserve(budget, 112) or (work['repository_id'], work['object_format'], work['base'])))
+    _check((descriptor['repository']['id'], descriptor['object_format'], descriptor['comparison']['base']) ==
+           (work['repository_id'], work['object_format'], work['base']))
     _check(result['verdict'] == (None if output['stage'] == 'development' else output['outcome']))
     if subject is not None:
         _check(descriptor == subject)
@@ -408,26 +385,24 @@ class CodingRevisionFinalSelection(CodingBoundFinalSelection):
 BoundFinalSelection = Annotated[CodingBoundFinalSelection | CodingRevisionFinalSelection, Field(discriminator='format')]
 
 
-def selected_repository(mapping: dict, work: dict, *, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 96) or (mapping, work,)), budget)
-    references = _reader_list((r for r in mapping['repository_references']
-        if (_reader_reserve(budget, 96) or (r['repository_id'], r['object_format'])) == (_reader_reserve(budget, 96) or (work['repository_id'], work['object_format']))), budget=budget)
+def selected_repository(mapping: dict, work: dict) -> dict:
+    references = [r for r in mapping['repository_references']
+        if (r['repository_id'], r['object_format']) == (work['repository_id'], work['object_format'])]
     _check(len(references) == 1)
-    return _reader_dump(RepositoryReference.model_validate(references[0]), budget=budget)
+    return RepositoryReference.model_validate(references[0]).model_dump()
 
 
-def validate_final_identity(selected: dict, *, org: str, budget=None) -> None:
+def validate_final_identity(selected: dict, *, org: str) -> None:
     """Pure full-path/reference reconstruction; filesystem checks belong to the local tool."""
-    _reader_work((_reader_reserve(budget, 96) or (selected, org,)), budget)
-    reference, workspace = (_reader_reserve(budget, 96) or (selected['repository_reference'], selected['workspace']))
+    reference, workspace = selected['repository_reference'], selected['workspace']
     _check(workspace['org_slug'] == org and
-           (_reader_reserve(budget, 128) or (workspace['principal'], workspace['task_id'], workspace['attempt_id'], workspace['session_id'])) ==
-           (_reader_reserve(budget, 128) or (selected['principal'], selected['task_id'], selected['attempt_id'], selected['session_id'])))
+           (workspace['principal'], workspace['task_id'], workspace['attempt_id'], workspace['session_id']) ==
+           (selected['principal'], selected['task_id'], selected['attempt_id'], selected['session_id']))
     from runtime.workflows.coding_saved_records import _canonical, _hash
     _check(reference['repository_id'] == 'workflow-repository:' + _hash(_canonical(
-        (_reader_reserve(budget, 448) or [org, reference['repo_key'], reference['origin_digest']]), reader_budget=budget), reader_budget=budget)
-        and (_reader_reserve(budget, 96) or (reference['repository_id'], reference['object_format'])) ==
-            (_reader_reserve(budget, 96) or (selected['subject']['repository']['id'], selected['subject']['object_format'])))
+        [org, reference['repo_key'], reference['origin_digest']]))
+        and (reference['repository_id'], reference['object_format']) ==
+            (selected['subject']['repository']['id'], selected['subject']['object_format']))
 
 
 def aware_time(value: str) -> str:
@@ -647,74 +622,69 @@ def github_subject(subject: dict) -> tuple[str, int]:
     return match[1], int(match[2])
 
 
-def parse_finalize(raw: bytes, *, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 80) or (raw,)), budget)
-    value = _json(raw, 65536, reader_budget=budget)
-    return _reader_dump(_model(CodingRevisionFinalizeCommand if value.get('format') == 'workflow-coding-finalize-command@2' else CodingFinalizeCommand, value, reader_budget=budget), budget=budget)
+def parse_finalize(raw: bytes) -> dict:
+    value = _json(raw, 65536)
+    return _model(CodingRevisionFinalizeCommand if value.get('format') == 'workflow-coding-finalize-command@2' else CodingFinalizeCommand, value).model_dump()
 
 
 def parse_final_output(result: dict, *, instance: str, attempt: dict, work: dict,
-                       subject: dict, upstream: dict, selected: dict | None = None, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 176) or (result, instance, attempt, work, subject, upstream, selected,)), budget)
+                       subject: dict, upstream: dict, selected: dict | None = None) -> dict:
     _check(type(result['id']) is int and result['id'] > 0 and result['id'] == attempt['result_id']
-           and (_reader_reserve(budget, 112) or (result['task_id'], result['session_id'], result['agent'])) ==
-               (_reader_reserve(budget, 112) or (attempt['task_id'], attempt['session_id'], attempt['principal']))
+           and (result['task_id'], result['session_id'], result['agent']) ==
+               (attempt['task_id'], attempt['session_id'], attempt['principal'])
            and attempt['stage'] == 'manager_closeout' and result['status'] == 'completed'
            and result['decision_json'] is None and result['waiting_on_job_ids'] is None
            and result['verdict'] is None and type(result['output_summary']) is str)
-    raw = _json(_reader_encode(result['output_summary'], 'utf8', budget=budget), 65536, reader_budget=budget)
+    raw = _json(result['output_summary'].encode('utf8'), 65536)
     revised = selected is not None and selected['format'] == 'workflow-coding-final-selection@3'
     repaired = revised or selected is not None and selected['format'] == 'workflow-coding-final-selection@2'
-    output = _reader_dump(_model(CodingRevisionFinalOutput if revised else CodingBoundFinalOutput if repaired else CodingFinalOutput, raw, reader_budget=budget), budget=budget)
+    output = _model(CodingRevisionFinalOutput if revised else CodingBoundFinalOutput if repaired else CodingFinalOutput, raw).model_dump()
     if repaired:
         intent = output['evidence']['intent']
         _check(intent['repository_reference'] == selected['repository_reference']
                and intent['workspace'] == selected['workspace'])
-    _check((_reader_reserve(budget, 144) or (output['instance_id'], output['attempt_id'], output['revision'], output['subject'], output['upstream_results'])) ==
-           (_reader_reserve(budget, 144) or (instance, attempt['id'], attempt['revision'], subject, upstream)))
+    _check((output['instance_id'], output['attempt_id'], output['revision'], output['subject'], output['upstream_results']) ==
+           (instance, attempt['id'], attempt['revision'], subject, upstream))
     c = output['evidence']['intent']['command']
-    _check((_reader_reserve(budget, 112) or (c['task_id'], c['session_id'], c['principal'])) ==
-           (_reader_reserve(budget, 112) or (attempt['task_id'], attempt['session_id'], attempt['principal'])))
-    _check((_reader_reserve(budget, 112) or (subject['repository']['id'], subject['object_format'], subject['comparison']['base'])) ==
-           (_reader_reserve(budget, 112) or (work['repository_id'], work['object_format'], work['base'])))
+    _check((c['task_id'], c['session_id'], c['principal']) ==
+           (attempt['task_id'], attempt['session_id'], attempt['principal']))
+    _check((subject['repository']['id'], subject['object_format'], subject['comparison']['base']) ==
+           (work['repository_id'], work['object_format'], work['base']))
     # Positive aware callback time is an upper bound on same-session observations.
     callback_at = datetime.fromisoformat(aware_time(result['created_at']).replace('Z', '+00:00'))
     evidence = output['evidence']
-    for value in (_reader_reserve(budget, 128) or (evidence['intent']['created_at'], evidence['revalidated_at'],
+    for value in (evidence['intent']['created_at'], evidence['revalidated_at'],
                   None if evidence['command'] is None else evidence['command']['finished_at'],
-                  None if evidence['remote'] is None else evidence['remote']['observed_at'])):
+                  None if evidence['remote'] is None else evidence['remote']['observed_at']):
         _check(value is None or datetime.fromisoformat(value.replace('Z', '+00:00')) <= callback_at)
     return output
 
 
-def parse_start(raw: bytes, *, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 80) or (raw,)), budget)
-    return _reader_dump(_model(CodingStartDecision, (_reader_reserve(budget, 320) or dict(action='workflow_start',
-        workflow=_json(raw, START_LIMIT, reader_budget=budget))), reader_budget=budget), budget=budget)['workflow']
+def parse_start(raw: bytes) -> dict:
+    return _model(CodingStartDecision, dict(action='workflow_start',
+        workflow=_json(raw, START_LIMIT))).model_dump()['workflow']
 
 
-def parse_decision(raw: bytes, *, budget=None) -> dict:
+def parse_decision(raw: bytes) -> dict:
     # The native callback owner preserves json.dumps spacing and key order.
     # Retain those bytes separately; only the nested command is canonicalized.
-    _reader_work((_reader_reserve(budget, 80) or (raw,)), budget)
     _check(type(raw) is bytes and 0 < len(raw) <= START_LIMIT)
-    value = _reader_json(_reader_decode(raw, 'utf8', budget=budget), budget, object_pairs_hook=_pairs, parse_constant=_constant)
-    return _reader_dump(_model(CodingStartDecision, value, reader_budget=budget), budget=budget)
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=_pairs, parse_constant=_constant)
+    return _model(CodingStartDecision, value).model_dump()
 
 
-def effective_mapping(mapping: dict, command: dict, *, budget=None) -> dict:
+def effective_mapping(mapping: dict, command: dict) -> dict:
     """Select initial work without inventing a developer head or subject."""
-    _reader_work((_reader_reserve(budget, 96) or (mapping, command,)), budget)
     import copy
     selected = copy.deepcopy(mapping)
     override = command['implementer_override']
     if override is not None:
         _check(override in mapping['eligible_replacements']['implementer'])
-        _reader_put(override, selected['roles'], 'implementer', budget=budget)
-    _reader_put(_reader_dict_pairs(((_reader_reserve(budget, 96) or (key,  (_reader_reserve(budget, 64) or []) )) for key in selected['roles']), budget=budget), selected, 'eligible_replacements', budget=budget)
-    references = _reader_list((r for r in mapping['repository_references']
-        if (_reader_reserve(budget, 96) or (r['repository_id'], r['object_format'])) ==
-           (_reader_reserve(budget, 96) or (command['work']['repository_id'], command['work']['object_format']))), budget=budget)
+        selected['roles']['implementer'] = override
+    selected['eligible_replacements'] = {key: [] for key in selected['roles']}
+    references = [r for r in mapping['repository_references']
+        if (r['repository_id'], r['object_format']) ==
+           (command['work']['repository_id'], command['work']['object_format'])]
     _check(len(references) == 1 and command['release'] == mapping['release'])
     # RoleMapping performs distinct-principal and repository-reference checks.
     from runtime.workflows._coding_role_records import RoleMapping
@@ -722,15 +692,14 @@ def effective_mapping(mapping: dict, command: dict, *, budget=None) -> dict:
     return selected
 
 
-def parse_native_decision(raw: bytes, *, budget=None) -> dict:
+def parse_native_decision(raw: bytes) -> dict:
     # Existing native callback route owns this reserved carrier. Preserve the
     # entire original result and fingerprint; it is never caller authority.
-    _reader_work((_reader_reserve(budget, 80) or (raw,)), budget)
     _check(type(raw) is bytes and 0 < len(raw) <= 1048576)
-    value = _reader_json(_reader_decode(raw, 'utf8', budget=budget), budget, object_pairs_hook=_pairs, parse_constant=_constant)
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=_pairs, parse_constant=_constant)
     _check(type(value) is dict)
     value.pop('_manager_self_evaluation', None)
-    return _reader_dump(_model(CodingStartDecision, value, reader_budget=budget), budget=budget)
+    return _model(CodingStartDecision, value).model_dump()
 
 
 def start_decision_schema() -> dict:

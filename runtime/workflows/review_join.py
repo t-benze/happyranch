@@ -1,25 +1,6 @@
 """Template-driven collection and service join; history grants no current authority."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _append as _reader_append,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _any_true as _reader_any_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _list as _reader_list,
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _reserve as _reader_reserve, _work as _reader_work,
-    _sha256 as _reader_sha256, _fromhex as _reader_fromhex,
-)
-
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -50,65 +31,61 @@ def captured_authority(capture: Any, actions: list[str]) -> dict:
         cutover='enabled', actions=actions)
 
 
-def _responses(conn: sqlite3.Connection, graph: dict, *, budget=None) -> list[dict]:
-    _reader_reserve(budget, 0)
-    return _reader_list((_record(conn, 'workflow_review_requests', qid, budget=budget) for qid in graph['request_ids']), budget=budget)
+def _responses(conn: sqlite3.Connection, graph: dict) -> list[dict]:
+    return [_record(conn, 'workflow_review_requests', qid) for qid in graph['request_ids']]
 
 
-def _event(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict, created_at: str, *, budget=None) -> dict:
+def _event(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict, created_at: str) -> dict:
     """Only called after every receipt has passed the complete graph oracle."""
-    _reader_reserve(budget, 0)
     grant_pin = proof['pins']['authorization']
-    grant = _stored_json(_reader_fromhex(grant_pin['bytes_hex'], budget=budget), grant_pin['digest'],
-                         code='workflow_review_join_storage_corrupt', budget=budget)
-    if not _reader_set(ACTIONS, budget=budget) <= _reader_set(grant['original_request']['allowed_actions'], budget=budget):
+    grant = _stored_json(bytes.fromhex(grant_pin['bytes_hex']), grant_pin['digest'],
+                         code='workflow_review_join_storage_corrupt')
+    if not set(ACTIONS) <= set(grant['original_request']['allowed_actions']):
         raise ValueError('workflow_review_join_storage_corrupt')
-    receipts, assignments = (_reader_reserve(budget, 96) or (_reader_reserve(budget, 64) or [], _reader_reserve(budget, 64) or []))
-    for request in _responses(conn, graph, budget=budget):
-        receipt = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (_reader_reserve(budget, 80) or (request['id'],)), budget=budget)
+    receipts, assignments = [], []
+    for request in _responses(conn, graph):
+        receipt = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (request['id'],))
         if len(receipt) != 1 or request['status'] != 'approved' or receipt[0]['outcome'] != 'approved':
             raise ValueError('workflow_review_join_storage_corrupt')
-        _reader_append(receipts, _hex(receipt[0], budget=budget), budget=budget)
+        receipts.append(_hex(receipt[0]))
         scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'],
-                             code='workflow_review_join_storage_corrupt', budget=budget)
+                             code='workflow_review_join_storage_corrupt')
         if scope['kind'] == 'agent':
             selected = _records(conn, 'SELECT * FROM workflow_current_assignments WHERE instance_id=? AND role_key=?',
-                                (_reader_reserve(budget, 96) or (row['instance_id'], scope['role'])), budget=budget)
+                                (row['instance_id'], scope['role']))
             if len(selected) != 1:
                 raise ValueError('workflow_review_join_storage_corrupt')
-            _reader_append(assignments, selected[0], budget=budget)
-    return (_reader_reserve(budget, 1856) or dict(format='workflow-review-join@3' if row['revision'] == 2 else 'workflow-review-join@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-review-join@1', event_kind='joined', org_slug=row['org_slug'],
+            assignments.append(selected[0])
+    return dict(format='workflow-review-join@3' if row['revision'] == 2 else 'workflow-review-join@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-review-join@1', event_kind='joined', org_slug=row['org_slug'],
         instance_id=row['instance_id'], round_id=graph['round_id'], submission_id=row['submission_id'],
         revision=row['revision'], submission_digest=row['candidate_digest'],
-        operation=(_reader_reserve(budget, 448) or dict(principal=SERVICE, operation_key=graph['round_id'], action='approve-planning-input')),
-        pins=proof['pins'], admission_authority=((_reader_reserve(budget, 64 + 128 * (1 + len(proof['admission_authority']))) if budget is not None else None) or dict(proof['admission_authority'], actions=ACTIONS)),
-        receipts=receipts, assignments=assignments, created_at=created_at))
+        operation=dict(principal=SERVICE, operation_key=graph['round_id'], action='approve-planning-input'),
+        pins=proof['pins'], admission_authority=dict(proof['admission_authority'], actions=ACTIONS),
+        receipts=receipts, assignments=assignments, created_at=created_at)
 
 
-def _replay(row: dict, graph: dict, event: dict, *, budget=None) -> dict:
-    _reader_reserve(budget, 0)
-    return (_reader_reserve(budget, 832) or dict(org_slug=row['org_slug'], principal=SERVICE, operation_key=graph['round_id'],
-                request_digest=event['event_digest'], instance_id=row['instance_id'], effect_id=event['id']))
+def _replay(row: dict, graph: dict, event: dict) -> dict:
+    return dict(org_slug=row['org_slug'], principal=SERVICE, operation_key=graph['round_id'],
+                request_digest=event['event_digest'], instance_id=row['instance_id'], effect_id=event['id'])
 
 
-def validate_collection(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict, *, budget=None) -> str:
+def validate_collection(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict) -> str:
     """Validate saved closure AFTER receipts; never recurse through schema/graph admission."""
-    _reader_work((_reader_reserve(budget, 112) or (row,proof,graph)), budget, copies=2)
     from runtime.workflows.review_dispatch import _same_value
     code = 'workflow_review_join_storage_corrupt'
-    round_ = _record(conn, 'workflow_rounds', graph['round_id'], budget=budget)
-    instance = _record(conn, 'workflow_instances', row['instance_id'], budget=budget)
-    requests = _responses(conn, graph, budget=budget)
-    pending = _reader_any_true((q['status'] == 'pending' for q in requests), budget=budget)
-    objection = _reader_any_true((q['status'] == 'changes_requested' for q in requests), budget=budget)
+    round_ = _record(conn, 'workflow_rounds', graph['round_id'])
+    instance = _record(conn, 'workflow_instances', row['instance_id'])
+    requests = _responses(conn, graph)
+    pending = any(q['status'] == 'pending' for q in requests)
+    objection = any(q['status'] == 'changes_requested' for q in requests)
     events = _records(conn, "SELECT * FROM workflow_events WHERE instance_id=? AND revision=? AND event_kind='joined'",
-                      (_reader_reserve(budget, 96) or (row['instance_id'], row['revision'])), budget=budget)
+                      (row['instance_id'], row['revision']))
     replays = _records(conn, 'SELECT * FROM workflow_operation_replays WHERE '
         '(org_slug=? AND principal=? AND operation_key=?) OR effect_id=?',
-        (_reader_reserve(budget, 128) or (row['org_slug'], SERVICE, graph['round_id'], _id('workflow-event', row['instance_id'], row['revision'], 'joined', budget=budget))), budget=budget)
+        (row['org_slug'], SERVICE, graph['round_id'], _id('workflow-event', row['instance_id'], row['revision'], 'joined')))
     if not events:
         from runtime.workflows.submissions import history_successor
-        historical = row['revision'] == 1 and history_successor(conn, row['instance_id'], budget=budget)
+        historical = row['revision'] == 1 and history_successor(conn, row['instance_id'])
         if (replays or (instance['status'] != 'reviewing' and not (historical and instance['status'] == 'complete')) or round_['state'] not in ('reviewing', 'closed')
                 or (round_['state'] == 'closed' and (pending or not objection))):
             raise ValueError(code)
@@ -116,17 +93,17 @@ def validate_collection(conn: sqlite3.Connection, row: dict, proof: dict, graph:
     if len(events) != 1 or pending or objection or round_['state'] != 'closed' or instance['status'] != 'complete':
         raise ValueError(code)
     event = events[0]
-    body = _stored_json(event['event_bytes'], event['event_digest'], code=code, budget=budget)
+    body = _stored_json(event['event_bytes'], event['event_digest'], code=code)
     stamp = datetime.strptime(body['created_at'], '%Y-%m-%dT%H:%M:%S.%fZ')
     if body['created_at'] != stamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ'):
         raise ValueError(code)
-    expected = _event(conn, row, proof, graph, body['created_at'], budget=budget)
-    raw = canonical_bytes(expected, budget=budget)
-    if (not _same_value(body, expected, budget=budget) or not _same_value(event, (_reader_reserve(budget, 960) or dict(
-            id=_id('workflow-event', row['instance_id'], row['revision'], 'joined', budget=budget),
+    expected = _event(conn, row, proof, graph, body['created_at'])
+    raw = canonical_bytes(expected)
+    if (not _same_value(body, expected) or not _same_value(event, dict(
+            id=_id('workflow-event', row['instance_id'], row['revision'], 'joined'),
             instance_id=row['instance_id'], revision=row['revision'], event_kind='joined',
-            event_bytes=raw, event_digest=digest(raw, budget=budget), created_at=body['created_at'])), budget=budget)
-            or not _same_value(replays, (_reader_reserve(budget, 192) or [_replay(row, graph, event, budget=budget)]), budget=budget)):
+            event_bytes=raw, event_digest=digest(raw), created_at=body['created_at']))
+            or not _same_value(replays, [_replay(row, graph, event)])):
         raise ValueError(code)
     return 'approved'
 

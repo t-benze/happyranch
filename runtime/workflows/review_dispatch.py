@@ -1,29 +1,6 @@
 """F5 request owner using the unchanged native host lifecycle interface."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _b64decode as _reader_b64decode,
-    _b64encode as _reader_b64encode,
-    _decode as _reader_decode,
-    _dump as _reader_dump,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all_true as _reader_all_true,
-    _any_true as _reader_any_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _list as _reader_list,
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _reserve as _reader_reserve, _work as _reader_work,
-    _sha256 as _reader_sha256, _fromhex as _reader_fromhex,
-)
-
 import base64
 import json
 import sqlite3
@@ -65,156 +42,135 @@ class RevisionReviewStageCommand(ReviewStageCommand):
     expected_revision: StrictInt = Field(ge=2, le=2)
 
 
-def parse_stage(command: dict, *, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 80) or (command,)), budget, copies=2)
+def parse_stage(command: dict) -> dict:
     try:
-        _reader_reserve(budget, 112)
-        model = ((_reader_reserve(budget, 448) or {'workflow-review-stage-command@1': ReviewStageCommand,
+        model = ({'workflow-review-stage-command@1': ReviewStageCommand,
                   'workflow-review-stage-command@2': ArtifactReviewStageCommand,
-                  'workflow-review-stage-command@3': RevisionReviewStageCommand}).get(command.get('format'), ReviewStageCommand)
+                  'workflow-review-stage-command@3': RevisionReviewStageCommand}.get(command.get('format'), ReviewStageCommand)
                  if isinstance(command, dict) else ReviewStageCommand)
-        parsed = _reader_dump(model.model_validate(command), budget=budget)
-        raw = _reader_b64decode(parsed['findings_bytes_base64'], validate=True, budget=budget)
-        _reader_decode(raw, 'utf8', budget=budget)
-        if (not 1 <= len(raw) <= 1048576 or digest(raw, budget=budget) != parsed['findings_digest']
-                or _reader_decode(_reader_b64encode(raw, budget=budget), 'ascii', budget=budget) != parsed['findings_bytes_base64']):
+        parsed = model.model_validate(command).model_dump()
+        raw = base64.b64decode(parsed['findings_bytes_base64'], validate=True)
+        raw.decode('utf8')
+        if (not 1 <= len(raw) <= 1048576 or digest(raw) != parsed['findings_digest']
+                or base64.b64encode(raw).decode('ascii') != parsed['findings_bytes_base64']):
             raise ValueError('findings')
         return parsed
-    except ((ValidationError, ValueError, UnicodeError)) as exc:
+    except (ValidationError, ValueError, UnicodeError) as exc:
         raise WorkflowActivationError('workflow_review_stage_invalid_request') from exc
 
 
-def validate_stage(conn: sqlite3.Connection, body: dict, *, outbox: dict, bridge: dict, budget=None) -> dict:
+def validate_stage(conn: sqlite3.Connection, body: dict, *, outbox: dict, bridge: dict) -> dict:
     """Closed pure-data stage; the exact retained request selects the reviewer kind."""
-    _reader_work((_reader_reserve(budget, 112) or (body,outbox,bridge)), budget, copies=2)
     code = 'workflow_review_storage_corrupt'
     stage = body['stage']
-    if type(stage) is not dict or _reader_set(stage, budget=budget) != _reader_set((_reader_reserve(budget, 144) or ('command', 'request_digest', 'scope', 'outbox_id', 'session_id')), budget=budget):
+    if type(stage) is not dict or set(stage) != {'command', 'request_digest', 'scope', 'outbox_id', 'session_id'}:
         raise ValueError(code)
-    command = parse_stage(stage['command'], budget=budget)
-    request = _record(conn, 'workflow_review_requests', bridge['request_id'], budget=budget)
-    scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'], code=code, budget=budget)
+    command = parse_stage(stage['command'])
+    request = _record(conn, 'workflow_review_requests', bridge['request_id'])
+    scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'], code=code)
     before = body['before']
-    if (command['format'] != f'workflow-review-stage-command@{review_family(scope, budget=budget)}'
-            or not _same_value(stage['scope'], scope, budget=budget) or scope['kind'] != 'agent'
+    if (command['format'] != f'workflow-review-stage-command@{review_family(scope)}'
+            or not _same_value(stage['scope'], scope) or scope['kind'] != 'agent'
             or command['outcome'] not in scope['outcomes']
             or command['request_id'] != request['id'] or command['expected_revision'] != scope['revision']
             or command['request_scope_digest'] != request['request_scope_digest']
-            or stage['request_digest'] != digest(canonical_bytes(command, budget=budget), budget=budget)
+            or stage['request_digest'] != digest(canonical_bytes(command))
             or stage['outbox_id'] != outbox['id'] or stage['session_id'] != before['bridge']['session_id']
             or scope['principal'] != bridge['assigned_principal']
-            or not _same_value(scope['assignment_generation'], bridge['assignment_generation'], budget=budget)
+            or not _same_value(scope['assignment_generation'], bridge['assignment_generation'])
             or not stage['session_id'] or before['bridge']['result_id'] is not None
             or before['outbox']['host_launch_started'] != 1
             or before['outbox']['state'] not in ('claimed', 'running')
-            or not _same_value(before, body['after'], budget=budget)
+            or not _same_value(before, body['after'])
             or body['result'] is not None or body['terminal_evidence'] is not None):
         raise ValueError(code)
     matches = _stages_for_key(conn, org_slug=body['org_slug'], principal=scope['principal'],
-                              operation_key=command['operation_key'], budget=budget)
+                              operation_key=command['operation_key'])
     if len(matches) != 1 or matches[0]['operation_id'] != bridge['operation_id']:
         raise ValueError(code)
     return stage
 
 
-def _stages_for_key(conn: sqlite3.Connection, *, org_slug: str, principal: str, operation_key: str, budget=None) -> list[dict]:
-    _reader_reserve(budget, 0)
+def _stages_for_key(conn: sqlite3.Connection, *, org_slug: str, principal: str, operation_key: str) -> list[dict]:
     rows = _records(conn, "SELECT e.* FROM workflow_dispatch_events e JOIN workflow_dispatch_operations o "
                     "ON o.id=e.operation_id WHERE o.org_slug=? AND o.principal=? AND e.event_kind='review_staged'",
-                    (_reader_reserve(budget, 96) or (org_slug, principal)), budget=budget)
-    return _reader_list((e for e in rows if _stored_json(e['event_bytes'], e['event_digest'],
-            code='workflow_review_storage_corrupt', budget=budget)['stage']['command']['operation_key'] == operation_key), budget=budget)
+                    (org_slug, principal))
+    return [e for e in rows if _stored_json(e['event_bytes'], e['event_digest'],
+            code='workflow_review_storage_corrupt')['stage']['command']['operation_key'] == operation_key]
 
 
-def _same_value(left: Any, right: Any, *, budget=None) -> bool:
+def _same_value(left: Any, right: Any) -> bool:
     """Compare new F5 witnesses recursively without Python's bool/int coercion."""
-    if budget is not None:
-        budget.step()
-        if type(left) in (_reader_reserve(budget, 96) or (dict, list)):
-            _reader_reserve(budget, 128 * len(left))
-        else:
-            _reader_work((_reader_reserve(budget, 96) or (left, right)), budget)
     if type(left) is not type(right):
         return False
     if isinstance(left, dict):
-        if budget is not None:
-            # Comparing keys and looking up their values hashes/compares the
-            # actual freshly selected keys; the allowance is never a proof.
-            for key in left:
-                _reader_work(key, budget)
-            for key in right:
-                _reader_work(key, budget)
-        return left.keys() == right.keys() and _reader_all_true((_same_value(left[k], right[k], budget=budget) for k in left), budget=budget)
+        return left.keys() == right.keys() and all(_same_value(left[k], right[k]) for k in left)
     if isinstance(left, list):
-        return len(left) == len(right) and _reader_all_true((_same_value(a, b, budget=budget) for a, b in zip(left, right)), budget=budget)
+        return len(left) == len(right) and all(_same_value(a, b) for a, b in zip(left, right))
     return left == right
 
 
-def _validate_projection(projection: dict, *, outbox: dict, bridge: dict, budget=None) -> None:
+def _validate_projection(projection: dict, *, outbox: dict, bridge: dict) -> None:
     """Anchor every witness, including intermediate rows, to retained native values."""
-    _reader_work((_reader_reserve(budget, 112) or (projection,outbox,bridge)), budget, copies=2)
     code = 'workflow_review_storage_corrupt'
-    if (type(projection) is not dict or _reader_set(projection, budget=budget) != _reader_set((_reader_reserve(budget, 96) or ('outbox', 'bridge')), budget=budget)
+    if (type(projection) is not dict or set(projection) != {'outbox', 'bridge'}
             or type(projection['outbox']) is not dict or type(projection['bridge']) is not dict
-            or _reader_set(projection['outbox'], budget=budget) != _reader_set(outbox, budget=budget) or _reader_set(projection['bridge'], budget=budget) != _reader_set(bridge, budget=budget)):
+            or set(projection['outbox']) != set(outbox) or set(projection['bridge']) != set(bridge)):
         raise ValueError(code)
-    projected_outbox, projected_bridge = (_reader_reserve(budget, 96) or (projection['outbox'], projection['bridge']))
-    if (_reader_any_true((not _same_value(projected_outbox[k], outbox[k], budget=budget) for k in outbox if k not in _OUTBOX_MUTABLE), budget=budget)
-            or _reader_any_true((not _same_value(projected_bridge[k], bridge[k], budget=budget) for k in bridge if k not in _BRIDGE_MUTABLE), budget=budget)
+    projected_outbox, projected_bridge = projection['outbox'], projection['bridge']
+    if (any(not _same_value(projected_outbox[k], outbox[k]) for k in outbox if k not in _OUTBOX_MUTABLE)
+            or any(not _same_value(projected_bridge[k], bridge[k]) for k in bridge if k not in _BRIDGE_MUTABLE)
             or type(projected_outbox['host_launch_started']) is not int
             or projected_outbox['host_launch_started'] not in (0, 1)
-            or _reader_any_true((type(projected_outbox[k]) is not str for k in ('state', 'updated_at')), budget=budget)
+            or any(type(projected_outbox[k]) is not str for k in ('state', 'updated_at'))
             or type(projected_bridge['state']) is not str
-            or _reader_any_true((projected_outbox[k] is not None and type(projected_outbox[k]) is not str
-                   for k in ('claim_token', 'claim_owner', 'host_execution_id', 'last_error')), budget=budget)
-            or _reader_any_true((projected_bridge[k] is not None and type(projected_bridge[k]) is not str
-                   for k in ('session_id', 'result_id')), budget=budget)):
+            or any(projected_outbox[k] is not None and type(projected_outbox[k]) is not str
+                   for k in ('claim_token', 'claim_owner', 'host_execution_id', 'last_error'))
+            or any(projected_bridge[k] is not None and type(projected_bridge[k]) is not str
+                   for k in ('session_id', 'result_id'))):
         raise ValueError(code)
 
 
-def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: str, budget=None) -> None:
-    _reader_reserve(budget, 0)
+def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: str) -> None:
     try:
-        _reader_reserve(budget, 144)
-        _validate_review_dispatch_storage(conn, request_id=request_id, budget=budget)
-    except ((KeyError, TypeError, AttributeError, ValueError, sqlite3.DatabaseError)) as exc:
+        _validate_review_dispatch_storage(conn, request_id=request_id)
+    except (KeyError, TypeError, AttributeError, ValueError, sqlite3.DatabaseError) as exc:
         raise ValueError('workflow_review_storage_corrupt') from exc
 
 
-def _validate_transition(body: dict, *, cancelled: bool, budget=None) -> None:
+def _validate_transition(body: dict, *, cancelled: bool) -> None:
     """Closed lifecycle grammar; event hashes alone are not ownership proof."""
-    _reader_work((_reader_reserve(budget, 96) or (body,cancelled)), budget, copies=2)
     code = 'workflow_review_storage_corrupt'
     kind = body['event_kind']
-    before, after = (_reader_reserve(budget, 96) or (body['before'], body['after']))
-    old, new = (_reader_reserve(budget, 96) or (before['outbox'], after['outbox']))
-    old_bridge, new_bridge = (_reader_reserve(budget, 96) or (before['bridge'], after['bridge']))
-    changes = (_reader_reserve(budget, 1344) or {
-        'claimed': (_reader_set((_reader_reserve(budget, 128) or ('state', 'claim_token', 'claim_owner', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-        'launch_reserved': (_reader_set((_reader_reserve(budget, 96) or ('host_launch_started', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('session_id',)), budget=budget)),
-        'requeued': (_reader_set((_reader_reserve(budget, 128) or ('state', 'claim_token', 'claim_owner', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-        'running': (_reader_set((_reader_reserve(budget, 112) or ('state', 'host_execution_id', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-        'callback_recorded': (_reader_reserve(budget, 96) or (_reader_set(budget=budget), _reader_set((_reader_reserve(budget, 80) or ('result_id',)), budget=budget))),
-        'uncertain': (_reader_set((_reader_reserve(budget, 112) or ('state', 'last_error', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-        'failed': (_reader_set((_reader_reserve(budget, 112) or ('state', 'last_error', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-        'cancel_requested': (_reader_reserve(budget, 96) or (_reader_set(budget=budget), _reader_set(budget=budget))),
-        'cancelled': (_reader_set((_reader_reserve(budget, 96) or ('state', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-        'completed': (_reader_set((_reader_reserve(budget, 96) or ('state', 'updated_at')), budget=budget), _reader_set((_reader_reserve(budget, 80) or ('state',)), budget=budget)),
-    })
-    edges = (_reader_reserve(budget, 1344) or {
-        'claimed': _reader_set((_reader_reserve(budget, 80) or (('queued', 'claimed'),)), budget=budget), 'launch_reserved': _reader_set((_reader_reserve(budget, 80) or (('claimed', 'claimed'),)), budget=budget),
-        'requeued': _reader_set((_reader_reserve(budget, 80) or (('claimed', 'queued'),)), budget=budget), 'running': _reader_set((_reader_reserve(budget, 80) or (('claimed', 'running'),)), budget=budget),
-        'callback_recorded': _reader_set(((_reader_reserve(budget, 96) or (s, s)) for s in ('claimed', 'running')), budget=budget),
-        'uncertain': _reader_set(((_reader_reserve(budget, 96) or (s, 'uncertain')) for s in ('claimed', 'running')), budget=budget),
-        'failed': _reader_set(((_reader_reserve(budget, 96) or (s, 'uncertain')) for s in ('claimed', 'running', 'uncertain')), budget=budget),
-        'cancel_requested': _reader_set(((_reader_reserve(budget, 96) or (s, s)) for s in ('queued', 'claimed', 'running', 'uncertain')), budget=budget),
-        'cancelled': _reader_set(((_reader_reserve(budget, 96) or (s, 'cancelled')) for s in ('queued', 'claimed', 'running', 'uncertain')), budget=budget),
-        'completed': _reader_set(((_reader_reserve(budget, 96) or (s, 'completed')) for s in ('running', 'uncertain')), budget=budget),
-    })
-    if (kind not in changes or (_reader_reserve(budget, 96) or (old['state'], new['state'])) not in edges[kind]
+    before, after = body['before'], body['after']
+    old, new = before['outbox'], after['outbox']
+    old_bridge, new_bridge = before['bridge'], after['bridge']
+    changes = {
+        'claimed': ({'state', 'claim_token', 'claim_owner', 'updated_at'}, {'state'}),
+        'launch_reserved': ({'host_launch_started', 'updated_at'}, {'session_id'}),
+        'requeued': ({'state', 'claim_token', 'claim_owner', 'updated_at'}, {'state'}),
+        'running': ({'state', 'host_execution_id', 'updated_at'}, {'state'}),
+        'callback_recorded': (set(), {'result_id'}),
+        'uncertain': ({'state', 'last_error', 'updated_at'}, {'state'}),
+        'failed': ({'state', 'last_error', 'updated_at'}, {'state'}),
+        'cancel_requested': (set(), set()),
+        'cancelled': ({'state', 'updated_at'}, {'state'}),
+        'completed': ({'state', 'updated_at'}, {'state'}),
+    }
+    edges = {
+        'claimed': {('queued', 'claimed')}, 'launch_reserved': {('claimed', 'claimed')},
+        'requeued': {('claimed', 'queued')}, 'running': {('claimed', 'running')},
+        'callback_recorded': {(s, s) for s in ('claimed', 'running')},
+        'uncertain': {(s, 'uncertain') for s in ('claimed', 'running')},
+        'failed': {(s, 'uncertain') for s in ('claimed', 'running', 'uncertain')},
+        'cancel_requested': {(s, s) for s in ('queued', 'claimed', 'running', 'uncertain')},
+        'cancelled': {(s, 'cancelled') for s in ('queued', 'claimed', 'running', 'uncertain')},
+        'completed': {(s, 'completed') for s in ('running', 'uncertain')},
+    }
+    if (kind not in changes or (old['state'], new['state']) not in edges[kind]
             or old['state'] != old_bridge['state'] or new['state'] != new_bridge['state']
-            or _reader_any_true((not _same_value(old[k], new[k], budget=budget) for k in old if k not in changes[kind][0]), budget=budget)
-            or _reader_any_true((not _same_value(old_bridge[k], new_bridge[k], budget=budget) for k in old_bridge if k not in changes[kind][1]), budget=budget)
+            or any(not _same_value(old[k], new[k]) for k in old if k not in changes[kind][0])
+            or any(not _same_value(old_bridge[k], new_bridge[k]) for k in old_bridge if k not in changes[kind][1])
             or type(new['host_launch_started']) is not int
             or new['host_launch_started'] not in (0, 1)):
         raise ValueError(code)
@@ -246,38 +202,38 @@ def _validate_transition(body: dict, *, cancelled: bool, budget=None) -> None:
     if kind not in ('completed', 'cancelled', 'failed') and body['terminal_evidence'] is not None:
         raise ValueError(code)
     if kind in ('cancelled', 'failed') and not _same_value(body['terminal_evidence'],
-            (_reader_reserve(budget, 192) or {'host_quiescent': True}) if old['host_launch_started'] else None, budget=budget):
+            {'host_quiescent': True} if old['host_launch_started'] else None):
         raise ValueError(code)
 
 
-def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: str, budget=None) -> None:
+def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: str) -> None:
     """Authenticate the entire sequenced F5 owner, full callbacks and terminal evidence."""
-    _reader_work((_reader_reserve(budget, 80) or (request_id,)), budget, copies=2)
     code = 'workflow_review_storage_corrupt'
-    bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (_reader_reserve(budget, 80) or (request_id,)), budget=budget)
-    operations = _records(conn, 'SELECT * FROM workflow_dispatch_operations WHERE request_id=?', (_reader_reserve(budget, 80) or (request_id,)), budget=budget)
-    outboxes = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE request_id=?', (_reader_reserve(budget, 80) or (request_id,)), budget=budget)
+    bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (request_id,))
+    operations = _records(conn, 'SELECT * FROM workflow_dispatch_operations WHERE request_id=?', (request_id,))
+    outboxes = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE request_id=?', (request_id,))
     if len(bridges) != 1 or len(operations) != 1 or len(outboxes) != 1:
         raise ValueError(code)
-    bridge, operation, outbox = (_reader_reserve(budget, 112) or (bridges[0], operations[0], outboxes[0]))
-    retained = (_reader_reserve(budget, 320) or {'outbox': outbox, 'bridge': bridge})
-    _validate_projection(retained, outbox=outbox, bridge=bridge, budget=budget)
-    initial = (_reader_reserve(budget, 320) or dict(outbox=dict(outbox, state='queued', claim_token=None, claim_owner=None,
+    bridge, operation, outbox = bridges[0], operations[0], outboxes[0]
+    retained = {'outbox': outbox, 'bridge': bridge}
+    _validate_projection(retained, outbox=outbox, bridge=bridge)
+    initial = dict(outbox=dict(outbox, state='queued', claim_token=None, claim_owner=None,
                               host_launch_started=0, host_execution_id=None, last_error=None,
                               updated_at=outbox['created_at']),
-                   bridge=dict(bridge, state='queued', session_id=None, result_id=None)))
-    events = _records(conn, 'SELECT * FROM workflow_dispatch_events WHERE operation_id=? ORDER BY event_seq', (_reader_reserve(budget, 80) or (operation['id'],)), budget=budget)
+                   bridge=dict(bridge, state='queued', session_id=None, result_id=None))
+    events = _records(conn, 'SELECT * FROM workflow_dispatch_events WHERE operation_id=? ORDER BY event_seq', (operation['id'],))
     previous = None
     accepted = None
     cancelled = False
     staged = False
     for seq, event in enumerate(events, start=1):
-        body = _stored_json(event['event_bytes'], event['event_digest'], code=code, budget=budget)
-        _validate_projection(body['before'], outbox=outbox, bridge=bridge, budget=budget)
-        _validate_projection(body['after'], outbox=outbox, bridge=bridge, budget=budget)
+        body = _stored_json(event['event_bytes'], event['event_digest'], code=code)
+        _validate_projection(body['before'], outbox=outbox, bridge=bridge)
+        _validate_projection(body['after'], outbox=outbox, bridge=bridge)
         is_stage = body['event_kind'] == 'review_staged'
-        keys = _reader_set((_reader_reserve(budget, 256) or ('format', 'org_slug', 'operation_id', 'request_id', 'task_id', 'event_seq', 'event_kind', 'previous_digest', 'before', 'after', 'terminal_evidence', 'result')), budget=budget)
-        if (_reader_set(body, budget=budget) != keys | (_reader_set((_reader_reserve(budget, 80) or ('stage',)), budget=budget) if is_stage else _reader_set(budget=budget))
+        keys = {'format', 'org_slug', 'operation_id', 'request_id', 'task_id', 'event_seq', 'event_kind',
+                'previous_digest', 'before', 'after', 'terminal_evidence', 'result'}
+        if (set(body) != keys | ({'stage'} if is_stage else set())
                 or body['format'] != ('workflow-review-stage@1' if is_stage else 'workflow-review-dispatch-event@1')
                 or body['org_slug'] != operation['org_slug']
                 or body['operation_id'] != operation['id'] or body['request_id'] != request_id
@@ -287,46 +243,46 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
                 or body['before']['outbox']['state'] != event['state_before']
                 or body['after']['outbox']['state'] != event['state_after']
                 or body['previous_digest'] != (None if previous is None else previous[0]['event_digest'])
-                or not _same_value(body['before'], initial if previous is None else previous[1]['after'], budget=budget)):
+                or not _same_value(body['before'], initial if previous is None else previous[1]['after'])):
             raise ValueError(code)
         if is_stage:
             if cancelled or staged:
                 raise ValueError(code)
-            validate_stage(conn, body, outbox=outbox, bridge=bridge, budget=budget)
+            validate_stage(conn, body, outbox=outbox, bridge=bridge)
             staged = True
         else:
-            _validate_transition(body, cancelled=cancelled, budget=budget)
+            _validate_transition(body, cancelled=cancelled)
         cancelled = cancelled or body['event_kind'] == 'cancel_requested'
         if body['event_kind'] == 'callback_recorded':
             if (accepted is not None or not isinstance(body['result'], dict)
-                    or _reader_set(body['result'], budget=budget) != _reader_set((_reader_reserve(budget, 144) or ('id', 'record', 'digest', 'accepted', 'disposition')), budget=budget)
+                    or set(body['result']) != {'id', 'record', 'digest', 'accepted', 'disposition'}
                     or type(body['result']['id']) is not int
                     or type(body['result']['accepted']) is not int or body['result']['accepted'] != 1):
                 raise ValueError(code)
             accepted = body['result']
-            result = _record(conn, 'task_results', accepted['id'], budget=budget)
-            if (not _same_value(accepted['record'], result, budget=budget)
-                    or accepted['digest'] != digest(canonical_bytes(result, budget=budget), budget=budget)
+            result = _record(conn, 'task_results', accepted['id'])
+            if (not _same_value(accepted['record'], result)
+                    or accepted['digest'] != digest(canonical_bytes(result))
                     or result['task_id'] != bridge['task_id'] or result['agent'] != bridge['assigned_principal']
                     or result['session_id'] != body['after']['bridge']['session_id']
-                    or body['after']['bridge']['result_id'] != (_reader_reserve(budget, 128) or str(result['id']))):
+                    or body['after']['bridge']['result_id'] != str(result['id'])):
                 raise ValueError(code)
             if accepted['disposition'] != ('accepted' if body['before']['outbox']['state'] == 'running'
                                             else 'pending_host_acknowledgment'):
                 raise ValueError(code)
         if body['event_kind'] == 'completed' and (
                 accepted is None or accepted['record']['status'] != 'completed'
-                or not _same_value(body['terminal_evidence'], (_reader_reserve(budget, 192) or {'host_quiescent': True}), budget=budget)
-                or not _same_value(body['result'], accepted, budget=budget)
+                or not _same_value(body['terminal_evidence'], {'host_quiescent': True})
+                or not _same_value(body['result'], accepted)
                 or not body['after']['outbox']['host_execution_id']):
             raise ValueError(code)
-        previous = (_reader_reserve(budget, 96) or (event, body))
+        previous = event, body
     if previous is None:
-        if not _same_value(retained, initial, budget=budget):
+        if not _same_value(retained, initial):
             raise ValueError(code)
-    elif not _same_value(previous[1]['after'], retained, budget=budget):
+    elif not _same_value(previous[1]['after'], retained):
         raise ValueError(code)
-    callbacks = _records(conn, 'SELECT * FROM workflow_dispatch_callbacks WHERE outbox_id=?', (_reader_reserve(budget, 80) or (outbox['id'],)), budget=budget)
+    callbacks = _records(conn, 'SELECT * FROM workflow_dispatch_callbacks WHERE outbox_id=?', (outbox['id'],))
     if len(callbacks) != int(accepted is not None):
         raise ValueError(code)
     if callbacks:
@@ -338,7 +294,7 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
                 or callback['disposition'] != accepted['disposition']
                 or callback['id'] != f"{operation['id']}:callback:{accepted['id']}"):
             raise ValueError(code)
-    effects = _records(conn, 'SELECT * FROM workflow_dispatch_effects WHERE outbox_id=?', (_reader_reserve(budget, 80) or (outbox['id'],)), budget=budget)
+    effects = _records(conn, 'SELECT * FROM workflow_dispatch_effects WHERE outbox_id=?', (outbox['id'],))
     if len(effects) != int(outbox['host_execution_id'] is not None):
         raise ValueError(code)
     if effects and (effects[0]['host_execution_id'] != outbox['host_execution_id']
@@ -476,22 +432,21 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                         return dict(format=f"workflow-review-stage-ack@{review_family(intent['scope'])}", stage_event_id=event_id,
                                     request_digest=digest(canonical_bytes(command)), replayed=bool(stages), signed=False)
 
-    def _intent(self, conn: sqlite3.Connection, task_id: str, *, budget=None) -> dict[str, Any]:
-        _reader_work((_reader_reserve(budget, 80) or (task_id,)), budget, copies=2)
-        bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
-        if len(bridges) != 1 or _reader_one(conn, 'SELECT 1 FROM workflow_draft_dispatch_intents WHERE task_id=?', (_reader_reserve(budget, 80) or (task_id,)), budget=budget):
+    def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+        bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
+        if len(bridges) != 1 or conn.execute('SELECT 1 FROM workflow_draft_dispatch_intents WHERE task_id=?', (task_id,)).fetchone():
             raise DraftOwnershipError('workflow_review_storage_corrupt')
         bridge = bridges[0]
-        operation = _record(conn, 'workflow_dispatch_operations', bridge['operation_id'], budget=budget)
-        request = _record(conn, 'workflow_review_requests', bridge['request_id'], budget=budget)
-        outboxes = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE operation_id=?', (_reader_reserve(budget, 80) or (operation['id'],)), budget=budget)
+        operation = _record(conn, 'workflow_dispatch_operations', bridge['operation_id'])
+        request = _record(conn, 'workflow_review_requests', bridge['request_id'])
+        outboxes = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE operation_id=?', (operation['id'],))
         if len(outboxes) != 1:
             raise DraftOwnershipError('workflow_review_storage_corrupt')
         outbox = outboxes[0]
-        scope = _reader_json(request['request_scope_bytes'], budget)
+        scope = json.loads(request['request_scope_bytes'])
         from runtime.workflows.revisions import selected_subject
-        row, proof = selected_subject(conn, scope, budget=budget)
-        graph = validate_handoff_graph(conn, row, proof, budget=budget)
+        row, proof = selected_subject(conn, scope)
+        graph = validate_handoff_graph(conn, row, proof)
         if graph is None or request['id'] not in graph['request_ids'] or task_id not in graph['reviewer_task_ids']:
             raise DraftOwnershipError('workflow_review_storage_corrupt')
         # These are source adapter fields consumed by the existing lifecycle
@@ -500,7 +455,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             assignment_generation=bridge['assignment_generation'], session_id=bridge['session_id'],
             final_result_id=None if bridge['result_id'] is None else int(bridge['result_id']),
             cancellation_requested=int(operation['state'] == 'cancelled'),
-            is_current=int(request['status'] == 'pending' and _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'], budget=budget)['is_current']),
+            is_current=int(request['status'] == 'pending' and _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])['is_current']),
             instance_id=bridge['instance_id'], scope=scope, bridge=bridge, operation=operation,
             intent_id=row['intent_id'], activation_id=proof['pins']['activation']['id'],
             activation_revision=1, attempt_sequence=1)

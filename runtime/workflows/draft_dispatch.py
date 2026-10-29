@@ -1,21 +1,6 @@
 """Workflow-owned initial drafting intent and canonical lifecycle events."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _encode as _reader_encode,
-    _json_dumps as _reader_json_dumps,
-    _sha256 as _reader_sha256,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict as _reader_dict,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _json as _reader_json,
-    _reserve as _reader_reserve, _work as _reader_work,
-)
-
 import hashlib
 import json
 import asyncio
@@ -35,14 +20,13 @@ if TYPE_CHECKING:
     from runtime.workflows.authority import AuthorityAdmissionCapture
 
 
-def canonical_bytes(value: object, *, budget=None) -> bytes:
-    _reader_reserve(budget, 0)
-    return _reader_encode(_reader_json_dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, budget=budget), "utf-8", budget=budget)
+def canonical_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
-def digest(value: bytes, *, budget=None) -> str:
-    _reader_reserve(budget, 0)
-    return _reader_sha256(value, budget=budget).hexdigest()
+def digest(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 def append_event_uncommitted(conn: sqlite3.Connection, *, org_slug: str, intent_id: str, kind: str, before: dict[str, Any] | None,
@@ -115,34 +99,34 @@ class WorkflowDraftDispatcher:
                 conn.rollback()
                 raise
 
-    def _intent(self, conn: sqlite3.Connection, task_id: str, *, budget=None) -> dict[str, Any]:
+    def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
         """Ordinary entry retains the activation owner's complete validation."""
-        return self._intent_with_activation_closure(conn, task_id, self.org.workflow_activations._closure, budget=budget)
+        return self._intent_with_activation_closure(conn, task_id, self.org.workflow_activations._closure)
 
-    def _intent_from_validated_schema(self, conn: sqlite3.Connection, task_id: str, *, budget=None) -> dict[str, Any]:
+    def _intent_from_validated_schema(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
         """Recovery-only composition after its complete same-snapshot read."""
         if not conn.in_transaction:
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         return self._intent_with_activation_closure(
-            conn, task_id, self.org.workflow_activations._closure_from_validated_schema, budget=budget)
+            conn, task_id, self.org.workflow_activations._closure_from_validated_schema)
 
     def _intent_with_activation_closure(self, conn: sqlite3.Connection, task_id: str,
-                                      closure: Callable[..., dict], *, budget=None) -> dict[str, Any]:
+                                      closure: Callable[..., dict]) -> dict[str, Any]:
         # These two private entries select actual owner methods, never a
         # caller-supplied inventory or a Boolean claiming schema validation.
-        rows = _reader_all(conn, "SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget)
+        rows = conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?", (task_id,)).fetchall()
         if len(rows) != 1:
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
-        intent = _reader_dict(rows[0], budget=budget)
+        intent = dict(rows[0])
         if intent['admission_kind'] == 'revision':
             from runtime.workflows.revisions import validate_revision_record
-            row = _reader_one(conn, 'SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=?', (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
+            row = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=?', (intent['id'],)).fetchone()
             if row is None:
                 raise DraftOwnershipError('workflow_document_revision_storage_corrupt')
-            validate_revision_record(conn, _reader_dict(row, budget=budget), expected_org_slug=self.org.slug, budget=budget)
+            validate_revision_record(conn, dict(row), expected_org_slug=self.org.slug)
         else:
-            closure(conn, intent["activation_id"], actor=intent["admission_principal"], budget=budget)
-        if _reader_one(conn, "SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?", (_reader_reserve(budget, 80) or (task_id,)), budget=budget):
+            closure(conn, intent["activation_id"], actor=intent["admission_principal"])
+        if conn.execute("SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchone():
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         return intent
 

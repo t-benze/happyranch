@@ -6,26 +6,6 @@ only until a separately authorized immutable-object reader is mounted.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _b64encode as _reader_b64encode,
-    _decode as _reader_decode,
-    _dump as _reader_dump,
-    _encode as _reader_encode,
-    _json_dumps as _reader_json_dumps,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict_pairs as _reader_dict_pairs,
-    _list as _reader_list,
-    _tuple as _reader_tuple,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _reserve as _reader_reserve, _work as _reader_work,
-    _sha256 as _reader_sha256, _fromhex as _reader_fromhex,
-)
-
 import base64
 import hashlib
 import json
@@ -41,10 +21,10 @@ SHA256 = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 Revision = Annotated[StrictInt, Field(gt=0)]
 
 
-def _canonical_bytes(value: object, *, budget=None) -> bytes:
+def _canonical_bytes(value: object) -> bytes:
     # Exact historical serializer, deliberately independent of the store module.
-    _reader_reserve(budget, 0)
-    return _reader_encode(_reader_json_dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False, budget=budget), 'utf8', budget=budget)
+    return json.dumps(value, sort_keys=True, separators=(',', ':'),
+                      ensure_ascii=False, allow_nan=False).encode('utf8')
 
 
 class _FrozenRecord(BaseModel):
@@ -178,8 +158,7 @@ class ArtifactRevision(_FrozenRecord):
 
 def document_revision(*, identity: ArtifactIdentity, submission_id: str, revision: int,
                       content_bytes: bytes, content_digest: str,
-                      provenance: ArtifactProvenance, budget=None) -> ArtifactRevision:
-    _reader_work((_reader_reserve(budget, 160) or (identity,submission_id,revision,content_bytes,content_digest,provenance)), budget, copies=2)
+                      provenance: ArtifactProvenance) -> ArtifactRevision:
     return ArtifactRevision(identity=identity, submission_id=submission_id, revision=revision,
         subject=DocumentSubject(kind='document', content_bytes=content_bytes, content_digest=content_digest),
         provenance=provenance)
@@ -194,9 +173,8 @@ def code_change_revision(*, identity: ArtifactIdentity, submission_id: str, revi
                                  descriptor_digest=descriptor_digest), provenance=provenance)
 
 
-def require_document_subject(artifact: ArtifactRevision, scope: dict, *, budget=None) -> None:
+def require_document_subject(artifact: ArtifactRevision, scope: dict) -> None:
     """Match a closed, already selected legacy scope against stored subject facts."""
-    _reader_work((_reader_reserve(budget, 96) or (artifact,scope)), budget, copies=2)
     expected_identity = ArtifactIdentity(org_namespace=scope['org_slug'],
         instance_id=scope['instance_id'], output_slot='output')
     # Construct a strict expected value too: True cannot compare equal to revision 1.
@@ -205,53 +183,50 @@ def require_document_subject(artifact: ArtifactRevision, scope: dict, *, budget=
     if (not isinstance(artifact.subject, DocumentSubject) or artifact.review_key != expected.review_key
             or artifact.subject.content_digest != scope['submission_digest']):
         raise ValueError('artifact_subject_mismatch')
-    if review_family(scope, budget=budget) in (2, 3):
-        expected_projection = (_reader_reserve(budget, 832) or dict(identity=_reader_dump(artifact.identity, budget=budget), submission_id=artifact.submission_id,
+    if review_family(scope) in (2, 3):
+        expected_projection = dict(identity=artifact.identity.model_dump(), submission_id=artifact.submission_id,
             revision=artifact.revision, kind='document', bytes_digest=artifact.subject.content_digest,
-            subject=(_reader_reserve(budget, 192) or dict(content_digest=artifact.subject.content_digest))))
-        if (_canonical_bytes(scope['artifact'], budget=budget) != _canonical_bytes(expected_projection, budget=budget)
+            subject=dict(content_digest=artifact.subject.content_digest))
+        if (_canonical_bytes(scope['artifact']) != _canonical_bytes(expected_projection)
                 or scope['repository_resolution'] is not None):
             raise ValueError('artifact_subject_mismatch')
 
 
 def document_from_handoff(row: dict, proof: dict, *, source_result_id: int | None = None,
-                          contributors: tuple[dict, ...] = (), budget=None) -> ArtifactRevision:
+                          contributors: tuple[dict, ...] = ()) -> ArtifactRevision:
     """Project caller-authenticated H data; an active author has no invented result."""
-    _reader_work((_reader_reserve(budget, 128) or (row,proof,source_result_id,contributors)), budget, copies=2)
     return document_revision(identity=ArtifactIdentity(org_namespace=row['org_slug'],
         instance_id=row['instance_id'], output_slot='output'), submission_id=row['submission_id'],
         revision=row['revision'], content_bytes=row['candidate_bytes'], content_digest=row['candidate_digest'],
         provenance=ArtifactProvenance(source_task_id=row['source_task_id'],
             source_session_id=row['source_session_id'], source_result_id=source_result_id,
-            author_principal=row['principal'], source_bytes=_canonical_bytes(proof['source_intent'], budget=budget),
-            contributor_bytes=_reader_tuple((_canonical_bytes(item, budget=budget) for item in contributors), budget=budget),
-            pins_bytes=_canonical_bytes(proof['pins'], budget=budget)), budget=budget)
+            author_principal=row['principal'], source_bytes=_canonical_bytes(proof['source_intent']),
+            contributor_bytes=tuple(_canonical_bytes(item) for item in contributors),
+            pins_bytes=_canonical_bytes(proof['pins'])))
 
 
 def document_from_submission(submission: dict, *, org_namespace: str, pins: dict,
                              source_result_id: int | None = None,
-                             contributors: tuple[dict, ...] = (), budget=None) -> ArtifactRevision:
+                             contributors: tuple[dict, ...] = ()) -> ArtifactRevision:
     """Project a stored row; legacy TEXT result is retained, never cast to INTEGER."""
-    _reader_work((_reader_reserve(budget, 144) or (submission,org_namespace,pins,source_result_id,contributors)), budget, copies=2)
-    source = _reader_dict_pairs(((_reader_reserve(budget, 96) or (key,  submission[key] )) for key in ('source_task_id', 'source_session_id',
-                                               'source_result_id', 'author_principal')), budget=budget)
+    source = {key: submission[key] for key in ('source_task_id', 'source_session_id',
+                                               'source_result_id', 'author_principal')}
     return document_revision(identity=ArtifactIdentity(org_namespace=org_namespace,
         instance_id=submission['instance_id'], output_slot='output'), submission_id=submission['id'],
         revision=submission['revision'], content_bytes=submission['submission_bytes'],
         content_digest=submission['submission_digest'], provenance=ArtifactProvenance(
             source_task_id=submission['source_task_id'], source_session_id=submission['source_session_id'],
             source_result_id=source_result_id, author_principal=submission['author_principal'],
-            source_bytes=_canonical_bytes(source, budget=budget),
-            contributor_bytes=_reader_tuple((_canonical_bytes(item, budget=budget) for item in contributors), budget=budget),
-            pins_bytes=_canonical_bytes(pins, budget=budget)), budget=budget)
+            source_bytes=_canonical_bytes(source),
+            contributor_bytes=tuple(_canonical_bytes(item) for item in contributors),
+            pins_bytes=_canonical_bytes(pins)))
 
 
 def document_review_scope(*, row: dict, proof: dict, context: dict, contract: dict, role: str,
-                          request_id: str, round_id: str, binding: dict, budget=None) -> dict:
+                          request_id: str, round_id: str, binding: dict) -> dict:
     """Historical document compatibility presentation, with byte-exact fields."""
-    _reader_work((_reader_reserve(budget, 192) or (row,proof,context,contract,role,request_id,round_id,binding)), budget, copies=2)
-    inputs = _reader_list((item for item in context['inputs'] if role in item['pin']['recipients']), budget=budget)
-    return (_reader_reserve(budget, 3136) or dict(format='workflow-review-request@1', org_slug=row['org_slug'], instance_id=row['instance_id'],
+    inputs = [item for item in context['inputs'] if role in item['pin']['recipients']]
+    return dict(format='workflow-review-request@1', org_slug=row['org_slug'], instance_id=row['instance_id'],
                 handoff_id=row['id'], submission_id=row['submission_id'], submission_digest=row['candidate_digest'],
                 revision=1, round_id=round_id, request_id=request_id, role=role,
                 kind=contract['role_kinds'][role], principal=binding['principal'], team=binding['team'],
@@ -260,23 +235,20 @@ def document_review_scope(*, row: dict, proof: dict, context: dict, contract: di
                 binding_snapshot_id=proof['pins']['binding']['id'], context_id=proof['pins']['context']['id'],
                 output=contract['output'], outcomes=contract['outcomes'],
                 purpose='Independently review the pinned immutable document; requests remain unsigned.',
-                allowed_actions=(_reader_reserve(budget, 192) or ['collect-review']), inputs=inputs))
+                allowed_actions=['collect-review'], inputs=inputs)
 
 
-def document_review_brief(scope: dict, candidate: bytes, *, budget=None) -> str:
-    _reader_work((_reader_reserve(budget, 96) or (scope,candidate)), budget, copies=2)
+def document_review_brief(scope: dict, candidate: bytes) -> str:
     return ("Workflow document review. Independently assess only the pinned document and your authorized inputs. "
             "Do not delegate, implement code, merge, approve planning input, or sign on behalf of another principal. "
             "Report your findings through your actual task/session completion callback as the final session action. "
             "This request and its callback remain unsigned; genuine review receipts and joins are later units.\n\n"
-            + _reader_decode(_canonical_bytes((_reader_reserve(budget, 320) or dict(scope=scope,
-                submission_bytes_base64=_reader_decode(_reader_b64encode(candidate, budget=budget), 'ascii', budget=budget))), budget=budget), budget=budget))
+            + _canonical_bytes(dict(scope=scope,
+                submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
 
 
-def context_contract(context: dict, *, budget=None) -> dict:
+def context_contract(context: dict) -> dict:
     """Only matched explicit original-author context families are supported."""
-    _reader_reserve(budget, 0)
-    _reader_work(context.get('format'), budget)
     if context.get('format') == 'workflow-document-revision-context@1':
         contract = context['contract']
         if contract['format'] in ('workflow-document-contract@3', 'workflow-artifact-contract@4'):
@@ -285,7 +257,7 @@ def context_contract(context: dict, *, budget=None) -> dict:
     if context.get('format') == 'workflow-initial-draft-context@4':
         contract = context['artifact_contract']
         if (contract['format'] != 'workflow-artifact-contract@4'
-                or contract['output']['accepted_kinds'] != (_reader_reserve(budget, 192) or ['document'])
+                or contract['output']['accepted_kinds'] != ['document']
                 or context['repository_binding'] is not None):
             raise ValueError('artifact_context_mismatch')
         return contract
@@ -296,41 +268,37 @@ def context_contract(context: dict, *, budget=None) -> dict:
     raise ValueError('artifact_context_mismatch')
 
 
-def review_family(scope: dict, *, budget=None) -> int:
+def review_family(scope: dict) -> int:
     """No unknown scope can inherit a historical proof interpretation."""
-    _reader_reserve(budget, 0)
-    _reader_work(scope.get('format'), budget)
-    version = (_reader_reserve(budget, 448) or {'workflow-review-request@1': 1, 'workflow-review-request@2': 2, 'workflow-review-request@3': 3}).get(scope.get('format'))
+    version = {'workflow-review-request@1': 1, 'workflow-review-request@2': 2, 'workflow-review-request@3': 3}.get(scope.get('format'))
     if version is None:
         raise ValueError('artifact_scope_family_unknown')
     return version
 
 
-def artifact_review_scope(*, budget=None, **values: object) -> dict:
-    _reader_work((_reader_reserve(budget, 80) or (values,)), budget, copies=2)
-    row, proof, contract = (_reader_reserve(budget, 112) or (values['row'], values['proof'], values['contract']))
+def artifact_review_scope(**values: object) -> dict:
+    row, proof, contract = values['row'], values['proof'], values['contract']
     if (contract['format'] != 'workflow-artifact-contract@4'
-            or contract['output']['accepted_kinds'] != (_reader_reserve(budget, 192) or ['document'])
+            or contract['output']['accepted_kinds'] != ['document']
             or proof['format'] != 'workflow-author-handoff@2'
             or proof['repository_resolution'] is not None):
         raise ValueError('artifact_scope_mismatch')
-    artifact = document_from_handoff(row, proof, budget=budget)
+    artifact = document_from_handoff(row, proof)
     # Explicit new presentation; retain the entire legacy serializer unchanged.
-    scope = document_review_scope(**values, budget=budget)
+    scope = document_review_scope(**values)
     result = dict(scope, format='workflow-review-request@2',
         purpose='Independently review the pinned immutable artifact; requests remain unsigned.',
-        repository_resolution=None, artifact=(_reader_reserve(budget, 832) or dict(identity=_reader_dump(artifact.identity, budget=budget),
+        repository_resolution=None, artifact=dict(identity=artifact.identity.model_dump(),
             submission_id=artifact.submission_id, revision=artifact.revision, kind='document',
             bytes_digest=artifact.subject.content_digest,
-            subject=(_reader_reserve(budget, 192) or dict(content_digest=artifact.subject.content_digest)))))
-    if len(_canonical_bytes(result, budget=budget)) > CONTENT_LIMIT:
+            subject=dict(content_digest=artifact.subject.content_digest)))
+    if len(_canonical_bytes(result)) > CONTENT_LIMIT:
         raise ValueError('artifact_scope_bounds')
     return result
 
 
-def artifact_review_brief(scope: dict, candidate: bytes, *, budget=None) -> str:
-    _reader_work((_reader_reserve(budget, 96) or (scope,candidate)), budget, copies=2)
-    if review_family(scope, budget=budget) != 2:
+def artifact_review_brief(scope: dict, candidate: bytes) -> str:
+    if review_family(scope) != 2:
         raise ValueError('artifact_scope_mismatch')
     return ("Workflow artifact review. Independently assess the pinned artifact and only your authorized inputs. "
             "Do not delegate, implement code, merge, deploy, or sign for another principal. "
@@ -338,8 +306,8 @@ def artifact_review_brief(scope: dict, candidate: bytes, *, budget=None) -> str:
             "Stage findings under one stable operation key before the actual final task/session callback; "
             "stage and callback remain unsigned until genuine successful/quiescent receipt closure. "
             "Report an unavailable stage adapter honestly.\n\n"
-            + _reader_decode(_canonical_bytes((_reader_reserve(budget, 320) or dict(scope=scope,
-                submission_bytes_base64=_reader_decode(_reader_b64encode(candidate, budget=budget), 'ascii', budget=budget))), budget=budget), budget=budget))
+            + _canonical_bytes(dict(scope=scope,
+                submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
 
 
 def decode_artifact_json(raw: bytes) -> object:

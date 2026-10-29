@@ -5,22 +5,6 @@ never acquire another async gate and names never publish canonical authority.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _put as _reader_put,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict as _reader_dict,
-    _dict_pairs as _reader_dict_pairs,
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _json_work as _reader_json_work,
-    _reserve as _reader_reserve, _work as _reader_work,
-)
-
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -192,16 +176,15 @@ def capture_namespace(root: Path, teams):
     return second
 
 
-def validate_rows(owner_rows, claim_rows, namespace=None, *, budget=None):
-    _reader_work((_reader_reserve(budget, 112) or (owner_rows,claim_rows,namespace)), budget, copies=2)
-    owners = (_reader_reserve(budget, 64) or {})
-    claims = (_reader_reserve(budget, 64) or {})
+def validate_rows(owner_rows, claim_rows, namespace=None):
+    owners = {}
+    claims = {}
     deadline = time.monotonic() + SCAN_SECONDS
     for row in owner_rows:
         if time.monotonic() > deadline:
             raise NamingError("naming_scan_deadline")
         kind, name, life, label, revision = row
-        key = (_reader_reserve(budget, 96) or (kind, name))
+        key = (kind, name)
         if (key in owners or kind not in ('agent', 'founder')
                 or not isinstance(name, str) or _ID.fullmatch(name) is None
                 or (kind == 'agent' and name == 'founder')
@@ -213,14 +196,14 @@ def validate_rows(owner_rows, claim_rows, namespace=None, *, budget=None):
                 or (label is not None and (not isinstance(label, str)
                     or (label != name and _LABEL.fullmatch(label) is None)))):
             raise NamingError('naming_owner_corrupt')
-        _reader_put(row, owners, key, budget=budget)
+        owners[key] = row
     if ('founder', 'founder') not in owners:
         raise NamingError('naming_founder_missing')
     for row in claim_rows:
         if time.monotonic() > deadline:
             raise NamingError("naming_scan_deadline")
         token, kind, name, reserved, permanent = row
-        key = (_reader_reserve(budget, 96) or (kind, name))
+        key = (kind, name)
         owner = owners.get(key)
         if (owner is None or not isinstance(token, str) or token in claims
                 or token != token.lower() or not token
@@ -231,8 +214,8 @@ def validate_rows(owner_rows, claim_rows, namespace=None, *, budget=None):
                 or (reserved and (owner[2] == 'absent' or token != name.lower()))
                 or (token != name.lower() and not permanent)):
             raise NamingError('naming_claim_corrupt')
-        _reader_put(row, claims, token, budget=budget)
-    chosen_owners = _reader_set((c[1:3] for c in claims.values() if c[4]), budget=budget)
+        claims[token] = row
+    chosen_owners = {c[1:3] for c in claims.values() if c[4]}
     for key, (_, name, life, label, _) in owners.items():
         own_id = claims.get(name.lower())
         if life != 'absent' and (own_id is None or own_id[1:3] != key or own_id[3] != 1):
@@ -246,11 +229,11 @@ def validate_rows(owner_rows, claim_rows, namespace=None, *, budget=None):
         if life == 'absent' and label == name and (own_id is None or own_id[1:3] != key or not own_id[4]):
             raise NamingError('naming_absent_default_corrupt')
     if namespace is not None:
-        expected = _reader_dict(namespace.subjects, budget=budget)
-        observed = _reader_dict_pairs(((_reader_reserve(budget, 96) or (key[1],  row[2] )) for key, row in owners.items() if key[0] == 'agent' and row[2] != 'absent'), budget=budget)
+        expected = dict(namespace.subjects)
+        observed = {key[1]: row[2] for key, row in owners.items() if key[0] == 'agent' and row[2] != 'absent'}
         if expected != observed:
             raise NamingError('naming_projection_mismatch')
-    return (_reader_reserve(budget, 96) or (owners, claims))
+    return owners, claims
 
 
 def _desired(owner_rows, claim_rows, namespace):

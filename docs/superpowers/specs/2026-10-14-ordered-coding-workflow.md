@@ -1,82 +1,41 @@
 # Ordered coding workflow — agent-read contract
 
-## Candidate-directed classifier contract — THR320 / TASK-13610
+## Task-local ownership delivery — Founder THR320 seq385
 
-Task ownership follows authoritative task/result/root/source/bridge relations and
-complete directed local history. Ordinary candidates acquire complete structure
-and their closure without unrelated DATA/integrity/FK/queued scans, including the
-final heartbeat guard. Actual draft/F5/coding owners retain complete semantics,
-history, FKs and current physical gates. One ORIGINAL 8192-row/16MiB/16384-step
-allowance is explicitly shared through all dependent structure/acquisition/copy/
-parse/hash/equality/reconstruction, complete-owner and source/target readers;
-exhaustion refuses before effects. Standalone entry behavior is retained.
+Ordinary task classification follows its own persisted task/result/root/source/
+bridge relations and required indexed reverse ranges. It validates reached
+historical relations, including retained document and F5 proof, without acquiring
+unassociated foreign DATA or running complete integrity/FK/history readers.
+Foreign payload-only claims stay at their own workflow/native boundary. Missing,
+malformed, orphan, dual or contradictory reached relations and exhausted local
+acquisition refuse; a miss is ordinary only after all applicable ranges close.
+Candidate success publishes no complete-reader watermark. Source-derived indexed
+access is not a measured query plan or a latency/RSS/SQLite-I/O guarantee.
 
-Dynamic container copies, sorts and generator traversals reserve before their
-work. Fixed list/mapping literals and keyword-built mappings reserve their output
-slots before construction. Dynamic tuples, expanded local sequences, immutable-set reconstruction and
-list/dict/set growth also reserve before allocation or key hashing. JSON decoding,
-canonical serialization/key sorting, model dumps, encoding, hex/base64 and hashes
-charge before their own work. Integer domain byte limits remain distinct from
-the actual shared reader allowance. Exception envelopes reserve within the
-protected try body; selecting an error handler never spends the allowance. Structural comparison and object-key reconstruction
-consume the same remainder; local metadata names and invariant SQL are built once
-per acquisition without certifying an inventory or skipping validation. Metadata scalar/payload/terminal fetches share the same allowance. Fixed-width
-metadata rows reserve their bounded check/decode/copy/normalization envelope
-before work; structural equality charges its real scalar-row comparisons while
-retaining original Python equality. Re-entering an inspected routine does not
-itself copy its entire input. Delegating reader entries charge their visit;
-actual acquisition and reconstruction charge where they occur. Serializer/hash
-wrappers do not invent another deep input copy before their charged operation.
-Shallow projections reserve actual output slots and selected scalar work; they
-retain referenced payloads without copying them. Generated SQL
-reserves its positional names, expressions and final strings before allocation,
-including empty results, using their current lengths. Per-node traversal is
-charged once by its reservation. Complete-owner ordinary-prefix discrimination
-also gates and charges payload acquisition on that original remainder.
+Workflow-owned tasks enter the pre-split complete classifier/readers, including
+both global agent and human replay-key assertions, original dispatchers and
+budget/error/cleanup/publication behavior. Reader-budget accounting changes are
+excluded here and remain a separate dependent DRAFT/HELD subject for Founder.
+The local lookup uses the existing _Budget and native type/size fences; it does
+not expand budget plumbing into complete readers. All five final native consumers
+observe in their own writer or legitimate caller transaction. Reconciliation
+precedes effects; PID retains exact task/agent/SID/status/not-cancelled CAS, and
+coding record_pid retains its independent writer. PID refusal proves no launch
+or process cleanup. No producer permission, audit shape or lifecycle changes.
 
-The installed reader and selected-owner classifier each own one complete
-independent structural comparison, then enter the original whole-connection
-semantic owners in that unchanged snapshot. The classifier does not reacquire
-another standalone structural boundary. No candidate row inventory or validity
-mark enters those readers; layout only selects literal optional families and
-certifies no data or history. Standalone complete, coding and queued boundaries
-retain their own structural comparison and original allocation. The full-reader
-return value is charged and constructed before snapshot exit or watermark
-publication; the classifier's original allowance precedes its first output
-allocation. Strict F5 dictionary-key comparisons, selected contributor-set merges,
-pending absence traversals and native INTEGER-to-TEXT reconstruction charge their
-actual operation before the original equality, insertion, traversal or conversion.
-Compatibility installation observes complete object absence before foundation
-DDL, retains the original full source and fresh target validation, and discards
-source advances at its first write. An inner data validator only collects
-advances; a joined reader without an outer collector publishes none. Native
-row, byte and traversal exhaustion retains its resource refusal through semantic
-fallbacks. Rows acquired by later selected reconstruction return through directed
-parent/reverse closure and all selected semantic checks on the same remainder;
-closure convergence supplies no global validity mark. A successful install hook
-invalidates captured advances and precedes fresh complete validation before the
-original owning COMMIT. Primary and cursor-close failures are retained together.
+Exact old/indexed structure is independently recognized. Normal org compatibility
+installation adds only the final query-required index set after complete source
+validation and before complete target validation and the original owning COMMIT.
+Fresh creation and supported migrations preserve exact variant recognition;
+SELECT/classification/generic Database never install. Partial/wrong/case/extra
+structures refuse without repair. Existing predecessor UNIQUE stays unchanged.
 
+This is source delivery only: behavior/scale NOT RUN; fault/native/performance
+PROOF NOT RUN or EXPECTED-UNMEASURED. Units RETIRED, all general integration
+SKIPPED24342/211270–271, daily19UTC E2E remains separate/nonblocking. No live
+host/deploy/restart/DB/settings/import/admission/grants/cleanup/schedule/scratch
+authority follows. Ordinary coding remains HELD; original scratch is UNSTARTED.
 
-Other-participant U3 excludes ONLY absence acquisition of UNASSOCIATED foreign
-agent stage-command K (org/principal) and human review-command L
-(org/human:founder). Every reached collision, native INTEGER/task/agent/SID/Boolean
-quiescence, human signed/pending/no-task invariants, retained r1/r2/predecessor,
-subject/independence/reverse and collection check remains. Actual owner T retains
-BOTH global K/L assertions. No F5 downgrade, receipt certification or candidate
-watermark follows. Five coherent final ordinary writers retain fresh proof,
-PID-before-UPDATE/CAS, separate coding record_pid and original rollback/COMMIT/
-publication uncertainty; no launch cleanup is proved. Exact40 indexes,
-canonical partial UNIQUE predecessor/IS NOT NULL, independent references,
-old→old/indexed→indexed and org-owned installation rules remain.
-
-Full normative contract: AGENTS.md, “Candidate-directed task ownership”.
-Registration1250 and historical waivers remain. Source/static is not loaded,
-behavior, fault, concurrency, persistence, cleanup, performance or scratch proof;
-those remain NOT RUN/PROOF NOT RUN/EXPECTED-UNMEASURED. Units RETIRED; all general
-integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342/211270–271;
-daily19UTC-only/nonblocking E2E remains separate. No new runtime/user command,
-settings change, schema installation or coding admission follows; coding is HELD.
 
 ## Built-in registration census and refusal — issue1248
 
@@ -1244,10 +1203,6 @@ including orphan rows and current authority pointers. Typed scalar/native
 `business_purpose=coding-replacement-selection@1` participates in the same
 valid/malformed/duplicate/escaped/incomplete metadata rules. Ordinary
 worker_execution/session purpose and free document prose remain noncoding.
-Historical K2a2 classifier checkpoint: the following empty/reserved full-scan
-routing predates the candidate-directed classifier contract above and is retained
-only as original source history. Current ordinary eligibility uses authoritative
-candidate-local closure; selected actual owners retain the complete reader.
 Recovery.classify_task runs the empty/reserved boundary under its existing lock/error fence before
 no-workflow and no-root/draft/F5 legacy returns; any coding-family schema
 object, including unknown/case-changed names or wrong types, also requires the

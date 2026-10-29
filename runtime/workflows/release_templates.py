@@ -1,25 +1,6 @@
 """Disabled release catalog: fixed package bytes, no workflow store or effects."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _json_dumps as _reader_json_dumps,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all_true as _reader_all_true,
-)
-
-
-from runtime.infrastructure._workflow_reader import (
-    _decode as _reader_decode,
-    _encode as _reader_encode,
-    _json as _reader_json,
-    _reserve as _reader_reserve,
-    _sha256 as _reader_sha256,
-    _work as _reader_work,
-)
-
-
 import base64
 import binascii
 import hashlib
@@ -71,39 +52,36 @@ def _reject_constant(value: str) -> object:
     raise ValueError("nonfinite JSON")
 
 
-def _exact_value(value: object, expected: object, *, budget=None) -> bool:
+def _exact_value(value: object, expected: object) -> bool:
     """Closed keys, list order/bounds and native scalar types, including bool/int."""
-    _reader_work((_reader_reserve(budget, 96) or (value, expected)), budget)
     if type(value) is not type(expected):
         return False
     if isinstance(expected, dict):
-        return value.keys() == expected.keys() and _reader_all_true((
-            _exact_value(value[key], item, budget=budget) for key, item in expected.items()
-        ), budget=budget)
+        return value.keys() == expected.keys() and all(
+            _exact_value(value[key], item) for key, item in expected.items()
+        )
     if isinstance(expected, list):
-        return len(value) == len(expected) and _reader_all_true((
-            _exact_value(left, right, budget=budget) for left, right in zip(value, expected)
-        ), budget=budget)
+        return len(value) == len(expected) and all(
+            _exact_value(left, right) for left, right in zip(value, expected)
+        )
     return value == expected
 
 
-def validate_coding_release(raw: bytes, *, budget=None) -> bytes:
+def validate_coding_release(raw: bytes) -> bytes:
     """Admit only the canonical v1 preimage; caller data cannot select policy."""
     try:
-        _reader_reserve(budget, 128)
         if type(raw) is not bytes or not 0 < len(raw) <= _RESOURCE_LIMIT:
             raise ValueError("resource bounds")
-        _reader_work(raw, budget)
-        definition = _reader_json(_reader_decode(raw, "utf-8", budget=budget), object_pairs_hook=_unique_object,
-                                parse_constant=_reject_constant, budget=budget)
-        if not _exact_value(definition, _EXPECTED_DEFINITION, budget=budget):
+        definition = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
+                                parse_constant=_reject_constant)
+        if not _exact_value(definition, _EXPECTED_DEFINITION):
             raise ValueError("definition shape")
-        _reader_work(definition, budget)
-        canonical = _reader_encode(_reader_json_dumps(definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, budget=budget), "utf-8", budget=budget)
+        canonical = json.dumps(definition, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, allow_nan=False).encode("utf-8")
         if (raw != canonical or len(raw) != _DEFINITION_SIZE
-                or _reader_sha256(raw, budget=budget).hexdigest() != CODING_DEFINITION_DIGEST):
+                or hashlib.sha256(raw).hexdigest() != CODING_DEFINITION_DIGEST):
             raise ValueError("definition pin")
-    except ((ValueError, TypeError, UnicodeError, RecursionError)) as exc:
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
         raise ReleaseTemplateError("resource_corrupt") from exc
     return raw
 

@@ -11,25 +11,6 @@ short and never span snapshot capture or filesystem publication.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _add as _reader_add,
-    _update as _reader_update,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _any_true as _reader_any_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _reserve as _reader_reserve, _work as _reader_work,
-    _sha256 as _reader_sha256, _fromhex as _reader_fromhex,
-)
-
 from runtime.orchestrator.producer_move import NativeWriterDisposition, native_writer
 
 import asyncio
@@ -194,9 +175,8 @@ def _agent_projection(agent, *, status: str) -> dict[str, object]:
     return projection
 
 
-def snapshot_team_agents(snapshot: dict, team: dict, *, budget=None) -> list[str]:
+def snapshot_team_agents(snapshot: dict, team: dict) -> list[str]:
     """Interpret retained v1 and typed v2 authority without rewriting history."""
-    _reader_work((_reader_reserve(budget, 96) or (snapshot,team)), budget, copies=2)
     if not isinstance(snapshot, dict) or not isinstance(team, dict):
         raise WorkflowAuthorityError("authority_snapshot_invalid")
     version = snapshot.get("schema_version")
@@ -208,7 +188,7 @@ def snapshot_team_agents(snapshot: dict, team: dict, *, budget=None) -> list[str
             raise WorkflowAuthorityError("authority_manager_incoherent")
         lead = manager
     else:
-        if (not isinstance(manager, dict) or _reader_set(manager, budget=budget) != _reader_set((_reader_reserve(budget, 96) or ("kind", "principal")), budget=budget)
+        if (not isinstance(manager, dict) or set(manager) != {"kind", "principal"}
                 or manager["kind"] not in ("agent", "human")
                 or not isinstance(manager["principal"], str) or not manager["principal"].strip()
                 or (manager["kind"] == "human" and manager["principal"] != "founder")):
@@ -216,33 +196,32 @@ def snapshot_team_agents(snapshot: dict, team: dict, *, budget=None) -> list[str
         lead = manager["principal"] if manager["kind"] == "agent" else None
     workers = team.get("workers")
     if (not isinstance(workers, list)
-            or _reader_any_true((not isinstance(item, str) or not item.strip() for item in workers), budget=budget)
-            or (version == 2 and (len(_reader_set(workers, budget=budget)) != len(workers) or lead in workers))):
+            or any(not isinstance(item, str) or not item.strip() for item in workers)
+            or (version == 2 and (len(set(workers)) != len(workers) or lead in workers))):
         raise WorkflowAuthorityError("authority_worker_incoherent")
-    return ((_reader_reserve(budget, 192) or [lead]) if lead is not None else (_reader_reserve(budget, 64) or [])) + workers
+    return ([lead] if lead is not None else []) + workers
 
 
-def validate_authority_snapshot(snapshot: dict, *, budget=None) -> None:
-    _reader_work((_reader_reserve(budget, 80) or (snapshot,)), budget, copies=2)
+def validate_authority_snapshot(snapshot: dict) -> None:
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("teams"), list):
         raise WorkflowAuthorityError("authority_snapshot_invalid")
     if type(snapshot.get("schema_version")) is not int or snapshot["schema_version"] not in (1, 2):
         raise WorkflowAuthorityError("authority_snapshot_version_unsupported")
-    names = _reader_set(budget=budget)
-    members = _reader_set(budget=budget)
+    names = set()
+    members = set()
     for team in snapshot["teams"]:
         if (not isinstance(team, dict) or not isinstance(team.get("name"), str)
                 or not team["name"].strip()
                 or (snapshot["schema_version"] == 2 and team["name"] in names)):
             raise WorkflowAuthorityError("authority_snapshot_invalid")
-        _reader_add(names, team["name"], budget=budget)
-        identities = snapshot_team_agents(snapshot, team, budget=budget)
+        names.add(team["name"])
+        identities = snapshot_team_agents(snapshot, team)
         if snapshot["schema_version"] == 2 and members.intersection(identities):
             raise WorkflowAuthorityError("authority_agent_identity_conflict")
-        _reader_update(members, identities, budget=budget)
+        members.update(identities)
     if snapshot["schema_version"] == 2:
-        if _reader_any_true((not isinstance(snapshot.get(key), str) or snapshot[key] not in names
-               for key in ("default_team", "task_default_team")), budget=budget):
+        if any(not isinstance(snapshot.get(key), str) or snapshot[key] not in names
+               for key in ("default_team", "task_default_team")):
             raise WorkflowAuthorityError("authority_routing_incoherent")
 
 

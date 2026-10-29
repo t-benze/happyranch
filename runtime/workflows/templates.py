@@ -6,32 +6,6 @@ templates, create workflow instances/tasks, dispatch work, or emit effects.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _encode as _reader_encode,
-    _json_dumps as _reader_json_dumps,
-    _sha256 as _reader_sha256,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _append as _reader_append,
-    _put as _reader_put,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _any_true as _reader_any_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict_pairs as _reader_dict_pairs,
-    _list as _reader_list,
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _json as _reader_json,
-    _reserve as _reader_reserve, _work as _reader_work,
-)
-
 import hashlib
 import json
 import re
@@ -154,29 +128,33 @@ class WorkflowTemplateVersion:
     published_at: str
 
 
-def _canonical_json(value: object, *, code: str, budget=None) -> bytes:
-    _reader_reserve(budget, 0)
+def _canonical_json(value: object, *, code: str) -> bytes:
     try:
-        _reader_reserve(budget, 112)
-        return _reader_encode(_reader_json_dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, budget=budget), "utf-8", budget=budget)
-    except ((TypeError, ValueError, UnicodeError)) as exc:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
         raise WorkflowTemplateError(code) from exc
 
 
-def _closed_dict(value: object, keys: set[str], *, budget=None) -> dict:
-    _reader_reserve(budget, 0)
-    _reader_reserve(budget, 64 * len(keys))
-    if not isinstance(value, dict) or _reader_set(value, budget=budget) != keys:
+def _closed_dict(value: object, keys: set[str]) -> dict:
+    if not isinstance(value, dict) or set(value) != keys:
         raise WorkflowTemplateError("invalid_template_definition")
     return value
 
 
-def _validate_legacy_definition(definition: object, *, budget=None) -> bytes:
-    _reader_work(definition, budget, copies=2)
+def _validate_legacy_definition(definition: object) -> bytes:
     root = _closed_dict(
         definition,
-        _reader_set((_reader_reserve(budget, 176) or ("kind", "schema_version", "description", "author", "reviewers", "approval", "request_changes")), budget=budget),
-    budget=budget)
+        {
+            "kind", "schema_version", "description", "author", "reviewers",
+            "approval", "request_changes",
+        },
+    )
     if (
         root["kind"] != "product-design"
         or type(root["schema_version"]) is not int
@@ -189,98 +167,102 @@ def _validate_legacy_definition(definition: object, *, budget=None) -> bytes:
         or len(root["description"]) > 2000
     ):
         raise WorkflowTemplateError("invalid_template_definition")
-    author = _closed_dict(root["author"], _reader_set((_reader_reserve(budget, 112) or ("role", "kind", "artifact")), budget=budget), budget=budget)
-    if author != (_reader_reserve(budget, 448) or {
+    author = _closed_dict(root["author"], {"role", "kind", "artifact"})
+    if author != {
         "role": "product-lead",
         "kind": "agent",
         "artifact": "immutable-prd-revision",
-    }):
+    }:
         raise WorkflowTemplateError("invalid_template_definition")
     reviewers = root["reviewers"]
-    if reviewers != (_reader_reserve(budget, 448) or [
-        (_reader_reserve(budget, 320) or {"role": "founder", "kind": "human"}),
-        (_reader_reserve(budget, 320) or {"role": "implementer", "kind": "agent"}),
-        (_reader_reserve(budget, 320) or {"role": "tester", "kind": "agent"}),
-    ]):
+    if reviewers != [
+        {"role": "founder", "kind": "human"},
+        {"role": "implementer", "kind": "agent"},
+        {"role": "tester", "kind": "agent"},
+    ]:
         raise WorkflowTemplateError("invalid_template_definition")
-    approval = _closed_dict(root["approval"], _reader_set((_reader_reserve(budget, 112) or ("mode", "revision", "required_roles")), budget=budget), budget=budget)
-    if approval != (_reader_reserve(budget, 448) or {
+    approval = _closed_dict(root["approval"], {"mode", "revision", "required_roles"})
+    if approval != {
         "mode": "all",
         "revision": "current",
-        "required_roles": (_reader_reserve(budget, 448) or ["founder", "implementer", "tester"]),
-    }):
+        "required_roles": ["founder", "implementer", "tester"],
+    }:
         raise WorkflowTemplateError("invalid_template_definition")
-    request_changes = _closed_dict(root["request_changes"], _reader_set((_reader_reserve(budget, 80) or ("action",)), budget=budget), budget=budget)
-    if request_changes != (_reader_reserve(budget, 192) or {"action": "return-to-author"}):
+    request_changes = _closed_dict(root["request_changes"], {"action"})
+    if request_changes != {"action": "return-to-author"}:
         raise WorkflowTemplateError("invalid_template_definition")
-    return _canonical_json(root, code="invalid_template_definition", budget=budget)
+    return _canonical_json(root, code="invalid_template_definition")
 
 
-def _compile_document_definition(definition: object, *, budget=None) -> dict:
+def _compile_document_definition(definition: object) -> dict:
     """Compile a matched finite document family without principal authority."""
-    _reader_work(definition, budget, copies=2)
-    root = _closed_dict(definition, _reader_set((_reader_reserve(budget, 224) or ("kind", "schema_version", "description", "author", "output", "reviewers", "outcomes", "approval", "request_changes", "submission")), budget=budget), budget=budget)
+    root = _closed_dict(definition, {
+        "kind", "schema_version", "description", "author", "output", "reviewers",
+        "outcomes", "approval", "request_changes", "submission",
+    })
     if (type(root["schema_version"]) is not int or root["schema_version"] not in (2, 3)
             or root["kind"] != "document-review"):
         raise WorkflowTemplateError("invalid_template_definition")
-    for description in (_reader_reserve(budget, 96) or (root["description"], _closed_dict(
-            root["output"], _reader_set((_reader_reserve(budget, 96) or ("primitive", "description")), budget=budget), budget=budget)["description"])):
+    for description in (root["description"], _closed_dict(
+            root["output"], {"primitive", "description"})["description"]):
         if not isinstance(description, str) or not description.strip() or len(description) > 2000:
             raise WorkflowTemplateError("invalid_template_definition")
     if root["output"]["primitive"] != "immutable-document-revision":
         raise WorkflowTemplateError("invalid_template_definition")
-    author = _closed_dict(root["author"], _reader_set((_reader_reserve(budget, 96) or ("role", "kind")), budget=budget), budget=budget)
-    _component(author["role"], code="invalid_template_definition", budget=budget)
+    author = _closed_dict(root["author"], {"role", "kind"})
+    _component(author["role"], code="invalid_template_definition")
     if author["kind"] != "agent":
         raise WorkflowTemplateError("invalid_template_definition")
     reviewers = root["reviewers"]
     if not isinstance(reviewers, list) or not 1 <= len(reviewers) <= 3:
         raise WorkflowTemplateError("invalid_template_definition")
-    kinds = (_reader_reserve(budget, 192) or {author["role"]: "agent"})
-    reviewer_roles = (_reader_reserve(budget, 64) or [])
+    kinds = {author["role"]: "agent"}
+    reviewer_roles = []
     for value in reviewers:
-        reviewer = _closed_dict(value, _reader_set((_reader_reserve(budget, 96) or ("role", "kind")), budget=budget), budget=budget)
-        role = _component(reviewer["role"], code="invalid_template_definition", budget=budget)
+        reviewer = _closed_dict(value, {"role", "kind"})
+        role = _component(reviewer["role"], code="invalid_template_definition")
         if role in kinds or reviewer["kind"] not in ("agent", "human"):
             raise WorkflowTemplateError("invalid_template_definition")
-        _reader_put(reviewer["kind"], kinds, role, budget=budget)
-        _reader_append(reviewer_roles, role, budget=budget)
-    if _reader_list(kinds.values(), budget=budget).count("human") > 1:
+        kinds[role] = reviewer["kind"]
+        reviewer_roles.append(role)
+    if list(kinds.values()).count("human") > 1:
         raise WorkflowTemplateError("invalid_template_definition")
     outcomes = root["outcomes"]
     if (not isinstance(outcomes, list) or not 1 <= len(outcomes) <= 2
-            or _reader_any_true((value not in ("approved", "changes_requested") for value in outcomes), budget=budget)
-            or len(_reader_set(outcomes, budget=budget)) != len(outcomes) or "approved" not in outcomes):
+            or any(value not in ("approved", "changes_requested") for value in outcomes)
+            or len(set(outcomes)) != len(outcomes) or "approved" not in outcomes):
         raise WorkflowTemplateError("invalid_template_definition")
-    approval = _closed_dict(root["approval"], _reader_set((_reader_reserve(budget, 112) or ("mode", "revision", "required_roles")), budget=budget), budget=budget)
+    approval = _closed_dict(root["approval"], {"mode", "revision", "required_roles"})
     if (approval["mode"] != "all" or approval["revision"] != "current"
             or approval["required_roles"] != reviewer_roles):
         raise WorkflowTemplateError("invalid_template_definition")
     if "changes_requested" in outcomes:
-        if _closed_dict(root["request_changes"], _reader_set((_reader_reserve(budget, 112) or ("action", "revision", "invalidate")), budget=budget), budget=budget) != (_reader_reserve(budget, 448) or {
-                "action": "return-to-author", "revision": "new", "invalidate": "all-prior-receipts"}):
+        if _closed_dict(root["request_changes"], {"action", "revision", "invalidate"}) != {
+                "action": "return-to-author", "revision": "new", "invalidate": "all-prior-receipts"}:
             raise WorkflowTemplateError("invalid_template_definition")
     elif root["request_changes"] is not None:
         raise WorkflowTemplateError("invalid_template_definition")
     version = root["schema_version"]
-    submission = _closed_dict(root["submission"], _reader_set((_reader_reserve(budget, 96) or ("timing", "delivery")), budget=budget) if version == 3 else _reader_set((_reader_reserve(budget, 80) or ("timing",)), budget=budget), budget=budget)
+    submission = _closed_dict(root["submission"], {"timing", "delivery"} if version == 3 else {"timing"})
     if version == 3 and submission["delivery"] != "current-author-handoff@1":
         raise WorkflowTemplateError("invalid_template_definition")
     if submission["timing"] not in ("on-completion", "while-active-or-completed"):
         raise WorkflowTemplateError("invalid_template_definition")
     # Store the operator's ordering. Neither a name nor a numerical publication
     # version participates in policy selection.
-    return (_reader_reserve(budget, 1216) or dict(format=f"workflow-document-contract@{version}", author_role=author["role"],
+    return dict(format=f"workflow-document-contract@{version}", author_role=author["role"],
                 role_kinds=kinds, reviewer_roles=reviewer_roles, output=root["output"],
                 outcomes=outcomes, approval=approval, request_changes=root["request_changes"],
-                submission=submission))
+                submission=submission)
 
 
-def _compile_artifact_definition(definition: object, *, budget=None) -> dict:
+def _compile_artifact_definition(definition: object) -> dict:
     """Finite @4 data contract; kind selection never confers repository access."""
-    _reader_work(definition, budget, copies=2)
-    root = _closed_dict(definition, _reader_set((_reader_reserve(budget, 224) or ("kind", "schema_version", "description", "author", "output", "reviewers", "outcomes", "approval", "request_changes", "submission")), budget=budget), budget=budget)
-    output = _closed_dict(root["output"], _reader_set((_reader_reserve(budget, 112) or ("primitive", "description", "accepted_kinds")), budget=budget), budget=budget)
+    root = _closed_dict(definition, {
+        "kind", "schema_version", "description", "author", "output", "reviewers",
+        "outcomes", "approval", "request_changes", "submission",
+    })
+    output = _closed_dict(root["output"], {"primitive", "description", "accepted_kinds"})
     if (type(root["schema_version"]) is not int or root["schema_version"] != 4
             or root["kind"] != "artifact-review"
             or output["primitive"] != "immutable-artifact-revision"
@@ -291,75 +273,68 @@ def _compile_artifact_definition(definition: object, *, budget=None) -> dict:
     # Share finite policy validation, preserving the historical compiler and
     # serializer. The @4 output remains explicit and is never content-sniffed.
     policy = _compile_document_definition(dict(root, kind="document-review", schema_version=3,
-        output=(_reader_reserve(budget, 320) or dict(primitive="immutable-document-revision", description=output["description"]))), budget=budget)
+        output=dict(primitive="immutable-document-revision", description=output["description"])))
     return dict(policy, format="workflow-artifact-contract@4", output=output)
 
 
-def _validate_definition(definition: object, *, budget=None) -> bytes:
-    _reader_reserve(budget, 0)
+def _validate_definition(definition: object) -> bytes:
     if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] == 4:
-        _compile_artifact_definition(definition, budget=budget)
-        return _canonical_json(definition, code="invalid_template_definition", budget=budget)
+        _compile_artifact_definition(definition)
+        return _canonical_json(definition, code="invalid_template_definition")
     if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3):
-        _compile_document_definition(definition, budget=budget)
-        return _canonical_json(definition, code="invalid_template_definition", budget=budget)
-    return _validate_legacy_definition(definition, budget=budget)
+        _compile_document_definition(definition)
+        return _canonical_json(definition, code="invalid_template_definition")
+    return _validate_legacy_definition(definition)
 
 
-def _definition_pins(definition: dict, *, budget=None) -> tuple[str, str, str]:
-    _reader_reserve(budget, 0)
-    _reader_reserve(budget, 256)
+def _definition_pins(definition: dict) -> tuple[str, str, str]:
     if type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3, 4):
         version = definition["schema_version"]
-        return (_reader_reserve(budget, 112) or (f'workflow-compiler@{version}', f'workflow-validator@{version}', f'operator-input@{version}'))
-    return (_reader_reserve(budget, 112) or (_COMPILER_PIN, _VALIDATOR_PIN, _SOURCE_PIN))
+        return f"workflow-compiler@{version}", f"workflow-validator@{version}", f"operator-input@{version}"
+    return _COMPILER_PIN, _VALIDATOR_PIN, _SOURCE_PIN
 
 
 def _validate_definition_pins(definition: object, *, compiler_pin: str,
-                              validator_pin: str, source_pin: str, budget=None) -> bytes:
-    _reader_reserve(budget, 0)
-    raw = _validate_definition(definition, budget=budget)
-    if (_reader_reserve(budget, 112) or (compiler_pin, validator_pin, source_pin)) != _definition_pins(definition, budget=budget):
+                              validator_pin: str, source_pin: str) -> bytes:
+    raw = _validate_definition(definition)
+    if (compiler_pin, validator_pin, source_pin) != _definition_pins(definition):
         raise WorkflowTemplateError("invalid_template_definition")
     return raw
 
 
-def _document_contract(template: WorkflowTemplateVersion, *, budget=None) -> dict | None:
+def _document_contract(template: WorkflowTemplateVersion) -> dict | None:
     """Read the retained definition and exact family, including during replay."""
     try:
-        _reader_reserve(budget, 112)
-        definition = _reader_json(template.definition_bytes, budget)
+        definition = json.loads(template.definition_bytes)
         raw = _validate_definition_pins(definition, compiler_pin=template.compiler_pin,
-                                        validator_pin=template.validator_pin, source_pin=template.source_pin, budget=budget)
+                                        validator_pin=template.validator_pin, source_pin=template.source_pin)
         if raw != template.definition_bytes:
             raise WorkflowTemplateError("template_storage_corrupt")
-        if _definition_pins(definition, budget=budget)[0] in ("workflow-compiler@2", "workflow-compiler@3"):
-            return _compile_document_definition(definition, budget=budget)
+        if _definition_pins(definition)[0] in ("workflow-compiler@2", "workflow-compiler@3"):
+            return _compile_document_definition(definition)
         if template.compiler_pin == "workflow-compiler@4":
             raise WorkflowTemplateError("template_storage_corrupt")
         return None
-    except ((ValueError, TypeError, UnicodeError)) as exc:
+    except (ValueError, TypeError, UnicodeError) as exc:
         raise WorkflowTemplateError("template_storage_corrupt") from exc
 
 
-def _review_contract(template: WorkflowTemplateVersion, *, budget=None) -> dict | None:
+def _review_contract(template: WorkflowTemplateVersion) -> dict | None:
     """Select an exact closed family; legacy documents keep their own contract."""
     if template.compiler_pin != "workflow-compiler@4":
-        return _document_contract(template, budget=budget)
+        return _document_contract(template)
     try:
-        _reader_reserve(budget, 112)
-        definition = _reader_json(template.definition_bytes, budget)
+        definition = json.loads(template.definition_bytes)
         raw = _validate_definition_pins(definition, compiler_pin=template.compiler_pin,
-            validator_pin=template.validator_pin, source_pin=template.source_pin, budget=budget)
+            validator_pin=template.validator_pin, source_pin=template.source_pin)
         if raw != template.definition_bytes:
             raise ValueError("canonical bytes")
-        return _compile_artifact_definition(definition, budget=budget)
-    except ((ValueError, TypeError, UnicodeError)) as exc:
+        return _compile_artifact_definition(definition)
+    except (ValueError, TypeError, UnicodeError) as exc:
         raise WorkflowTemplateError("template_storage_corrupt") from exc
 
 
-def _component(value: object, *, code: str, budget=None) -> str:
-    _reader_work(value, budget)
+def _component(value: object, *, code: str) -> str:
     if not isinstance(value, str) or _COMPONENT.fullmatch(value) is None:
         raise WorkflowTemplateError(code)
     return value
@@ -371,12 +346,10 @@ def _namespace(org_slug: str, team_slug: str) -> str:
     return f"org/{org}/team/{team}"
 
 
-def _stable_id(kind: str, *parts: object, budget=None) -> str:
-    _reader_reserve(budget, 0)
-    _reader_reserve(budget, 64 + 16 * (len(parts) + 1) + 128 + 4 * len(kind))
-    raw = _canonical_json([kind, *parts], code="invalid_template_request", budget=budget)
-    _reader_work(raw, budget)
-    digest = _reader_sha256(raw, budget=budget).hexdigest()
+def _stable_id(kind: str, *parts: object) -> str:
+    digest = hashlib.sha256(
+        _canonical_json([kind, *parts], code="invalid_template_request")
+    ).hexdigest()
     return f"{kind}:{digest}"
 
 
@@ -612,12 +585,10 @@ class WorkflowTemplateStore:
 
     @staticmethod
     def _read_release(conn: sqlite3.Connection, *, org_slug: str | None,
-                      allow_absent: bool = False, budget=None) -> WorkflowTemplateVersion | None:
+                      allow_absent: bool = False) -> WorkflowTemplateVersion | None:
         from runtime.workflows._coding_registered_release import read_registered_release
         from runtime.workflows.coding_authority_history import _Budget
-        if budget is not None and type(budget) is not _Budget:
-            raise WorkflowTemplateError('template_storage_corrupt')
-        budget = _Budget() if budget is None else budget
+        budget = _Budget()
         owned = not conn.in_transaction
         if owned:
             conn.execute('BEGIN')
@@ -654,42 +625,40 @@ class WorkflowTemplateStore:
         identity_id: str,
         version: int,
         expected_version_id: str | None = None,
-        budget=None,
     ) -> WorkflowTemplateVersion:
-        row = _reader_one(conn, "SELECT i.namespace,i.template_name,m.version,m.template_version_id,"
+        row = conn.execute(
+            "SELECT i.namespace,i.template_name,m.version,m.template_version_id,"
             "v.definition_bytes,v.definition_digest,v.compiler_pin,v.validator_pin,"
             "v.source_pin,v.published_by,v.published_at "
             "FROM workflow_template_identities i "
             "JOIN workflow_template_identity_versions m ON m.template_identity_id=i.id "
             "JOIN workflow_template_versions v ON v.id=m.template_version_id "
-            "WHERE i.id=? AND m.version=?", (_reader_reserve(budget, 96) or (identity_id, version)), budget=budget)
+            "WHERE i.id=? AND m.version=?",
+            (identity_id, version),
+        ).fetchone()
         if row is None:
             raise WorkflowTemplateError("template_version_not_found")
         if expected_version_id is not None and row["template_version_id"] != expected_version_id:
             raise WorkflowTemplateError("template_storage_corrupt")
         if row['namespace'] == 'release/happyranch':
-            imported = WorkflowTemplateStore._read_release(conn, org_slug=None, budget=budget)
+            imported = WorkflowTemplateStore._read_release(conn, org_slug=None)
             if (type(version) is not int or imported.identity_id != identity_id or imported.version != version
                     or (expected_version_id is not None and imported.version_id != expected_version_id)):
                 raise WorkflowTemplateError('template_storage_corrupt')
             return imported
-        _reader_work(row["definition_bytes"], budget, copies=2)
         definition_bytes = bytes(row["definition_bytes"])
-        if _reader_sha256(definition_bytes, budget=budget).hexdigest() != row["definition_digest"]:
+        if hashlib.sha256(definition_bytes).hexdigest() != row["definition_digest"]:
             raise WorkflowTemplateError("template_storage_corrupt")
         try:
-            _reader_reserve(budget, 112)
-            canonical = _validate_definition_pins(_reader_json(definition_bytes, budget),
-                compiler_pin=row["compiler_pin"], validator_pin=row["validator_pin"], source_pin=row["source_pin"], budget=budget)
+            canonical = _validate_definition_pins(json.loads(definition_bytes),
+                compiler_pin=row["compiler_pin"], validator_pin=row["validator_pin"], source_pin=row["source_pin"])
             if canonical != definition_bytes:
                 raise WorkflowTemplateError("template_storage_corrupt")
-            publisher = _reader_json(row["published_by"], budget)
-        except ((TypeError, ValueError, UnicodeError)) as exc:
+            publisher = json.loads(row["published_by"])
+        except (TypeError, ValueError, UnicodeError) as exc:
             raise WorkflowTemplateError("template_storage_corrupt") from exc
         if not isinstance(publisher, dict):
             raise WorkflowTemplateError("template_storage_corrupt")
-        _reader_work(publisher, budget)
-        _reader_reserve(budget, 512)
         return WorkflowTemplateVersion(
             identity_id=identity_id,
             version_id=str(row["template_version_id"]),
@@ -701,6 +670,6 @@ class WorkflowTemplateStore:
             compiler_pin=str(row["compiler_pin"]),
             validator_pin=str(row["validator_pin"]),
             source_pin=str(row["source_pin"]),
-            publisher=_reader_dict_pairs(((_reader_reserve(budget, 96) or (str(key),  str(value) )) for key, value in publisher.items()), budget=budget),
+            publisher={str(key): str(value) for key, value in publisher.items()},
             published_at=str(row["published_at"]),
         )

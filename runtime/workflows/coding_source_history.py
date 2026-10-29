@@ -8,35 +8,6 @@ No transaction control, native writer, tracker reconstruction or mount occurs.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _add as _reader_add,
-    _append as _reader_append,
-    _extend as _reader_extend,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all_true as _reader_all_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _list as _reader_list,
-    _set as _reader_set,
-    _tuple as _reader_tuple,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _decode as _reader_decode,
-    _encode as _reader_encode,
-    _work as _reader_work,
-)
-
-
-from runtime.infrastructure._workflow_reader import (
-    _raw_rows as _reader_raw_rows, _raw_one as _reader_raw_one, _json as _reader_json,
-    _reserve as _reader_reserve,
-    _json_work as _reader_json_work,
-)
-
 import json
 import math
 import re
@@ -114,11 +85,9 @@ class NativeSourceRecord:
     def _value(self, name: str) -> bytes | int | float | None:
         return next(column.value for column in self.columns if column.name == name)
 
-    def _text(self, name: str, *, budget=None) -> str | None:
-        _reader_work(name, budget)
-        _reader_reserve(budget, 16 * len(self.columns))
+    def _text(self, name: str) -> str | None:
         value = self._value(name)
-        return None if value is None else _reader_decode(value, 'utf8', budget=budget)
+        return None if value is None else value.decode('utf8')
 
 
 @dataclass(frozen=True)
@@ -170,22 +139,23 @@ _RESULT_SQL = _projection(_RESULT_COLUMNS, _RESULT_TYPES, 'task_results',
 def _native_rows(conn: sqlite3.Connection, sql: str, args: tuple,
                  columns: tuple[str, ...], types: tuple[tuple[str, ...], ...],
                  budget: _Budget) -> Iterator[NativeSourceRecord]:
-    records = _reader_raw_rows(conn, sql, args + (_reader_reserve(budget, 96) or (
-        _CALL_ROW_LIMIT - budget.accepted_rows, budget.remaining_bytes)) * len(columns), budget=budget)
+    cursor = conn.cursor()
+    cursor.row_factory = None
     try:
         # Page size is one. The relevant inventory advances by native INTEGER
         # ID with bounded keyset pages, not OFFSET/fetchall. Every next candidate
         # receives a NEW remaining-byte gate; no page can overspend the budget
         # through multiple buffered payload rows with a stale remaining value.
-        for row in records:
+        cursor.execute(sql, args + (_CALL_ROW_LIMIT - budget.accepted_rows,
+                                    budget.remaining_bytes) * len(columns))
+        while (row := cursor.fetchone()) is not None:
             budget.candidate()  # before type/grammar/conflict rejection
             budget.step()
             values = budget.native_row(row, types)
-            _reader_reserve(budget, 256 * len(columns) + 64)
-            yield NativeSourceRecord(_reader_tuple((NativeSourceColumn(name, storage, value)
-                for name, storage, value in zip(columns, row[len(columns):], values)), budget=budget))
+            yield NativeSourceRecord(tuple(NativeSourceColumn(name, storage, value)
+                for name, storage, value in zip(columns, row[len(columns):], values)))
     finally:
-        records.close()
+        cursor.close()
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -204,20 +174,19 @@ def _constant(_: str) -> None:
 def _json(raw: bytes, budget: _Budget) -> object:
     # Bound already applied to raw native bytes before fetch. Retain raw bytes
     # in the result; parsing never rewrites whitespace/key order/UTF8 spelling.
-    _reader_json_work(raw, budget)
-    value = _reader_json(_reader_decode(raw, 'utf8', budget=budget), object_pairs_hook=_pairs, parse_constant=_constant, budget=budget)
-    pending = (_reader_reserve(budget, 192) or [value])
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=_pairs, parse_constant=_constant)
+    pending = [value]
     while pending:
         item = pending.pop()
         budget.step()
         if type(item) is str:
-            _reader_encode(item, 'utf8', budget=budget)
+            item.encode('utf8')
         elif type(item) is float:
             _check(math.isfinite(item))  # includes overflow such as 1e999
         elif type(item) is dict:
-            _reader_extend(pending, item.values(), budget=budget)
+            pending.extend(item.values())
         elif type(item) is list:
-            _reader_extend(pending, item, budget=budget)
+            pending.extend(item)
     return value
 
 
@@ -245,27 +214,35 @@ def _native_json(record: NativeSourceRecord, names: tuple[str, ...], budget: _Bu
 def _task(conn: sqlite3.Connection, identity: str, budget: _Budget) -> NativeSourceRecord:
     # Bounded independent uniqueness probe precedes the singleton payload
     # fetch. LIMIT1 below cannot mask conflicts; caller holds this snapshot.
-    count = _reader_raw_one(conn, _TASK_COUNT_SQL, (_reader_reserve(budget, 80) or (identity,)), budget=budget)
-    _check(count == (1,))
-    rows = (_reader_reserve(budget, 64) or [])
-    for row in _native_rows(conn, _TASK_SQL, (_reader_reserve(budget, 80) or (identity,)), _TASK_COLUMNS, _TASK_TYPES, budget):
+    cursor = conn.cursor()
+    cursor.row_factory = None
+    try:
+        cursor.execute(_TASK_COUNT_SQL, (identity,))
+        count = cursor.fetchone()
+        budget.candidate()
+        budget.step()
+        _check(count == (1,))
+    finally:
+        cursor.close()
+    rows = []
+    for row in _native_rows(conn, _TASK_SQL, (identity,), _TASK_COLUMNS, _TASK_TYPES, budget):
         _check(not rows)
-        _reader_append(rows, row, budget=budget)
+        rows.append(row)
     _check(len(rows) == 1)
     row = rows[0]
-    _check(row._text('id', budget=budget) == identity)
-    _token(identity, budget=budget)
-    _check(row._text('status', budget=budget) in ('pending', 'in_progress', 'escalated', 'completed',
+    _check(row._text('id') == identity)
+    _token(identity)
+    _check(row._text('status') in ('pending', 'in_progress', 'escalated', 'completed',
                                  'failed', 'cancelled', 'superseded'))
-    _check(row._text('task_type', budget=budget) in ('task', 'subtask'))
-    _token(row._text('team', budget=budget), budget=budget)
+    _check(row._text('task_type') in ('task', 'subtask'))
+    _token(row._text('team'))
     for name in ('assigned_agent', 'parent_task_id', 'revisit_of_task_id',
                  'dispatched_from_thread_id', 'current_session_id'):
-        _optional_token(row._text(name, budget=budget))
+        _optional_token(row._text(name))
     for name in ('created_at', 'updated_at'):
-        _timestamp(row._text(name, budget=budget))
+        _timestamp(row._text(name))
     for name in ('completed_at', 'cancelled_at', 'last_heartbeat', 'zombie_flagged_at'):
-        _timestamp(row._text(name, budget=budget), nullable=True)
+        _timestamp(row._text(name), nullable=True)
     _native_json(row, ('blocked_on_job_ids', 'active_chain', 'active_fanout'), budget)
     return row
 
@@ -279,7 +256,7 @@ def _inventory(conn: sqlite3.Connection, sql: str, args: tuple,
     after = -9223372036854775808
     while True:
         budget.step()
-        page = _reader_list(_native_rows(conn, sql, args + (_reader_reserve(budget, 96) or (after, 1)), columns, types, budget), budget=budget)
+        page = list(_native_rows(conn, sql, args + (after, 1), columns, types, budget))
         if not page:
             return
         _check(len(page) == 1)
@@ -297,13 +274,13 @@ def _session_start(conn: sqlite3.Connection, issuer: dict,
     selected = None
     # Scan the task's complete relevant start inventory, including foreign
     # agents: SQL agent filtering must not hide a conflicting same-SID row.
-    for row in _inventory(conn, _AUDIT_SQL, (_reader_reserve(budget, 80) or (issuer['task_id'],)), _AUDIT_COLUMNS, _AUDIT_TYPES, budget):
-        _check(row._text('task_id', budget=budget) == issuer['task_id'] and row._text('action', budget=budget) == 'session_start')
-        _token(row._text('agent', budget=budget), budget=budget)
-        _timestamp(row._text('timestamp', budget=budget))
+    for row in _inventory(conn, _AUDIT_SQL, (issuer['task_id'],), _AUDIT_COLUMNS, _AUDIT_TYPES, budget):
+        _check(row._text('task_id') == issuer['task_id'] and row._text('action') == 'session_start')
+        _token(row._text('agent'))
+        _timestamp(row._text('timestamp'))
         payload = _json(row._value('payload'), budget)
-        required = _reader_set((_reader_reserve(budget, 144) or ('workspace', 'session_id', 'invocation_purpose', 'executor', 'model')), budget=budget)
-        _check(type(payload) is dict and _reader_set(payload, budget=budget) in (_reader_reserve(budget, 96) or (required, required | _reader_set((_reader_reserve(budget, 80) or ('reasoning_effort',)), budget=budget))))
+        required = {'workspace', 'session_id', 'invocation_purpose', 'executor', 'model'}
+        _check(type(payload) is dict and set(payload) in (required, required | {'reasoning_effort'}))
         _check(type(payload['workspace']) is str)
         _optional_token(payload['session_id'])
         _check(payload['invocation_purpose'] in ('manager_decision', 'worker_execution', 'unattributed', 'completion_recovery'))
@@ -312,7 +289,7 @@ def _session_start(conn: sqlite3.Connection, issuer: dict,
         if 'reasoning_effort' in payload:
             _check(type(payload['reasoning_effort']) is str)
         if payload['session_id'] == issuer['session_id']:
-            _check(selected is None and row._text('agent', budget=budget) == issuer['principal']
+            _check(selected is None and row._text('agent') == issuer['principal']
                    and payload['invocation_purpose'] == 'manager_decision')
             selected = row
     _check(selected is not None)
@@ -320,37 +297,37 @@ def _session_start(conn: sqlite3.Connection, issuer: dict,
 
 
 def _start_decision(row: NativeSourceRecord, capability: dict, budget: _Budget) -> None:
-    _check(row._text('status', budget=budget) == 'completed' and row._value('waiting_on_job_ids') is None)
-    decision = _closed(_json(row._value('decision_json'), budget), 'action workflow', reader_budget=budget)
+    _check(row._text('status') == 'completed' and row._value('waiting_on_job_ids') is None)
+    decision = _closed(_json(row._value('decision_json'), budget), 'action workflow')
     _check(decision['action'] == 'workflow_start')
     command = decision['workflow']
     _check(type(command) is dict)
     tag = command.get('format')
     _check(tag in ('workflow-coding-start@1', 'workflow-coding-start@2'))
     _closed(command, 'format operation_key release mapping work implementer_override'
-            + (' settings' if tag == 'workflow-coding-start@2' else ''), reader_budget=budget)
+            + (' settings' if tag == 'workflow-coding-start@2' else ''))
     if tag == 'workflow-coding-start@2':
-        settings = _closed(command['settings'], 'generation snapshot_digest', reader_budget=budget)
-        _integer(settings['generation'], 1, reader_budget=budget)
+        settings = _closed(command['settings'], 'generation snapshot_digest')
+        _integer(settings['generation'], 1)
         _check(settings['generation'] <= 9223372036854775807)
-        _digest(settings['snapshot_digest'], reader_budget=budget)
-    _operation(command['operation_key'], reader_budget=budget)
-    _release(command['release'], reader_budget=budget)
-    mapping = _closed(command['mapping'], 'id generation digest', reader_budget=budget)
-    _token(mapping['id'], budget=budget)
-    _integer(mapping['generation'], 1, reader_budget=budget)
-    _digest(mapping['digest'], reader_budget=budget)
-    work = _closed(command['work'], 'brief repository_id object_format base paths', reader_budget=budget)
-    _check(type(work['brief']) is str and 0 < len(_reader_encode(work['brief'], 'utf8', budget=budget)) <= 16384
+        _digest(settings['snapshot_digest'])
+    _operation(command['operation_key'])
+    _release(command['release'])
+    mapping = _closed(command['mapping'], 'id generation digest')
+    _token(mapping['id'])
+    _integer(mapping['generation'], 1)
+    _digest(mapping['digest'])
+    work = _closed(command['work'], 'brief repository_id object_format base paths')
+    _check(type(work['brief']) is str and 0 < len(work['brief'].encode('utf8')) <= 16384
            and '\x00' not in work['brief'])
-    _repository(work['repository_id'], reader_budget=budget)
+    _repository(work['repository_id'])
     _check(work['object_format'] in ('sha1', 'sha256'))
-    _oid(work['base'], work['object_format'], reader_budget=budget)
-    _paths(work['paths'], reader_budget=budget)
+    _oid(work['base'], work['object_format'])
+    _paths(work['paths'])
     radius = capability['radius']
-    _check(_reader_all_true((work[key] == radius[key] for key in ('repository_id', 'object_format', 'base', 'paths')), budget=budget))
+    _check(all(work[key] == radius[key] for key in ('repository_id', 'object_format', 'base', 'paths')))
     if command['implementer_override'] is not None:
-        _agent(command['implementer_override'], reader_budget=budget)
+        _agent(command['implementer_override'])
     # The WHOLE original decision/command remains in this exact native row.
     # Original callback/source capture, mapping/effective roles, action claim,
     # source_rule and current-use equality belong to later independent owners.
@@ -360,13 +337,13 @@ def _results(conn: sqlite3.Connection, capability: dict,
              budget: _Budget) -> tuple[NativeSourceRecord, ...]:
     issuer = capability['issuer']
     selected = None
-    records = (_reader_reserve(budget, 64) or [])
-    for row in _inventory(conn, _RESULT_SQL, (_reader_reserve(budget, 96) or (issuer['task_id'], issuer['session_id'])),
+    records = []
+    for row in _inventory(conn, _RESULT_SQL, (issuer['task_id'], issuer['session_id']),
                           _RESULT_COLUMNS, _RESULT_TYPES, budget):
-        _check(row._text('task_id', budget=budget) == issuer['task_id'] and row._text('agent', budget=budget) == issuer['principal']
-               and row._text('session_id', budget=budget) == issuer['session_id'])
-        _token(row._text('status', budget=budget), budget=budget)
-        _timestamp(row._text('created_at', budget=budget))
+        _check(row._text('task_id') == issuer['task_id'] and row._text('agent') == issuer['principal']
+               and row._text('session_id') == issuer['session_id'])
+        _token(row._text('status'))
+        _timestamp(row._text('created_at'))
         # Native learnings is nullable free TEXT, inserted unchanged by its
         # owner. Its storage/UTF8/raw-byte gates still apply to EVERY result.
         _native_json(row, ('decision_json', 'risks_flagged', 'waiting_on_job_ids', 'local_ci'), budget)
@@ -374,11 +351,11 @@ def _results(conn: sqlite3.Connection, capability: dict,
             _check(selected is None)
             _start_decision(row, capability, budget)
             selected = row
-        _reader_append(records, row, budget=budget)
+        records.append(row)
     if issuer['result_id'] is not None:
         _check(selected is not None and capability['action'] == 'start-coding')
     # A genuine null selected ID does NOT prove no later callback exists.
-    return _reader_tuple(records, budget=budget)
+    return tuple(records)
 
 
 def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
@@ -387,12 +364,12 @@ def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
     _check(type(conn) is sqlite3.Connection and conn.in_transaction and conn.text_factory is str)
     _check(type(expected_org_slug) is str
            and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
-    _token(authorization_id, budget=budget)
+    _token(authorization_id)
     if budget is None:
         budget = _Budget()
     setups = setups if setups is not None else _SetupHistoryReader(conn, expected_org_slug, budget)
     history = _history(conn, expected_org_slug, authorization_id, budget=budget, setups=setups)
-    capability = _reader_json(history.selected.authority_bytes, budget)
+    capability = json.loads(history.selected.authority_bytes)
     _check(capability['level'] == 'source')
     issuer = capability['issuer']
     # _history binds the COMPLETE native lineage in source-to-selected
@@ -400,22 +377,22 @@ def _source_records(conn: sqlite3.Connection, expected_org_slug: str,
     # retain the same issuer/result but may narrow paths. The original
     # callback must match that initial P exactly, not the narrower child.
     budget.step()
-    initial_source = _reader_json(history.capabilities[0].authority_bytes, budget)
+    initial_source = json.loads(history.capabilities[0].authority_bytes)
     _check(initial_source['level'] == 'source' and initial_source['issuer'] == issuer)
     source = _task(conn, issuer['task_id'], budget)
-    chain = (_reader_reserve(budget, 192) or [source])
-    seen = _reader_set((_reader_reserve(budget, 80) or (issuer['task_id'],)), budget=budget)
-    parent = source._text('parent_task_id', budget=budget)
+    chain = [source]
+    seen = {issuer['task_id']}
+    parent = source._text('parent_task_id')
     while parent is not None:
         _check(len(chain) < _SOURCE_LIMIT and parent not in seen)
-        _reader_add(seen, parent, budget=budget)
+        seen.add(parent)
         row = _task(conn, parent, budget)
-        _check(row._text('team', budget=budget) == source._text('team', budget=budget))
-        _reader_append(chain, row, budget=budget)
-        parent = row._text('parent_task_id', budget=budget)
+        _check(row._text('team') == source._text('team'))
+        chain.append(row)
+        parent = row._text('parent_task_id')
     start = _session_start(conn, issuer, budget)
     results = _results(conn, initial_source, budget)
-    return CodingSourceNativeRecords(history, source, _reader_tuple(chain[1:], budget=budget), start, results)
+    return CodingSourceNativeRecords(history, source, tuple(chain[1:]), start, results)
 
 
 def read_source_native_records(conn: sqlite3.Connection, *, expected_org_slug: str,

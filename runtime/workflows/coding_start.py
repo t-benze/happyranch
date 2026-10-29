@@ -1,24 +1,6 @@
 """Genuine result-owned K3a bootstrap. No pre-callback allocation or launcher."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _decode as _reader_decode,
-    _encode as _reader_encode,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _add as _reader_add,
-    _append as _reader_append,
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import _reserve as _reader_reserve
-
-from runtime.infrastructure._workflow_reader import (
-    _dict_pairs as _reader_dict_pairs,
-    _list as _reader_list,
-)
-
 import sqlite3
 from typing import Any
 from dataclasses import asdict
@@ -102,8 +84,8 @@ class CodingStartStore:
                and invocation is self.db._task_pause_store._live.get(invocation.identity)
                and invocation.owner in ('ordinary', 'v2') and invocation.admitted
                and invocation.attempt_committed and invocation.unsettled
-               and (_reader_reserve(budget, 112) or (invocation.task.id, invocation.agent, invocation.session_id)) ==
-                   (_reader_reserve(budget, 112) or (claim.task_id, claim.assigned_agent, claim.current_session_id)))
+               and (invocation.task.id, invocation.agent, invocation.session_id) ==
+                   (claim.task_id, claim.assigned_agent, claim.current_session_id))
         if self.db.get_active_authority_continue_envelope(claim.task_id) is not None:
             # The historical v1 consumer owns a self-committing spend, so it
             # cannot be borrowed by this atomic graph writer. Preserve its
@@ -115,47 +97,47 @@ class CodingStartStore:
                or (policy.kind == 'receipt' and policy.decision_state == 'ready'))
         _check(budget is None or type(budget) is _Budget)
         budget = _Budget() if budget is None else budget
-        selected = _reader_list(rows(conn, 'tasks', budget, where='id=?', args=(_reader_reserve(budget, 80) or (claim.task_id,)), maximum=1), budget=budget)
+        selected = list(rows(conn, 'tasks', budget, where='id=?', args=(claim.task_id,), maximum=1))
         _check(len(selected) == 1)
         source = selected[0]
         _check(source['zombie_flagged_at'] is None and source['completed_at'] is None)
         _check(source['task_type'] == 'task' and claim.active_chain is None and claim.active_fanout is None
-               and self.org.teams.teams_for_manager(claim.assigned_agent) == (_reader_reserve(budget, 80) or (claim.team,)))
-        ancestors, seen = (_reader_reserve(budget, 96) or (_reader_reserve(budget, 64) or [], _reader_set(_reader_reserve(budget, 80) or (claim.task_id,), budget=budget)))
+               and self.org.teams.teams_for_manager(claim.assigned_agent) == (claim.team,))
+        ancestors, seen = [], {claim.task_id}
         current = source
         while current['parent_task_id'] is not None:
             _check(len(ancestors) < 19 and current['parent_task_id'] not in seen)
-            selected = _reader_list(rows(conn, 'tasks', budget, where='id=?', args=(_reader_reserve(budget, 80) or (current['parent_task_id'],)), maximum=1), budget=budget)
+            selected = list(rows(conn, 'tasks', budget, where='id=?', args=(current['parent_task_id'],), maximum=1))
             _check(len(selected) == 1)
             current = selected[0]
             _check(current['team'] == claim.team and current['cancelled_at'] is None
                    and current['status'] not in ('completed', 'failed', 'cancelled', 'superseded'))
-            _reader_add(seen, current['id'], budget=budget)
-            _reader_append(ancestors, current, budget=budget)
+            seen.add(current['id'])
+            ancestors.append(current)
         root, pause = self.db._task_pause_store.held_uncommitted(claim.task_id)
         _check(pause is not None and not pause['held'] and root['id'] == current['id'])
         entry = invocation._entry(pause)
         _check(entry['phase'] == 'running' and entry['generation'] == pause['generation']
                and not entry['context'].get('execution_unknown')
                and entry['fingerprint']['count'] + 1 == claim.step
-               and entry['fingerprint']['brief_digest'] == _hash(_reader_encode(source['brief'], 'utf8', budget=budget), reader_budget=budget))
+               and entry['fingerprint']['brief_digest'] == _hash(source['brief'].encode('utf8')))
         for row in [source, *ancestors]:
             self.db._check_team_move_task_uncommitted(row['id'])
-        result_rows = _reader_list(rows(conn, 'task_results', budget,
-            where='task_id=? AND session_id=?', args=(_reader_reserve(budget, 96) or (claim.task_id, claim.current_session_id))), budget=budget)
+        result_rows = list(rows(conn, 'task_results', budget,
+            where='task_id=? AND session_id=?', args=(claim.task_id, claim.current_session_id)))
         _check(len(result_rows) == 1)
         result = result_rows[0]
         _check(type(result['id']) is int and result['id'] == claim.result_row_id
                and result['agent'] == claim.assigned_agent and result['status'] == 'completed'
                and result['waiting_on_job_ids'] is None)
-        decision = parse_native_decision(_reader_encode(result['decision_json'], 'utf8', budget=budget), budget=budget)
-        start = _session_start(conn, (_reader_reserve(budget, 448) or dict(task_id=claim.task_id, session_id=claim.current_session_id,
-                                        principal=claim.assigned_agent)), budget)
-        start_row = _reader_dict_pairs(((_reader_reserve(budget, 96) or (c.name,  _reader_decode(c.value, 'utf8', budget=budget) if c.storage_class == 'text' else c.value )) for c in start.columns), budget=budget)
+        decision = parse_native_decision(result['decision_json'].encode('utf8'))
+        start = _session_start(conn, dict(task_id=claim.task_id, session_id=claim.current_session_id,
+                                        principal=claim.assigned_agent), budget)
+        start_row = {c.name: c.value.decode('utf8') if c.storage_class == 'text' else c.value for c in start.columns}
         _check(claim_for(source, result['id']) == asdict(claim))
-        native = (_reader_reserve(budget, 448) or dict(ancestors=_reader_list((encode_row(r, budget=budget) for r in ancestors), budget=budget), session_start=start_row,
-                      invocation=(_reader_reserve(budget, 448) or dict(id=invocation.identity, owner=invocation.owner, entry=entry))))
-        return (_reader_reserve(budget, 128) or (source, result, decision, native))
+        native = dict(ancestors=[encode_row(r) for r in ancestors], session_start=start_row,
+                      invocation=dict(id=invocation.identity, owner=invocation.owner, entry=entry))
+        return source, result, decision, native
 
     async def get(self, *, principal: Any, instance_id: str) -> dict:
         # Reuse current-manager native session transport and lock ownership.
@@ -194,12 +176,15 @@ class CodingStartStore:
                              actor=actor, transitions=transitions)
 
     def guard_native_mutation(self, task_id: str) -> None:
-        """Native effects require their own coherent writer and final observer."""
-        if not self.db._conn.in_transaction:
-            raise CodingStartError('coding_native_writer_required')
-        from runtime.workflows.recovery import classify_task
-        owner = classify_task(self.db, task_id, org_slug=self.org.slug)
-        if owner.kind not in ('legacy', 'draft', 'f5'):
+        # K3a has no standalone native mutation bridge. Preserve complete
+        # original observations; do not silently accept new PID/clock/status/
+        # counter/session/cancel drift or record a fabricated heartbeat owner.
+        conn = self.db._conn
+        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
+            return
+        if not conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone():
+            return
+        if task_id in queued_storage(conn, self.org.slug).owners:
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:

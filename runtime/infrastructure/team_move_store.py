@@ -6,36 +6,6 @@ only D's private native readback transaction can commit the terminal receipt.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _dump as _reader_dump,
-    _encode as _reader_encode,
-    _json_dumps as _reader_json_dumps,
-    _sha256 as _reader_sha256,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _add as _reader_add,
-    _put as _reader_put,
-    _update as _reader_update,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all_true as _reader_all_true,
-    _any_true as _reader_any_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict as _reader_dict,
-    _set as _reader_set,
-    _tuple as _reader_tuple,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _json_work as _reader_json_work,
-    _reserve as _reader_reserve, _work as _reader_work,
-)
-
 import base64
 import hashlib
 import json
@@ -347,49 +317,45 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _digest(raw: bytes, *, reader_budget=None) -> str:
-    _reader_reserve(reader_budget, 0)
-    return _reader_sha256(raw, budget=reader_budget).hexdigest()
+def _digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
 
 
-def _bytes(value: Closed, *, reader_budget=None) -> bytes:
-    _reader_reserve(reader_budget, 0)
-    raw = _reader_encode(_reader_json_dumps(_reader_dump(value, mode="json", budget=reader_budget), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, budget=reader_budget), "utf-8", budget=reader_budget)
+def _bytes(value: Closed) -> bytes:
+    raw = json.dumps(value.model_dump(mode="json"), sort_keys=True,
+                     separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
     if not 0 < len(raw) <= MAX_BYTES:
         raise TeamMoveError("team_move_byte_bound")
     return raw
 
 
-def _decode(model: type[Closed], raw: bytes, *, reader_budget=None) -> Any:
+def _decode(model: type[Closed], raw: bytes) -> Any:
     """Strict JSON + exact canonical bytes rejects duplicates and coercion."""
-    _reader_work((_reader_reserve(reader_budget, 80) or (raw,)), reader_budget, copies=2)
     if type(raw) is not bytes or not 0 < len(raw) <= MAX_BYTES:
         raise TeamMoveError("team_move_byte_bound")
-    _reader_json_work(raw, reader_budget)
     value = model.model_validate_json(raw, strict=True)
-    if _bytes(value, reader_budget=reader_budget) != raw:
+    if _bytes(value) != raw:
         raise TeamMoveError("team_move_noncanonical_bytes")
     return value
 
 
-def _inventory(conn: sqlite3.Connection, *, reader_budget=None) -> tuple:
-    _reader_reserve(reader_budget, 0)
-    objects = _reader_tuple((_reader_tuple(r, budget=reader_budget) for r in _reader_rows(
-        conn, "SELECT type,name,tbl_name,sql FROM sqlite_master "
+def _inventory(conn: sqlite3.Connection) -> tuple:
+    objects = tuple(tuple(r) for r in conn.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master "
         "WHERE tbl_name='team_move_operations' OR lower(name) GLOB 'team_move_*' ORDER BY name LIMIT 5"
-    , budget=reader_budget)), budget=reader_budget)
+    ))
     if len(objects) > 4:
         raise TeamMoveError("team_move_schema_mismatch")
-    metadata = _reader_tuple((_reader_tuple((_reader_tuple(r, budget=reader_budget) for r in _reader_rows(conn, f"PRAGMA {p}(team_move_operations)", budget=reader_budget)), budget=reader_budget)
-                     for p in ("table_xinfo", "foreign_key_list", "index_list")), budget=reader_budget)
-    indexes = _reader_tuple(((_reader_reserve(reader_budget, 96) or (r[1], _reader_tuple((_reader_tuple(x, budget=reader_budget) for x in _reader_rows(
-        conn, "SELECT * FROM pragma_index_xinfo(?) ORDER BY seqno", (_reader_reserve(reader_budget, 80) or (r[1],))
-    , budget=reader_budget)), budget=reader_budget))) for r in _reader_rows(conn, "PRAGMA index_list(team_move_operations)", budget=reader_budget)), budget=reader_budget)
-    return (_reader_reserve(reader_budget, 112) or (objects, metadata, indexes))
+    metadata = tuple(tuple(tuple(r) for r in conn.execute(f"PRAGMA {p}(team_move_operations)"))
+                     for p in ("table_xinfo", "foreign_key_list", "index_list"))
+    indexes = tuple((r[1], tuple(tuple(x) for x in conn.execute(
+        "SELECT * FROM pragma_index_xinfo(?) ORDER BY seqno", (r[1],)
+    ))) for r in conn.execute("PRAGMA index_list(team_move_operations)"))
+    return objects, metadata, indexes
 
 
 @lru_cache(maxsize=1)
-def _cached_reference_inventory() -> tuple:
+def _reference_inventory() -> tuple:
     conn = sqlite3.connect(":memory:")
     try:
         conn.execute(TEAM_MOVE_SCHEMA_SQL)
@@ -398,45 +364,30 @@ def _cached_reference_inventory() -> tuple:
         conn.close()
 
 
-def _reference_inventory(*, reader_budget=None):
-    if reader_budget is None:
-        return _cached_reference_inventory()
-    # Supplied allowances acquire the independent literal reference afresh;
-    # an eager cached tuple cannot stand in for charged acquisition.
-    reference = sqlite3.connect(":memory:")
-    try:
-        reference.execute(TEAM_MOVE_SCHEMA_SQL)
-        reference.execute('BEGIN')
-        return _inventory(reference, reader_budget=reader_budget)
-    finally:
-        reference.close()
-
-
-def _validate_row(row: dict, org_slug: str | None, *, reader_budget=None) -> None:
-    _reader_work((_reader_reserve(reader_budget, 96) or (row,org_slug)), reader_budget, copies=2)
-    request = _decode(MoveRequest, row["request_bytes"], reader_budget=reader_budget)
-    admission = _decode(FounderAdmission, row["admission_bytes"], reader_budget=reader_budget)
-    progress = _decode(Progress, row["progress_bytes"], reader_budget=reader_budget)
+def _validate_row(row: dict, org_slug: str | None) -> None:
+    request = _decode(MoveRequest, row["request_bytes"])
+    admission = _decode(FounderAdmission, row["admission_bytes"])
+    progress = _decode(Progress, row["progress_bytes"])
     phase = Phase(row["phase"])
-    if _reader_any_true((type(row[k]) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,256}", row[k]) is None
-           for k in ("operation_id", "operation_key", "org_slug")), budget=reader_budget):
+    if any(type(row[k]) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,256}", row[k]) is None
+           for k in ("operation_id", "operation_key", "org_slug")):
         raise TeamMoveError("team_move_record_identity")
     _time(row["created_at"])
     _time(row["updated_at"])
     if (row["schema_version"] != 1 or row["principal"] != "founder"
             or row["org_slug"] != request.org_slug or row["org_slug"] != admission.org_slug
             or (org_slug is not None and org_slug != row["org_slug"])
-            or _digest(row["request_bytes"], reader_budget=reader_budget) != row["request_digest"]
+            or _digest(row["request_bytes"]) != row["request_digest"]
             or type(row["state_revision"]) is not int or not 1 <= row["state_revision"] <= MAX_REVISION
-            or row["operation_id"] != _operation_id(row["org_slug"], row["operation_key"], reader_budget=reader_budget)
+            or row["operation_id"] != _operation_id(row["org_slug"], row["operation_key"])
             or ((phase in TERMINAL) != (row["active_slot"] is None))
             or (phase not in TERMINAL and (type(row["active_slot"]) is not int or row["active_slot"] != 1))):
         raise TeamMoveError("team_move_record_mismatch")
     if row["decision_bytes"] is not None:
-        decision = _decode(ForwardDecision, row["decision_bytes"], reader_budget=reader_budget)
+        decision = _decode(ForwardDecision, row["decision_bytes"])
         if (decision.request_digest != row["request_digest"]
-                or decision.revalidated_inputs_digest != _digest(_bytes(request.expected, reader_budget=reader_budget), reader_budget=reader_budget)
-                or phase in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.WAITING, Phase.REFUSED, Phase.ABANDONED)), budget=reader_budget)):
+                or decision.revalidated_inputs_digest != _digest(_bytes(request.expected))
+                or phase in {Phase.WAITING, Phase.REFUSED, Phase.ABANDONED}):
             raise TeamMoveError("team_move_decision_mismatch")
         if progress.publication is not None and (
             progress.publication.writer_invocation_id != decision.writer_invocation_id
@@ -445,13 +396,13 @@ def _validate_row(row: dict, org_slug: str | None, *, reader_budget=None) -> Non
         ):
             raise TeamMoveError("team_move_publication_owner")
         previous_owner = decision.writer_invocation_id
-        claims = _reader_set(budget=reader_budget)
+        claims = set()
         for recovery in progress.recovery:
             if recovery.previous_owner_id != previous_owner or recovery.claim_id in claims:
                 raise TeamMoveError("team_move_recovery_owner_chain")
             previous_owner = recovery.owner_id
-            _reader_add(claims, recovery.claim_id, budget=reader_budget)
-    elif phase not in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.WAITING, Phase.REFUSED, Phase.ABANDONED)), budget=reader_budget) or progress != _empty_progress(reader_budget=reader_budget):
+            claims.add(recovery.claim_id)
+    elif phase not in {Phase.WAITING, Phase.REFUSED, Phase.ABANDONED} or progress != _empty_progress():
         raise TeamMoveError("team_move_missing_forward_decision")
     if phase is Phase.REPAIR_REQUIRED:
         if row["resume_phase"] not in FORWARD_PHASES or row["diagnostic_bytes"] is None:
@@ -459,55 +410,53 @@ def _validate_row(row: dict, org_slug: str | None, *, reader_budget=None) -> Non
     elif row["resume_phase"] is not None:
         raise TeamMoveError("team_move_recovery_state")
     if row["diagnostic_bytes"] is not None:
-        _decode(Diagnostic, row["diagnostic_bytes"], reader_budget=reader_budget)
-        if _digest(row["diagnostic_bytes"], reader_budget=reader_budget) != row["diagnostic_digest"]:
+        _decode(Diagnostic, row["diagnostic_bytes"])
+        if _digest(row["diagnostic_bytes"]) != row["diagnostic_digest"]:
             raise TeamMoveError("team_move_diagnostic_digest")
     elif row["diagnostic_digest"] is not None:
         raise TeamMoveError("team_move_diagnostic_digest")
     if phase in TERMINAL:
-        receipt = _decode(CompletedReceipt if phase is Phase.COMPLETE else TerminalReceipt, row["receipt_bytes"], reader_budget=reader_budget)
+        receipt = _decode(CompletedReceipt if phase is Phase.COMPLETE else TerminalReceipt, row["receipt_bytes"])
         if (type(receipt.version) is not int or receipt.operation_id != row["operation_id"] or receipt.request_digest != row["request_digest"]
                 or receipt.state_revision != row["state_revision"] or receipt.phase != phase
-                or _digest(row["receipt_bytes"], reader_budget=reader_budget) != row["receipt_digest"]
-                or (phase is not Phase.COMPLETE and _bytes(receipt.diagnostic, reader_budget=reader_budget) != row["diagnostic_bytes"])):
+                or _digest(row["receipt_bytes"]) != row["receipt_digest"]
+                or (phase is not Phase.COMPLETE and _bytes(receipt.diagnostic) != row["diagnostic_bytes"])):
             raise TeamMoveError("team_move_receipt_mismatch")
-        if phase is Phase.COMPLETE and (receipt.progress_digest != _digest(row["progress_bytes"], reader_budget=reader_budget)
+        if phase is Phase.COMPLETE and (receipt.progress_digest != _digest(row["progress_bytes"])
                 or receipt.publication != progress.publication):
             raise TeamMoveError("team_move_completion_evidence_mismatch")
     elif row["receipt_bytes"] is not None or row["receipt_digest"] is not None:
         raise TeamMoveError("team_move_nonterminal_receipt")
-    _validate_stage(phase, progress, row["resume_phase"], reader_budget=reader_budget)
+    _validate_stage(phase, progress, row["resume_phase"])
 
 
-def _validate_stage(phase: Phase, progress: Progress, resume: str | None, *, reader_budget=None) -> None:
-    _reader_work((_reader_reserve(reader_budget, 112) or (phase,progress,resume)), reader_budget, copies=2)
+def _validate_stage(phase: Phase, progress: Progress, resume: str | None) -> None:
     effective = Phase(resume) if phase is Phase.REPAIR_REQUIRED else (Phase.PUBLISH if phase is Phase.COMPLETE else phase)
     if progress.publication is None and effective in FORWARD_PHASES[1:]:
         raise TeamMoveError("team_move_missing_publication_identity")
-    if effective in FORWARD_PHASES[3:] and _reader_any_true((a.reset is None for a in progress.agents), budget=reader_budget):
+    if effective in FORWARD_PHASES[3:] and any(a.reset is None for a in progress.agents):
         raise TeamMoveError("team_move_missing_reset")
     if effective in FORWARD_PHASES[4:] and len(progress.canonical_after) != 3:
         raise TeamMoveError("team_move_missing_canonical")
-    if effective is Phase.PUBLISH and _reader_any_true((a.context is None for a in progress.agents), budget=reader_budget):
+    if effective is Phase.PUBLISH and any(a.context is None for a in progress.agents):
         raise TeamMoveError("team_move_missing_context")
-    if effective in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.WAITING, Phase.REFUSED, Phase.ABANDONED)), budget=reader_budget) and progress != _empty_progress(reader_budget=reader_budget):
+    if effective in {Phase.WAITING, Phase.REFUSED, Phase.ABANDONED} and progress != _empty_progress():
         raise TeamMoveError("team_move_precommit_mutation")
     # Progress cannot assert steps from a future stage.
-    if effective in FORWARD_PHASES[:2] and _reader_any_true((a.reset or a.context for a in progress.agents), budget=reader_budget):
+    if effective in FORWARD_PHASES[:2] and any(a.reset or a.context for a in progress.agents):
         raise TeamMoveError("team_move_early_reset")
-    if effective in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.COMMIT_DECIDED, Phase.FENCED, Phase.RESET)), budget=reader_budget) and progress.canonical_after:
+    if effective in {Phase.COMMIT_DECIDED, Phase.FENCED, Phase.RESET} and progress.canonical_after:
         raise TeamMoveError("team_move_early_canonical")
-    if effective in FORWARD_PHASES[:4] and _reader_any_true((a.context for a in progress.agents), budget=reader_budget):
+    if effective in FORWARD_PHASES[:4] and any(a.context for a in progress.agents):
         raise TeamMoveError("team_move_early_context")
 
 
-def _transition_resume_phase(current: Phase, phase: Phase, resume: str | None, *, reader_budget=None) -> str | None:
+def _transition_resume_phase(current: Phase, phase: Phase, resume: str | None) -> str | None:
     """Finite edge contract shared by committed-history reads and CAS writes.
 
     Unchanged replay returns before this function in the writer; it is never
     another audit transition. Recovery ownership/progress is validated separately.
     """
-    _reader_work((_reader_reserve(reader_budget, 112) or (current,phase,resume)), reader_budget, copies=2)
     if current in TERMINAL:
         raise TeamMoveError("team_move_terminal")
     if phase is Phase.COMPLETE:
@@ -515,7 +464,7 @@ def _transition_resume_phase(current: Phase, phase: Phase, resume: str | None, *
             raise TeamMoveError("team_move_illegal_transition")
         return None
     if current is Phase.WAITING:
-        if phase not in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.COMMIT_DECIDED, Phase.REFUSED, Phase.ABANDONED)), budget=reader_budget):
+        if phase not in {Phase.COMMIT_DECIDED, Phase.REFUSED, Phase.ABANDONED}:
             raise TeamMoveError("team_move_illegal_transition")
     elif current is Phase.REPAIR_REQUIRED:
         if phase is Phase.REPAIR_REQUIRED:
@@ -533,42 +482,40 @@ def _transition_resume_phase(current: Phase, phase: Phase, resume: str | None, *
     return resume
 
 
-def validate_team_move_schema(conn: sqlite3.Connection, *, org_slug: str | None = None, reader_budget=None) -> bool:
+def validate_team_move_schema(conn: sqlite3.Connection, *, org_slug: str | None = None) -> bool:
     """Absent is compatible; partial/extra/unsupported or corrupt fails closed.
 
     The bounded scan refuses overflow; it never treats a truncated inventory as
     complete. Call within the DB owner's transaction or coherent read snapshot.
     """
-    _reader_work((_reader_reserve(reader_budget, 80) or (org_slug,)), reader_budget, copies=2)
     try:
-        _reader_reserve(reader_budget, 112)
-        inventory = _inventory(conn, reader_budget=reader_budget)
+        inventory = _inventory(conn)
         if not inventory[0]:
             return False
-        if inventory != _reference_inventory(reader_budget=reader_budget):
+        if inventory != _reference_inventory():
             raise TeamMoveError("team_move_schema_mismatch")
         total = 0
         count = 0
         deadline = time.monotonic() + 2.0
         # Size scan precedes body decoding, so hostile BLOBs cannot allocate
         # unbounded Python objects. All history rows are validated, not active only.
-        columns = _reader_tuple((c[1] for c in _reader_rows(conn, "SELECT * FROM pragma_table_xinfo('team_move_operations')", budget=reader_budget)), budget=reader_budget)
+        columns = tuple(c[0] for c in conn.execute("SELECT * FROM team_move_operations LIMIT 0").description)
         sizes = " + ".join(f'coalesce(length(CAST("{c}" AS BLOB)),0)' for c in columns)
-        for size, in _reader_rows(conn, f"SELECT {sizes} FROM team_move_operations", budget=reader_budget):
+        for size, in conn.execute(f"SELECT {sizes} FROM team_move_operations"):
             count += 1
             total += size
             if count > MAX_ROWS or total > MAX_SCAN_BYTES or time.monotonic() > deadline:
                 raise TeamMoveError("team_move_scan_bound")
-        for row in _reader_rows(conn, "SELECT * FROM team_move_operations ORDER BY operation_id", budget=reader_budget):
-            record = _reader_dict(zip(columns, row), budget=reader_budget)
-            _validate_row(record, org_slug, reader_budget=reader_budget)
-            total += _validate_audit_history(conn, record, budget=MAX_SCAN_BYTES - total, reader_budget=reader_budget)
-            _stages, size = _staging_history(conn, record, budget=MAX_SCAN_BYTES - total, reader_budget=reader_budget)
+        for row in conn.execute("SELECT * FROM team_move_operations ORDER BY operation_id"):
+            record = dict(zip(columns, row))
+            _validate_row(record, org_slug)
+            total += _validate_audit_history(conn, record, budget=MAX_SCAN_BYTES - total)
+            _stages, size = _staging_history(conn, record, budget=MAX_SCAN_BYTES - total)
             total += size
             if time.monotonic() > deadline:
                 raise TeamMoveError("team_move_scan_deadline")
         return True
-    except ((ValueError, TypeError, sqlite3.DatabaseError)) as exc:
+    except (ValueError, TypeError, sqlite3.DatabaseError) as exc:
         if isinstance(exc, TeamMoveError):
             raise
         raise TeamMoveError("team_move_unavailable") from exc
@@ -583,14 +530,13 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict:
     return result
 
 
-def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int, reader_budget=None) -> int:
+def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int) -> int:
     """Bind immutable request/provenance and current progress to existing audit.
 
     The writer validates new state structurally before its uncommitted audit;
     readers validate the complete committed pair. No synthetic history repair.
     """
-    _reader_work((_reader_reserve(reader_budget, 80) or (row,)), reader_budget, copies=2)
-    parameters = (_reader_reserve(reader_budget, 96) or ("config:team-move:" + row["operation_id"], MAX_ROWS + 1))
+    parameters = ("config:team-move:" + row["operation_id"], MAX_ROWS + 1)
     predicate = " FROM audit_log WHERE task_id=? AND action IN ('team_move_reserved','team_move_transition') ORDER BY id LIMIT ?"
     count, total = 0, 0
     for size, in conn.execute("SELECT coalesce(length(CAST(payload AS BLOB)),0)" + predicate, parameters):
@@ -604,14 +550,14 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int,
     last = None
     resume = None
     recovered = False
-    empty_progress_digest = _digest(_bytes(_empty_progress(reader_budget=reader_budget), reader_budget=reader_budget), reader_budget=reader_budget)
-    admission = _reader_json(row["admission_bytes"], budget=reader_budget)
-    keys = _reader_set((_reader_reserve(reader_budget, 208) or ("operation_id", "request_digest", "phase", "state_revision", "admission", "progress_digest", "decision_digest", "diagnostic_digest", "receipt_digest")), budget=reader_budget)
+    empty_progress_digest = _digest(_bytes(_empty_progress()))
+    admission = json.loads(row["admission_bytes"])
+    keys = {"operation_id", "request_digest", "phase", "state_revision", "admission", "progress_digest", "decision_digest", "diagnostic_digest", "receipt_digest"}
     for revision, audit in enumerate(audits, 1):
-        if type(audit[2]) is not str or len(_reader_encode(audit[2], budget=reader_budget)) > MAX_BYTES:
+        if type(audit[2]) is not str or len(audit[2].encode()) > MAX_BYTES:
             raise TeamMoveError("team_move_audit_bound")
-        payload = _reader_json(audit[2], object_pairs_hook=_unique_object, budget=reader_budget)
-        if (not isinstance(payload, dict) or _reader_set(payload, budget=reader_budget) != keys or audit[0] != "founder"
+        payload = json.loads(audit[2], object_pairs_hook=_unique_object)
+        if (not isinstance(payload, dict) or set(payload) != keys or audit[0] != "founder"
                 or audit[1] != ("team_move_reserved" if revision == 1 else "team_move_transition")
                 or type(payload["state_revision"]) is not int or payload["state_revision"] != revision
                 or payload["operation_id"] != row["operation_id"]
@@ -619,34 +565,34 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int,
                 or (revision == 1 and payload["phase"] != "waiting")):
             raise TeamMoveError("team_move_audit_history")
         phase = Phase(payload["phase"])
-        if _reader_any_true((value is not None and (
+        if any(value is not None and (
                 not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
-        ) for value in (_reader_reserve(reader_budget, 128) or (payload["progress_digest"], payload["decision_digest"],
-                        payload["diagnostic_digest"], payload["receipt_digest"]))), budget=reader_budget):
+        ) for value in (payload["progress_digest"], payload["decision_digest"],
+                        payload["diagnostic_digest"], payload["receipt_digest"])):
             raise TeamMoveError("team_move_audit_digest")
-        precommit = phase in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.WAITING, Phase.REFUSED, Phase.ABANDONED)), budget=reader_budget)
+        precommit = phase in {Phase.WAITING, Phase.REFUSED, Phase.ABANDONED}
         if (payload["progress_digest"] is None
                 or (precommit and payload["progress_digest"] != empty_progress_digest)
                 or ((payload["decision_digest"] is None) != precommit)
                 or ((payload["receipt_digest"] is not None) != (phase in TERMINAL))
-                or (phase in _reader_set((_reader_reserve(reader_budget, 112) or (Phase.REFUSED, Phase.ABANDONED, Phase.REPAIR_REQUIRED)), budget=reader_budget) and payload["diagnostic_digest"] is None)
+                or (phase in {Phase.REFUSED, Phase.ABANDONED, Phase.REPAIR_REQUIRED} and payload["diagnostic_digest"] is None)
                 or (revision == 1 and payload["diagnostic_digest"] is not None)):
             raise TeamMoveError("team_move_audit_lifecycle")
         if last is not None:
             previous = Phase(last["phase"])
-            resume = _transition_resume_phase(previous, phase, resume, reader_budget=reader_budget)
+            resume = _transition_resume_phase(previous, phase, resume)
             if last["decision_digest"] is not None and payload["decision_digest"] != last["decision_digest"]:
                 raise TeamMoveError("team_move_audit_decision_rewrite")
             if previous is Phase.REPAIR_REQUIRED and phase is not Phase.REPAIR_REQUIRED:
                 recovered = True
-            if phase is previous and _reader_all_true((payload[k] == last[k] for k in (
+            if phase is previous and all(payload[k] == last[k] for k in (
                 "progress_digest", "decision_digest", "diagnostic_digest", "receipt_digest"
-            )), budget=reader_budget):
+            )):
                 raise TeamMoveError("team_move_audit_unchanged_replay")
         last = payload
     if (last is None or last["phase"] != row["phase"]
-            or last["progress_digest"] != _digest(row["progress_bytes"], reader_budget=reader_budget)
-            or last["decision_digest"] != (_digest(row["decision_bytes"], reader_budget=reader_budget) if row["decision_bytes"] else None)
+            or last["progress_digest"] != _digest(row["progress_bytes"])
+            or last["decision_digest"] != (_digest(row["decision_bytes"]) if row["decision_bytes"] else None)
             or last["diagnostic_digest"] != row["diagnostic_digest"]
             or last["receipt_digest"] != row["receipt_digest"]
             or resume != row["resume_phase"]):
@@ -654,57 +600,58 @@ def _validate_audit_history(conn: sqlite3.Connection, row: dict, *, budget: int,
     # The audit preserves digests, not old progress bodies. A recovery return
     # requires retained ownership evidence in the final monotonic progress;
     # _validate_row authenticates its chain shape, not native quiescence.
-    if recovered and not _decode(Progress, row["progress_bytes"], reader_budget=reader_budget).recovery:
+    if recovered and not _decode(Progress, row["progress_bytes"]).recovery:
         raise TeamMoveError("team_move_recovery_owner_required")
     return total
 
 
-def _staging_history(conn, row, *, budget=MAX_SCAN_BYTES, reader_budget=None):
+def _staging_history(conn, row, *, budget=MAX_SCAN_BYTES):
     """Strict old/new reader: no staging rows is valid historical data.
 
     New completion additionally requires exact terminal staging coverage. Old
     progress/receipts/audit payloads keep their original bytes and interpretation.
     """
-    _reader_work((_reader_reserve(reader_budget, 80) or (row,)), reader_budget, copies=2)
-    owners = _reader_set(budget=reader_budget)
+    owners = set()
     if row["decision_bytes"] is not None:
-        _reader_add(owners, _decode(ForwardDecision, row["decision_bytes"], reader_budget=reader_budget).writer_invocation_id, budget=reader_budget)
-        _reader_update(owners, (r.owner_id for r in _decode(Progress, row["progress_bytes"], reader_budget=reader_budget).recovery), budget=reader_budget)
-    stages, total = (_reader_reserve(reader_budget, 96) or (_reader_reserve(reader_budget, 64) or {}, 0))
-    protocol = _reader_all(conn, "SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='team_move_staging_protocol' ORDER BY id LIMIT 2", (_reader_reserve(reader_budget, 80) or ("config:team-move:" + row["operation_id"],)), budget=reader_budget)
+        owners.add(_decode(ForwardDecision, row["decision_bytes"]).writer_invocation_id)
+        owners.update(r.owner_id for r in _decode(Progress, row["progress_bytes"]).recovery)
+    stages, total = {}, 0
+    protocol = conn.execute("SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='team_move_staging_protocol' ORDER BY id LIMIT 2",
+        ("config:team-move:" + row["operation_id"],)).fetchall()
     if len(protocol) > 1:
         raise TeamMoveError("team_move_staging_protocol_ambiguous")
     if protocol:
         raw = protocol[0]["payload"]
-        if type(raw) is not str or len(_reader_encode(raw, budget=reader_budget)) > 16384:
+        if type(raw) is not str or len(raw.encode()) > 16384:
             raise TeamMoveError("team_move_staging_history_bound")
-        payload = _reader_json(raw, object_pairs_hook=_unique_object, budget=reader_budget)
+        payload = json.loads(raw, object_pairs_hook=_unique_object)
         if (protocol[0]["agent"] != "founder" or not isinstance(payload, dict)
-                or _reader_set(payload, budget=reader_budget) != _reader_set((_reader_reserve(reader_budget, 128) or ("version", "request_digest", "owner_id", "state_revision")), budget=reader_budget)
+                or set(payload) != {"version", "request_digest", "owner_id", "state_revision"}
                 or type(payload["version"]) is not int or payload["version"] != 1
                 or payload["request_digest"] != row["request_digest"] or payload["owner_id"] not in owners):
             raise TeamMoveError("team_move_staging_protocol_unknown")
-        previous = _reader_one(conn, "SELECT payload FROM audit_log WHERE task_id=? AND action='team_move_transition' AND id<? ORDER BY id DESC LIMIT 1", (_reader_reserve(reader_budget, 96) or ("config:team-move:" + row["operation_id"], protocol[0]["id"])), budget=reader_budget)
-        prior = None if previous is None else _reader_json(previous["payload"], object_pairs_hook=_unique_object, budget=reader_budget)
+        previous = conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='team_move_transition' AND id<? ORDER BY id DESC LIMIT 1",
+            ("config:team-move:" + row["operation_id"], protocol[0]["id"])).fetchone()
+        prior = None if previous is None else json.loads(previous["payload"], object_pairs_hook=_unique_object)
         if (type(payload["state_revision"]) is not int or prior is None
                 or prior["phase"] != "canonical" or prior["state_revision"] != payload["state_revision"]):
             raise TeamMoveError("team_move_staging_protocol_transition_unknown")
-        total += len(_reader_encode(raw, budget=reader_budget))
+        total += len(raw.encode())
         if total > budget:
             raise TeamMoveError("team_move_staging_history_bound")
-    rows = _reader_rows(conn, "SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='team_move_staging' ORDER BY id LIMIT ?",
-        (_reader_reserve(reader_budget, 96) or ("config:team-move:" + row["operation_id"], 577)), budget=reader_budget)
+    rows = conn.execute("SELECT id,agent,payload FROM audit_log WHERE task_id=? AND action='team_move_staging' ORDER BY id LIMIT ?",
+        ("config:team-move:" + row["operation_id"], 577))
     for index, audit in enumerate(rows):
         if not protocol or audit["id"] <= protocol[0]["id"]:
             raise TeamMoveError("team_move_staging_protocol_missing")
         raw = audit["payload"]
-        if type(raw) is not str or len(_reader_encode(raw, budget=reader_budget)) > 16384:
+        if type(raw) is not str or len(raw.encode()) > 16384:
             raise TeamMoveError("team_move_staging_history_bound")
-        total += len(_reader_encode(raw, budget=reader_budget))
+        total += len(raw.encode())
         if index >= 576 or total > budget:
             raise TeamMoveError("team_move_staging_history_bound")
-        value = _reader_json(raw, object_pairs_hook=_unique_object, budget=reader_budget)
-        fact = _decode(StagingFact, _reader_encode(_reader_json_dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, budget=reader_budget), budget=reader_budget), reader_budget=reader_budget)
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+        fact = _decode(StagingFact, json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
         if audit["agent"] != "founder" or fact.request_digest != row["request_digest"] or fact.owner_id not in owners:
             raise TeamMoveError("team_move_staging_owner_unknown")
         prior = stages.get(fact.stage_id)
@@ -714,22 +661,22 @@ def _staging_history(conn, row, *, budget=MAX_SCAN_BYTES, reader_budget=None):
         elif (prior.state == "disposed" or fact.state == "intent"
                 or (prior.state == "acquired" and fact.state != "disposed")
                 or (prior.state == "intent" and fact.state == "disposed" and (fact.disposition != "absent" or fact.identity is not None))
-                or _reader_any_true((getattr(prior, k) != getattr(fact, k) for k in ("version", "request_digest", "stage_id", "owner_id", "path", "parent")), budget=reader_budget)
+                or any(getattr(prior, k) != getattr(fact, k) for k in ("version", "request_digest", "stage_id", "owner_id", "path", "parent"))
                 or (prior.identity is not None and fact.identity != prior.identity)):
             raise TeamMoveError("team_move_staging_history_rewrite")
-        image = next(i for i in _decode(MoveRequest, row["request_bytes"], reader_budget=reader_budget).files if i.path == fact.path)
+        image = next(i for i in _decode(MoveRequest, row["request_bytes"]).files if i.path == fact.path)
         if fact.identity is not None and (fact.identity.mode != image.identity.mode
                 or fact.identity.device != image.identity.device or fact.identity.device != fact.parent.device):
             raise TeamMoveError("team_move_staging_identity_mismatch")
-        _reader_put(fact, stages, fact.stage_id, budget=reader_budget)
+        stages[fact.stage_id] = fact
     if protocol:
-        progress = _decode(Progress, row["progress_bytes"], reader_budget=reader_budget)
-        replaced = _reader_set((f.path for f in stages.values() if f.disposition == "replaced"), budget=reader_budget)
-        if not _reader_set(progress.canonical_after, budget=reader_budget) <= replaced:
+        progress = _decode(Progress, row["progress_bytes"])
+        replaced = {f.path for f in stages.values() if f.disposition == "replaced"}
+        if not set(progress.canonical_after) <= replaced:
             raise TeamMoveError("team_move_staging_progress_unproven")
-        if row["phase"] == "complete" and (_reader_any_true((f.state != "disposed" for f in stages.values()), budget=reader_budget) or len(replaced) != 3):
+        if row["phase"] == "complete" and (any(f.state != "disposed" for f in stages.values()) or len(replaced) != 3):
             raise TeamMoveError("team_move_staging_cleanup_unproven")
-    return (_reader_reserve(reader_budget, 96) or (stages, total))
+    return stages, total
 
 
 @contextmanager
@@ -743,15 +690,12 @@ def _transaction(db: Any) -> Iterator[sqlite3.Connection]:
         try:
             yield conn
             conn.commit()
-        except BaseException as primary:
-            try:
-                conn.rollback()
-            except BaseException as cleanup:
-                primary.add_note('team move transaction rollback failed: ' + type(cleanup).__name__)
+        except BaseException:
+            conn.rollback()
             raise
 
 
-def install_team_move_schema(db: Any, *, org_slug: str, reader_budget=None) -> None:
+def install_team_move_schema(db: Any, *, org_slug: str) -> None:
     """Native org release owner only; never generic DB or diagnostic recovery.
 
     The release-reference builder also uses this literal on disposable org
@@ -763,25 +707,22 @@ def install_team_move_schema(db: Any, *, org_slug: str, reader_budget=None) -> N
         # A complete org workflow schema is the existing org-extension
         # discriminator. Generic Database/runtime-audit lack it and refuse.
         from runtime.infrastructure.workflow_schema import validate_workflow_schema
-        validate_workflow_schema(conn, expected_org_slug=org_slug, budget=reader_budget)
-        installed = validate_team_move_schema(conn, org_slug=org_slug, reader_budget=reader_budget)
-        if installed and _reader_one(conn, "SELECT 1 FROM team_move_operations WHERE active_slot=1", budget=reader_budget):
+        validate_workflow_schema(conn, expected_org_slug=org_slug)
+        installed = validate_team_move_schema(conn, org_slug=org_slug)
+        if installed and conn.execute("SELECT 1 FROM team_move_operations WHERE active_slot=1").fetchone():
             raise TeamMoveError("team_move_startup_recovery_required")
         if not installed:
-            _reader_work(TEAM_MOVE_SCHEMA_SQL, reader_budget)
             conn.execute(TEAM_MOVE_SCHEMA_SQL)
-        validate_team_move_schema(conn, org_slug=org_slug, reader_budget=reader_budget)
+        validate_team_move_schema(conn, org_slug=org_slug)
 
 
-def _operation_id(org_slug: str, key: str, *, reader_budget=None) -> str:
+def _operation_id(org_slug: str, key: str) -> str:
     # Delimited canonical tuple, not task/session identity or logical-ID parsing.
-    _reader_work((_reader_reserve(reader_budget, 96) or (org_slug,key)), reader_budget, copies=2)
-    return "team_move_" + _digest(_reader_encode(_reader_json_dumps(_reader_reserve(reader_budget, 320) or [org_slug, key], separators=(",", ":"), budget=reader_budget), budget=reader_budget), reader_budget=reader_budget)
+    return "team_move_" + _digest(json.dumps([org_slug, key], separators=(",", ":")).encode())
 
 
-def _empty_progress(*, reader_budget=None) -> Progress:
-    _reader_work((), reader_budget, copies=2)
-    return Progress(agents=(_reader_reserve(reader_budget, 96) or (AgentProgress(agent_id="consultant_codex"), AgentProgress(agent_id="consultant_head"))))
+def _empty_progress() -> Progress:
+    return Progress(agents=(AgentProgress(agent_id="consultant_codex"), AgentProgress(agent_id="consultant_head")))
 
 
 def _monotonic(old: Progress, new: Progress) -> None:

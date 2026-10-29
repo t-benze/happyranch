@@ -1,33 +1,6 @@
 """Original-current author reservations and proof-bound same-operation consumption."""
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _b64encode as _reader_b64encode,
-    _decode as _reader_decode,
-    _hex as _reader_hex,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _append as _reader_append,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _any_true as _reader_any_true,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict_pairs as _reader_dict_pairs,
-    _list as _reader_list,
-    _set as _reader_set,
-    _tuple as _reader_tuple,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
-    _json as _reader_json, _reserve as _reader_reserve, _work as _reader_work,
-    _sha256 as _reader_sha256, _fromhex as _reader_fromhex,
-)
-
 import asyncio
 import base64
 import json
@@ -137,17 +110,15 @@ class ArtifactHandoffReceipt(AuthorHandoffReceipt):
     core: ArtifactHandoffCore
 
 
-def _record(conn: sqlite3.Connection, table: str, identity: str, *, budget=None) -> dict:
-    _reader_reserve(budget, 0)
-    rows = _records(conn, f'SELECT * FROM {table} WHERE id=?', (_reader_reserve(budget, 80) or (identity,)), budget=budget)
+def _record(conn: sqlite3.Connection, table: str, identity: str) -> dict:
+    rows = _records(conn, f'SELECT * FROM {table} WHERE id=?', (identity,))
     if len(rows) != 1:
         raise WorkflowActivationError('workflow_author_handoff_storage_corrupt')
     return rows[0]
 
 
-def _hex(record: dict, *, budget=None) -> dict:
-    _reader_reserve(budget, 0)
-    return _reader_dict_pairs(((_reader_reserve(budget, 96) or (k,  _reader_hex(v, budget=budget) if isinstance(v, bytes) else v )) for k, v in record.items()), budget=budget)
+def _hex(record: dict) -> dict:
+    return {k: v.hex() if isinstance(v, bytes) else v for k, v in record.items()}
 
 
 def _insert(conn: sqlite3.Connection, table: str, record: dict) -> None:
@@ -155,28 +126,26 @@ def _insert(conn: sqlite3.Connection, table: str, record: dict) -> None:
                  tuple(record.values()))
 
 
-def _source(conn: sqlite3.Connection, intent: dict, *, budget=None) -> tuple[dict, dict, dict, Any, dict]:
-    _reader_reserve(budget, 0)
-    activation = _record(conn, 'workflow_activations', intent['activation_id'], budget=budget)
-    context = _record(conn, 'workflow_contexts', intent['context_id'], budget=budget)
-    binding = _record(conn, 'workflow_binding_snapshots', intent['binding_snapshot_id'], budget=budget)
-    authorization = _record(conn, 'workflow_authorization_revisions', binding['authorization_revision_id'], budget=budget)
-    grant = _reader_json(authorization['authority_bytes'], budget)
+def _source(conn: sqlite3.Connection, intent: dict) -> tuple[dict, dict, dict, Any, dict]:
+    activation = _record(conn, 'workflow_activations', intent['activation_id'])
+    context = _record(conn, 'workflow_contexts', intent['context_id'])
+    binding = _record(conn, 'workflow_binding_snapshots', intent['binding_snapshot_id'])
+    authorization = _record(conn, 'workflow_authorization_revisions', binding['authorization_revision_id'])
+    grant = json.loads(authorization['authority_bytes'])
     template = WorkflowTemplateStore._read_version(conn, identity_id=activation['template_identity_id'],
-        version=grant['template']['version'], expected_version_id=activation['template_version_id'], budget=budget)
-    contract = _review_contract(template, budget=budget)
+        version=grant['template']['version'], expected_version_id=activation['template_version_id'])
+    contract = _review_contract(template)
     if contract is None or contract['format'] not in ('workflow-document-contract@3', 'workflow-artifact-contract@4'):
         raise WorkflowActivationError('workflow_author_handoff_action_not_authorized')
-    context_contract(_reader_json(context['context_bytes'], budget), budget=budget)
-    return (_reader_reserve(budget, 144) or (activation, context, binding, template, authorization))
+    context_contract(json.loads(context['context_bytes']))
+    return activation, context, binding, template, authorization
 
 
-def _source_result(conn: sqlite3.Connection, intent: dict, *, budget=None) -> dict | None:
+def _source_result(conn: sqlite3.Connection, intent: dict) -> dict | None:
     """Authenticate the original INTEGER callback and committed terminal, never PID absence."""
-    _reader_work((_reader_reserve(budget, 80) or (intent,)), budget, copies=2)
     if intent['state'] != 'completed' or type(intent['final_result_id']) is not int:
         return None
-    rows = _records(conn, 'SELECT * FROM task_results WHERE id=?', (_reader_reserve(budget, 80) or (intent['final_result_id'],)), budget=budget)
+    rows = _records(conn, 'SELECT * FROM task_results WHERE id=?', (intent['final_result_id'],))
     if len(rows) != 1:
         return None
     result = rows[0]
@@ -184,21 +153,21 @@ def _source_result(conn: sqlite3.Connection, intent: dict, *, budget=None) -> di
             or result['session_id'] != intent['session_id'] or result['status'] != 'completed'):
         return None
     callback = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind='callback_recorded'",
-                        (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
+                        (intent['id'],))
     terminal = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('completed','host_reconciled') ORDER BY event_seq",
-                        (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
+                        (intent['id'],))
     if len(callback) != 1 or not terminal:
         return None
     accepted = _stored_json(callback[0]['event_bytes'], callback[0]['event_digest'],
-                            code='workflow_author_handoff_storage_corrupt', budget=budget)['result']
+                            code='workflow_author_handoff_storage_corrupt')['result']
     last = _stored_json(terminal[-1]['event_bytes'], terminal[-1]['event_digest'],
-                        code='workflow_author_handoff_storage_corrupt', budget=budget)
-    task = _record(conn, 'tasks', intent['task_id'], budget=budget)
+                        code='workflow_author_handoff_storage_corrupt')
+    task = _record(conn, 'tasks', intent['task_id'])
     if (callback[0]['result_id'] != result['id'] or callback[0]['callback_accepted'] != 1
-            or canonical_bytes(accepted['record'], budget=budget) != canonical_bytes(result, budget=budget) or type(accepted['id']) is not int or accepted['id'] != result['id']
-            or accepted['digest'] != digest(canonical_bytes(result, budget=budget), budget=budget)
+            or canonical_bytes(accepted['record']) != canonical_bytes(result) or type(accepted['id']) is not int or accepted['id'] != result['id']
+            or accepted['digest'] != digest(canonical_bytes(result))
             or last['after']['state'] != 'completed' or last['after']['final_result_id'] != result['id']
-            or canonical_bytes(last['terminal_evidence'], budget=budget) != canonical_bytes((_reader_reserve(budget, 192) or {'host_quiescent': True}), budget=budget)
+            or canonical_bytes(last['terminal_evidence']) != canonical_bytes({'host_quiescent': True})
             or last['result'] != accepted or task['status'] != 'completed'
             or intent['cancellation_requested'] or task['cancelled_at'] is not None
             or task['current_session_id'] != intent['session_id'] or task['assigned_agent'] != intent['assigned_principal']):
@@ -206,43 +175,42 @@ def _source_result(conn: sqlite3.Connection, intent: dict, *, budget=None) -> di
     return result
 
 
-def _reviewed_source_result(conn: sqlite3.Connection, row: dict, intent: dict, *, budget=None) -> dict:
+def _reviewed_source_result(conn: sqlite3.Connection, row: dict, intent: dict) -> dict:
     """Authenticate the retained successful source; never reinterpret it as current validity."""
-    _reader_work((_reader_reserve(budget, 96) or (row,intent)), budget, copies=2)
     from runtime.workflows.review_dispatch import _same_value
     code = 'workflow_author_handoff_storage_corrupt'
-    links = _records(conn, 'SELECT * FROM workflow_submission_result_links WHERE submission_id=?', (_reader_reserve(budget, 80) or (row['submission_id'],)), budget=budget)
+    links = _records(conn, 'SELECT * FROM workflow_submission_result_links WHERE submission_id=?', (row['submission_id'],))
     if len(links) != 1 or type(links[0]['task_result_id']) is not int or links[0]['task_result_id'] <= 0:
         raise ValueError(code)
     link = links[0]
-    result = _record(conn, 'task_results', link['task_result_id'], budget=budget)
+    result = _record(conn, 'task_results', link['task_result_id'])
     callbacks = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind='callback_recorded'",
-                         (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
+                         (intent['id'],))
     terminals = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('completed','host_reconciled')",
-                         (_reader_reserve(budget, 80) or (intent['id'],)), budget=budget)
+                         (intent['id'],))
     if (len(callbacks) != 1 or result['status'] != 'completed'
             or result['task_id'] != row['source_task_id'] or result['agent'] != row['principal']
             or result['session_id'] != row['source_session_id'] or intent['final_result_id'] != result['id']
             or link['source_task_id'] != result['task_id'] or link['source_session_id'] != result['session_id']
-            or not _same_value(_stored_json(link['result_bytes'], link['result_digest'], code=code, budget=budget), result, budget=budget)):
+            or not _same_value(_stored_json(link['result_bytes'], link['result_digest'], code=code), result)):
         raise ValueError(code)
-    callback = _stored_json(callbacks[0]['event_bytes'], callbacks[0]['event_digest'], code=code, budget=budget)
+    callback = _stored_json(callbacks[0]['event_bytes'], callbacks[0]['event_digest'], code=code)
     accepted = callback['result']
-    if (type(accepted) is not dict or _reader_set(accepted, budget=budget) != _reader_set((_reader_reserve(budget, 144) or ('id', 'digest', 'record', 'accepted', 'disposition')), budget=budget)
+    if (type(accepted) is not dict or set(accepted) != {'id', 'digest', 'record', 'accepted', 'disposition'}
             or type(accepted['accepted']) is not int or accepted['accepted'] != 1
             or accepted['disposition'] not in ('accepted', 'pending_host_acknowledgment')
-            or not _same_value(accepted['id'], result['id'], budget=budget)
-            or not _same_value(accepted['record'], result, budget=budget)
-            or accepted['digest'] != digest(canonical_bytes(result, budget=budget), budget=budget)
+            or not _same_value(accepted['id'], result['id'])
+            or not _same_value(accepted['record'], result)
+            or accepted['digest'] != digest(canonical_bytes(result))
             or type(callbacks[0]['callback_accepted']) is not int or callbacks[0]['callback_accepted'] != 1
-            or not _same_value(callbacks[0]['result_id'], result['id'], budget=budget)):
+            or not _same_value(callbacks[0]['result_id'], result['id'])):
         raise ValueError(code)
     witnessed = False
     for terminal in terminals:
-        body = _stored_json(terminal['event_bytes'], terminal['event_digest'], code=code, budget=budget)
-        if (body['after']['state'] == 'completed' and _same_value(body['after']['final_result_id'], result['id'], budget=budget)
-                and _same_value(body['terminal_evidence'], (_reader_reserve(budget, 192) or {'host_quiescent': True}), budget=budget)
-                and _same_value(body['result'], accepted, budget=budget)):
+        body = _stored_json(terminal['event_bytes'], terminal['event_digest'], code=code)
+        if (body['after']['state'] == 'completed' and _same_value(body['after']['final_result_id'], result['id'])
+                and _same_value(body['terminal_evidence'], {'host_quiescent': True})
+                and _same_value(body['result'], accepted)):
             witnessed = True
     if not witnessed:
         raise ValueError(code)
@@ -250,130 +218,120 @@ def _reviewed_source_result(conn: sqlite3.Connection, row: dict, intent: dict, *
 
 
 def review_scope(*, row: dict, proof: dict, context: dict, contract: dict, role: str,
-                 request_id: str, round_id: str, binding: dict, generation: int = 1, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 208) or (row,proof,context,contract,role,request_id,round_id,binding,generation)), budget, copies=2)
+                 request_id: str, round_id: str, binding: dict, generation: int = 1) -> dict:
     if row['revision'] == 2:
         from runtime.workflows.revisions import revision_review_scope
         return revision_review_scope(row=row, proof=proof, context=context, contract=contract, role=role,
-            request_id=request_id, round_id=round_id, binding=binding, generation=generation, budget=budget)
+            request_id=request_id, round_id=round_id, binding=binding, generation=generation)
     serializer = artifact_review_scope if contract['format'] == 'workflow-artifact-contract@4' else document_review_scope
     return serializer(row=row, proof=proof, context=context, contract=contract,
                                  role=role, request_id=request_id, round_id=round_id, binding=binding)
 
 
-def subject_proof(conn: sqlite3.Connection, row: dict, *, budget=None) -> dict:
-    _reader_work((_reader_reserve(budget, 80) or (row,)), budget, copies=2)
+def subject_proof(conn: sqlite3.Connection, row: dict) -> dict:
     if row['revision'] == 2:
         from runtime.workflows.revisions import validate_revision_record
-        operation = _record(conn, 'workflow_document_revision_operations', row['id'], budget=budget)
-        return validate_revision_record(conn, operation, expected_org_slug=row['org_slug'], budget=budget)
-    return _handoff_record(conn, row, expected_org_slug=row['org_slug'], budget=budget)
+        operation = _record(conn, 'workflow_document_revision_operations', row['id'])
+        return validate_revision_record(conn, operation, expected_org_slug=row['org_slug'])
+    return _handoff_record(conn, row, expected_org_slug=row['org_slug'])
 
 
-def history_successor(conn: sqlite3.Connection, instance_id: str, *, fulfilled: bool = False, budget=None) -> bool:
-    _reader_work((_reader_reserve(budget, 96) or (instance_id,fulfilled)), budget, copies=2)
+def history_successor(conn: sqlite3.Connection, instance_id: str, *, fulfilled: bool = False) -> bool:
     from runtime.workflows.revisions import successor_for_history
-    row = successor_for_history(conn, instance_id, budget=budget)
+    row = successor_for_history(conn, instance_id)
     if row is None:
         return False
     if not fulfilled:
         return True
-    return _reader_one(conn, 'SELECT 1 FROM workflow_submission_result_links l JOIN workflow_submissions s ON s.id=l.submission_id WHERE s.instance_id=? AND s.revision=2', (_reader_reserve(budget, 80) or (instance_id,)), budget=budget) is not None
+    return conn.execute('SELECT 1 FROM workflow_submission_result_links l JOIN workflow_submissions s ON s.id=l.submission_id WHERE s.instance_id=? AND s.revision=2', (instance_id,)).fetchone() is not None
 
 
-def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict, *, budget=None) -> dict | None:
-    _reader_work((_reader_reserve(budget, 96) or (row,proof)), budget, copies=2)
+def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> dict | None:
     try:
-        _reader_reserve(budget, 144)
-        return _validate_handoff_graph(conn, row, proof, budget=budget)
-    except ((KeyError, TypeError, AttributeError, ValueError, sqlite3.DatabaseError)) as exc:
+        return _validate_handoff_graph(conn, row, proof)
+    except (KeyError, TypeError, AttributeError, ValueError, sqlite3.DatabaseError) as exc:
         raise ValueError('workflow_author_handoff_storage_corrupt') from exc
 
 
-def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict, *, budget=None) -> dict | None:
+def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> dict | None:
     """Closed graph oracle: all declared requests and all actual agent tasks in role order."""
-    _reader_work((_reader_reserve(budget, 96) or (row,proof)), budget, copies=2)
     code = 'workflow_author_handoff_storage_corrupt'
     revision = row['revision']
     generation = 2 if revision == 2 else 1
-    operations = _records(conn, 'SELECT * FROM workflow_submission_operations WHERE submission_id=?', (_reader_reserve(budget, 80) or (row['submission_id'],)), budget=budget)
-    rounds = _records(conn, 'SELECT * FROM workflow_rounds WHERE instance_id=? AND current_revision=?', (_reader_reserve(budget, 96) or (row['instance_id'], revision)), budget=budget)
-    if revision == 2 and not _reader_one(conn, 'SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (_reader_reserve(budget, 80) or (row['submission_id'],)), budget=budget):
+    operations = _records(conn, 'SELECT * FROM workflow_submission_operations WHERE submission_id=?', (row['submission_id'],))
+    rounds = _records(conn, 'SELECT * FROM workflow_rounds WHERE instance_id=? AND current_revision=?', (row['instance_id'], revision))
+    if revision == 2 and not conn.execute('SELECT 1 FROM workflow_submission_result_links WHERE submission_id=?', (row['submission_id'],)).fetchone():
         if rounds:
             raise ValueError(code)
         return None
     if not operations:
-        if rounds or _reader_one(conn, 'SELECT 1 FROM workflow_submissions WHERE id=?', (_reader_reserve(budget, 80) or (row['submission_id'],)), budget=budget):
+        if rounds or conn.execute('SELECT 1 FROM workflow_submissions WHERE id=?', (row['submission_id'],)).fetchone():
             raise ValueError(code)
         return None
     if len(operations) != 1 or len(rounds) != 1:
         raise ValueError(code)
-    intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'], budget=budget)
+    intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
     # A saved review graph uses immutable linked source evidence. Current
     # source validity belongs to mutation/approved-use admission, not history.
-    result = _reviewed_source_result(conn, row, intent, budget=budget)
+    result = _reviewed_source_result(conn, row, intent)
     # Pure integrity projection only; keep full H/F5/receipt oracles in their callers.
-    contributors = _reader_tuple(_records(conn, 'SELECT * FROM workflow_instance_contributors WHERE instance_id=?',
-                                  (_reader_reserve(budget, 80) or (row['instance_id'],)), budget=budget), budget=budget)
-    candidate = (document_from_submission(_record(conn, 'workflow_submissions', row['submission_id'], budget=budget),
-        org_namespace=row['org_slug'], pins=proof['pins'], source_result_id=result['id'], contributors=contributors, budget=budget)
-        if revision == 2 else document_from_handoff(row, proof, source_result_id=result['id'], contributors=contributors, budget=budget))
-    submission = document_from_submission(_record(conn, 'workflow_submissions', row['submission_id'], budget=budget),
+    contributors = tuple(_records(conn, 'SELECT * FROM workflow_instance_contributors WHERE instance_id=?',
+                                  (row['instance_id'],)))
+    candidate = (document_from_submission(_record(conn, 'workflow_submissions', row['submission_id']),
+        org_namespace=row['org_slug'], pins=proof['pins'], source_result_id=result['id'], contributors=contributors)
+        if revision == 2 else document_from_handoff(row, proof, source_result_id=result['id'], contributors=contributors))
+    submission = document_from_submission(_record(conn, 'workflow_submissions', row['submission_id']),
         org_namespace=operations[0]['org_slug'], pins=proof['pins'], source_result_id=result['id'],
-        contributors=contributors, budget=budget)
-    _reader_reserve(budget, 512)
-    _accounted_candidate_key = candidate.review_key
-    _accounted_submission_key = submission.review_key
-    _reader_work((_reader_reserve(budget, 96) or (_accounted_candidate_key, _accounted_submission_key)), budget)
-    if _accounted_candidate_key != _accounted_submission_key:
+        contributors=contributors)
+    if candidate.review_key != submission.review_key:
         raise ValueError(code)
     round_ = rounds[0]
     if (round_['submission_id'] != row['submission_id'] or round_['state'] not in ('reviewing', 'closed')
-            or round_['id'] != _id('workflow-round', row['instance_id'], revision, row['submission_id'], budget=budget)):
+            or round_['id'] != _id('workflow-round', row['instance_id'], revision, row['submission_id'])):
         raise ValueError(code)
-    context = _reader_json(_record(conn, 'workflow_contexts', intent['context_id'], budget=budget)['context_bytes'], budget)
-    contract = context_contract(context, budget=budget)
+    context = json.loads(_record(conn, 'workflow_contexts', intent['context_id'])['context_bytes'])
+    contract = context_contract(context)
     bindings = context['binding']['bindings']
-    requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE round_id=?', (_reader_reserve(budget, 80) or (round_['id'],)), budget=budget)
-    expected = (_reader_reserve(budget, 64) or [])
-    tasks = (_reader_reserve(budget, 64) or [])
+    requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE round_id=?', (round_['id'],))
+    expected = []
+    tasks = []
     if len(requests) != len(contract['reviewer_roles']):
         raise ValueError(code)
     for role in contract['reviewer_roles']:
         principal = bindings[role]['principal']
-        selected = _reader_list((q for q in requests if q['principal'] == principal and q['assignment_generation'] == generation), budget=budget)
+        selected = [q for q in requests if q['principal'] == principal and q['assignment_generation'] == generation]
         if len(selected) != 1:
             raise ValueError(code)
         q = selected[0]
         scope = review_scope(row=row, proof=proof, context=context, contract=contract, role=role,
-                             request_id=q['id'], round_id=round_['id'], binding=bindings[role], generation=generation, budget=budget)
-        if (q['id'] != _id('workflow-request', round_['id'], role, principal, generation, budget=budget)
+                             request_id=q['id'], round_id=round_['id'], binding=bindings[role], generation=generation)
+        if (q['id'] != _id('workflow-request', round_['id'], role, principal, generation)
                 or q['status'] not in ('pending', 'approved', 'changes_requested') or q['supersedes_request_id'] is not None
-                or canonical_bytes(scope, budget=budget) != q['request_scope_bytes']
-                or digest(q['request_scope_bytes'], budget=budget) != q['request_scope_digest']):
+                or canonical_bytes(scope) != q['request_scope_bytes']
+                or digest(q['request_scope_bytes']) != q['request_scope_digest']):
             raise ValueError(code)
-        _reader_append(expected, q['id'], budget=budget)
-        bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (_reader_reserve(budget, 80) or (q['id'],)), budget=budget)
-        dispatch = _records(conn, 'SELECT * FROM workflow_dispatch_operations WHERE request_id=?', (_reader_reserve(budget, 80) or (q['id'],)), budget=budget)
+        expected.append(q['id'])
+        bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (q['id'],))
+        dispatch = _records(conn, 'SELECT * FROM workflow_dispatch_operations WHERE request_id=?', (q['id'],))
         if contract['role_kinds'][role] == 'human':
             if bridges or dispatch:
                 raise ValueError(code)
             from runtime.workflows.review_receipts import validate_human_receipt
-            validate_human_receipt(conn, q, scope, proof, budget=budget)
+            validate_human_receipt(conn, q, scope, proof)
             continue
         if len(bridges) != 1 or len(dispatch) != 1:
             raise ValueError(code)
-        bridge, op = (_reader_reserve(budget, 96) or (bridges[0], dispatch[0]))
-        task = _record(conn, 'tasks', bridge['task_id'], budget=budget)
-        outbox = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE request_id=?', (_reader_reserve(budget, 80) or (q['id'],)), budget=budget)
-        brief = review_brief(scope, row['candidate_bytes'], budget=budget)
+        bridge, op = bridges[0], dispatch[0]
+        task = _record(conn, 'tasks', bridge['task_id'])
+        outbox = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE request_id=?', (q['id'],))
+        brief = review_brief(scope, row['candidate_bytes'])
         if (len(outbox) != 1 or outbox[0]['operation_id'] != op['id'] or bridge['operation_id'] != op['id']
-                or op['id'] != _id('workflow-dispatch', q['id'], generation, budget=budget) or op['operation_key'] != q['id']
-                or outbox[0]['id'] != _id('workflow-outbox', op['id'], budget=budget)
+                or op['id'] != _id('workflow-dispatch', q['id'], generation) or op['operation_key'] != q['id']
+                or outbox[0]['id'] != _id('workflow-outbox', op['id'])
                 or outbox[0]['effect_key'] != 'workflow-review:' + q['id']
                 or outbox[0]['host_execution_key'] != 'workflow-review-host:' + op['id']
                 or outbox[0]['recovery_owner'] != 'workflow_recovery' or outbox[0]['artifact_revision'] != revision
-                or _reader_any_true((outbox[0][k] != intent[k] for k in ('authority_namespace', 'authority_generation', 'authority_digest')), budget=budget)
+                or any(outbox[0][k] != intent[k] for k in ('authority_namespace', 'authority_generation', 'authority_digest'))
                 or bridge['instance_id'] != row['instance_id'] or bridge['assigned_principal'] != principal
                 or bridge['assignment_generation'] != generation or task['assigned_agent'] != principal
                 or task['team'] != bindings[role]['team'] or op['org_slug'] != row['org_slug']
@@ -387,52 +345,47 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict, *,
                 or op['principal'] != principal or op['instance_id'] != row['instance_id']
                 or op['round_id'] != round_['id'] or op['request_digest'] != q['request_scope_digest']):
             raise ValueError(code)
-        _reader_append(tasks, task['id'], budget=budget)
+        tasks.append(task['id'])
         from runtime.workflows.review_receipts import validate_agent_receipt
-        validate_agent_receipt(conn, q, scope, budget=budget)
-    if len(tasks) > 3 or len(_reader_set(tasks, budget=budget)) != len(tasks) or len(_reader_set(expected, budget=budget)) != len(expected):
+        validate_agent_receipt(conn, q, scope)
+    if len(tasks) > 3 or len(set(tasks)) != len(tasks) or len(set(expected)) != len(expected):
         raise ValueError(code)
     events = _records(conn, "SELECT * FROM workflow_events WHERE instance_id=? AND revision=? AND event_kind='submitted'",
-                      (_reader_reserve(budget, 96) or (row['instance_id'], revision)), budget=budget)
-    links = _records(conn, 'SELECT * FROM workflow_submission_result_links WHERE submission_id=?', (_reader_reserve(budget, 80) or (row['submission_id'],)), budget=budget)
+                      (row['instance_id'], revision))
+    links = _records(conn, 'SELECT * FROM workflow_submission_result_links WHERE submission_id=?', (row['submission_id'],))
     if len(events) != 1 or len(links) != 1 or links[0]['task_result_id'] != intent['final_result_id']:
         raise ValueError(code)
-    event = _reader_json(events[0]['event_bytes'], budget)
-    graph = (_reader_reserve(budget, 576) or dict(submission_id=row['submission_id'], round_id=round_['id'], request_ids=expected, reviewer_task_ids=tasks))
-    _accounted_event = (_reader_reserve(budget, 64 + 128 * (4 + len(graph))) if budget is not None else None) or dict(event_kind='submitted', instance_id=row['instance_id'], revision=revision,
-                     submission_digest=row['candidate_digest'], **graph)
-    _reader_work((_reader_reserve(budget, 96) or (event, _accounted_event)), budget)
-    if event != _accounted_event:
+    event = json.loads(events[0]['event_bytes'])
+    graph = dict(submission_id=row['submission_id'], round_id=round_['id'], request_ids=expected, reviewer_task_ids=tasks)
+    if event != dict(event_kind='submitted', instance_id=row['instance_id'], revision=revision,
+                     submission_digest=row['candidate_digest'], **graph):
         raise ValueError(code)
-    contributor = (_reader_reserve(budget, 704) or dict(principal=row['principal'], source_task_id=row['source_task_id'],
-                       source_session_id=row['source_session_id'], source_result_id=(_reader_reserve(budget, 128) or str(intent['final_result_id'])),
-                       contribution_kind='author'))
+    contributor = dict(principal=row['principal'], source_task_id=row['source_task_id'],
+                       source_session_id=row['source_session_id'], source_result_id=str(intent['final_result_id']),
+                       contribution_kind='author')
     for table, key in (('workflow_submission_contributors', 'submission_id'),
                        ('workflow_instance_contributors', 'instance_id')):
         identity = row['submission_id'] if key == 'submission_id' else row['instance_id']
         records = _records(conn, f'SELECT * FROM {table} WHERE {key}=? AND contribution_kind=?',
-                           (_reader_reserve(budget, 96) or (identity, 'author')), budget=budget)
-        if key == 'instance_id' and history_successor(conn, row['instance_id'], budget=budget):
+                           (identity, 'author'))
+        if key == 'instance_id' and history_successor(conn, row['instance_id']):
             from runtime.workflows.revisions import validate_author_history
-            validate_author_history(conn, row['instance_id'], records, budget=budget)
-            records = _reader_list((r for r in records if r['source_task_id'] == row['source_task_id']), budget=budget)
-        _accounted_contributors = _reader_reserve(budget, 192) or [((_reader_reserve(budget, 64 + 128 * (1 + len(contributor))) if budget is not None else None) or {key: identity, **contributor})]
-        _reader_work((_reader_reserve(budget, 96) or (records, _accounted_contributors)), budget)
-        if records != _accounted_contributors:
+            validate_author_history(conn, row['instance_id'], records)
+            records = [r for r in records if r['source_task_id'] == row['source_task_id']]
+        if records != [{key: identity, **contributor}]:
             raise ValueError(code)
     from runtime.workflows.review_join import validate_collection
-    validate_collection(conn, row, proof, graph, budget=budget)
+    validate_collection(conn, row, proof, graph)
     return graph
 
 
-def review_brief(scope: dict, candidate: bytes, *, budget=None) -> str:
-    _reader_work((_reader_reserve(budget, 96) or (scope,candidate)), budget, copies=2)
-    if review_family(scope, budget=budget) == 3:
+def review_brief(scope: dict, candidate: bytes) -> str:
+    if review_family(scope) == 3:
         return ('Workflow revision review. Independently assess the pinned r2 and only your selected inputs. '
             'Stage workflow-review-stage-command@3 under one stable key before your genuine final callback. '
             'No task, callback or stage is a signature; no delegation/coding/merge grant follows.\n\n'
-            + _reader_decode(canonical_bytes((_reader_reserve(budget, 320) or dict(scope=scope, submission_bytes_base64=_reader_decode(_reader_b64encode(candidate, budget=budget), 'ascii', budget=budget))), budget=budget), budget=budget))
-    return artifact_review_brief(scope, candidate, budget=budget) if review_family(scope, budget=budget) == 2 else document_review_brief(scope, candidate, budget=budget)
+            + canonical_bytes(dict(scope=scope, submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
+    return artifact_review_brief(scope, candidate) if review_family(scope) == 2 else document_review_brief(scope, candidate)
 
 
 class WorkflowSubmissionStore:

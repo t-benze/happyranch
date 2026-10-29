@@ -7,25 +7,6 @@ current policy, actual invocation/Pause ownership or producer permission.
 """
 from __future__ import annotations
 
-from runtime.infrastructure._workflow_reader import (
-    _add as _reader_add,
-    _append as _reader_append,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _dict_pairs as _reader_dict_pairs,
-    _list as _reader_list,
-    _set as _reader_set,
-)
-
-from runtime.infrastructure._workflow_reader import (
-    _json as _reader_json,
-    _reserve as _reader_reserve,
-    _sha256 as _reader_sha256,
-    _work as _reader_work,
-)
-
-
 import hashlib
 import json
 import sqlite3
@@ -77,10 +58,9 @@ def _native_task_links(conn: sqlite3.Connection, capture: OriginalSourceCapture,
     # Mutable assignment/SID/team/counters/timestamps are NEVER compared to
     # today's rows. Native task identity, creation and structural parent/type
     # remain independent links, not replay of the original full snapshots.
-    _reader_work((_reader_reserve(budget, 96) or (capture, native)), budget)
-    current = _reader_dict_pairs(((_reader_reserve(budget, 96) or (row._text('id', budget=budget),  row )) for row in (_reader_reserve(budget, 128 + 32 * (1 + len(native.ancestor_task_records))) or (native.source_task_record, *native.ancestor_task_records))), budget=budget)
-    for original in (_reader_reserve(budget, 128 + 32 * (1 + len(capture.ancestor_records))) or (capture.task_record, *capture.ancestor_records)):
-        identity = original._text('id', budget=budget)
+    current = {row._text('id'): row for row in (native.source_task_record, *native.ancestor_task_records)}
+    for original in (capture.task_record, *capture.ancestor_records):
+        identity = original._text('id')
         row = current.get(identity)
         if row is None:
             row = _task(conn, identity, budget)
@@ -91,40 +71,38 @@ def _native_task_links(conn: sqlite3.Connection, capture: OriginalSourceCapture,
 
 def _selected_links(capture: OriginalSourceCapture, native: CodingSourceNativeRecords,
                     initial: dict, budget: _Budget) -> None:
-    _reader_work((_reader_reserve(budget, 112) or (capture, native, initial)), budget)
     issuer = initial['issuer']
     task = capture.task_record
     _check(capture.org_slug == initial['subject']['org_slug']
-           and task._text('id', budget=budget) == issuer['task_id']
-           and task._text('assigned_agent', budget=budget) == issuer['principal']
-           and task._text('team', budget=budget) == initial['subject']['team']
-           and task._text('current_session_id', budget=budget) == issuer['session_id']
+           and task._text('id') == issuer['task_id']
+           and task._text('assigned_agent') == issuer['principal']
+           and task._text('team') == initial['subject']['team']
+           and task._text('current_session_id') == issuer['session_id']
            and capture.session_start_audit_id == native.session_start_audit_record._value('id'))
     if issuer['result_id'] is None:
         _check(capture.result_record is None and initial['action'] != 'start-coding')
     else:
         _check(capture.result_record is not None and initial['action'] == 'start-coding')
-        results = _reader_list((row for row in native.same_session_result_records if row._value('id') == issuer['result_id']), budget=budget)
+        results = [row for row in native.same_session_result_records if row._value('id') == issuer['result_id']]
         _check(len(results) == 1)
-        _same_record(capture.result_record, results[0], budget=budget)
+        _same_record(capture.result_record, results[0])
         _start_decision(capture.result_record, initial, budget)
 
 
-def _first_boundary(callback: OriginalSourceCapture, source: OriginalSourceCapture, *, budget=None) -> None:
-    _reader_work((_reader_reserve(budget, 96) or (callback, source)), budget)
+def _first_boundary(callback: OriginalSourceCapture, source: OriginalSourceCapture) -> None:
     _check(callback.phase == 'callback' and source.phase == 'source'
            and source.callback_admission_audit_id == callback.audit_record._value('id')
            and callback.audit_record._value('id') < source.audit_record._value('id')
            and callback.session_start_audit_id == source.session_start_audit_id
            and callback.command_bytes == source.command_bytes)
-    _same_record(callback.result_record, source.result_record, budget=budget)
+    _same_record(callback.result_record, source.result_record)
     _check(len(callback.ancestor_records) == len(source.ancestor_records))
     # EXACT25 named columns, in complete27 native order. Only the two valid
     # timestamp observations may differ at this boundary; BOTH are retained.
     # Each original chain has already independently closed parent-to-NULL.
-    for c0, c1 in zip((_reader_reserve(budget, 128 + 32 * (1 + len(callback.ancestor_records))) or (callback.task_record, *callback.ancestor_records)),
-                      (_reader_reserve(budget, 128 + 32 * (1 + len(source.ancestor_records))) or (source.task_record, *source.ancestor_records))):
-        _same_record(c0, c1, first_boundary=True, budget=budget)
+    for c0, c1 in zip((callback.task_record, *callback.ancestor_records),
+                      (source.task_record, *source.ancestor_records)):
+        _same_record(c0, c1, first_boundary=True)
 
 
 def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str, *,
@@ -132,16 +110,16 @@ def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str, *,
     budget = budget if budget is not None else _Budget()
     native = _source_records(conn, org_slug, authorization_id, budget=budget, setups=setups)
     initial_row = native.capability_history.capabilities[0]
-    initial = _reader_json(initial_row.authority_bytes, budget=budget)
+    initial = json.loads(initial_row.authority_bytes)
     # The initial source admission is already independently joined to ALL five
     # actual native admission columns by the capability reader. No selected
     # refinement mint, mapping owner or caller-provided source can substitute.
     source_admission_id = initial['source_admission_id']
     _check(source_admission_id == initial_row.own_admission.id)
-    captures = (_reader_reserve(budget, 64) or [])
-    owners = _reader_set(budget=budget)
-    admissions = _reader_set(budget=budget)
-    allocating_results = _reader_set(budget=budget)
+    captures = []
+    owners = set()
+    admissions = set()
+    allocating_results = set()
     selected = None
     if inventory is None:
         from runtime.workflows._coding_mapping_admission import _MappingCaptures
@@ -149,18 +127,17 @@ def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str, *,
     inventory.load()
     for capture in inventory.all_captures:
         budget.step()
-        owner_key = (_reader_reserve(budget, 112) or (capture.phase, capture.native_owner.table, capture.native_owner.id))
+        owner_key = (capture.phase, capture.native_owner.table, capture.native_owner.id)
         _check(owner_key not in owners)
-        _reader_add(owners, owner_key, budget=budget)
+        owners.add(owner_key)
         if capture.phase == 'source':
             _check(capture.source_admission_id not in admissions)
-            _reader_add(admissions, capture.source_admission_id, budget=budget)
+            admissions.add(capture.source_admission_id)
             if capture.result_record is not None:
                 result_id = capture.result_record._value('id')
                 _check(result_id not in allocating_results)
-                _reader_add(allocating_results, result_id, budget=budget)
-        _reader_work(capture, budget)
-        _reader_append(captures, capture, budget=budget)
+                allocating_results.add(result_id)
+        captures.append(capture)
         if capture.phase == 'source' and (
                 capture.source_admission_id == source_admission_id
                 or (capture.native_owner.table == 'workflow_authorization_revisions'
@@ -189,20 +166,19 @@ def _read(conn: sqlite3.Connection, org_slug: str, authorization_id: str, *,
             # An existing referenced foreign action is INVALID, not missing
             # capture evidence. Full bounded native row gates still apply.
             links = _native_rows(conn, _AUDIT_LINK_SQL,
-                (_reader_reserve(budget, 80) or (selected.callback_admission_audit_id,)), _AUDIT_COLUMNS, _AUDIT_TYPES, budget)
+                (selected.callback_admission_audit_id,), _AUDIT_COLUMNS, _AUDIT_TYPES, budget)
             try:
                 _check(next(links, None) is None)  # ANY native row here is a conflict
             finally:
                 links.close()
             raise CodingSourceHistoryError(_UNAVAILABLE)
         _selected_links(callback, native, initial, budget)
-        _first_boundary(callback, selected, budget=budget)
+        _first_boundary(callback, selected)
         # Original C0 and C1 independently link to retained native identities;
         # no call to today's _retry_claim_matches or tracker reconstruction.
         _native_task_links(conn, callback, native, budget)
-    _reader_work((_reader_reserve(budget, 128) or (native, initial_row, selected, callback)), budget)
     return CodingSourceAdmissionHistory(native, initial_row, selected, callback,
-        None if callback is None else _reader_sha256(callback.command_bytes, budget=budget).hexdigest())
+        None if callback is None else hashlib.sha256(callback.command_bytes).hexdigest())
 
 
 def read_source_admission_history(conn: sqlite3.Connection, *, expected_org_slug: str,
