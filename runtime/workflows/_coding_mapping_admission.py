@@ -5,6 +5,23 @@ validity does not restore current permission or create any task/result.
 """
 from __future__ import annotations
 
+from runtime.infrastructure._workflow_reader import (
+    _put as _reader_put,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _dict_pairs as _reader_dict_pairs,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _b64decode as _reader_b64decode,
+    _encode as _reader_encode,
+    _json as _reader_json,
+    _reserve as _reader_reserve,
+    _work as _reader_work,
+)
+
+
 import base64
 import json
 from datetime import datetime
@@ -24,19 +41,20 @@ class _MappingCaptures:
     """One complete decoded fixed-action inventory per caller snapshot/budget."""
 
     def __init__(self, conn, org_slug, budget):
-        self.conn, self.org_slug, self.budget = conn, org_slug, budget
+        self.conn, self.org_slug, self.budget = (_reader_reserve(budget, 112) or (conn, org_slug, budget))
+        _reader_reserve(budget, 1024)
         self.loaded = False
-        self.by_admission, self.by_mapping, self.admission_uses = {}, {}, {}
-        self.tasks, self.starts = {}, {}
-        self.operations = {}
-        self.all_captures = []
+        self.by_admission, self.by_mapping, self.admission_uses = (_reader_reserve(budget, 112) or (_reader_reserve(budget, 64) or {}, _reader_reserve(budget, 64) or {}, _reader_reserve(budget, 64) or {}))
+        self.tasks, self.starts = (_reader_reserve(budget, 96) or (_reader_reserve(budget, 64) or {}, _reader_reserve(budget, 64) or {}))
+        self.operations = (_reader_reserve(budget, 64) or {})
+        self.all_captures = (_reader_reserve(budget, 64) or [])
 
     def load(self):
         if self.loaded:
             return
         owners = set()
         for audit in _inventory(self.conn, _CAPTURE_SQL, (), _AUDIT_COLUMNS, _AUDIT_TYPES, self.budget):
-            if audit._text('action') == 'coding_source_operation':
+            if audit._text('action', budget=self.budget) == 'coding_source_operation':
                 from runtime.workflows._coding_source_admission import decode_operation
                 operation = decode_operation(audit, self.org_slug, self.budget)
                 key = (operation['principal'], operation['command']['operation_key'])
@@ -44,6 +62,7 @@ class _MappingCaptures:
                 self.operations[key] = (operation, audit)
                 continue
             capture = _decode_capture(audit, self.org_slug, self.budget)
+            _reader_work(capture, self.budget)
             self.all_captures.append(capture)
             owner = (capture.phase, capture.native_owner.table, capture.native_owner.id)
             _check(owner not in owners)
@@ -75,23 +94,24 @@ def mapping_capture(conn, org_slug, mapping_id, raw, record, budget, *, inventor
            and selected.phase == 'source' and selected.source_admission_id == admission
            and selected.command_bytes == raw and selected.result_record is None
            and selected.observed_at == record['created_at'])
+    _reader_work((_reader_reserve(budget, 112) or (raw, record, selected)), budget)
     task = selected.task_record
     issuer = record['issuer']
-    _check(task._text('id') == issuer['task_id']
-           and task._text('assigned_agent') == issuer['principal']
-           and task._text('current_session_id') == issuer['session_id']
-           and task._text('team') == record['mapping']['roles']['agent_manager']['team'])
+    _check(task._text('id', budget=budget) == issuer['task_id']
+           and task._text('assigned_agent', budget=budget) == issuer['principal']
+           and task._text('current_session_id', budget=budget) == issuer['session_id']
+           and task._text('team', budget=budget) == record['mapping']['roles']['agent_manager']['team'])
     from runtime.workflows.coding_authority_history import _setup_configuration, _canonical, _digest
-    snapshot = _decoded(json.loads(base64.b64decode(record['authority']['snapshot_bytes_base64'], validate=True)), budget)
+    snapshot = _decoded(_reader_json(_reader_b64decode(record['authority']['snapshot_bytes_base64'], validate=True, budget=budget), budget), budget)
     if record['format'] == 'workflow-coding-agent-read-role-record@1':
         from runtime.workflows._coding_role_records import configuration
-        configuration(record['mapping'], snapshot)
+        configuration(record['mapping'], snapshot, budget=budget)
     else:
-        grant = _decoded(json.loads(base64.b64decode(record['authority']['grant_bytes_base64'], validate=True)), budget)
+        grant = _decoded(_reader_json(_reader_b64decode(record['authority']['grant_bytes_base64'], validate=True, budget=budget), budget), budget)
         for setup in grant['setups']:
             budget.step()
-            _setup_configuration(setup, snapshot)
-        agents = {agent['name']: agent for agent in snapshot['agents'] if agent['status'] == 'active'}
+            _setup_configuration(setup, snapshot, budget=budget)
+        agents = _reader_dict_pairs(((_reader_reserve(budget, 96) or (agent['name'],  agent )) for agent in snapshot['agents'] if agent['status'] == 'active'), budget=budget)
         for role, selector in record['mapping']['roles'].items():
             for candidate in [selector, *record['mapping']['eligible_replacements'][role]]:
                 budget.step()
@@ -100,30 +120,31 @@ def mapping_capture(conn, org_slug, mapping_id, raw, record, budget, *, inventor
             budget.step()
             binding = entry['binding']
             origin = agents[binding['store_owner']]['repos'].get(binding['repo_key'])
-            _check(type(origin) is str and _digest(origin.encode('utf8')) == binding['origin_digest']
+            _check(type(origin) is str and _digest(_reader_encode(origin, 'utf8', budget=budget), budget=budget) == binding['origin_digest']
                    and binding['repository_id'] == 'workflow-repository:' + _digest(_canonical(
-                       [org_slug, binding['repo_key'], binding['origin_digest']])))
-    start_key = (issuer['task_id'], issuer['session_id'], issuer['principal'])
+                       (_reader_reserve(budget, 448) or [org_slug, binding['repo_key'], binding['origin_digest']]), budget=budget), budget=budget))
+    start_key = (_reader_reserve(budget, 112) or (issuer['task_id'], issuer['session_id'], issuer['principal']))
     budget.step()
     if start_key not in cache.starts:
-        cache.starts[start_key] = _session_start(conn, issuer, budget)
+        _reader_put(_session_start(conn, issuer, budget), cache.starts, start_key, budget=budget)
     start = cache.starts[start_key]
     _check(start._value('id') == selected.session_start_audit_id)
     observed = datetime.fromisoformat(selected.observed_at.replace('Z', '+00:00'))
-    _check(datetime.fromisoformat(start._text('timestamp').replace('Z', '+00:00')) <= observed)
-    for original in (task, *selected.ancestor_records):
-        _check(datetime.fromisoformat(original._text('created_at').replace('Z', '+00:00')) <= observed)
-    for original in (task, *selected.ancestor_records):
-        identity = original._text('id')
+    _check(datetime.fromisoformat(start._text('timestamp', budget=budget).replace('Z', '+00:00')) <= observed)
+    for original in (_reader_reserve(budget, 128 + 32 * (1 + len(selected.ancestor_records))) or (task, *selected.ancestor_records)):
+        _check(datetime.fromisoformat(original._text('created_at', budget=budget).replace('Z', '+00:00')) <= observed)
+    for original in (_reader_reserve(budget, 128 + 32 * (1 + len(selected.ancestor_records))) or (task, *selected.ancestor_records)):
+        identity = original._text('id', budget=budget)
         budget.step()
         if identity not in cache.tasks:
-            cache.tasks[identity] = _task(conn, identity, budget)
+            _reader_put(_task(conn, identity, budget), cache.tasks, identity, budget=budget)
         today = cache.tasks[identity]
         for name in ('id', 'created_at', 'parent_task_id', 'task_type'):
             _check(today._value(name) == original._value(name))
     return selected
 
 
-def audit_values(capture):
+def audit_values(capture, *, budget=None):
+    _reader_work(capture, budget)
     row = capture.audit_record
-    return {c.name: row._text(c.name) if c.storage_class == 'text' else c.value for c in row.columns}
+    return _reader_dict_pairs(((_reader_reserve(budget, 96) or (c.name,  row._text(c.name, budget=budget) if c.storage_class == 'text' else c.value )) for c in row.columns), budget=budget)

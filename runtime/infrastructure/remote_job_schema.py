@@ -6,6 +6,24 @@ authenticate runners, select workspaces, or activate the remote-job runtime.
 
 from __future__ import annotations
 
+from runtime.infrastructure._workflow_reader import (
+    _reserve as _reader_reserve,
+    _set as _reader_set,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _all_true as _reader_all_true,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _dict_pairs as _reader_dict_pairs,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _all as _reader_all, _one as _reader_one, _rows as _reader_rows,
+    _work as _reader_work,
+)
+
 import re
 import sqlite3
 from collections.abc import Callable
@@ -274,27 +292,23 @@ STAGES = (
 )
 
 
-def _normalized(sql: str) -> str:
+def _normalized(sql: str, *, budget=None) -> str:
+    _reader_work(sql, budget, copies=3)
     value = sql.strip().rstrip(";")
     value = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", value, flags=re.IGNORECASE)
     value = re.sub(r"[\s\"`\[\]]+", "", value).lower()
     return value
 
 
-def _schema_sql(conn: sqlite3.Connection, kind: str, name: str) -> str | None:
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type=? AND name=?", (kind, name)
-    ).fetchone()
+def _schema_sql(conn: sqlite3.Connection, kind: str, name: str, *, budget=None) -> str | None:
+    row = _reader_one(conn, "SELECT sql FROM sqlite_master WHERE type=? AND name=?", (_reader_reserve(budget, 96) or (kind, name)), budget=budget)
     return None if row is None else str(row[0])
 
 
-def _identity_marker_stage(conn: sqlite3.Connection) -> str | None:
-    if _schema_sql(conn, "table", "remote_runner_schema_migrations") is None:
+def _identity_marker_stage(conn: sqlite3.Connection, *, budget=None) -> str | None:
+    if _schema_sql(conn, "table", "remote_runner_schema_migrations", budget=budget) is None:
         return None
-    rows = conn.execute(
-        "SELECT stage FROM remote_runner_schema_migrations WHERE name=?",
-        (IDENTITY_MIGRATION_NAME,),
-    ).fetchall()
+    rows = _reader_all(conn, "SELECT stage FROM remote_runner_schema_migrations WHERE name=?", (_reader_reserve(budget, 80) or (IDENTITY_MIGRATION_NAME,)), budget=budget)
     if len(rows) > 1:
         raise sqlite3.DatabaseError("duplicate identity/enrollment migration marker")
     if not rows:
@@ -305,7 +319,7 @@ def _identity_marker_stage(conn: sqlite3.Connection) -> str | None:
     return stage
 
 
-def _runner_graph_is_empty(conn: sqlite3.Connection) -> bool:
+def _runner_graph_is_empty(conn: sqlite3.Connection, *, budget=None) -> bool:
     names = (
         "remote_runners",
         "remote_runner_workspaces",
@@ -315,32 +329,32 @@ def _runner_graph_is_empty(conn: sqlite3.Connection) -> bool:
         "remote_protocol_frames",
         "remote_runner_enrollment_challenges",
     )
-    return all(
-        _schema_sql(conn, "table", name) is None
-        or conn.execute(f'SELECT 1 FROM "{name}" LIMIT 1').fetchone() is None
+    return _reader_all_true((
+        _schema_sql(conn, "table", name, budget=budget) is None
+        or _reader_one(conn, f'SELECT 1 FROM "{name}" LIMIT 1', budget=budget) is None
         for name in names
-    )
+    ), budget=budget)
 
 
-def _validate_identity_enrollment_shapes(conn: sqlite3.Connection) -> None:
+def _validate_identity_enrollment_shapes(conn: sqlite3.Connection, *, budget=None) -> None:
     """Validate the exact TASK-6611 transition without writing anything."""
-    if _schema_sql(conn, "table", IDENTITY_TEMP_PARENT) is not None:
+    if _schema_sql(conn, "table", IDENTITY_TEMP_PARENT, budget=budget) is not None:
         raise sqlite3.DatabaseError("reserved identity/enrollment temporary parent exists")
 
-    marker_sql = _schema_sql(conn, "table", "remote_runner_schema_migrations")
-    if marker_sql is not None and _normalized(marker_sql) != _normalized(
+    marker_sql = _schema_sql(conn, "table", "remote_runner_schema_migrations", budget=budget)
+    if marker_sql is not None and _normalized(marker_sql, budget=budget) != _normalized(
         TABLE_SQL["remote_runner_schema_migrations"]
-    ):
+    , budget=budget):
         raise sqlite3.DatabaseError(
             "conflicting remote-job table: remote_runner_schema_migrations"
         )
-    stage = _identity_marker_stage(conn)
+    stage = _identity_marker_stage(conn, budget=budget)
 
-    runner_sql = _schema_sql(conn, "table", "remote_runners")
+    runner_sql = _schema_sql(conn, "table", "remote_runners", budget=budget)
     runner_shape = (
         "absent" if runner_sql is None
-        else "s2" if _normalized(runner_sql) == _normalized(S2_REMOTE_RUNNERS_SQL)
-        else "canonical" if _normalized(runner_sql) == _normalized(TABLE_SQL["remote_runners"])
+        else "s2" if _normalized(runner_sql, budget=budget) == _normalized(S2_REMOTE_RUNNERS_SQL, budget=budget)
+        else "canonical" if _normalized(runner_sql, budget=budget) == _normalized(TABLE_SQL["remote_runners"], budget=budget)
         else "conflict"
     )
     if runner_shape == "conflict":
@@ -351,40 +365,37 @@ def _validate_identity_enrollment_shapes(conn: sqlite3.Connection) -> None:
         )
     if stage not in (None, "validate_empty_s2_runner_graph") and runner_shape == "absent":
         raise sqlite3.DatabaseError("identity/enrollment marker exists without parent")
-    if runner_shape == "s2" and not _runner_graph_is_empty(conn):
+    if runner_shape == "s2" and not _runner_graph_is_empty(conn, budget=budget):
         raise sqlite3.DatabaseError("untouched S2 remote-runner graph is not empty")
 
     # Every already-present S2 child keeps its exact merged meaning.  The parent
     # is the sole two-shape exception during this named transition.
     for name, expected in TABLE_SQL.items():
-        if name in {
-            "remote_runner_schema_migrations", "remote_runners",
-            "remote_runner_enrollment_challenges",
-        }:
+        if name in _reader_set((_reader_reserve(budget, 112) or ("remote_runner_schema_migrations", "remote_runners", "remote_runner_enrollment_challenges")), budget=budget):
             continue
-        actual = _schema_sql(conn, "table", name)
-        if actual is not None and _normalized(actual) != _normalized(expected):
+        actual = _schema_sql(conn, "table", name, budget=budget)
+        if actual is not None and _normalized(actual, budget=budget) != _normalized(expected, budget=budget):
             raise sqlite3.DatabaseError(f"conflicting remote-job table: {name}")
     for name, expected in INDEX_SQL.items():
         if name == "remote_enrollment_challenge_expiry":
             continue
-        actual = _schema_sql(conn, "index", name)
-        if actual is not None and _normalized(actual) != _normalized(expected):
+        actual = _schema_sql(conn, "index", name, budget=budget)
+        if actual is not None and _normalized(actual, budget=budget) != _normalized(expected, budget=budget):
             raise sqlite3.DatabaseError(f"conflicting remote-job index: {name}")
 
     challenge_sql = _schema_sql(
         conn, "table", "remote_runner_enrollment_challenges"
-    )
-    expiry_sql = _schema_sql(conn, "index", "remote_enrollment_challenge_expiry")
-    if challenge_sql is not None and _normalized(challenge_sql) != _normalized(
+    , budget=budget)
+    expiry_sql = _schema_sql(conn, "index", "remote_enrollment_challenge_expiry", budget=budget)
+    if challenge_sql is not None and _normalized(challenge_sql, budget=budget) != _normalized(
         TABLE_SQL["remote_runner_enrollment_challenges"]
-    ):
+    , budget=budget):
         raise sqlite3.DatabaseError(
             "conflicting remote-job table: remote_runner_enrollment_challenges"
         )
-    if expiry_sql is not None and _normalized(expiry_sql) != _normalized(
+    if expiry_sql is not None and _normalized(expiry_sql, budget=budget) != _normalized(
         INDEX_SQL["remote_enrollment_challenge_expiry"]
-    ):
+    , budget=budget):
         raise sqlite3.DatabaseError(
             "conflicting remote-job index: remote_enrollment_challenge_expiry"
         )
@@ -401,9 +412,9 @@ def _validate_identity_enrollment_shapes(conn: sqlite3.Connection) -> None:
 
 def validate_identity_enrollment_schema_preflight(
     conn: sqlite3.Connection,
-) -> None:
+ *, budget=None) -> None:
     """First-open read-only guard for the founder-approved TASK-6611 schema."""
-    _validate_identity_enrollment_shapes(conn)
+    _validate_identity_enrollment_shapes(conn, budget=budget)
 
 
 def _record_identity_stage(conn: sqlite3.Connection, stage: str) -> None:
@@ -515,17 +526,17 @@ def migrate_identity_enrollment_schema(
         _validate_identity_enrollment_shapes(conn)
 
 
-def _validate_existing_shapes(conn: sqlite3.Connection) -> None:
+def _validate_existing_shapes(conn: sqlite3.Connection, *, budget=None) -> None:
     for name, expected in TABLE_SQL.items():
-        actual = _schema_sql(conn, "table", name)
-        if actual is not None and _normalized(actual) != _normalized(expected):
+        actual = _schema_sql(conn, "table", name, budget=budget)
+        if actual is not None and _normalized(actual, budget=budget) != _normalized(expected, budget=budget):
             raise sqlite3.DatabaseError(f"conflicting remote-job table: {name}")
     for name, expected in INDEX_SQL.items():
-        actual = _schema_sql(conn, "index", name)
-        if actual is not None and _normalized(actual) != _normalized(expected):
+        actual = _schema_sql(conn, "index", name, budget=budget)
+        if actual is not None and _normalized(actual, budget=budget) != _normalized(expected, budget=budget):
             raise sqlite3.DatabaseError(f"conflicting remote-job index: {name}")
 
-    job_info = {str(row[1]): row for row in conn.execute("PRAGMA table_info(jobs)")}
+    job_info = _reader_dict_pairs(((_reader_reserve(budget, 96) or (str(row[1]),  row )) for row in _reader_rows(conn, "PRAGMA table_info(jobs)", budget=budget)), budget=budget)
     for name, declared_type in JOB_COLUMNS:
         row = job_info.get(name)
         if row is not None and (
@@ -533,30 +544,26 @@ def _validate_existing_shapes(conn: sqlite3.Connection) -> None:
         ):
             raise sqlite3.DatabaseError(f"conflicting jobs column: {name}")
 
-    marker_sql = _schema_sql(conn, "table", "remote_runner_schema_migrations")
+    marker_sql = _schema_sql(conn, "table", "remote_runner_schema_migrations", budget=budget)
     if marker_sql is not None:
-        rows = conn.execute(
-            "SELECT name, stage FROM remote_runner_schema_migrations"
-        ).fetchall()
+        rows = _reader_all(conn, "SELECT name, stage FROM remote_runner_schema_migrations", budget=budget)
         for name, stage in rows:
             if name == MIGRATION_NAME and stage not in STAGES:
                 raise sqlite3.DatabaseError("conflicting remote-job migration stage")
 
     if (
-        _schema_sql(conn, "table", "remote_runner_workspaces") is not None
-        and _schema_sql(conn, "index", "remote_one_live_workspace") is None
+        _schema_sql(conn, "table", "remote_runner_workspaces", budget=budget) is not None
+        and _schema_sql(conn, "index", "remote_one_live_workspace", budget=budget) is None
     ):
-        duplicate = conn.execute(
-            "SELECT 1 FROM remote_runner_workspaces WHERE state <> 'retired' "
-            "GROUP BY runner_id, runner_generation, agent_name HAVING COUNT(*) > 1 LIMIT 1"
-        ).fetchone()
+        duplicate = _reader_one(conn, "SELECT 1 FROM remote_runner_workspaces WHERE state <> 'retired' "
+            "GROUP BY runner_id, runner_generation, agent_name HAVING COUNT(*) > 1 LIMIT 1", budget=budget)
         if duplicate is not None:
             raise sqlite3.IntegrityError("duplicate live remote-runner workspace")
 
 
-def validate_remote_job_schema_preflight(conn: sqlite3.Connection) -> None:
+def validate_remote_job_schema_preflight(conn: sqlite3.Connection, *, budget=None) -> None:
     """Refuse conflicting S2 objects before broader startup schema writes."""
-    _validate_existing_shapes(conn)
+    _validate_existing_shapes(conn, budget=budget)
 
 
 def _record_stage(conn: sqlite3.Connection, stage: str) -> None:

@@ -10,6 +10,25 @@ consumer. They do not block the separate human setup producer.
 """
 from __future__ import annotations
 
+from runtime.infrastructure._workflow_reader import (
+    _add as _reader_add,
+    _append as _reader_append,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _list as _reader_list,
+    _set as _reader_set,
+    _tuple as _reader_tuple,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _b64decode as _reader_b64decode,
+    _json as _reader_json,
+    _reserve as _reader_reserve,
+    _work as _reader_work,
+)
+
+
 import base64
 import json
 import re
@@ -99,15 +118,15 @@ def _native_capability(conn: sqlite3.Connection, org_slug: str,
     # Every returned field gates storage class/byte length BEFORE fetch and
     # retains original typeof for refusal, including wrong-type NULL sentinels.
     columns = ('id', 'namespace', 'revision', 'authority_bytes', 'authority_digest', 'source_pin', 'created_at')
-    rows = list(_bounded_rows(conn, 'workflow_authorization_revisions', columns,
-        tuple((kind,) for kind in _TYPES), budget,
+    rows = _reader_list(_bounded_rows(conn, 'workflow_authorization_revisions', columns,
+        _reader_tuple(((_reader_reserve(budget, 80) or (kind,)) for kind in _TYPES), budget=budget), budget,
         where='id=? OR namespace=? OR authority_digest=(SELECT authority_digest '
               'FROM workflow_authorization_revisions WHERE id=? LIMIT 1)',
-        args=(authorization_id, namespace, authorization_id), maximum=1))
+        args=(_reader_reserve(budget, 112) or (authorization_id, namespace, authorization_id)), maximum=1), budget=budget)
     _check(len(rows) == 1)
     values = budget.row(rows[0], _TYPES, counted=True, charged=True)
     _check(values[0] == authorization_id and values[1] == namespace
-           and values[2] == 1 and values[4] == _digest(values[3])
+           and values[2] == 1 and values[4] == _digest(values[3], budget=budget)
            and values[5] == _SOURCE_PIN)
     return values
 
@@ -126,32 +145,33 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     # Parse the selected COMPLETE contained ancestry once. Exact native byte
     # equality below then binds each already-validated P, with no recursive
     # parser/budget reset, caller records, resolver or Boolean trust seam.
-    read_saved_capability(values[3], expected_org_slug=org_slug)
-    record = json.loads(values[3])
-    identities: set[str] = set()
-    admission_ids: set[str] = set()
-    result: list[HistoricalCodingCapability] = []
+    read_saved_capability(values[3], expected_org_slug=org_slug, budget=budget)
+    record = _reader_json(values[3], budget)
+    identities: set[str] = _reader_set(budget=budget)
+    admission_ids: set[str] = _reader_set(budget=budget)
+    result: list[HistoricalCodingCapability] = (_reader_reserve(budget, 64) or [])
     while True:
         budget.step()
         _check(len(result) < _ANCESTRY_LIMIT and record['id'] not in identities
                and values[0] == record['id'] and values[6] == record['created_at'])
-        identities.add(record['id'])
+        _reader_add(identities, record['id'], budget=budget)
         capture = record['authority']
         admission = HistoricalCapabilityAdmission(
             capture['admission_record_id'], capture['pin']['namespace'],
             capture['pin']['generation'], values[4],
             'agent:' + record['issuer']['principal'])
         _check(admission.id not in admission_ids)
-        admission_ids.add(admission.id)
+        _reader_add(admission_ids, admission.id, budget=budget)
         # Full-P request_digest and historical source principal belong to THIS
         # mint; source_admission_id, parent H(P) and U wrapper H are distinct.
-        _capture_admission(conn, dict(
+        _capture_admission(conn, (_reader_reserve(budget, 704) or dict(
             id=admission.id, namespace=admission.namespace,
             generation=admission.generation, request_digest=admission.request_digest,
-            admitted_by=admission.admitted_by), capture, budget)
-        result.append(HistoricalCodingCapability(*values, _TYPES, admission))
-        parent_raw = base64.b64decode(capture['grant_bytes_base64'], validate=True)
-        parent = json.loads(parent_raw)
+            admitted_by=admission.admitted_by)), capture, budget)
+        _reader_work((_reader_reserve(budget, 96) or (values, admission)), budget)
+        _reader_append(result, HistoricalCodingCapability(*values, _TYPES, admission), budget=budget)
+        parent_raw = _reader_b64decode(capture['grant_bytes_base64'], validate=True, budget=budget)
+        parent = _reader_json(parent_raw, budget)
         _check(record['parent_id'] == parent['id'])
         if parent['format'] == 'workflow-coding-setup-authority@1':
             _check(record['level'] == 'source')
@@ -159,7 +179,8 @@ def _history(conn: sqlite3.Connection, org_slug: str,
             # row-ID alias or wrapper digest. Reused cache retains full prefix,
             # own admissions/publications and terminal original ISSUE Q.
             setup_history = setups.setup(parent['id'], parent_raw)
-            return CodingCapabilityHistory(tuple(reversed(result)), setup_history)
+            _reader_work((_reader_reserve(budget, 96) or (result, setup_history)), budget)
+            return CodingCapabilityHistory(_reader_tuple(reversed(result), budget=budget), setup_history)
         _check(parent['format'] == _SOURCE_PIN
                and parent['id'] not in identities and len(result) < _ANCESTRY_LIMIT)
         values = _native_capability(conn, org_slug, parent['id'], budget)

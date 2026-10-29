@@ -10,8 +10,29 @@ No current pointer, roster, cache, filesystem, objects or network is read.
 """
 from __future__ import annotations
 
-import base64
-import json
+from runtime.infrastructure._workflow_reader import (
+    _add as _reader_add,
+    _append as _reader_append,
+    _put as _reader_put,
+    _setdefault as _reader_setdefault,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _dict as _reader_dict,
+    _list as _reader_list,
+    _set as _reader_set,
+    _tuple as _reader_tuple,
+)
+
+from runtime.infrastructure._workflow_reader import (
+    _reserve as _reader_reserve,
+)
+
+
+from runtime.infrastructure._workflow_reader import (
+    _work as _reader_work, _json as _reader_json,
+    _b64decode as _reader_b64decode,
+)
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -86,11 +107,11 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     setups = setups if setups is not None else _SetupHistoryReader(conn, org_slug, budget)
     from runtime.workflows._coding_mapping_admission import _MappingCaptures, audit_values, mapping_capture
     captures = captures if captures is not None else _MappingCaptures(conn, org_slug, budget)
-    inventory: list[tuple[tuple, tuple[str, ...], bytes, dict]] = []
-    identities: set[str] = set()
-    generations: set[int] = set()
-    operations: set[tuple[str, str]] = set()
-    digests: set[str] = set()
+    inventory: list[tuple[tuple, tuple[str, ...], bytes, dict]] = (_reader_reserve(budget, 64) or [])
+    identities: set[str] = _reader_set(budget=budget)
+    generations: set[int] = _reader_set(budget=budget)
+    operations: set[tuple[str, str]] = _reader_set(budget=budget)
+    digests: set[str] = _reader_set(budget=budget)
     # Org inventory finds operation conflicts independently of generation and
     # selected ID. Including that ID also categorically refuses a foreign row.
     # Every one of the ten projections gates the ORIGINAL storage class before
@@ -99,22 +120,22 @@ def _history(conn: sqlite3.Connection, org_slug: str,
     columns = ('id', 'org_slug', 'release_identity', 'generation', 'principal',
                'operation_key', 'request_digest', 'mapping_bytes', 'mapping_digest', 'created_at')
     for row in _bounded_rows(conn, 'workflow_coding_mappings', columns,
-        tuple((kind,) for kind in _TYPES), budget,
-        where='org_slug=? OR id=?', args=(org_slug, mapping_id), maximum=_ROW_LIMIT):
+        _reader_tuple(((_reader_reserve(budget, 80) or (kind,)) for kind in _TYPES), budget=budget), budget,
+        where='org_slug=? OR id=?', args=(_reader_reserve(budget, 96) or (org_slug, mapping_id)), maximum=_ROW_LIMIT):
         budget.step()
         values = budget.row(row, _TYPES, counted=True, charged=True)
         (identity, actual_org, release, generation, principal, key,
          request_digest, raw, digest, created_at) = values
-        _token(identity)
+        _token(identity, budget=budget)
         _integer(generation, 1)
         _check(actual_org == org_slug and release == _RELEASE
                and identity not in identities and generation not in generations
-               and (principal, key) not in operations and digest not in digests
-               and digest == _digest(raw))
+               and (_reader_reserve(budget, 96) or (principal, key)) not in operations and digest not in digests
+               and digest == _digest(raw, budget=budget))
         saved = read_saved_mapping_record(raw, expected_org_slug=org_slug, budget=budget)
         _check(saved.command_bytes is not None)
-        record = _decoded(json.loads(raw), budget)
-        command = _decoded(json.loads(saved.command_bytes), budget)
+        record = _decoded(_reader_json(raw, budget), budget)
+        command = _decoded(_reader_json(saved.command_bytes, budget), budget)
         # WorkflowTemplatePrincipal.operation_principal convention. This is
         # historical attribution, not construction of an authenticated actor.
         human = record['format'] == 'workflow-coding-agent-read-role-record@2'
@@ -123,24 +144,26 @@ def _history(conn: sqlite3.Connection, org_slug: str,
                and release == record['mapping']['release']['identity']
                and key == command['operation_key']
                and generation == command['expected_mapping_generation' if human else 'expected_generation'] + 1
-               and request_digest == record['command_digest'] == _digest(saved.command_bytes)
+               and request_digest == record['command_digest'] == _digest(saved.command_bytes, budget=budget)
                and created_at == record['created_at'])
-        identities.add(identity)
-        generations.add(generation)
-        operations.add((principal, key))
-        digests.add(digest)
-        inventory.append((values, row[10:], saved.command_bytes, record))
+        _reader_add(identities, identity, budget=budget)
+        _reader_add(generations, generation, budget=budget)
+        _reader_add(operations, (_reader_reserve(budget, 96) or (principal, key)), budget=budget)
+        _reader_add(digests, digest, budget=budget)
+        _reader_work((_reader_reserve(budget, 112) or (values, saved.command_bytes, record)), budget)
+        _reader_append(inventory, (_reader_reserve(budget, 128) or (values, row[10:], saved.command_bytes, record)), budget=budget)
     captures.load()
-    _check(set(captures.by_mapping) == identities)
-    inventory.sort(key=lambda entry: (entry[0][3], entry[0][0]))
-    selected = [entry for entry in inventory if entry[0][0] == mapping_id]
+    _check(_reader_set(captures.by_mapping, budget=budget) == identities)
+    _reader_work(inventory, budget)
+    inventory.sort(key=lambda entry: (_reader_reserve(budget, 96) or (entry[0][3], entry[0][0])))
+    selected = _reader_list((entry for entry in inventory if entry[0][0] == mapping_id), budget=budget)
     _check(len(selected) == 1)
     target_generation = selected[0][0][3]
-    required = [entry for entry in inventory if entry[0][3] <= target_generation]
+    required = _reader_list((entry for entry in inventory if entry[0][3] <= target_generation), budget=budget)
     _check(len(required) == target_generation)
     previous_time: datetime | None = None
-    admissions: set[str] = set()
-    result: list[HistoricalCodingMapping] = []
+    admissions: set[str] = _reader_set(budget=budget)
+    result: list[HistoricalCodingMapping] = (_reader_reserve(budget, 64) or [])
     previous_mapping, previous_snapshot = None, None
     previous_audit = 0
     # Validate the whole inventory even for an old selected pin: later human
@@ -154,24 +177,24 @@ def _history(conn: sqlite3.Connection, org_slug: str,
         capture = record['authority']
         admission_id = capture['admission_record_id']
         _check(admission_id not in admissions)
-        admissions.add(admission_id)
+        _reader_add(admissions, admission_id, budget=budget)
         # No reduced/native DTO: compare the actual complete five-column row
         # against full original command, agent operation principal and capture.
-        expected = dict(id=admission_id, namespace=capture['pin']['namespace'],
+        expected = (_reader_reserve(budget, 704) or dict(id=admission_id, namespace=capture['pin']['namespace'],
                         generation=capture['pin']['generation'],
-                        request_digest=values[6], admitted_by=values[4])
+                        request_digest=values[6], admitted_by=values[4]))
         _capture_admission(conn, expected, capture, budget)
-        grant = _decoded(json.loads(base64.b64decode(capture['grant_bytes_base64'], validate=True)), budget)
-        histories = []
-        for setup in (grant['setups'] if record['format'] == 'workflow-coding-mapping-record@1' else []):
+        grant = _decoded(_reader_json(_reader_b64decode(capture['grant_bytes_base64'], validate=True, budget=budget), budget), budget)
+        histories = (_reader_reserve(budget, 64) or [])
+        for setup in (grant['setups'] if record['format'] == 'workflow-coding-mapping-record@1' else (_reader_reserve(budget, 64) or [])):
             budget.step()
             # Pure reader already checks U -> mapping/adoption prior times,
             # manager/actions/repository radius and all adoption pin equalities.
             # Exact canonical U must belong to a genuine native issuance with
             # its own earlier complete prefix/admission/publication closure.
-            histories.append(setups.setup(setup['id'], _canonical(setup)))
+            _reader_append(histories, setups.setup(setup['id'], _canonical(setup, budget=budget)), budget=budget)
         from runtime.workflows._coding_settings_history import HUMAN_RECORD, HumanPublication, human_mapping
-        command = _decoded(json.loads(command_raw), budget)
+        command = _decoded(_reader_json(command_raw, budget), budget)
         if record['format'] == HUMAN_RECORD:
             original = captures.by_mapping.get(values[0])
             _check(type(original) is HumanPublication)
@@ -189,22 +212,24 @@ def _history(conn: sqlite3.Connection, org_slug: str,
         if expected_rows is not None:
             # Derive these complete typed rows from the validated record ONCE,
             # while it is decoded. IDs only locate candidates for full equality.
-            rows = (('workflow_coding_mappings', dict(zip(columns, values, strict=True))),
-                    ('workflow_admission_records', expected))
-            rows += tuple(('audit_log', row) for row in (original.audit_rows
-                if type(original) is HumanPublication else (audit_values(original),)))
+            rows = (_reader_reserve(budget, 96) or (_reader_reserve(budget, 96) or (('workflow_coding_mappings', _reader_dict(zip(columns, values, strict=True), budget=budget)), _reader_reserve(budget, 96) or ('workflow_admission_records', expected))))
+            rows += _reader_tuple(((_reader_reserve(budget, 96) or ('audit_log', row)) for row in (original.audit_rows
+                if type(original) is HumanPublication else (_reader_reserve(budget, 80) or (audit_values(original, budget=budget),)))), budget=budget)
             for table, row in rows:
                 budget.step()
-                index = expected_rows.setdefault(table, {})
-                identity = (type(row['id']), row['id'])
+                index = _reader_setdefault(expected_rows, table, _reader_reserve(budget, 64) or {}, budget=budget)
+                identity = (_reader_reserve(budget, 96) or (type(row['id']), row['id']))
                 _check(identity not in index)
-                index[identity] = row
-        result.append(HistoricalCodingMapping(
-            *values, storage_classes, command_raw, tuple(histories), original))
+                _reader_put(row, index, identity, budget=budget)
+        _reader_work((_reader_reserve(budget, 144) or (values, storage_classes, command_raw, histories, original)), budget)
+        _reader_append(result, HistoricalCodingMapping(
+            *values, storage_classes, command_raw, _reader_tuple(histories, budget=budget), original), budget=budget)
     from runtime.workflows._coding_settings_history import current_snapshot
-    full = CodingMappingHistory(tuple(result))
+    _reader_work(result, budget)
+    full = CodingMappingHistory(_reader_tuple(result, budget=budget))
     current_snapshot(conn, org_slug, budget, full, captures)
-    return CodingMappingHistory(tuple(result[:target_generation]))
+    _reader_work(result, budget)
+    return CodingMappingHistory(_reader_tuple(result[:target_generation], budget=budget))
 
 
 def read_mapping_history(conn: sqlite3.Connection, *, expected_org_slug: str,
@@ -247,6 +272,7 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
                           ) -> tuple[CodingMappingHistory | None, dict]:
     """Private complete-history/expected-row composition; no nested budget reset."""
     try:
+        _reader_reserve(budget, 208)
         _check(type(conn) is sqlite3.Connection and conn.in_transaction)
         _check(type(expected_org_slug) is str
                and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', expected_org_slug) is not None)
@@ -259,7 +285,7 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
             cursor.execute("SELECT CASE WHEN ? > 0 AND typeof(id)='text' "
                 "AND length(CAST(id AS BLOB))<=min(128,?) THEN id ELSE NULL END,typeof(id) "
                 "FROM workflow_coding_mappings ORDER BY generation DESC,id LIMIT 1",
-                (8192 - budget.accepted_rows, budget.remaining_bytes))
+                (_reader_reserve(budget, 96) or (8192 - budget.accepted_rows, budget.remaining_bytes)))
             row = cursor.fetchone()
         finally:
             cursor.close()
@@ -268,17 +294,17 @@ def _read_mapping_storage(conn: sqlite3.Connection, *, expected_org_slug: str,
             from runtime.workflows._coding_settings_history import current_snapshot
             captures = captures if captures is not None else _MappingCaptures(conn, expected_org_slug, budget)
             current_snapshot(conn, expected_org_slug, budget, None, captures)
-            return None, {}
+            return (_reader_reserve(budget, 96) or (None, _reader_reserve(budget, 64) or {}))
         budget.candidate()
         _check(row[0] is not None and row[1] == 'text')
         budget.row(row, ('text',), counted=True)
-        _token(row[0])
-        expected = {}
+        _token(row[0], budget=budget)
+        expected = (_reader_reserve(budget, 64) or {})
         history = _history(conn, expected_org_slug, row[0], budget=budget,
                            setups=setups, expected_rows=expected, captures=captures)
-        return history, expected
-    except (sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
-            ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+        return (_reader_reserve(budget, 96) or (history, expected))
+    except ((sqlite3.Error, CodingSavedRecordError, CodingAuthorityHistoryError,
+            ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError)):
         raise CodingMappingHistoryError(_REFUSAL) from None
 
 
