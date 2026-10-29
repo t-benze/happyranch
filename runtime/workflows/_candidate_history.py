@@ -694,10 +694,16 @@ class _Candidate:
                     for target in ('workflow_receipt_evidence', 'workflow_draft_dispatch_intents', 'workflow_document_revision_operations'):
                         self.rows(target, 'binding_snapshot_id', row['id'])
                 elif table == 'workflow_activations':
+                    version = self.one('workflow_template_versions', row['template_version_id'])
+                    mapping = self.rows('workflow_template_identity_versions', 'template_version_id', row['template_version_id'])
+                    _check(len(mapping) == 1 and mapping[0]['template_identity_id'] == row['template_identity_id'] and version['namespace'] == row['authority_namespace'])
                     self.rows('workflow_activation_operations', 'activation_id', row['id'])
                     self.rows('workflow_active_activations', 'activation_id', row['id'])
                     self.rows('workflow_draft_dispatch_intents', 'activation_id', row['id'])
                     self.rows('workflow_document_revision_operations', 'activation_id', row['id'])
+                elif table == 'workflow_active_activations':
+                    activation = self.one('workflow_activations', row['activation_id'])
+                    _check(activation['instance_id'] == row['instance_id'] and activation['activation_revision'] == row['activation_revision'] and activation['state'] == 'active')
                 elif table == 'workflow_submissions':
                     for target, column in (('workflow_submission_contributors', 'submission_id'), ('workflow_rounds', 'submission_id'), ('workflow_review_receipts', 'submission_id'), ('workflow_submission_operations', 'submission_id'), ('workflow_submission_result_links', 'submission_id'), ('workflow_author_handoffs', 'submission_id'), ('workflow_document_revision_operations', 'predecessor_submission_id'), ('workflow_coding_attempts', 'submission_id')):
                         self.rows(target, column, row['id'])
@@ -1837,9 +1843,12 @@ def _local_activation(c: _Candidate, activation_id: str, *, actor: str) -> dict:
     """Selected activation comparisons after private candidate acquisition; no full-reader certificate."""
     if not c.conn.in_transaction:
         raise WorkflowActivationError('workflow_activation_storage_corrupt')
-    operation = (list(c.select('workflow_activation_operations', activation_id=activation_id, org_slug=c.org, principal=actor)) + [None])[0]
-    if operation is None:
+    operations = c.rows('workflow_activation_operations', 'activation_id', activation_id)
+    if not operations:
         raise WorkflowActivationError('workflow_activation_not_found')
+    if len(operations) != 1 or operations[0]['org_slug'] != c.org or operations[0]['principal'] != actor:
+        raise WorkflowActivationError('workflow_activation_storage_corrupt')
+    operation = operations[0]
     try:
         activation = dict((list(c.select('workflow_activations', id=activation_id)) + [None])[0])
         instance = dict((list(c.select('workflow_instances', id=activation['instance_id'])) + [None])[0])
