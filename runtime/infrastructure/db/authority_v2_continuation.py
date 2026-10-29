@@ -685,6 +685,8 @@ class AuthorityV2ContinuationMixin:
             or envelope.manager_agent != candidate.manager_agent
             or envelope.manager_session_id != candidate.manager_session_id
             or envelope.attempt_id != attempt.attempt_id
+            or envelope.owner_attempt_id != attempt.owner_attempt_id
+            or envelope.origin_boot_id != attempt.origin_boot_id
             or envelope.result_id != candidate.result_id
             or envelope.binding_id != candidate.binding_id
             or envelope.contract_id != candidate.contract_id
@@ -1157,6 +1159,10 @@ class AuthorityV2ContinuationMixin:
         binding = ctx["binding"]
         release = ctx["release"]
         attempt_row = ctx["row"]
+        # This final stage requires consumed K; the shared evidence helper also
+        # serves earlier stages whose authenticated lifecycle is not consumed.
+        if candidate.lifecycle_stage != "consumed":
+            return _pending("evidence_drift", candidate.candidate_id)
 
         # BOTH halves of EVERY required prior stage: the candidate
         # claimed/evaluated/consumed events AND their sibling closed

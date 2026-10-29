@@ -3301,20 +3301,19 @@ def _consume_completion_report(
                     return "lost_owner"
                 return _submit_human_failed_recovery(orch, task_id, agent, task.current_session_id or "", resolved_row_id,
                     bookkeeping=after_human_recovery)
-        _consume_completion_report_body(
+        return _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
             **reclaim_kwargs,
         )
-        return
     # ADMITTED: the winning claim authorizes exactly one consumer entry.  The
     # SAME caller runs the EXISTING body outside any DB transaction once, then
     # acknowledges the EXACT causal receipt it claimed.
     manager_agent = outcome.manager_agent or agent
     causal_result_id = outcome.causal_result_id
     try:
-        _consume_completion_report_body(
+        body_outcome = _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
@@ -3336,6 +3335,10 @@ def _consume_completion_report(
         except Exception:  # pragma: no cover - fail-closed defensive
             logger.exception("run_step %s: v2 decision refusal failed", task_id)
         raise
+    if isinstance(body_outcome, str):
+        # A retained pending obligation is not an applied decision. Forward the
+        # explicit negative to recovery without acknowledging or adding effects.
+        return body_outcome
     # A bounded ack/audit failure leaves the receipt ``claimed``; a later restart
     # performs refusal housekeeping and never re-runs the consumer.
     try:
@@ -3358,7 +3361,7 @@ def _consume_completion_report_body(
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
     reclaim_terminal_worktree: bool = True,
-) -> None:
+) -> str | None:
     """Consume a persisted CompletionReport and apply its transition.
 
     Used both inline in ``run_step_impl`` (after ``_log_step_result``) and
@@ -3667,11 +3670,12 @@ def _consume_completion_report_body(
                 )
                 _maybe_post_thread_escalation(orch, task_id, reason=reason)
             return
-        # A bounded v2_pending outcome means refusal housekeeping did not
-        # commit.  Failing closed must still terminate and surface the root, so
-        # continue through the ordinary exactly-once escalation CAS below.  A
-        # later refusal-housekeeping discovery may close the retained attempt;
-        # it cannot re-run this consumer once the task is already escalated.
+        if hook_outcome == "v2_pending":
+            # Refusal housekeeping is unresolved, possibly after a genuine
+            # final COMMIT whose return was lost. Preserve the exact pending
+            # obligation and greatest committed prefix; ordinary escalation
+            # would overwrite that state without authenticating its owner.
+            return "v2_pending"
         # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.

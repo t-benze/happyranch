@@ -64,9 +64,15 @@ only the writer's newly committed `refused` outcome, after that transaction
 returns. An authenticated `already_refused` replay, `owner_lost` disposition or
 pending outcome emits no notification or thread follow-up; the fenced-root skip
 for accepted recovery, pid failure and Pending enqueue is unchanged. If refusal
-remains pending in the ordinary completion consumer, its escalation CAS supplies
-the terminal root transition and surfacing instead. Neither branch may leave
-the root indefinitely `in_progress`.
+remains pending in the ordinary completion consumer, `v2_pending` returns as an
+explicit negative before ordinary escalation, audit/notification or enqueue
+effects. Preserve the exact obligation and greatest committed prefix, including
+genuine final E/N/D/Jcontinued and task Pending after a post-COMMIT return loss.
+Both common-wrapper branches propagate the negative without acknowledging an
+admitted decision as applied. Accepted recovery forwards it before receipt
+settlement; the cold owner records recovery failure and suppresses the whole
+final batch. This supersedes the original issue #918 ordinary-escalation fallback
+while retaining its historical attribution. Genuine legacy escalation is unchanged.
 
 Every completion-consumer entry checks the persisted orchestration-step audit
 before appending a decision audit. Startup, zombie, accepted-recovery and

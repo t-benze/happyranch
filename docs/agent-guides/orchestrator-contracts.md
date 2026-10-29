@@ -3819,8 +3819,15 @@ newly committed `refused` outcome, after commit; authenticated
 `already_refused` replay, `owner_lost` and pending outcomes do not surface.
 Thus a second startup adds no notification, thread follow-up or audit while the
 pre-final root remains fenced from every later startup recovery branch. A
-`v2_pending` outcome instead proceeds through the ordinary escalation CAS so it
-cannot leave a result-bearing root permanently `in_progress`.
+`v2_pending` outcome returns an explicit pending negative before ordinary
+escalation, audit/notification or enqueue effects. It preserves the exact
+obligation and greatest committed prefix, including genuine final E/N/D/Jcontinued
+and task Pending if a post-COMMIT return is lost. Both common-wrapper branches
+propagate the negative without acknowledging an admitted decision as applied;
+accepted recovery forwards it before receipt settlement, and the cold owner
+records recovery failure and suppresses the whole final batch. This supersedes
+the former issue #918 ordinary-escalation fallback; genuine legacy escalation
+is unchanged.
 
 The persisted orchestration-step audit is the consumer idempotency key on every
 entry, including startup and zombie recovery even if a caller omits the
