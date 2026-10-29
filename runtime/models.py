@@ -2865,8 +2865,12 @@ class AuthorityPolicyV2GenerationClaimOutcome(BaseModel):
     ``claimed`` carries the exact causal identity plus the reserved
     ``next_session_id`` and the winning ``orchestration_step_count``; the caller
     may then settle and launch with that exact session.  It is never by itself a
-    guarantee of external launch, and a non-``claimed`` status means NO
-    generation admission occurred (so no ordinary claim/launch may follow).
+    guarantee of external launch.  A non-``claimed`` status, error or lost
+    return grants NO fresh claim/launch or re-admission permission: COMMIT or
+    late wrapper clock/warning/log/return failure can leave committed or unknown
+    admission effects.  Successful owned precommit rollback undoes only that
+    transaction; rollback failure retains uncertainty.  Separate settlement
+    failure cannot erase an earlier committed claim or native preparation.
     """
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 

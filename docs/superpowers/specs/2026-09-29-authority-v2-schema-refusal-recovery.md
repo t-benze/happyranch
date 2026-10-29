@@ -93,8 +93,33 @@ superseded/expired/restart-settled history retains both NULLs. Partial/malformed
 identity or a second potentially related row refuses before Q/audit mutation.
 Transition settlement requires active E with NULL spend/decision beside needed N
 and pending D, as does shared proof for pre-admission publication/generation
-claim. Generic post-final evidence still supports genuine later consumed E and
-settled N/retired D lifetimes. This supersedes the original issue #918
+claim. The shared settlement and retained-publication readers also require active
+E with NULL spending_result_id/decision_state while same-G D is admitted: first
+admission settlement, exact settled replay and admitted/settled consumer-outran
+publish_returned acknowledgement all refuse a prematurely consumed E before
+writes or replay success. A model-valid result FK is not spend proof. Generic
+post-final evidence still supports genuine later consumed E and settled N/retired
+D (or a distinct B) through the ORIGINAL full R2/report/binding/spent/decision proof.
+
+Generation invalidation classifies its complete relevant event set before any
+first N/D/audit write and requires coherent absence plus supported source-stage
+proof. Exact invalidated replay requires one authentic closed type-exact event
+and retired same-G D; a distinct B is untouched. Healthy causal pre-admission
+ownership and authentic admitted reserved-nextSID ownership both refuse unchanged.
+Only actual cancellation, well-typed nonempty replacement or displaced G supplies
+a cause; null/partial/malformed identity never does. Independently owed native
+cleanup retains its original owner without a new readiness prerequisite.
+
+Nonclaimed/error/lost returns grant no fresh launch or re-admission permission.
+Successful owned PRECOMMIT rollback undoes only that transaction; COMMIT or late
+wrapper clock/warning/log/return failure can leave committed or unknown effects,
+and rollback failure retains uncertainty. Separate settlement failure cannot erase
+an earlier committed claim/preparation. Pause composes both private cores in ONE
+writer, whose successful precommit rollback cannot erase prior preparation/native
+ownership. Preserve the first cause and exactly the originally acquired RLock level.
+These corrections change no native retry predicate, result bridge or permission.
+
+This supersedes the original issue #918
 ordinary-escalation fallback while retaining its historical attribution. Genuine
 legacy escalation is unchanged; no schema or history repair follows.
 

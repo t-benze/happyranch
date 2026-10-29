@@ -3390,7 +3390,16 @@ durable cause read from current state under the same owned transaction — a
 cancelled task, a well-typed replacement owner/session, or a root pointer
 displaced onto a replacement generation B — so a null/malformed current identity
 field alone refuses, a healthy exact owner/pointer stays publishable and
-unchanged, and only the exact old G may be retired. The publication-stage
+unchanged, and only the exact old G may be retired. Before first writes the
+complete relevant invalidation-event set must be coherently absent, with authentic
+supported N/D/publication/claim source state. Exact invalidated replay requires
+one closed type-exact authentic event and retired same-G D; a distinct B stays
+untouched. Cause classification uses the causal SID before admission and the
+original authenticated reserved nextSID after it, so healthy admitted G is not
+replacement evidence. Genuine cancellation, well-typed nonempty actual replacement
+and displaced G remain supported; null/partial/malformed identity proves neither.
+These evidence checks do not gate independently owed cancellation/native cleanup.
+The publication-stage
 shipping proof is extended in `tests/test_authority_v2_shipping.py`: the fresh
 and full historical-migrated real owned-RuntimeDir/two-agent subprocess
 CLI -> HTTP -> persisted-result venues drive finalized/exact-settled ->
@@ -3414,8 +3423,15 @@ G, D `pending(G)`, N `publishing` OR `published` (a consumer can outrun
 acknowledgement), no prior reservation and the causal Pending owner; it atomically
 writes N `admitted` + `next_session_id`, D `admitted(G)`, the task to
 `in_progress` with a normal monotonic step increment and the reserved
-owner/session, and exactly one closed `generation_claimed` audit, rolling every
-field back on any failure. The separate
+owner/session, and exactly one closed `generation_claimed` audit. Successful
+owned PRECOMMIT rollback undoes only that transaction; COMMIT or late wrapper
+clock/warning/log/return failure can leave committed or unknown effects, and
+rollback failure retains uncertainty. A non-claimed/error/lost return grants no
+fresh claim/launch or re-admission permission. Separate settlement failure cannot
+undo an earlier committed claim/preparation. The actual Pause path composes both
+cores in ONE writer; successful precommit rollback there cannot erase prior
+preparation/native ownership. Preserve the first cause and release exactly the
+originally acquired RLock level. The separate
 `Database.settle_v2_continuation_generation_admission` CASes `admitted` ->
 `settled` with one closed `notification_settled` audit and grants no launch
 authority; only the uninterrupted winning owner that received the reservation
@@ -3460,8 +3476,14 @@ ABSENCE of any prior related `generation_claimed`/`notification_settled` event; 
 deleted, duplicated, preexisting, foreign, malformed, opaque or extra-key row
 refuses with the exact prior residue and is never repaired by reinsertion.
 Settlement reuses that retained publication evidence plus the genuine
-ordinary-or-exact-recovery settlement proof at every boundary, requires coherent
-absence of settlement-stage evidence before the first `admitted -> settled`
+ordinary-or-exact-recovery settlement proof at every boundary. Both shared readers
+require active E with NULL spending_result_id/decision_state while same-G D is
+admitted, before first settlement, exact replay or consumer-outran returned ack.
+Model-valid consumed E plus a real result FK is not spend proof. Genuine later
+consumed E/settled N/retired D (or a distinct B) retains its ORIGINAL independent
+R2/report/binding/spent/decision proof; generic post-final evidence remains usable.
+Settlement requires coherent absence of settlement-stage evidence before the
+first `admitted -> settled`
 transition, treats an already-recorded claim/settled event inconsistent with the
 current N/D as a conflict, and replays `already_settled_exact` read-only. Every
 public writer still refuses caller transaction nesting before BEGIN/rollback.
@@ -3478,8 +3500,10 @@ closed by TASK-8555): a deleted ordinary completion, a preexisting
 `publish_failed`, and any conflicting/duplicate/malformed/null/wrong-type/
 extra-key/opaque related `publish_returned` observation now refuse with the
 exact admitted/settled residue and never fabricate an observation, while a
-publish_returned audit-insert or commit failure rolls back for one safe exact
-retry; the fresh AND full historical-migrated shipping venues add a
+successful owned precommit rollback after publish_returned audit failure undoes
+only that transaction; COMMIT/rollback/late-return failure retains any committed
+or unknown prefix and grants no fresh launch permission; the fresh AND full
+historical-migrated shipping venues add a
 barrier-established (never elapsed-sleep) admission-before-corruption
 acknowledgement negative that proves the refusal, the unchanged admitted
 reservation/N/D and no continuation launch.

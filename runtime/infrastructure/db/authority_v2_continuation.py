@@ -2119,6 +2119,7 @@ class AuthorityV2ContinuationMixin:
             manager_session_id=manager_session_id, result_id=result_id,
             attempt=ctx["attempt"], candidate=ctx["candidate"],
             envelope=ctx["envelope"], notification=ctx["notification"],
+            dispatch=ctx["dispatch"],
             result_row=ctx["result_row"],
         ):
             return "evidence_drift", None
@@ -2126,7 +2127,7 @@ class AuthorityV2ContinuationMixin:
 
     def _authenticate_v2_publication_settlement_proof_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
-        result_id: int, attempt, candidate, envelope, notification, result_row,
+        result_id: int, attempt, candidate, envelope, notification, dispatch, result_row,
     ) -> bool:
         """Read-only proof that the final generation was GENUINELY settled.
 
@@ -2141,11 +2142,18 @@ class AuthorityV2ContinuationMixin:
         stays non-blocking).  This seam performs no settlement write and never
         calls a transaction-owning public settlement method or transitions Q.
         """
-        # Before admission, E must still be unspent.  Keep the generic final
-        # reader and legitimate later settled/spend/decision lifetimes usable;
-        # only needed/publishing/published proof (including publication and the
-        # generation claim) is constrained to this active pre-admission stage.
-        if notification.state in ("needed", "publishing", "published") and (
+        # Pre-admission and the SAME-G admitted dispatch require an active,
+        # unspent E, including first settlement, exact replay and returned ack.
+        # A consumed E with a result FK is not spend proof.  Real later settled
+        # history with retired D (or a distinct B) still reaches its ORIGINAL
+        # independent R2/report/binding/spent/decision authentication.
+        if (
+            notification.state in ("needed", "publishing", "published", "admitted")
+            or (
+                dispatch.generation_id == notification.notification_id
+                and dispatch.state == "admitted"
+            )
+        ) and (
             envelope.lifecycle_state != "active"
             or envelope.spending_result_id is not None
             or envelope.decision_state is not None
@@ -2596,7 +2604,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=generation_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
             allowed_states=("needed", "publishing", "published"),
             allow_cleared_failure=True,
         ):
@@ -2674,7 +2683,9 @@ class AuthorityV2ContinuationMixin:
         identity and a 30-second server-clock lease, increments the bounded
         positive publication attempt and appends exactly one closed
         ``publish_claimed`` audit for the exact G/P in the SAME transaction.
-        Failure restores the previous state/counter/lease and appends nothing.
+        Successful owned precommit rollback restores only this transaction's
+        previous state/counter/lease and appends nothing.  COMMIT, rollback or
+        late-return failure can retain committed or unknown effects.
         No queue call, task mutation, reevaluation or admission happens here.
         """
         if self._conn.in_transaction:
@@ -2773,7 +2784,8 @@ class AuthorityV2ContinuationMixin:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
                 result_id=result_id, envelope_id=envelope.envelope_id,
-                notification=notification, generation_id=generation_id,
+                notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+                generation_id=generation_id,
                 allowed_states=("admitted", "settled"),
             ):
                 return _pending("evidence_drift", **base)
@@ -2785,7 +2797,8 @@ class AuthorityV2ContinuationMixin:
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 attempt=attempt, candidate=candidate, envelope=envelope,
-                notification=notification, result_row=ctx["result_row"],
+                notification=notification, dispatch=ctx["dispatch"],
+                result_row=ctx["result_row"],
             ):
                 return _pending("evidence_drift", **base)
             admission_claim = self._v2_admission_event_payload(
@@ -2884,7 +2897,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             attempt=attempt, candidate=candidate, envelope=envelope,
-            notification=notification, result_row=ctx["result_row"],
+            notification=notification, dispatch=ctx["dispatch"],
+            result_row=ctx["result_row"],
         ):
             return _pending("evidence_drift", **base)
         if not self._authenticate_v2_post_final_task_uncommitted(
@@ -2901,7 +2915,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=generation_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
             allowed_states=("publishing", "published"),
         ):
             return _pending("evidence_drift", **base)
@@ -3056,7 +3071,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=generation_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
             allowed_states=("publishing",), allow_cleared_failure=True,
         ):
             return _pending("evidence_drift", **base)
@@ -3211,21 +3227,88 @@ class AuthorityV2ContinuationMixin:
             result_id=result_id, envelope_id=envelope.envelope_id,
             notification_id=notification_id, generation_id=generation_id,
         )
-        if notification.state == "invalidated":
-            if self._authenticate_v2_publication_event_uncommitted(
-                root_task_id=root_task_id, manager_agent=manager_agent,
-                attempt_id=attempt.attempt_id, expected=expected_audit,
-            ):
-                return AuthorityPolicyV2InvalidationOutcome(
-                    status="already_invalidated", notification_state="invalidated",
-                    dispatch_state=dispatch.state, **base,
-                )
+        # Classify the COMPLETE relevant invalidation-event set before any
+        # first transition.  A false exact-event read is not proof of absence.
+        related_invalidated = self._v2_related_publication_events_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id,
+            stage=AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED,
+            candidate_id=candidate.candidate_id, result_id=result_id,
+            envelope_id=envelope.envelope_id, notification_id=notification_id,
+            generation_id=generation_id,
+        )
+        if related_invalidated is None:
             return _pending("evidence_drift", **base)
+        same_generation = dispatch.generation_id == generation_id
+        if notification.state == "invalidated":
+            if (
+                len(related_invalidated) != 1
+                or set(related_invalidated[0].keys())
+                != self._v2_publication_event_identity_keys(
+                    AUTHORITY_POLICY_V2_RESULT_STAGE_INVALIDATED
+                )
+                or not self._v2_json_type_sensitive_equal(
+                    related_invalidated[0], expected_audit,
+                )
+                or (same_generation and dispatch.state != "retired")
+                or envelope.lifecycle_state != "active"
+                or envelope.spending_result_id is not None
+                or envelope.decision_state is not None
+            ):
+                return _pending("evidence_drift", **base)
+            return AuthorityPolicyV2InvalidationOutcome(
+                status="already_invalidated", notification_state="invalidated",
+                dispatch_state=dispatch.state, **base,
+            )
         if notification.state == "settled":
             return _pending("not_invalidatable", **base)
+        if related_invalidated:
+            return _pending("evidence_drift", **base)
+        # Authenticate the supported source stage, not merely model-valid N/D.
+        # This does not require fresh readiness or original-Q settlement and
+        # never gates independently owed cancellation/native cleanup.
+        if (
+            envelope.lifecycle_state != "active"
+            or envelope.spending_result_id is not None
+            or envelope.decision_state is not None
+            or notification.state not in ("needed", "publishing", "published", "admitted")
+            or (
+                same_generation and dispatch.state
+                != ("admitted" if notification.state == "admitted" else "pending")
+            )
+        ):
+            return _pending("evidence_drift", **base)
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
+            allowed_states=("needed", "publishing", "published", "admitted"),
+            allow_cleared_failure=True,
+        ):
+            return _pending("evidence_drift", **base)
+        expected_owner_session = candidate.manager_session_id
+        if notification.state == "admitted":
+            # The real claim reserves nextSID; the old causal SID is no longer
+            # the current owner.  Authenticate that exact original reservation
+            # before using it to classify a purported replacement.
+            if not self._authenticate_v2_admission_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id,
+                expected=self._v2_admission_event_payload(
+                    stage=AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+                    attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+                    result_id=result_id, envelope_id=envelope.envelope_id,
+                    notification_id=notification_id, generation_id=generation_id,
+                    next_session_id=notification.next_session_id,
+                ),
+            ):
+                return _pending("evidence_drift", **base)
+            expected_owner_session = notification.next_session_id
         # Invalidate only on an ESTABLISHED cancellation/replacement cause read
         # from CURRENT durable state under this same owned transaction: a
-        # cancelled/terminal/replaced-owner causal task, or a stale generation
+        # cancelled/replaced stage owner, or a stale generation
         # displaced by a replacement root pointer.  A caller request/boolean is
         # never sufficient, partial/malformed identity is not affirmative proof,
         # and a healthy exact owner/pointer stays publishable and unchanged.  A
@@ -3240,7 +3323,7 @@ class AuthorityV2ContinuationMixin:
             current_session = task["current_session_id"]
             # Affirmative replacement evidence requires WELL-TYPED, non-empty
             # current identity fields that name a different owner/session than
-            # the authenticated causal one.  A null/malformed field is missing
+            # the authenticated stage owner.  A null/malformed field is missing
             # evidence, never proof of cancellation or replacement, so
             # `assigned_agent=NULL` or `current_session_id=NULL` alone must
             # refuse.
@@ -3249,10 +3332,10 @@ class AuthorityV2ContinuationMixin:
                 and isinstance(current_session, str) and current_session
                 and (
                     current_agent != candidate.manager_agent
-                    or current_session != candidate.manager_session_id
+                    or current_session != expected_owner_session
                 )
             )
-        stale_displacement = dispatch.generation_id != generation_id
+        stale_displacement = not same_generation
         if not (cancelled or replaced_owner or stale_displacement):
             return _pending("not_invalidatable", **base)
         updated = notification.model_copy(update={
@@ -3313,12 +3396,18 @@ class AuthorityV2ContinuationMixin:
         and pointer state under the same owned transaction, then atomically marks
         the exact old G ``invalidated`` and retires the root dispatch ONLY while
         it still points at that G, with one closed ``invalidated`` audit.  A
-        healthy exact causal owner with the pointer still naming G refuses and
-        remains publishable and unchanged.  It never mutates a
+        healthy exact stage owner (the causal SID before admission, the
+        authenticated reserved SID after it) with the pointer still naming G
+        refuses unchanged.  Before first writes the complete invalidation-event
+        set must be coherently absent and the source N/D/publication/claim stage
+        must authenticate.  Exact replay requires one closed authentic event and
+        retired same-G D; a distinct replacement B remains untouched.
+        It never mutates a
         cancelled/terminal/replacement task, retires a replacement generation,
         resets N to needed, spends the envelope or creates any
-        escalation/notification-routing side effect.  A failed audit rolls its
-        own invalidation changes back.
+        escalation/notification-routing side effect.  A successful owned
+        precommit rollback undoes only this invalidation transaction; COMMIT,
+        rollback or late-return failure can retain committed or unknown effects.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2InvalidationOutcome(
@@ -3418,7 +3507,8 @@ class AuthorityV2ContinuationMixin:
     def _authenticate_v2_retained_publication_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, attempt_id: str,
         candidate_id: str, result_id: int, envelope_id: str,
-        notification, generation_id: str, allowed_states: tuple[str, ...],
+        notification, envelope, dispatch, generation_id: str,
+        allowed_states: tuple[str, ...],
         allow_cleared_failure: bool = False,
     ) -> bool:
         """The complete retained publication evidence for one exact generation.
@@ -3434,14 +3524,32 @@ class AuthorityV2ContinuationMixin:
         extra-key evidence refuses with no repair; a genuine earlier attempt
         remains valid prior history after a real reclaim.  This is an
         UNCOMMITTED read-only reader: it performs no write.  Cleared-failure
-        evidence is allowed only by the reclaim/failure bookkeeping callers;
-        admission and all existing downstream readers require a bound boot.
+        evidence is allowed only by reclaim/failure bookkeeping and source
+        invalidation; admission and its downstream readers require a bound boot.
+        Pre-admission or a same-G admitted D requires active E with NULL spend/
+        decision, including settlement/replay and consumer-outran acknowledgement.
         """
         state = notification.state
         if state not in allowed_states:
             return False
         publication_attempt = notification.publication_attempt
         pre_admission = state in ("needed", "publishing", "published")
+        admitted_dispatch = (
+            dispatch.generation_id == notification.notification_id
+            and dispatch.state == "admitted"
+        )
+        # Apply the same E-stage requirement as the shared settlement reader
+        # before any admitted/settled observation or replay.  Do not impose it
+        # on a genuine later spent generation whose D is retired or replaced;
+        # its caller must authenticate the independent complete spend proof.
+        if (
+            pre_admission or state == "admitted" or admitted_dispatch
+        ) and (
+            envelope.lifecycle_state != "active"
+            or envelope.spending_result_id is not None
+            or envelope.decision_state is not None
+        ):
+            return False
         if pre_admission and notification.next_session_id is not None:
             return False
         # An invalidated event is incompatible with every accepted state here.
@@ -3455,7 +3563,9 @@ class AuthorityV2ContinuationMixin:
             )
         elif state == "admitted":
             absent_stages += (AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,)
-        if state != "settled":
+        # Even settled N cannot carry spend/decision history while the SAME-G
+        # D is still admitted.  Real later spend retires D in its own writer.
+        if state != "settled" or admitted_dispatch:
             absent_stages += (
                 AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
                 AUTHORITY_POLICY_V2_RESULT_STAGE_DECISION_CLAIMED,
@@ -3626,7 +3736,7 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             attempt=ctx["attempt"], candidate=ctx["candidate"],
-            envelope=ctx["envelope"], notification=notification,
+            envelope=ctx["envelope"], notification=notification, dispatch=ctx["dispatch"],
             result_row=ctx["result_row"],
         ):
             return "evidence_drift", None
@@ -3641,7 +3751,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=notification.notification_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=notification.notification_id,
             allowed_states=("publishing", "published"),
         ):
             return "evidence_drift", None
@@ -3798,10 +3909,16 @@ class AuthorityV2ContinuationMixin:
         owner/session and no prior reservation.  Atomically writes N admitted +
         ``next_session_id``, D admitted(G), the task to in_progress with a normal
         monotonic step increment and the reserved owner/session, and exactly one
-        closed ``generation_claimed`` audit.  Any failure rolls ALL fields back,
-        leaving the durable owner Pending and the generation re-admissible from a
-        duplicate publication.  No queue call and no external launch happen here;
-        a non-``claimed`` outcome forbids any ordinary claim/launch.
+        closed ``generation_claimed`` audit.  A successful owned PRECOMMIT
+        rollback undoes only this transaction.  COMMIT errors or late wrapper
+        clock/warning/log/return failures can leave committed or unknown effects;
+        rollback failure retains uncertainty.  A non-``claimed`` outcome, error
+        or lost return grants no fresh claim/launch or re-admission permission.
+        Separate settlement failure cannot undo a prior committed claim.  The
+        Pause owner composes both cores in one writer, whose successful
+        precommit rollback still cannot undo earlier preparation/native duties.
+        No queue call or external launch happens here; the synchronized wrapper
+        releases exactly its originally acquired RLock level on every exit.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2GenerationClaimOutcome(
@@ -3873,7 +3990,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=generation_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
             allowed_states=("admitted", "settled"),
         ):
             return _pending("evidence_drift", **base)
@@ -3885,7 +4003,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             attempt=attempt, candidate=candidate, envelope=envelope,
-            notification=notification, result_row=ctx["result_row"],
+            notification=notification, dispatch=ctx["dispatch"],
+            result_row=ctx["result_row"],
         ):
             return _pending("evidence_drift", **base)
         expected_claim = self._v2_admission_event_payload(
@@ -3981,7 +4100,11 @@ class AuthorityV2ContinuationMixin:
         ``notification_settled`` audit.  It grants no launch authority and never
         performs a second generation admission; a duplicate/reopened caller may
         settle exact evidence (or read-only replay ``already_settled_exact``) but
-        must never dispatch.  Failure keeps the admitted + claim-audit evidence.
+        must never dispatch.  A successful owned precommit rollback undoes only
+        this settlement transaction, preserving any earlier committed claim and
+        preparation.  COMMIT or late-return failure can retain a committed or
+        unknown settled prefix; failed rollback retains uncertainty.  No failed
+        or lost outcome permits fresh admission/launch or clears native duties.
         """
         if self._conn.in_transaction:
             return AuthorityPolicyV2AdmissionSettlementOutcome(
@@ -4376,7 +4499,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=generation_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
             allowed_states=("admitted", "settled"),
         ):
             return _pending("evidence_drift", **base)
@@ -4384,7 +4508,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             attempt=attempt, candidate=candidate, envelope=envelope,
-            notification=notification, result_row=ctx["result_row"],
+            notification=notification, dispatch=ctx["dispatch"],
+            result_row=ctx["result_row"],
         ):
             return _pending("evidence_drift", **base)
         # Complete retained generation-admission evidence (ag + as).
@@ -4805,7 +4930,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
             result_id=result_id, envelope_id=envelope.envelope_id,
-            notification=notification, generation_id=generation_id,
+            notification=notification, envelope=envelope, dispatch=ctx["dispatch"],
+            generation_id=generation_id,
             allowed_states=("admitted", "settled"),
         ):
             return "evidence_drift", None
@@ -4813,7 +4939,8 @@ class AuthorityV2ContinuationMixin:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             attempt=attempt, candidate=candidate, envelope=envelope,
-            notification=notification, result_row=ctx["result_row"],
+            notification=notification, dispatch=ctx["dispatch"],
+            result_row=ctx["result_row"],
         ):
             return "evidence_drift", None
         for stage in (
