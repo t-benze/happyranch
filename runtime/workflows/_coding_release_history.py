@@ -121,8 +121,13 @@ def _absent(conn: sqlite3.Connection, table: str, column: str, value: str,
             budget: _Budget) -> None:
     # Fixed internal declarations only; include empty and rejected probes.
     budget.step()
-    _check(not _reader_list(_rows(conn, f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1',
-                          (_reader_reserve(budget, 80) or (value,)), 1, budget), budget=budget))
+    # Reserve the SQL, argument tuple and scalar iterator before constructing
+    # them. The scalar reader separately charges execution and every fetch.
+    _reader_reserve(budget, 512 + 4 * (
+        len('SELECT 1 FROM  WHERE =? LIMIT 1') + len(table) + len(column)))
+    sql = f'SELECT 1 FROM {table} WHERE {column}=? LIMIT 1'
+    args = (value,)
+    _check(not _reader_list(_rows(conn, sql, args, 1, budget), budget=budget))
 
 
 def canonical(value: object, *, budget=None) -> bytes:
@@ -304,10 +309,24 @@ def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | No
              (_reader_reserve(budget, 128) or (pointer['journal_id'], ready['namespace'], ready['generation'], ready['snapshot_digest'])))),
         )):
             _steps(budget, 2 * len(columns) + 1)
+            # Reserve traversal/generator/join slots before iterating. Both
+            # expression strings and the joined output use current lengths.
+            _reader_reserve(budget, 256 + 16 * len(columns))
+            size_length = max(0, len(columns) - 1)  # comma separators
+            for column in columns:
+                budget.step()
+                size_length += len('CASE WHEN typeof("")=\'text\' '
+                    'THEN length(CAST("" AS BLOB)) ELSE 0 END') + 2 * len(column)
+            _reader_reserve(budget, 128 * len(columns) + 8 * size_length)
             sizes = ','.join(f'CASE WHEN typeof("{column}")=\'text\' '
                 f'THEN length(CAST("{column}" AS BLOB)) ELSE 0 END' for column in columns)
-            for lengths in _rows(conn, f'SELECT {sizes} FROM {table} WHERE {where} LIMIT 2',
-                                  args, 1, budget):
+            _reader_reserve(budget, 512 + 4 * (len('SELECT  FROM  WHERE  LIMIT 2')
+                + len(sizes) + len(table) + len(where)))
+            sql = f'SELECT {sizes} FROM {table} WHERE {where} LIMIT 2'
+            # Finish and close this bounded acquisition before semantic
+            # validation/copy charges can fail in the consuming loop.
+            length_rows = _reader_list(_rows(conn, sql, args, 1, budget), budget=budget)
+            for lengths in length_rows:
                 _steps(budget, len(columns))
                 _check(_reader_all_true((type(size) is int and 0 <= size <= _VALUE_LIMIT for size in lengths), budget=budget))
                 _copies(budget, 2 * sum(lengths))
