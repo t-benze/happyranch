@@ -99,6 +99,7 @@ class TaskQueue:
         self._startup_org = None
         self._startup_recovery = None
         self._admission_lock = threading.RLock()
+        self._publisher_validations = threading.local()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
         self._admission_reservations: set[tuple[str, str]] = set()
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(
@@ -198,10 +199,14 @@ class TaskQueue:
                 _publication: object = None,
                 _coding_validation: Callable[[], None] | None = None,
                 _queue_validation: Callable[[], None] | None = None) -> None:
+        publisher_validations = getattr(self._publisher_validations, "stack", ())
         validate, _ = self._require_publication(slug, task_id, metadata, _publication, _coding_validation)
         with self._admission_lock:
             # A nested enqueue also owes its caller's ORIGINAL selection.
             # This additional check cannot replace this entry's validation.
+            for selected_slug, selected_task, selected_validate in publisher_validations:
+                if (selected_slug, selected_task) == (slug, task_id):
+                    selected_validate()
             if _queue_validation is not None:
                 _queue_validation()
             validate()
@@ -261,7 +266,17 @@ class TaskQueue:
                              _coding_validation=coding_validation, _queue_validation=validate)
             else:
                 validate()
-                publisher()
+                # Existing custom/generation publishers call raw enqueue
+                # synchronously on this thread, after their DB waits. Retain
+                # every original selection for this queue/key until they return;
+                # unrelated keys/threads never inherit it. Restore the previous
+                # stack even on failure or reentry, without changing coding V0.
+                previous = getattr(self._publisher_validations, "stack", ())
+                self._publisher_validations.stack = (*previous, (slug, task_id, validate))
+                try:
+                    publisher()
+                finally:
+                    self._publisher_validations.stack = previous
             with self._admission_lock:
                 validate()
                 return not self._stopping and self._pending_counts[key] > 0

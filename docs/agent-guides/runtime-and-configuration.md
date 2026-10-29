@@ -793,8 +793,15 @@ legitimate in-place changes for unrelated orgs remain allowed. Ordinary and
 authentic noncoding recovery publications renew the selection after each
 admission-mutex acquisition before reservation, raw insertion or positive pending
 acknowledgement; a replacement ready owner cannot satisfy that selection.
-Coding's supplied V0 remains separate and unchanged
-through nested enqueue/generation. DB-aware publishers stay outside the mutex;
+Custom publishers retain that SAME original general validator in a queue-local,
+thread-local stack for their synchronous call, keyed by slug/task. Nested raw
+enqueue renews every matching original validator after its mutex wait and before
+insertion, including after generation-classifier DB waits; it also retains its
+own validation. Concurrent threads, other queues and unrelated keys do not inherit
+that selection; reentrant calls restore the previous stack in finally. This adds
+checks only and grants no recovery admission. Coding's supplied V0 remains
+separate and unchanged through nested enqueue/generation. DB-aware publishers
+stay outside the mutex;
 late refusal preserves actual inserted/committed prefixes and finally unreserves.
 Stopping cannot acknowledge delivery, and owed native/terminal drains stay ungated.
 No generic recovery-thread or metadata bypass grants queue/session/provider use.
