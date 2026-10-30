@@ -33,7 +33,7 @@ def append_revision(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: d
     after['run'].update(cas_version=run['cas_version'] + 1, last_event_id=event_id)
     if kind == 'stage_queued':
         _check(task is not None and attempt is not None)
-        dispatcher.db._insert_task_row_uncommitted(task)
+        dispatcher.db._insert_task_row_uncommitted(task, ownership=('coding_attempt', attempt['id']))
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (now, now, task.id))
         names = ','.join(attempt)
         conn.execute(f"INSERT INTO workflow_coding_attempts ({names}) VALUES ({','.join('?' for _ in attempt)})", tuple(attempt.values()))

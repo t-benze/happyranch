@@ -597,7 +597,7 @@ class WorkflowRevisionStore:
                         host_launch_started=0, host_execution_id=None, session_id=None, final_result_id=None,
                         last_error=None, created_at=now, updated_at=now)
                     self.db._check_team_move_workflow_uncommitted(instance["id"])
-                    self.db._insert_task_uncommitted(task)
+                    self.db._insert_task_uncommitted(task, ownership=("draft", iid))
                     ctxrow = dict(id=ctxid, binding_snapshot_id=first['binding_snapshot_id'], context_bytes=ctxraw,
                         context_digest=digest(ctxraw), source_kind='document-revision', source_id=opid)
                     _insert(conn, 'workflow_contexts', ctxrow)
@@ -826,7 +826,7 @@ class WorkflowRevisionStore:
                 continue
             task_id = self.db.next_task_id()
             self.db._insert_task_uncommitted(TaskRecord(id=task_id, assigned_agent=selected['principal'], team=selected['team'],
-                brief=review_brief(scope, subject['candidate_bytes']), task_type='subtask'))
+                brief=review_brief(scope, subject['candidate_bytes']), task_type='subtask'), ownership=('f5', qid))
             task_ids.append(task_id)
             opid = _id('workflow-dispatch', qid, generation)
             _insert(conn, 'workflow_dispatch_operations', dict(id=opid, org_slug=self.org.slug, principal=selected['principal'], operation_key=qid,

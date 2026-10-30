@@ -422,6 +422,8 @@ class OrgState:
             db._task_pause_store = TaskPauseStore(db, slug)
             with db._lock:
                 validate_workflow_schema(db._conn, expected_org_slug=slug)
+            from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+            install_task_ownership(db, org_slug=slug)
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.

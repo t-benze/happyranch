@@ -5,17 +5,63 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
-## Task-local ownership classifier reverted (issue: PR1251 refusals)
+## Creation-time task ownership (THR320 seq432/433, seq436/437)
 
-PR1251's task-local classifier is reverted: its single per-call budget was
-exhausted by real schema metadata plus ordinary task audit history, so nearly
-every task classified `reconciliation_required` and was silently not enqueued,
-claimed or resumed. `classify_task` again uses the complete reader path. The
-`workflow_owner_*` index recognition and installer in `workflow_schema.py` stay,
-because orgs loaded by PR1251 already carry those indexes and the old exact-layout
-reader would otherwise refuse them. `enqueue_task` now logs a warning when it
-skips a `reconciliation_required` task. Any redo of task-local classification
-needs budgets sized against real task history.
+The daemon persists one `workflow_task_ownership` record per task in the same
+transaction as task creation and its native binding. Ordinary producers write
+`legacy` explicitly. Document authors/revision authors use their draft intent;
+reviewers use their request; coding stages use their actual attempt, while the
+structural carrier and existing source use the admitted instance. Only the
+controlled coding-start writer can transition an existing ordinary source.
+A mark supplies routing ownership, never execution authority or a review/merge
+permission. TaskRecord, model output, briefs and API update fields cannot set it.
+
+OrgState load initializes this additive companion store before producers attach,
+after the existing complete compatibility readers. Initialization inventories
+instances, instance-task links, reviewer bridges, document draft intents and all
+coding runs/attempts, including source/carrier and historical generations. A
+positively empty complete inventory permits ordinary initialization. Nonempty
+owners get their actual binding once; ambiguity refuses with the selected task.
+The table/view and all records commit atomically. Reopen validates existing
+records and never fills a missing one again. Missing/uninitialized storage or
+records never mean ordinary. Generic Database/runtime-audit stay workflow-free.
+
+Routine classification reads the indexed mark and selected scalar binding
+relations through `workflow_task_owner_bindings`. This literal per-layout view
+contains no payload or history reader. It detects selected conflicting/dual
+owners and local task/principal/run/attempt inconsistencies without schema,
+integrity/FK, audit or unrelated-history scans. Errors return
+`reconciliation_required`; enqueue logs the existing refusal. Historical
+document-only roots/links remain owned and recovery-held. Foreign payload-only
+claims refuse at their own complete boundary (Founder347), without inventing an
+owner for another task. Actual admission, mutation, recovery and compatibility
+owners retain fresh complete semantic/authority/native validation.
+
+PID publication classifies even without a coding dispatcher. Only current
+ordinary task/agent/SID/in-progress/noncancelled identity reaches the ordinary
+UPDATE, with another ownership check inside its writer transaction. A genuine
+coding attempt uses its original native PID journal or refuses when unavailable;
+all other selections refuse. The five indirect ordinary mutation guards use
+this same selected lookup, never `queued_storage` for an unrelated run. Ordinary
+update/chain/fanout guard checks and writes share their native writer interval.
+
+Companion storage preserves frozen `_TASK_COLUMNS`, SELECT-* task captures,
+encode_row bytes, INTEGER results, SIDs, audit/chain shapes and historical pins.
+Complete independent references distinguish task marks separately from document
+layout, coding extension and retained `workflow_owner_*` index dimensions.
+Offline layout migrations refresh only the companion's literal binding view;
+old document/coding DDL, rows and installed indexes retain their original meaning.
+Marked databases require a compatible reader, including when empty; source
+rollback does not remove the store or grant old-reader downgrade compatibility.
+
+Historical PR1251 exhausted its per-call schema/history allowance on real
+ordinary histories, including the reported19-row case. PR1253 rolled that reader
+back; PR1254 repaired complete indexed-reference compatibility. Those failures
+and installed owner indexes remain preserved. This mark replaces routine
+reconstruction; it does not rewrite reader budgets or assert live relief.
+Isolated SQLite/static evidence is separate from full workflow behavior and
+post-deployment verification. Family Coding stays Disabled; no workflow start,
+live initialization, deployment or host lifecycle action follows from source.
 
 Each attachment storage_key can be claimed by one task only, including within
 the same tree. Each direct, child or then-leg list allows at most five refs;

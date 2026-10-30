@@ -358,6 +358,19 @@ enablement, deployment or a Phase1-completion claim.
   staged U3a(b) ownership is documented separately below.
   Source is not deployment or Phase1/operator acceptance.
 
+## Creation-time ownership compatibility
+
+THR320 seq432/433 and seq436/437 add the org-owned companion task mark and
+scalar binding view described in [task orchestration](task-orchestration.md#creation-time-task-ownership-thr320-seq432433-seq436437).
+They initialize once from complete validated authoritative bindings before
+producer attachment; a missing record never means ordinary. Each author,
+reviewer, revision, coding stage/successor and source/carrier writer persists its
+actual mark in its existing graph transaction. Full semantic/authority/native
+validation remains at actual workflow boundaries. Historical task snapshots,
+old layouts/pins/journals, installed owner indexes and complete independent
+schema comparisons remain intact. Marked storage requires compatible readers;
+this source change authorizes no live migration, enablement or workflow start.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the

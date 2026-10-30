@@ -1923,10 +1923,10 @@ COMMIT;
 """
 
 
-_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool, bool], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool, bool, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False) -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
@@ -1934,39 +1934,39 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
     hashing every SQL object. No candidate schema is used as an input. No
     persistent generic or runtime-audit database is changed. Cache identity
     includes layout, source history, naming version, pause layout, inert team-move
-    layout, coding extension and the complete owner-index variant;
+    layout, coding extension, complete owner-index and task-mark variants;
     unavailable construction fails closed.
     """
     # Legacy admission must reject workflow-only histories BEFORE shared cache.
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool or type(owner_indexed) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool or type(owner_marked) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
 
 
-def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False) -> str:
+def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Whole workflow references; legacy authority retains its four histories."""
     if history in _RELEASE_REFERENCE_HISTORIES:
         return _release_schema_digest(layout, history, naming_version,
-            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed)
+            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _WORKFLOW_RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool or type(owner_indexed) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool or type(owner_marked) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
 
 
-def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool, owner_indexed: bool = False) -> str:
+def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Shared disposable lifetime, entered only after family-specific admission."""
     global _release_schema_digest_cache
-    if type(owner_indexed) is not bool:
+    if type(owner_indexed) is not bool or type(owner_marked) is not bool:
         return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension, owner_indexed)
+    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension, owner_indexed, owner_marked)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
@@ -2028,6 +2028,10 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                 with fresh.workflow_schema_transaction() as conn:
                     if owner_indexed:
                         _install_owner_indexes(conn, final_layout, coding_extension=coding_extension)
+                    if owner_marked:
+                        from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+                        conn.execute(OWNERSHIP_DDL)
+                        conn.execute(binding_view_ddl(final_layout, coding_extension=coding_extension))
                     if validate_workflow_schema(conn, expected_org_slug="release-reference") != final_layout:
                         raise ValueError("workflow_release_reference_layout_mismatch")
                 if pause_layout:
@@ -3455,7 +3459,9 @@ def _server_evidence(
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             team_move_layout = validate_team_move_schema(conn, org_slug=orch._slug)
             owner_indexed = bool(_owner_indexes_present(conn))
-        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None, owner_indexed=owner_indexed) for history in _RELEASE_REFERENCE_HISTORIES)
+            from runtime.infrastructure.workflow_task_ownership import ownership_storage_present
+            owner_marked = ownership_storage_present(conn)
+        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None, owner_indexed=owner_indexed, owner_marked=owner_marked) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"

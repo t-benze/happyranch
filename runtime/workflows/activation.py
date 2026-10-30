@@ -597,7 +597,7 @@ class WorkflowActivationStore:
                         context_id = _id("workflow-context", instance_id, digest(context_bytes))
                         task = TaskRecord(id=task_id, assigned_agent=bindings[author_role]["principal"],
                                           team=bindings[author_role]["team"], brief=_task_brief(frozen, inputs, template), task_type="subtask")
-                        self.db._insert_task_uncommitted(task)
+                        self.db._insert_task_uncommitted(task, ownership=("draft", intent_id))
                         conn.execute("INSERT INTO workflow_authorization_revisions VALUES (?,?,?,?,?,?,?)",
                             (authorization_id, namespace, 1, authorization_bytes, digest(authorization_bytes),
                              template.source_pin, timestamp))

@@ -625,7 +625,7 @@ def _install_owner_indexes(conn: sqlite3.Connection, layout: str, *, coding_exte
             conn.execute(statement)
 
 @contextmanager
-def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed: bool):
+def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed: bool, owner_marked: bool = False):
     """Independent literal schema; callers choose complete or bounded metadata."""
     expected = sqlite3.connect(':memory:')
     primary = None
@@ -647,6 +647,10 @@ def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed:
             _execute_ddl(expected, CANONICAL_WORKFLOW_CODING_DDL)
         if owner_indexed:
             _install_owner_indexes(expected, layout, coding_extension=coding_extension)
+        if owner_marked:
+            from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+            expected.execute(OWNERSHIP_DDL)
+            expected.execute(binding_view_ddl(layout, coding_extension=coding_extension))
         yield expected
     except BaseException as exc:
         primary = exc
@@ -661,14 +665,14 @@ def _canonical_connection(layout: str, *, coding_extension: bool, owner_indexed:
 
 @lru_cache(maxsize=24)
 def _canonical_layout(layout: Literal["F", "E", "G", "H", "I", "J"] = "F", *,
-                      coding_extension: bool = False, owner_indexed: bool = False) -> tuple[object, ...]:
+                      coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> tuple[object, ...]:
     with _canonical_connection(layout, coding_extension=coding_extension,
-                               owner_indexed=owner_indexed) as expected:
+                               owner_indexed=owner_indexed, owner_marked=owner_marked) as expected:
         return _layout(expected)
 
 
-def _candidate_reference(layout: str, *, coding_extension: bool, owner_indexed: bool, budget: _Budget) -> tuple:
-    with _canonical_connection(layout, coding_extension=coding_extension, owner_indexed=owner_indexed) as expected:
+def _candidate_reference(layout: str, *, coding_extension: bool, owner_indexed: bool, budget: _Budget, owner_marked: bool = False) -> tuple:
+    with _canonical_connection(layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked) as expected:
         return _candidate_structure(expected, budget)[0]
 
 
@@ -843,7 +847,8 @@ def _read_structure(conn: sqlite3.Connection) -> tuple[Literal['F', 'E', 'G', 'H
     if coding and layout == 'I':
         layout = 'J'
     expected = _canonical_layout(layout, coding_extension=coding,
-                                 owner_indexed=bool(_owner_indexes_present(conn)))
+                                 owner_indexed=bool(_owner_indexes_present(conn)),
+                                 owner_marked='workflow_task_ownership' in names or 'workflow_task_owner_bindings' in names)
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError('workflow_schema_object_set_mismatch')
     if actual != expected:
@@ -930,6 +935,9 @@ def _read_installed(
     if layout in ("I", "J") and validate_data:
         from runtime.workflows.revisions import validate_revision_storage
         validate_revision_storage(conn, expected_org_slug=expected_org_slug)
+    from runtime.infrastructure.workflow_task_ownership import ownership_storage_present, validate_ownership_data
+    if ownership_storage_present(conn):
+        validate_ownership_data(conn, org_slug=expected_org_slug)
     return layout, coding
 
 
@@ -973,6 +981,8 @@ class WorkflowCompatibilityStore:
                     source_layout = layout
                     advances.clear()
                     _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
+                    from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
+                    refresh_binding_view(conn, source_layout, coding_extension=True)
                     if source_indexes:
                         _install_owner_indexes(conn, source_layout, coding_extension=True,
                                                existing=source_indexes)
@@ -1370,6 +1380,8 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     if owner_indexed:
         _install_owner_indexes(conn, 'E', coding_extension=has_coding_schema_objects(conn),
                                existing=_owner_indexes_present(conn))
+    from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
+    refresh_binding_view(conn, 'E', coding_extension=has_coding_schema_objects(conn))
     validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     _validate_release_database(conn, 'E', expected_org_slug=expected_org_slug)
     return 'migrated'
@@ -1969,6 +1981,8 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         if owner_indexed:
             _install_owner_indexes(conn, 'H', coding_extension=has_coding_schema_objects(conn),
                                    existing=_owner_indexes_present(conn))
+        from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
+        refresh_binding_view(conn, 'H', coding_extension=has_coding_schema_objects(conn))
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
@@ -1995,8 +2009,10 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expecte
     observed_layout, coding = _read_structure(conn)
     if observed_layout != layout:
         raise ValueError('workflow_release_layout_mismatch')
+    from runtime.infrastructure.workflow_task_ownership import ownership_storage_present
     expected = tuple(_workflow_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout,
-                                                     coding_extension=coding, owner_indexed=bool(_owner_indexes_present(conn)))
+                                                     coding_extension=coding, owner_indexed=bool(_owner_indexes_present(conn)),
+                                                     owner_marked=ownership_storage_present(conn))
                      for history in _WORKFLOW_RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')
@@ -2084,6 +2100,8 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         if owner_indexed:
             _install_owner_indexes(conn, 'G', coding_extension=has_coding_schema_objects(conn),
                                    existing=_owner_indexes_present(conn))
+        from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
+        refresh_binding_view(conn, 'G', coding_extension=has_coding_schema_objects(conn))
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, 'G', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
@@ -2157,6 +2175,8 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         if owner_indexed:
             _install_owner_indexes(conn, 'I', coding_extension=has_coding_schema_objects(conn),
                                    existing=_owner_indexes_present(conn))
+        from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
+        refresh_binding_view(conn, 'I', coding_extension=has_coding_schema_objects(conn))
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
@@ -2416,6 +2436,8 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
         if owner_indexed:
             _install_owner_indexes(conn, 'J', coding_extension=has_coding_schema_objects(conn),
                                    existing=_owner_indexes_present(conn))
+        from runtime.infrastructure.workflow_task_ownership import refresh_binding_view
+        refresh_binding_view(conn, 'J', coding_extension=True)
         if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'J':
             raise ValueError('workflow_coding_migration_target_mismatch')
         _validate_release_database(conn, 'J', expected_org_slug=expected_org_slug)

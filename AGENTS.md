@@ -243,7 +243,7 @@ One line per area; read the linked contract before changing it.
 - **Coding workflow** (disabled by default; built-in definition, Founder settings at `/orgs/:slug/settings/coding`, `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)
 - **Workflow schema, activation and document review** (F–J layouts, explicit migration scripts only): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md)
 - **Escalation authority policy** (THR-181/229/277/279): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
-- **Task orchestration** (attachments, retries, root Pause/Resume, classifier revert after PR1251): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
+- **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
 - **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)
 - **Teams, online team move and org admin**: [teams-and-org-admin.md](docs/agent-guides/contracts/teams-and-org-admin.md), runbook `docs/runbooks/online-team-move.md`
 - **Threads, routing and naming** (mention routing is unconditional; no switch exists): [threads-and-naming.md](docs/agent-guides/contracts/threads-and-naming.md)
