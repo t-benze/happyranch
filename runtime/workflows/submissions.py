@@ -705,7 +705,7 @@ class WorkflowSubmissionStore:
                 continue
             task_id = self.db.next_task_id()
             brief = review_brief(scope, row['candidate_bytes'])
-            self.db._insert_task_uncommitted(TaskRecord(id=task_id, assigned_agent=selected['principal'], team=selected['team'], brief=brief, task_type='subtask'))
+            self.db._insert_task_uncommitted(TaskRecord(id=task_id, assigned_agent=selected['principal'], team=selected['team'], brief=brief, task_type='subtask'), ownership=('f5', qid))
             task_ids.append(task_id)
             opid = _id('workflow-dispatch', qid, 1)
             _insert(conn, 'workflow_dispatch_operations', dict(id=opid, org_slug=self.org.slug, principal=selected['principal'],

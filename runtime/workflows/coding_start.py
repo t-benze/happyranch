@@ -176,15 +176,11 @@ class CodingStartStore:
                              actor=actor, transitions=transitions)
 
     def guard_native_mutation(self, task_id: str) -> None:
-        # K3a has no standalone native mutation bridge. Preserve complete
-        # original observations; do not silently accept new PID/clock/status/
-        # counter/session/cancel drift or record a fabricated heartbeat owner.
-        conn = self.db._conn
-        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
-            return
-        if not conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone():
-            return
-        if task_id in queued_storage(conn, self.org.slug).owners:
+        # Ordinary updates must not enter queued_storage for an unrelated run.
+        # Actual coding mutations retain their own full reader/native journal.
+        from runtime.workflows.recovery import classify_task
+        owner = classify_task(self.db, task_id, org_slug=self.org.slug)
+        if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
@@ -316,7 +312,7 @@ class CodingStartStore:
             brief='Structural coding carrier ' + instance, status=TaskStatus.IN_PROGRESS,
             block_kind=BlockKind.DELEGATED, created_at=stamp, updated_at=stamp,
             session_timeout_seconds=source_before['session_timeout_seconds'])
-        self.db._insert_task_uncommitted(carrier)
+        self.db._insert_task_uncommitted(carrier, ownership=('coding_carrier', instance))
         leaf_id = self.db.next_task_id()
         leaf = TaskRecord(id=leaf_id, task_type='subtask', parent_task_id=carrier_id,
             assigned_agent=roles['implementer']['principal'], team=roles['implementer']['team'],
@@ -336,12 +332,14 @@ class CodingStartStore:
                 conn.execute(f'INSERT INTO {table} ({names}) VALUES ({marks})', tuple(row.values()))
         conn.execute('INSERT INTO workflow_coding_runs VALUES (?,?,1,0,?,NULL,NULL)',
                      (instance, selected.mapping_id, 'development'))
-        self.db._insert_task_row_uncommitted(leaf)
+        self.db._insert_task_row_uncommitted(leaf, ownership=('coding_attempt', attempt_id))
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (now, now, leaf_id))
         scope = _canonical(initial_scope(org=self.org.slug, instance=instance, attempt=attempt_id,
                                         command=command, roles=roles, context=context))
         conn.execute('INSERT INTO workflow_coding_attempts VALUES (?,?,1,?,1,1,NULL,?,?,NULL,NULL,NULL,NULL,?,?,?)',
                      (attempt_id, instance, 'development', leaf_id, roles['implementer']['principal'], 'queued', scope, _hash(scope)))
+        from runtime.infrastructure.workflow_task_ownership import adopt_coding_source_uncommitted
+        adopt_coding_source_uncommitted(self.db, claim.task_id, instance)
         conn.execute('UPDATE tasks SET block_kind=?,note=?,updated_at=? WHERE id=?',
                      ('delegated', 'coding-owned:' + instance, now, claim.task_id))
         conn.execute('UPDATE workflow_coding_runs SET current_attempt_id=? WHERE instance_id=?', (attempt_id, instance))

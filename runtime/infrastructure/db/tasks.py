@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.db._shared import _task_move_admission, _late_database_now as _now, _synchronized
 from runtime.infrastructure.db.task_reconciliation import (
@@ -942,7 +943,7 @@ class TasksMixin:
                 self._conn.rollback()
             raise
 
-    def _insert_task_uncommitted(self, task: TaskRecord) -> None:
+    def _insert_task_uncommitted(self, task: TaskRecord, *, ownership: tuple[str, str] | None = None) -> None:
         """Insert through the caller-owned synchronized transaction.
 
         The ordinary wrapper deliberately retains its self-commit boundary,
@@ -950,9 +951,9 @@ class TasksMixin:
         admission owns the lock, writer reservation and entire graph commit.
         """
         self._check_team_move_task_uncommitted(task)
-        self._insert_task_row_uncommitted(task)
+        self._insert_task_row_uncommitted(task, ownership=ownership)
 
-    def _insert_task_row_uncommitted(self, task: TaskRecord) -> None:
+    def _insert_task_row_uncommitted(self, task: TaskRecord, *, ownership: tuple[str, str] | None = None) -> None:
         """Private row primitive for a prechecked, caller-owned graph writer.
 
         Ordinary callers retain _insert_task_uncommitted's native move guard.
@@ -993,6 +994,12 @@ class TasksMixin:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
+        self._insert_task_owner_uncommitted(task.id, ownership=ownership)
+
+    def _insert_task_owner_uncommitted(self, task_id: str, *, ownership: tuple[str, str] | None = None) -> None:
+        from runtime.infrastructure.workflow_task_ownership import insert_owner_uncommitted
+        insert_owner_uncommitted(self, task_id, ownership=ownership)
+
     @_synchronized
     def get_task(self, task_id: str) -> TaskRecord | None:
         cursor = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -1719,6 +1726,33 @@ class TasksMixin:
         owner = getattr(self, '_workflow_coding_start', None)
         if owner is not None:
             owner.guard_native_mutation(task_id)
+        else:
+            from runtime.infrastructure.workflow_task_ownership import ownership_storage_present
+            org = getattr(self, '_task_ownership_org', None)
+            if org is None and not ownership_storage_present(self._conn):
+                return  # Unattached generic Database has no workflow routing.
+            from runtime.workflows.recovery import classify_task
+            selected = classify_task(self, task_id, org_slug=org)
+            if selected.kind.startswith('coding_') or selected.kind == 'reconciliation_required':
+                raise ValueError('workflow_task_ownership_mutation_refused')
+
+    @contextmanager
+    def _task_owner_mutation(self, task_id: str) -> Iterator[None]:
+        began = not self._conn.in_transaction
+        if began:
+            self._conn.execute('BEGIN IMMEDIATE')
+        try:
+            self._guard_coding_task_mutation_uncommitted(task_id)
+            yield
+        except BaseException:
+            if began:
+                self._conn.rollback()
+            raise
+        finally:
+            # Existing native wrappers self-commit. A no-op or refused write
+            # must not strand a new writer transaction.
+            if began and self._conn.in_transaction:
+                self._conn.rollback()
 
     def claim_coding_step_uncommitted(self, *, task_id: str, before: dict) -> None:
         """Coding final native owner joins one caller-owned admission transaction."""
@@ -1748,54 +1782,54 @@ class TasksMixin:
 
     @_synchronized
     def update_task(self, task_id: str, **fields: object) -> None:
-        self._guard_coding_task_mutation_uncommitted(task_id)
-        allowed = {
-            "status", "assigned_agent", "revision_count", "completed_at",
-            "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
-            "final_output_dir", "cancelled_at", "last_heartbeat",
-            "executor_pid", "current_session_id", "zombie_flagged_at",
-        }
-        # NOTE: filter on membership, not on None-ness — block_kind must be
-        # resettable to NULL when a task unblocks.
-        updates: dict[str, object] = {}
-        for k, v in fields.items():
-            if k not in allowed:
-                continue
-            if hasattr(v, "value"):
-                updates[k] = v.value
-            else:
-                updates[k] = v
-        if not updates:
-            return
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [task_id]
-        self._conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
-        self._conn.commit()
+        with self._task_owner_mutation(task_id):
+            allowed = {
+                "status", "assigned_agent", "revision_count", "completed_at",
+                "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
+                "final_output_dir", "cancelled_at", "last_heartbeat",
+                "executor_pid", "current_session_id", "zombie_flagged_at",
+            }
+            # NOTE: filter on membership, not on None-ness — block_kind must be
+            # resettable to NULL when a task unblocks.
+            updates: dict[str, object] = {}
+            for k, v in fields.items():
+                if k not in allowed:
+                    continue
+                if hasattr(v, "value"):
+                    updates[k] = v.value
+                else:
+                    updates[k] = v
+            if not updates:
+                return
+            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [task_id]
+            self._conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
+            self._conn.commit()
 
     @_synchronized
     def update_task_active_chain(self, task_id: str, active_chain: str | None) -> None:
         """Set or clear tasks.active_chain. Pass None to clear (chain finished,
         aborted, or never declared)."""
-        self._guard_coding_task_mutation_uncommitted(task_id)
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "UPDATE tasks SET active_chain = ?, updated_at = ? WHERE id = ?",
-            (active_chain, now, task_id),
-        )
-        self._conn.commit()
+        with self._task_owner_mutation(task_id):
+            now = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                "UPDATE tasks SET active_chain = ?, updated_at = ? WHERE id = ?",
+                (active_chain, now, task_id),
+            )
+            self._conn.commit()
 
     @_synchronized
     def update_task_active_fanout(self, task_id: str, active_fanout: str | None) -> None:
         """Set or clear tasks.active_fanout. Pass None to clear (fan-out join
         claimed or parent terminal)."""
-        self._guard_coding_task_mutation_uncommitted(task_id)
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "UPDATE tasks SET active_fanout = ?, updated_at = ? WHERE id = ?",
-            (active_fanout, now, task_id),
-        )
-        self._conn.commit()
+        with self._task_owner_mutation(task_id):
+            now = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                "UPDATE tasks SET active_fanout = ?, updated_at = ? WHERE id = ?",
+                (active_fanout, now, task_id),
+            )
+            self._conn.commit()
 
     @staticmethod
     def _retry_object(raw: str) -> dict:
@@ -2491,6 +2525,7 @@ class TasksMixin:
                         child.active_fanout,
                     ),
                 )
+                self._insert_task_owner_uncommitted(child.id)
                 # Insert attachment links for this child if present.
                 child_atts = None
                 if children_attachments and i < len(children_attachments):
@@ -2540,6 +2575,7 @@ class TasksMixin:
                             None,
                         ),
                     )
+                    self._insert_task_owner_uncommitted(fl["id"])
             self._conn.execute(
                 """UPDATE tasks
                    SET status = ?, block_kind = ?, note = ?, active_fanout = ?, updated_at = ?
@@ -2614,6 +2650,7 @@ class TasksMixin:
                     child.zombie_flagged_at.isoformat() if child.zombie_flagged_at else None,
                 ),
             )
+            self._insert_task_owner_uncommitted(child.id)
             if attachments:
                 self._insert_task_attachments_txn(
                     child.id, attachments, uploaded_by,
@@ -2913,6 +2950,7 @@ class TasksMixin:
                 (successor_id, actor_agent, row["team"], successor_brief, now, now,
                  row["session_timeout_seconds"]),
             )
+            self._insert_task_owner_uncommitted(successor_id)
             self._conn.execute(
                 """INSERT INTO manager_supersessions
                    (predecessor_task_id, successor_task_id, original_root_task_id,
@@ -3089,6 +3127,7 @@ class TasksMixin:
                     next_child.zombie_flagged_at.isoformat() if next_child.zombie_flagged_at else None,
                 ),
             )
+            self._insert_task_owner_uncommitted(next_child.id)
             if attachments:
                 self._insert_task_attachments_txn(
                     next_child.id, attachments, uploaded_by,
@@ -3318,21 +3357,36 @@ class TasksMixin:
         self, *, task_id: str, agent: str, session_id: str, pid: int,
     ) -> bool:
         """Publish a PID only for the still-current invocation generation."""
-        coding = getattr(self, '_workflow_coding_dispatch', None)
-        if coding is not None:
-            from runtime.workflows.recovery import classify_task
-            owner = classify_task(self, task_id, org_slug=coding.org.slug)
-            if owner.kind == 'coding_attempt':
-                return coding.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
-        self._guard_coding_task_mutation_uncommitted(task_id)
-        cursor = self._conn.execute(
-            """UPDATE tasks SET executor_pid = ?
-               WHERE id = ? AND assigned_agent = ? AND current_session_id = ?
-                 AND status = ? AND cancelled_at IS NULL""",
-            (pid, task_id, agent, session_id, TaskStatus.IN_PROGRESS.value),
-        )
-        self._conn.commit()
-        return cursor.rowcount == 1
+        from runtime.workflows.recovery import classify_task
+        org = getattr(self, '_task_ownership_org', None)
+        owner = classify_task(self, task_id, org_slug=org)
+        if owner.kind == 'coding_attempt':
+            coding = getattr(self, '_workflow_coding_dispatch', None)
+            if coding is None or coding.org.slug != org:
+                return False
+            return coding.record_pid(task_id=task_id, agent=agent, session_id=session_id, pid=pid)
+        if owner.kind != 'legacy':
+            return False
+        began = not self._conn.in_transaction
+        if began:
+            self._conn.execute('BEGIN IMMEDIATE')
+        try:
+            if classify_task(self, task_id, org_slug=org).kind != 'legacy':
+                if began:
+                    self._conn.rollback()
+                return False
+            cursor = self._conn.execute(
+                """UPDATE tasks SET executor_pid = ?
+                   WHERE id = ? AND assigned_agent = ? AND current_session_id = ?
+                     AND status = ? AND cancelled_at IS NULL""",
+                (pid, task_id, agent, session_id, TaskStatus.IN_PROGRESS.value),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+        except BaseException:
+            if began:
+                self._conn.rollback()
+            raise
 
     @_synchronized
     def completion_recovery_callback_allowed(
@@ -4377,6 +4431,7 @@ class TasksMixin:
                     task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
                 ),
             )
+            self._insert_task_owner_uncommitted(task.id)
             for att in attachments:
                 # Reject if storage_key is already claimed — including by
                 # legacy duplicate rows excluded from the partial unique index.
@@ -4565,6 +4620,7 @@ class TasksMixin:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
+            self._insert_task_owner_uncommitted(task.id)
             sys_seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id, speaker=dispatcher,
                 kind=ThreadMessageKind.SYSTEM,
