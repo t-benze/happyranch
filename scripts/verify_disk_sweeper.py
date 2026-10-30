@@ -4,7 +4,8 @@
 Run from the repository: .venv/bin/python scripts/verify_disk_sweeper.py
 Real files/Git/child processes, synthetic SQLite records, no daemon actors. The
 wall-clock argument is advanced two hours for old-ctime fixtures (ctime cannot
-be backdated on Linux). Monotonic deadlines and process/Git effects stay real.
+be backdated on Linux). c12's comparison table advances an observed monotonic
+clock; its snapshots/signatures and all process/Git effects remain real.
 No pytest or tests/ imports. Never run against existing orgs or cleanup data.
 """
 from __future__ import annotations
@@ -651,6 +652,221 @@ def c11():
 
 
 def c12():
+    def comparison(caller: str, change: str, boundary: str | None = None, beyond: bool = False) -> dict:
+        """Observe the actual two consumers, including their old signature alias."""
+        label = f'{caller}/{change}/{boundary or "unexpired"}/{"beyond" if beyond else "exact"}'
+        with fixture() as f:
+            target = f.scratch('TASK-1')
+            early, tail = target / 'a-early', target / 'z-late'
+            early.write_bytes(b'early'); tail.write_bytes(b'late')
+            os.link(target / 'nested/payload', target / 'nested/duplicate')
+            control = f.scratch('TASK-2', status='in_progress')
+            output = f.workspace / 'output/TASK-1'
+            output.mkdir(parents=True); (output / 'keep').write_bytes(b'durable')
+            outside = f.base / 'outside'; outside.write_bytes(b'outside')
+            (target / 'outside').symlink_to(outside)
+            sidecars = f.workspace / '.happyranch/task-scratch-manifests'
+            # Ensure this candidate precedes the retained control regardless of
+            # filesystem timestamp resolution; all descendants pass NOW's age.
+            os.utime(target, (NOW - 10800, NOW - 10800))
+            os.utime(control, (NOW - 7200, NOW - 7200))
+            protected = candidate_contents(control, output, outside, sidecars)
+            expected_contents = candidate_contents(target)
+            inodes = {(s.st_dev, s.st_ino): s.st_blocks * 512
+                      for p in (target, *target.rglob('*')) for s in (p.lstat(),)}
+            amount = sum(inodes.values())  # c1's independent allocation oracle
+            report, captures, admissions, returns, entries, checks = {}, [], [], [], [], []
+            selected, captured, begun, pairs, differences = [], {}, set(), {}, []
+            real_snapshot, real_admit = ds.snapshot, ds.admit
+            real_signature, real_check, real_clock = fs.signature, fs.check, time.monotonic
+            real_chmod = os.chmod
+            real_compare = getattr(ds, 'trees_equal', None)
+            deadline = real_clock() + 12
+            clock = dict(value=deadline - 1, armed=False, observing=False, inside=False, flipped=False)
+            changed = False
+            summary = f.base / 'comparison.json'
+
+            def drift() -> None:
+                nonlocal changed, expected_contents
+                if changed or change == 'reordered_equal' or change == 'deadline':
+                    return
+                if change == 'early_mismatch':
+                    early.write_bytes(b'EARLY')  # real non-root, same-length drift
+                elif change == 'tail_write':
+                    tail.write_bytes(b'LATE')
+                elif change == 'key_rename':
+                    tail.rename(tail.with_name('zz-renamed'))
+                elif change == 'replacement':
+                    replacement = f.base / 'replacement'
+                    replacement.write_bytes(b'NEW!'); replacement.replace(tail)
+                elif change == 'chmod':
+                    real_chmod(tail, 0o400)  # fixture action, not a sweeper repair
+                else:
+                    raise AssertionError(change)
+                changed = True
+                expected_contents = candidate_contents(target)
+
+            def arm(left: dict, right: dict) -> None:
+                assert not selected and left and right and '' in left and '' in right
+                selected.extend((left, right))
+                for side, tree in enumerate(selected):
+                    for key, observed in tree.items():
+                        captured[id(observed)] = (key, side)
+                if change == 'reordered_equal':
+                    assert list(left) != list(right), label
+                elif change != 'deadline':
+                    assert changed, label
+                    assert len(left) == len(right), label
+                    for key in sorted(left.keys() | right.keys()):
+                        before = real_signature(right[key]) if key in right else None
+                        after = real_signature(left[key]) if key in left else None
+                        if before != after:
+                            differences.append(dict(key=key, left=after, right=before))
+                    assert differences, label
+                if change == 'early_mismatch':
+                    assert real_signature(left['']) == real_signature(right['']), label
+                    assert real_signature(left['a-early']) != real_signature(right['a-early']), label
+                    assert list(left).index('a-early') < list(left).index('z-late'), label
+                clock['observing'] = True
+                if boundary:
+                    clock['armed'] = True
+                    if boundary == 'entry':
+                        clock['value'] = deadline + int(beyond)
+                        clock['flipped'] = True
+
+            def snapshot(path: Path, original_deadline: float, **kwargs) -> dict:
+                observed = real_snapshot(path, original_deadline, **kwargs)
+                if path == target:
+                    number = len(captures) + 1
+                    if change == 'reordered_equal' and (
+                        caller == 'admit' and number == 2 or caller == 'sweep_org' and number in (3, 4)
+                    ):
+                        observed = dict(reversed(tuple(observed.items())))
+                    captures.append(observed)
+                    if caller == 'admit' and number == 1:
+                        drift()
+                    if caller == 'admit' and number == 2:
+                        arm(observed, captures[0])
+                return observed
+
+            def admit(candidate: dict, evidence: ds.Evidence, original_deadline: float, **kwargs) -> dict:
+                admissions.append(candidate['path'])
+                observed = real_admit(candidate, evidence, original_deadline, **kwargs)
+                if caller == 'sweep_org' and candidate['path'] == str(target) and len(captures) == 4:
+                    arm(captures[0], observed)
+                return observed
+
+            def checkpoint() -> None:
+                ds.atomic_json(summary, report)  # persisted existing boundary
+                if caller == 'sweep_org' and any(c['state'] == 'mutation_in_flight' for c in report['candidates']):
+                    drift()
+
+            def signature(observed: os.stat_result) -> tuple:
+                match = captured.get(id(observed)) if clock['observing'] else None
+                if match:
+                    key, side = match
+                    if key not in begun:
+                        begun.add(key)
+                        entries.append(dict(key=key, started=clock['value'], expired=clock['armed'] and clock['value'] >= deadline))
+                    pairs.setdefault(key, set()).add(side)
+                value = real_signature(observed)
+                if match and boundary and not clock['flipped'] and len(pairs[key]) == 2:
+                    trigger = list(selected[0])[0] if boundary == 'first' else list(selected[0])[-1]
+                    if key == trigger:
+                        # A pair already in progress may finish; production must
+                        # guard the NEXT entry or its own normal return.
+                        clock.update(value=deadline + int(beyond), flipped=True)
+                return value
+
+            def check(original_deadline: float) -> None:
+                if clock['inside']:
+                    checks.append(dict(deadline=original_deadline, at=clock['value']))
+                return real_check(original_deadline)  # observation adds no guard
+
+            def compare(left: dict, right: dict, original_deadline: float) -> bool:
+                if not selected or left is not selected[0] or right is not selected[1]:
+                    return real_compare(left, right, original_deadline)
+                assert original_deadline == deadline, label
+                clock['inside'] = True
+                try:
+                    value = real_compare(left, right, original_deadline)
+                except fs.Expired:
+                    returns.append(dict(kind='Expired', at=clock['value'], deadline=original_deadline))
+                    raise
+                else:
+                    returns.append(dict(kind='return', at=clock['value'], deadline=original_deadline, value=value))
+                    return value
+                finally:
+                    clock['inside'] = False
+                    clock['observing'] = False
+
+            mutations = []
+            real_mutate = ds.mutate
+            def mutate(*args, **kwargs) -> dict:
+                mutations.append(str(args[0]))
+                return real_mutate(*args, **kwargs)
+
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(ds, 'snapshot', snapshot))
+                stack.enter_context(patch.object(ds, 'admit', admit))
+                stack.enter_context(patch.object(ds, 'signature', signature))
+                stack.enter_context(patch.object(fs, 'signature', signature))
+                stack.enter_context(patch.object(fs, 'check', check))
+                stack.enter_context(patch.object(time, 'monotonic', lambda: clock['value'] if clock['armed'] else real_clock()))
+                stack.enter_context(patch.object(ds, 'mutate', mutate))
+                if real_compare is not None:
+                    stack.enter_context(patch.object(ds, 'trees_equal', compare))
+                if change != 'reordered_equal':
+                    stack.enter_context(refuse_mutations())
+                sweep_expired = False
+                try:
+                    result = ds.sweep_org(f.org, deadline, mode='on', now=NOW, result=report, checkpoint=checkpoint)
+                except fs.Expired:
+                    if not boundary:
+                        raise
+                    sweep_expired = True
+                    result = report  # shipping sweep_org checkpoints then propagates
+
+            evidence = dict(row=label, entries=entries, checks=checks, comparator=returns,
+                            differences=differences, original_deadline=deadline, admissions=admissions)
+            assert protected == candidate_contents(control, output, outside, sidecars), evidence
+            candidate, phase = row(result, target), result['phases']['scratch']
+            if change == 'reordered_equal':
+                assert candidate['state'] == 'removed' and not target.exists(), evidence
+                assert candidate['allocated_bytes'] == candidate['removed_attributable_bytes'] == amount, candidate
+                retained(result, control, 'task_or_root_not_terminal:in_progress')
+            else:
+                assert expected_contents == candidate_contents(target) and not mutations, evidence
+                assert phase['removed_attributable_bytes'] == 0, result
+                assert phase['measured_allocated_bytes'] == (amount if caller == 'sweep_org' else 0), result
+                assert candidate.get('allocated_bytes') == (amount if caller == 'sweep_org' else None), candidate
+                if boundary:
+                    assert sweep_expired, evidence
+                    assert result['outcome'] == 'incomplete' and result['error'] == 'total sweep deadline', evidence
+                    assert candidate['state'] == ('inspecting' if caller == 'admit' else 'mutation_in_flight'), candidate
+                    assert str(control) not in admissions, evidence
+                    assert clock['flipped'], evidence
+                    assert not any(e['expired'] for e in entries), ('comparison entry began after expiry', evidence)
+                    assert not any(r['kind'] == 'return' and r['at'] >= deadline for r in returns), ('comparator returned after expiry', evidence)
+                    if real_compare is not None:
+                        assert returns and returns[-1]['kind'] == 'Expired', evidence
+                        assert checks and all(c['deadline'] == deadline for c in checks), evidence
+                    if change == 'early_mismatch':
+                        assert 'a-early' in begun and 'z-late' in begun, evidence
+                else:
+                    retained(result, target, 'tree_changed_during_admission' if caller == 'admit' else 'tree_changed_before_mutation')
+            assert json.loads(summary.read_text()) == result, label
+            evidence.update(state=candidate['state'], measured=phase['measured_allocated_bytes'],
+                            removed=phase['removed_attributable_bytes'], preserved=change != 'reordered_equal')
+            return evidence
+
+    comparisons = []
+    for caller in ('admit', 'sweep_org'):
+        for change in ('reordered_equal', 'tail_write', 'key_rename', 'replacement', 'chmod'):
+            comparisons.append(comparison(caller, change))
+        for boundary in ('entry', 'first', 'last', 'early_mismatch_later_expiry'):
+            for beyond in (False, True):
+                comparisons.append(comparison(caller, 'early_mismatch' if boundary == 'early_mismatch_later_expiry' else 'deadline', boundary, beyond))
     with fixture() as f:
         p=f.scratch('TASK-1');(p/'nested/a').write_text('a')
         real=os.unlink
@@ -737,7 +953,7 @@ ds.sweep_org(Path({str(g.org)!r}),time.monotonic()+10,mode='on',now={NOW!r},resu
                 assert not (target/'nested/a').exists() and (target/'nested/payload').exists()
                 pid=int(marker.read_text());assert not Path(f'/proc/{pid}').exists(),'mutating worker survived'
             asyncio.run(stop_mutation())
-        return dict(partial='real earlier unlink observed, no false reclaimed bytes',supervisor=[a,b,'shutdown after actual unlink; surviving file preserved, mutating worker reaped'],event_loop='heartbeat remained responsive; Git/sleep child absent or zombie, no runnable worker')
+        return dict(comparisons=comparisons, partial='real earlier unlink observed, no false reclaimed bytes',supervisor=[a,b,'shutdown after actual unlink; surviving file preserved, mutating worker reaped'],event_loop='heartbeat remained responsive; Git/sleep child absent or zombie, no runnable worker')
 
 
 def c13():

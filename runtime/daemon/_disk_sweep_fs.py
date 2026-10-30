@@ -38,6 +38,23 @@ def signature(s: os.stat_result) -> tuple:
     return identity(s) + (s.st_mode, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink)
 
 
+def trees_equal(left: dict[str, os.stat_result], right: dict[str, os.stat_result], deadline: float) -> bool:
+    """Compare complete captured trees with constant additional storage.
+
+    Mismatch does not skip later work or its original-deadline checks. A pair
+    already in progress is not independently preemptible.
+    """
+    check(deadline)
+    equal = len(left) == len(right)
+    for path, observed in left.items():
+        check(deadline)
+        partner = right.get(path)
+        if partner is None or signature(observed) != signature(partner):
+            equal = False
+    check(deadline)
+    return equal
+
+
 def names(fd: int, deadline: float) -> list[str]:
     result = []
     with os.scandir(fd) as entries:

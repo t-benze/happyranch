@@ -165,6 +165,28 @@ Every admission, including permission repair and the one Git retry, requires:
   chmod mode/ctime changes may be recognized on Git retry, with all other gates
   refreshed; unknown changes never receive that exception.
 
+Admission takes two complete no-follow snapshots with intervening ownership/Git
+refresh and final root/Git validation. On-mode mutation repeats the entire
+admission, then compares the two admitted trees again. Both comparisons use
+exact cardinality, path lookup and the unchanged eight-field signature (device,
+inode, type, mode, size, mtime_ns, ctime_ns, nlink), independent of insertion order.
+They check the SAME original deadline at entry, before every comparison entry
+and at exit, accumulating mismatch without skipping later required work. Missing
+partners mark mismatch; full left membership plus equal cardinality excludes
+right-only entries. Expiry propagates as incomplete, including after an earlier
+mismatch. Unexpired drift retains with `tree_changed_during_admission` or
+`tree_changed_before_mutation` at the respective caller.
+
+Direct comparison uses constant additional storage; the complete snapshots,
+Counters, seen sets and other sweep costs remain O(N) or otherwise unbounded by
+this correction. An in-progress signature pair, syscall and other observation
+work is not independently preemptible. Cooperative checks supplement the existing
+parent supervision; they certify neither a hard OS-I/O deadline nor speedup,
+backlog clearance or physical freed bytes. `mutation_in_flight` is checkpointed
+before the final admission and may precede every unlink. A partial removal may
+change a surviving root's mtime and subsequent discovery position; ordering
+continues to use current root mtime.
+
 Paths open from `/` one component at a time with O_NOFOLLOW. Tree syscalls use
 verified directory fds and recorded inode/device identities. Mountinfo rejects
 same-device bind mounts as well as device changes. Internal symlinks are unlinked
@@ -291,6 +313,37 @@ Seven actual on-night records of attributable results, retained/unknown/eligible
 ~50GiB is provisional; output growth or operator deletions cannot determine PASS.
 
 ## Finite disposable verification
+
+ROOT13755's comparison correction extends existing c12 with tiny real Fixture
+rows at BOTH admission and cross-admission comparisons: reordered equal captures
+must permit real removal with independent lstat/inode allocation; same-count late
+write, key rename, replacement and chmod must retain with the exact caller reason
+and preserved changed contents/controls. These rows do not isolate all eight
+signature fields from accompanying ancestor changes; exact parity is also reviewed.
+CPU-expiry rows arm only after genuine selected snapshots/admissions, at entry,
+first pair, last pair/exit and an early non-root mismatch followed by later expiry,
+each exactly at the ORIGINAL deadline and beyond it. Delegating observers bind
+old `ds.signature`, new `fs.signature`/`fs.check` and imported `ds.trees_equal`;
+they record entries begun or normal comparator returns after expiry, before outer
+guards can mask a missing exit check. They add no guard or fabricated Expired.
+Resource assertions accompany actual incomplete reports, preserved filesystem/
+sidecars/outputs/outside controls, no later admission/mutation/Git action and
+truthful pre/post-measurement allocation with zero removal credit. Empty maps
+are defensive source-reviewed semantics only: successful snapshots include `''`.
+Existing c12 partial/supervision assertions remain. Focused supported selection:
+
+```bash
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 1 12 19 21
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --correction-cases 6
+```
+
+Use frozen Python3.14 and ordinary UID. c1 owns allocation, c19/c21 shared
+worktree admission/recovery and C6 (`correction_fresh_policy`, not historical
+`--cases 6`) fresh policy keepers. c9/c10/c11 retain missing/unknown, active-job/
+retry and recent nested-age coverage; c14 owns discovery exhaustion, not CPU
+comparison expiry. No historical namespace/host execution, scaled fixture or new
+diagnostic/performance campaign follows. Record actual execution/proof limits;
+source readiness and a small fixture do not close nightly operational acceptance.
 
 TASK13199 / ROOT13198 uses the existing driver with `--cases 1 2 7 8 11 12
 16 19 20 21 22` and `--correction-cases 1 2 6` in separate invocations, under
