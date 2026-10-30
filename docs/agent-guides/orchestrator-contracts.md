@@ -3677,6 +3677,17 @@ the model `confidence` field and the persisted raw `decision_json` is parsed int
 decision (not merely its action) plus every summary/status/confidence/verdict/
 output-path/risks/wait-ID/local-CI field must match the retained `R2` row while the
 persisted full material digest stays separately bound into `spent`.
+Retained attempt rows are validated before missing E/D can mean `no_v2`:
+canonical/column/preimage checks and the existing admitted or terminal-refusal
+stage evidence must authenticate. A continued attempt requires exactly one
+retained E with its original immutable tuple. Before terminal/later permission,
+every retained continued attempt must be covered by the root's authenticated
+terminal envelopes. The retired D's N/E joins independently require the same
+root, original owner/session, envelope, generation, candidate, result and selector,
+and membership of the pointed E in the captured root lineage. This leaves
+historical A-after-B receipt authentication unchanged; it never requires every
+old receipt to equal today's pointer or restores an old task projection.
+
 The COMMON consumer is guarded: `run_step.py` splits the
 existing `_consume_completion_report` into the single guarded entry (used by
 ordinary completion, accepted recovery, the startup sweep and the zombie reaper)
@@ -3709,7 +3720,16 @@ identity with no real persisted result row on a root that HAS v2 history
 (including `None`/bool/string/unknown integer) is a fail-closed `foreign` skip,
 never the ordinary/v1 absence path; and every other unmatched/malformed/foreign
 identity is a fail-closed skip, never ordinary permission, with a classification
-read failure also fail-closed. The winning caller retains the exact CAUSAL receipt identity from
+read failure also fail-closed. An actual SQL/decode/synchronizer or material-read
+exception propagates through the common and accepted-recovery boundary on the
+same selected original INTEGER/result. Accepted recovery never reclassifies the
+first failed observation as foreign and retries it away; both common-forwarding
+branches preserve returned negatives. Expected malformed material representations
+remain explicit identity conflicts, and authenticated successful skips stay
+separate. The original cold sweep catches the error, records unresolved failure
+before readiness, and suppresses its ENTIRE final batch. Live invocation cleanup,
+committed prefixes and independently owed native/host/Pause/move/cancel/DB/shutdown
+duties keep their original ownership. The winning caller retains the exact CAUSAL receipt identity from
 `AuthorityPolicyV2CompletionDispatchContext` and acknowledges/refuses with THAT
 identity (never the reserved spending result id and never post-effect
 task/owner/pointer state); a bounded pending/lost writer return is nonauthorizing,

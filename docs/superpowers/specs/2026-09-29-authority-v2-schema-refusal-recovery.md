@@ -82,6 +82,23 @@ continued-root receipt bridge and never uses that bridge or repeats reconciliati
 to settle v2. Owed native/host/Pause/move/cancel/DB/shutdown cleanup retains its
 original owner and sticky failure regardless of the returned negative.
 
+Completion-reader absence also authenticates retained attempt canonical/column/
+preimage and admitted or terminal-refusal stage evidence. A continued attempt
+without its matching retained E cannot authorize `no_v2` or terminal/later work.
+Every retained continued generation must join its original E before existing
+complete terminal proof permits later work. Retired D joins N/E's complete
+original root/owner/session/envelope/generation/candidate/result/selector tuple
+and requires captured root membership; historical A-after-B proof remains valid.
+Completion classification and actual material-read exceptions propagate through
+the common/accepted boundary on the same original selected INTEGER/result. A
+second successful read cannot erase the first failed observation. Both accepted
+common-forwarding branches preserve original pending negatives. The cold sweep's
+existing exception owner records unresolved failure before readiness and suppresses
+the ENTIRE final batch; authenticated successful no-op skips remain distinct.
+Committed prefixes and independently owed native/host/Pause/move/cancel/DB/shutdown
+cleanup retain their original owners. This source correction runs no scenarios
+and grants no new status, retry, execution allocation or activation.
+
 Before first accepted-Q settlement or exact consumed-Q replay, the owned
 transaction classifies the COMPLETE root/permanent-agent Q set and requires the
 sole relevant row to be the genuine asserted recovery/accepted INTEGER/session

@@ -2711,16 +2711,12 @@ def _consume_accepted_completion_recovery(
     _resolved_recovery_row = _resolve_completion_result_row_id(
         db, task_id, report, result_row_id,
     )
-    try:
-        _recovery_context = db.authority_policy_v2_completion_dispatch_context(
-            root_task_id=task_id, result_row_id=_resolved_recovery_row,
-        )
-        _recovery_kind = getattr(_recovery_context, "kind", None)
-    except Exception:
-        logger.exception(
-            "run_step %s: v2 recovery classification failed", task_id,
-        )
-        _recovery_kind = "foreign"
+    # Preserve the FIRST read error on this same selected result. Re-reading
+    # through the common entry could succeed and erase that unresolved fact.
+    _recovery_context = db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=task_id, result_row_id=_resolved_recovery_row,
+    )
+    _recovery_kind = getattr(_recovery_context, "kind", None)
     if _recovery_kind == "causal":
         # THR-229 C3d4b: the causal result R of a FINALIZED v2 continuation is
         # post-final bookkeeping only -- never the ordinary decision body.  Settle
@@ -2759,11 +2755,10 @@ def _consume_accepted_completion_recovery(
         # recovery transaction.  A missing job remains an ordinary fail-closed
         # outcome; it is not a recoverable partial receipt.
         if any(db.get_job_status(jid) is None for jid in deduped):
-            _consume_completion_report(
+            return _consume_completion_report(
                 orch, task_id, report, result_row_id=result_row_id,
                 reclaim_terminal_worktree=False,
             )
-            return
         transitioned = db.consume_accepted_blocked_task_completion_recovery(
             task_id=task_id, agent=agent, session_id=session_id,
             result_row_id=result_row_id, blocked_on_job_ids=deduped,
@@ -3126,13 +3121,11 @@ class _V2DecisionDispatchOutcome(NamedTuple):
 def _v2_report_binds(db, task_id, spending_result_id, report) -> bool:
     if spending_result_id is None:
         return False
-    try:
-        return db.authority_policy_v2_decision_result_report_binds(
-            root_task_id=task_id, spending_result_id=spending_result_id,
-            report=report,
-        )
-    except Exception:
-        return False
+    # A material read failure is unresolved, distinct from a genuine mismatch.
+    return db.authority_policy_v2_decision_result_report_binds(
+        root_task_id=task_id, spending_result_id=spending_result_id,
+        report=report,
+    )
 
 
 def _v2_decision_dispatch_gate(
@@ -3146,20 +3139,18 @@ def _v2_decision_dispatch_gate(
     ``admitted`` only for the uninterrupted winning claim (one consumer
     entry), and ``skip`` for every other outcome -- causal continuation replay,
     a duplicate/restarted/refused receipt, a foreign or malformed identity, a
-    drifted later report or a lookup failure -- after performing the
+    drifted later report -- after performing the
     interruption-refusal bookkeeping where required.  This is the production
     authority rule: reader absence or a mock's ``None`` is never ordinary
-    permission.
+    permission. Actual classification/material-read failures propagate to the
+    original caller, preserving its pending result and cold failure ownership.
     """
     db = orch._db
     skip = _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP)
-    try:
-        context = db.authority_policy_v2_completion_dispatch_context(
-            root_task_id=task_id, result_row_id=result_row_id,
-        )
-    except Exception:
-        logger.exception("run_step %s: v2 completion classification failed", task_id)
-        return skip
+    # Let the original read error reach the caller's existing failure owner.
+    context = db.authority_policy_v2_completion_dispatch_context(
+        root_task_id=task_id, result_row_id=result_row_id,
+    )
     kind = getattr(context, "kind", None)
     if kind == "no_v2":
         return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_ORDINARY)

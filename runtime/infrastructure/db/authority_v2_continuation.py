@@ -5598,6 +5598,93 @@ class AuthorityV2ContinuationMixin:
             expected_events=expected_events,
         )
 
+    def _v2_completion_attempts_authenticated_uncommitted(
+        self, *, root_task_id, attempts, envelopes,
+    ) -> bool:
+        """Validate retained J provenance before absence or terminal permission.
+
+        A continued J must name exactly one retained E with the SAME immutable
+        attempt tuple. Terminal permission additionally authenticates each E's
+        complete spent/decision proof below; this join alone grants no authority.
+        Supported pre-final and refusal histories use their existing stage
+        evidence, without re-evaluation or today's task/selector projection.
+        """
+        envelopes_by_attempt = {}
+        for envelope_row in envelopes:
+            try:
+                envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
+            except ValueError:
+                return False
+            envelopes_by_attempt.setdefault(envelope.attempt_id, []).append(envelope)
+        # Acquire the needed root history once outside validators' Boolean
+        # error mappings. SQL/decode/synchronizer errors remain the original
+        # unresolved read, rather than becoming a successful foreign skip.
+        history = self.get_audit_logs(root_task_id) if attempts else []
+        for row in attempts:
+            try:
+                attempt = self._authority_policy_v2_attempt_from_row(row)
+            except ValueError:
+                return False
+            if attempt.root_task_id != root_task_id:
+                return False
+            if attempt.finalization_state == "continued":
+                if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
+                    return False
+                matching = envelopes_by_attempt.get(attempt.attempt_id, [])
+                if len(matching) != 1:
+                    return False
+                if any(getattr(matching[0], key) != getattr(attempt, key) for key in (
+                    "attempt_id", "team", "root_task_id", "manager_agent",
+                    "manager_session_id", "result_id", "binding_id", "contract_id",
+                    "contract_version", "contract_digest", "release_id",
+                    "activation_id", "activation_epoch", "selector_id",
+                    "origin_boot_id", "owner_attempt_id",
+                )):
+                    return False
+            elif attempt.finalization_state == "unfinalized":
+                if not self._authenticate_v2_result_stage_audit_uncommitted(
+                    dict(row), AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+                    require_finalization=True, _history=history,
+                ):
+                    return False
+            else:
+                # Refusal may legitimately have been caused by missing earlier
+                # stage evidence. Authenticate its terminal stage, not a fresh
+                # attempt to complete the failed continuation.
+                candidate_row = self._conn.execute(
+                    "SELECT * FROM authority_policy_v2_candidates WHERE attempt_id=?",
+                    (attempt.attempt_id,),
+                ).fetchone()
+                candidate_id = None
+                if candidate_row is not None:
+                    try:
+                        candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+                    except ValueError:
+                        return False
+                    if any(getattr(candidate, key) != getattr(attempt, key) for key in (
+                        "attempt_id", "root_task_id", "manager_agent",
+                        "manager_session_id", "result_id",
+                    )):
+                        return False
+                    candidate_id = candidate.candidate_id
+                expected = self._v2_refusal_stage_payload(
+                    dict(row), candidate_id, attempt.refusal_code,
+                    attempt.finalization_state,
+                )
+                refusals = [
+                    event.get("payload") for event in history
+                    if event.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                    and event.get("agent") == attempt.manager_agent
+                    and isinstance(event.get("payload"), dict)
+                    and event["payload"].get("attempt_id") == attempt.attempt_id
+                    and event["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED
+                ]
+                if len(refusals) != 1 or not self._v2_json_type_sensitive_equal(
+                    refusals[0], expected,
+                ):
+                    return False
+        return True
+
     def _v2_root_lineage_live_uncommitted(
         self, *, root_task_id, dispatch_row, envelopes, attempts,
     ) -> bool:
@@ -5612,6 +5699,10 @@ class AuthorityV2ContinuationMixin:
         pointer keeps the lineage live and fail-closed, so a healthy later
         (ordinary) completion is never authorized by a corrupt proof.
         """
+        if not self._v2_completion_attempts_authenticated_uncommitted(
+            root_task_id=root_task_id, attempts=attempts, envelopes=envelopes,
+        ):
+            return True
         if dispatch_row is not None:
             try:
                 dispatch = self._authority_policy_v2_root_dispatch_from_row(
@@ -5642,8 +5733,31 @@ class AuthorityV2ContinuationMixin:
             if envelope_row is None:
                 return True
             try:
-                self._authority_policy_v2_envelope_from_row(envelope_row)
+                pointed_envelope = self._authority_policy_v2_envelope_from_row(envelope_row)
             except ValueError:
+                return True
+            # Historical receipt proof deliberately permits A after B. Prove
+            # the current D->N->E belongs to this captured root independently,
+            # rather than forcing every old receipt to equal today's pointer.
+            if (
+                dispatch.root_task_id != root_task_id
+                or notification.root_task_id != root_task_id
+                or pointed_envelope.root_task_id != root_task_id
+                or dispatch.generation_id != notification.notification_id
+                or dispatch.envelope_id != notification.envelope_id
+                or notification.envelope_id != pointed_envelope.envelope_id
+                or dispatch.expected_manager_agent != notification.manager_agent
+                or dispatch.expected_manager_session_id != notification.manager_session_id
+                or notification.manager_agent != pointed_envelope.manager_agent
+                or notification.manager_session_id != pointed_envelope.manager_session_id
+                or notification.candidate_id != pointed_envelope.candidate_id
+                or notification.result_id != pointed_envelope.result_id
+                or notification.selector_id != pointed_envelope.selector_id
+                or not any(
+                    row["envelope_id"] == pointed_envelope.envelope_id
+                    for row in envelopes
+                )
+            ):
                 return True
         for envelope_row in envelopes:
             try:
@@ -5749,11 +5863,14 @@ class AuthorityV2ContinuationMixin:
             (root_task_id,),
         ).fetchall()
         if not envelopes and dispatch_row is None:
-            # Provably no finalized v2 generation: either no v2 lineage at all,
-            # or only PRE-FINAL attempts/candidates (a live-owner duplicate
-            # loses the candidate claim there, and a refused attempt is
-            # terminal).  The ordinary path is unchanged in both cases.
-            return _ctx("no_v2")
+            # Missing E/D is absence only after retained J/stage provenance
+            # authenticates. A continued/malformed J with missing E is corrupt
+            # retained history, never ordinary permission or a repair request.
+            if self._v2_completion_attempts_authenticated_uncommitted(
+                root_task_id=root_task_id, attempts=attempts, envelopes=envelopes,
+            ):
+                return _ctx("no_v2")
+            return _ctx("foreign")
 
         row = None
         if self._v2_is_int(result_row_id):
@@ -6031,11 +6148,11 @@ class AuthorityV2ContinuationMixin:
         ).fetchone()
         if row is None:
             return False
-        try:
-            persisted = self._v2_completion_material_projection_from_row(row)
-            supplied = self._v2_completion_material_projection_from_report(report)
-        except Exception:
-            return False
+        # Expected malformed representations remain explicit None/sentinels.
+        # An actual read/projection failure must reach the original recovery
+        # owner; it is not an authenticated successful identity-conflict skip.
+        persisted = self._v2_completion_material_projection_from_row(row)
+        supplied = self._v2_completion_material_projection_from_report(report)
         if persisted is None or supplied is None:
             return False
         return self._v2_json_type_sensitive_equal(persisted, supplied)
