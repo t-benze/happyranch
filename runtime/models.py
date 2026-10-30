@@ -3335,6 +3335,9 @@ class AuthorityPolicyV2CompletionDispatchContext(BaseModel):
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
 
     kind: StrictStr
+    # Error custody only: the exact pre-final attempt from this ORIGINAL read.
+    # This grants no dispatch, stage, evaluation or recovery authority.
+    pre_final_identity: tuple[StrictStr, StrictStr, StrictStr, StrictInt] | None = None
     manager_agent: StrictStr | None = None
     manager_session_id: StrictStr | None = None
     causal_result_id: StrictInt | None = Field(

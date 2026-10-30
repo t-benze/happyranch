@@ -19,7 +19,7 @@ recovery and idempotency portions remain current.
 The real reaper preserves explicit pending/startup-held/lost-owner and selected
 human-operation outcomes before marker work. Both Database marker/cancellation
 writers renew the SAME original admission after their original RLock and blocking
-BEGIN waits and before mutation/COMMIT, retaining original map and queue identity
+BEGIN waits and before mutation/COMMIT, retaining original runtime, map and queue identity
 as well as state/gate/org/refs/epoch/loop. A same-member map replacement refuses;
 standalone construction is not a production bypass. Owed cleanup has no fresh
 readiness gate, and ambient BEGIN/SAVEPOINT is never committed or rolled back.
@@ -42,6 +42,24 @@ A failed sweep suppresses its ENTIRE root DB batch and retains its manifest;
 independently owed original child/worker joins remain. SOURCE only: behavior NOT
 RUN, PROOF NOT RUN, native UNKNOWN and operator acceptance UNVERIFIED. Existing
 resource, retired-unit, skipped-integration and daily-only E2E limits remain.
+
+The original completion classifier also retains the exact pre-final
+(task, manager, session, INTEGER result) identity from its already acquired
+attempt rows. Original reaper-family and accepted classifications retain their
+first selected tuple through the same forwards. The common consumer carries it to the hook solely for error
+custody: it grants no dispatch, evaluation, stage replay or continuation
+permission and performs no extra acquisition. A later family/attempt/binding/
+proof acquisition error cannot become ordinary escalation, diagnostic pending,
+or a successful reread. Known-v2 refusal and selected post-final calls propagate
+the same first cause/traceback through the store, both common/accepted forwards
+and the original periodic/cold failure owner. Acquired malformed/mixed/absent
+or semantic evidence and deliberate pending outcomes remain bounded; default
+legacy/v1 hook decisions and unselected publication target isolation remain.
+The selected post-final error route reaches existing settlement/publication
+transactions, retaining prior committed prefixes and each actual rollback
+secondary separately. Existing stage/final refusal bookkeeping cannot replace
+the first error. Native startup unsafe connection custody stays sticky beside
+the original cause; it does not replace it. No cleanup gains a readiness gate.
 
 ## Current startup observation extension — ROOT13137
 
@@ -103,8 +121,10 @@ settlement; the cold owner records recovery failure and suppresses the whole
 final batch. The causal accepted-recovery caller and both v2 hook post-final
 branches require the actual `POST_FINAL_RECONCILED` result before successful
 None/continued bookkeeping. Settlement refusal, a not-finalized/unexpected result
-in these already-final contexts or a reconciliation exception propagates the same
-`v2_pending`; missing/corrupt N/D and hidden/empty discovery cannot erase it. A
+in these already-final contexts propagates the same `v2_pending`;
+actual selected reconciliation acquisition/transaction exceptions instead retain
+the original cause/traceback through the failure owner. Missing/corrupt N/D and
+hidden/empty discovery cannot erase either observation. A
 real authenticated settled prefix remains positive when later queue publication
 is pending. A newly finalized v2 continuation is classified before the v1-only
 continued-root receipt bridge and never uses that bridge or repeats reconciliation

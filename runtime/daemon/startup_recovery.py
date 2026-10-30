@@ -1457,11 +1457,13 @@ def ordinary_admission_validation(owner: Any) -> Callable[[], None]:
     loop = None if gate is None else gate._loop
     org_map = None if state is None else state.orgs
     queue = None if state is None else state.queue
+    runtime = None if state is None else state.runtime
 
     def validate() -> None:
         if (owner._startup_state is not state or owner._startup_recovery is not gate
                 or owner._startup_org is not org
-                or state is not None and (state.orgs is not org_map or state.queue is not queue)
+                or state is not None and (state.orgs is not org_map or state.queue is not queue
+                                          or state.runtime is not runtime)
                 or org is not None and org._startup_admission_refs is not refs
                 or gate is not None and (gate.epoch != epoch or gate._loop is not loop)):
             raise StartupUnavailable("startup_attachment_changed")

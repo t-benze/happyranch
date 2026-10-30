@@ -11,6 +11,9 @@ into the orchestrator's manager-root escalation commit point. It defines:
   manager root's proposed escalation is committed. It returns
   ``"continue_same_root"`` (the named same-root permitted action was executed)
   or ``"escalate"`` (fail closed: the existing escalation path proceeds).
+  The selected original v2 completion instead propagates actual evidence and
+  transaction failures to its existing sweep/cold failure owner; acquired
+  semantic denials and deliberate v2 pending retain their bounded outcomes.
 
 Invariants (THR-181; see ``docs/agent-guides/orchestrator-contracts.md`` —
 ``Active team authority policy``):
@@ -3606,9 +3609,21 @@ def refuse_authority_policy_v2_pre_final_on_startup(
         observation.reader = reads
         try:
             targets = reads.discover()
-        except _V2StartupConnectionUnsafe:
+        except _V2StartupConnectionUnsafe as exc:
+            from runtime.orchestrator.run_step import _startup_sweep_owner
+            sweep = _startup_sweep_owner(orchestrator)
+            if sweep is not None:
+                sweep.fail(exc)
             raise
-        except Exception:
+        except Exception as exc:
+            from pydantic import ValidationError
+            observed = (exc.__cause__ if isinstance(exc, _V2StartupEvidenceUnavailable)
+                        and exc.__cause__ is not None else exc)
+            if not isinstance(observed, ValueError) or isinstance(observed, (json.JSONDecodeError, UnicodeError)) or (
+                observed.__cause__ is not None
+                and not isinstance(observed.__cause__, (ValidationError, KeyError, TypeError))
+            ):
+                raise
             reads.check()
             _v2_startup_failure_log("discovery_unavailable")
             reads.check()
@@ -3620,6 +3635,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
             if discovered.root_task_id in failed_roots:
                 continue
             tail_started = False
+            refusal_started = False
             try:
                 target, current_anchor = reads.exact(discovered)
                 if (
@@ -3645,13 +3661,14 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     failed_roots.add(discovered.root_task_id)
                     continue
                 if target.stage == "admitted" and orchestrator is not None:
+                    result_rows = db.get_task_results(target.root_task_id)
                     try:
                         from runtime.orchestrator.orchestrator import (
                             completion_report_from_result_row,
                         )
                         result = next(
                             (
-                                row for row in db.get_task_results(target.root_task_id)
+                                row for row in result_rows
                                 if row.get("id") == target.result_id
                                 and row.get("agent") == target.manager_agent
                                 and row.get("session_id") == target.manager_session_id
@@ -3671,8 +3688,8 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         )
                     except _V2StartupConnectionUnsafe:
                         raise
-                    except Exception:
-                        # Missing/unreadable causal evidence fails closed through
+                    except (ValueError, KeyError, TypeError):
+                        # Acquired malformed/missing causal evidence refuses through
                         # the existing refusal path below.
                         reads.invalidate()
                         reads.check()
@@ -3691,6 +3708,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         target.stage, "interrupted_pre_final",
                     )
                 )
+                refusal_started = True
                 outcome = reads.refuse(
                     root_task_id=target.root_task_id,
                     manager_agent=target.manager_agent,
@@ -3698,6 +3716,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     result_id=target.result_id,
                     refusal_code=refusal_code,
                 )
+                refusal_started = False
                 if outcome.status == "housekeeping_pending":
                     # A bounded writer disposition is not an exception/audit kind,
                     # but it still excludes every later same-root operation.
@@ -3788,13 +3807,32 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         reason="authority_v2_refusal",
                     )
                 reads.check()
-            except _V2StartupConnectionUnsafe:
+            except _V2StartupConnectionUnsafe as exc:
+                from runtime.orchestrator.run_step import _startup_sweep_owner
+                sweep = _startup_sweep_owner(orchestrator)
+                if sweep is not None:
+                    sweep.fail(exc)
                 if anchor is not None:
                     fenced_roots.add(discovered.root_task_id)
                     failed_roots.add(discovered.root_task_id)
                 raise
             except BaseException as exc:
                 reads.invalidate()
+                from pydantic import ValidationError
+                observed = (exc.__cause__ if isinstance(exc, _V2StartupEvidenceUnavailable)
+                            and exc.__cause__ is not None else exc)
+                unavailable = (
+                    not isinstance(observed, (ValueError, KeyError, TypeError))
+                    or isinstance(observed, (json.JSONDecodeError, UnicodeError))
+                    or observed.__cause__ is not None
+                    and not isinstance(observed.__cause__, (ValidationError, KeyError, TypeError))
+                )
+                if refusal_started or unavailable:
+                    # Preserve the writer/read E1 before a later check/log or
+                    # successful reread. Native unsafe custody remains sticky.
+                    if tail_started:
+                        reads._abort("postcommit_tail", exc)
+                    raise
                 if anchor is not None:
                     fenced_roots.add(discovered.root_task_id)
                     failed_roots.add(discovered.root_task_id)
@@ -3823,8 +3861,9 @@ def _v2_request_refusal(
     string-compatible structured output whose bounded fields distinguish a
     fresh terminal refusal from owner loss or an exact replay;
     ``v2_pending`` means safe attribution could not be established (or the
-    refusal transaction itself failed), so the prior durable state is preserved
-    and a later discovery unit owns the bounded obligation.
+    refusal transaction is intentionally held), so prior durable state remains.
+    Actual evidence/transaction errors escape unchanged to the original
+    completion/sweep owner, including separately retained cleanup failures.
     """
     db = orch._db
     if result_row_id is None:
@@ -3834,21 +3873,14 @@ def _v2_request_refusal(
         )
         return HOOK_V2_PENDING
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-    try:
-        outcome = AuthorityPolicyStore(db).finalize_v2_attempt_refusal(
-            root_task_id=task.id,
-            manager_agent=task.assigned_agent or agent,
-            manager_session_id=task.current_session_id or "",
-            result_id=result_row_id,
-            refusal_code=code,
-            owner_attempt_id=owner_attempt_id,
-        )
-    except Exception as exc:
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            error=f"v2 refusal housekeeping failed: {exc}",
-        )
-        return HOOK_V2_PENDING
+    outcome = AuthorityPolicyStore(db).finalize_v2_attempt_refusal(
+        root_task_id=task.id,
+        manager_agent=task.assigned_agent or agent,
+        manager_session_id=task.current_session_id or "",
+        result_id=result_row_id,
+        refusal_code=code,
+        owner_attempt_id=owner_attempt_id,
+    )
     status = getattr(outcome, "status", None)
     if status in ("refused", "owner_lost", "already_refused"):
         return AuthorityHookV2RefusalOutcome(
@@ -3883,10 +3915,7 @@ def _run_authority_hook_v2(
             orch, task, agent, result_row_id=None, owner_attempt_id=None,
             code="identity_mismatch",
         )
-    try:
-        attempt = db.get_authority_policy_v2_attempt_for_result(result_row_id)
-    except Exception:
-        attempt = None
+    attempt = db.get_authority_policy_v2_attempt_for_result(result_row_id)
     if attempt is None:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
@@ -3911,11 +3940,9 @@ def _run_authority_hook_v2(
     if attempt.finalization_state == "continued":
         # Already-final causal replay: existing exact post-final reconciliation,
         # never a stage replay or a second mint.
-        try:
-            post_final = reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-        except Exception:
-            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
-            return HOOK_V2_PENDING
+        post_final = reconcile_authority_policy_v2_post_final(
+            orch, root_task_id=task.id, _preserve_errors=True,
+        )
         if post_final != POST_FINAL_RECONCILED:
             return HOOK_V2_PENDING
         _record_hook_outcome(
@@ -3944,18 +3971,7 @@ def _run_authority_hook_v2(
     )
     for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
         forwarder = getattr(store, forwarder_name)
-        try:
-            outcome = forwarder(**stage_kwargs)
-        except Exception as exc:
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 stage {stage_name} raised: {exc}",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id,
-                code="interrupted_pre_final",
-            )
+        outcome = forwarder(**stage_kwargs)
         status = getattr(outcome, "status", None)
         if status == "refused":
             code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
@@ -3976,18 +3992,7 @@ def _run_authority_hook_v2(
                 code="interrupted_pre_final",
             )
     # ---- Final continuation (atomic; mints E/N/D and returns the root Pending) ----
-    try:
-        final = store.finalize_v2_continuation(**stage_kwargs)
-    except Exception as exc:
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            error=f"v2 final continuation raised: {exc}",
-        )
-        return _v2_request_refusal(
-            orch, task, agent, result_row_id=result_row_id,
-            owner_attempt_id=attempt.owner_attempt_id,
-            code="final_commit_failed",
-        )
+    final = store.finalize_v2_continuation(**stage_kwargs)
     final_status = getattr(final, "status", None)
     if final_status not in ("continued", "already_continued"):
         final_reason = getattr(final, "reason", None)
@@ -4006,11 +4011,9 @@ def _run_authority_hook_v2(
     # A committed final continuation is not undone (nor ordinarily escalated)
     # because settlement/publication remains pending.  The existing C3d4b
     # post-final seam owns exact settlement and authenticated publication.
-    try:
-        post_final = reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-    except Exception:
-        logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
-        return HOOK_V2_PENDING
+    post_final = reconcile_authority_policy_v2_post_final(
+        orch, root_task_id=task.id, _preserve_errors=True,
+    )
     # This context asserts a committed final continuation.  Not-finalized,
     # refused or unexpected outcomes cannot turn it into successful None at
     # the common consumer, nor authorize ordinary escalation or receipt work.
@@ -4029,11 +4032,16 @@ def run_authority_hook(
     reason: str,
     result_row_id: int | None,
     manager_self_evaluation: dict | None = None,
+    *, pre_final_identity: tuple[str, str, str, int] | None = None,
 ) -> str:
     """The pre-escalation authority hook. Returns ``"continue_same_root"``
     (the named same-root permitted action was executed and audited) or
     ``"escalate"`` (fail closed — the caller proceeds through the exact
-    existing escalation path). Never raises into the caller.
+    existing escalation path). Known v2 completion acquisition/transaction
+    errors escape to the existing caller's failure owner. Before family load,
+    only the exact pre-final identity retained by the ORIGINAL common classifier
+    selects this error route; legacy/v1/default callers retain their outcomes.
+    Acquired semantic denials and intentional v2 pending remain bounded.
 
     ``result_row_id`` is the immutable ``task_results`` row id whose
     CompletionReport produced this escalate decision — the causal event
@@ -4056,14 +4064,33 @@ def run_authority_hook(
     from runtime.orchestrator.active_authority_policy import (
         load_session_policy_binding, load_session_policy_snapshot, policy_from_release,
         SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
-        SELF_EVALUATION_CONTRACT_VERSION,
+        SELF_EVALUATION_CONTRACT_VERSION, ActiveAuthorityPolicyError,
     )
+    selected_v2 = pre_final_identity is not None
+    if selected_v2 and pre_final_identity != (
+        task.id, task.assigned_agent or agent, task.current_session_id or "", result_row_id,
+    ):
+        return HOOK_V2_PENDING  # Original owner/result changed; never recapture.
     try:
         session_binding = load_session_policy_binding(
             db=db, task_id=task.id, session_id=task.current_session_id or "",
             agent_name=agent,
         )
     except Exception as exc:
+        if selected_v2:
+            # Match the existing binding reader's acquired-denial partition.
+            # SQL/decode/lock/projection E1 escapes before logging or any
+            # ordinary escalation/audit/notification. Never reread it away.
+            if isinstance(exc, ActiveAuthorityPolicyError):
+                return HOOK_V2_PENDING
+            if isinstance(exc, ValueError):
+                from pydantic import ValidationError
+                if not isinstance(exc, (json.JSONDecodeError, UnicodeError)) and (
+                    exc.__cause__ is None
+                    or isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+                ):
+                    return HOOK_V2_PENDING
+            raise
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             policy=policy, error=f"policy family resolution failed: {exc}",
@@ -4074,6 +4101,8 @@ def run_authority_hook(
     )
     if binding_mode == "v2":
         return _run_authority_hook_v2(orch, task, agent, result_row_id)
+    if selected_v2:
+        return HOOK_V2_PENDING  # Acquired absent/mixed/replaced family, no v1 fallback.
     if binding_mode not in (None, "legacy_static", "db_release"):
         # Mixed/malformed/unknown family evidence: never a v1 fallback.
         _record_hook_outcome(
@@ -4712,7 +4741,7 @@ def run_authority_hook(
 def publish_authority_policy_v2_notifications(
     orch, queue, *, limit: int | None = 32, root_task_id: str | None = None,
     startup_observer: Callable[[str, object, BaseException | None], None] | None = None,
-    _publication=None, _startup_recovery=None,
+    _publication=None, _startup_recovery=None, _preserve_errors: bool = False,
 ) -> list[dict]:
     """Real publication entry for pending v2 continuation generations.
 
@@ -4737,7 +4766,9 @@ def publish_authority_policy_v2_notifications(
     audited failure path (the prior claim stays safely reclaimable).  An
     acknowledgement/audit failure leaves the exact lease/state replayable.
     This function performs no evaluation, no remint and no task mutation, and
-    returns bounded per-target receipts for the caller.
+    returns bounded per-target receipts for the caller. Only a selected original
+    completion passes _preserve_errors: that root retains actual failures through
+    its existing whole-sweep owner. Default discovery keeps per-target isolation.
     """
     from contextlib import nullcontext
     from runtime.daemon.queue import TaskQueue
@@ -4760,7 +4791,9 @@ def publish_authority_policy_v2_notifications(
             startup_observer(stage, value, cause)
     try:
         targets = db.list_authority_policy_v2_publication_targets()
-    except Exception as exc:  # discovery is read-only best effort
+    except Exception as exc:  # discovery is read-only best effort by default
+        if _preserve_errors:
+            raise
         observe("discovery", cause=exc)
         return [{"status": "discovery_failed", "error": type(exc).__name__}]
     observe("discovery", targets)
@@ -4790,8 +4823,11 @@ def publish_authority_policy_v2_notifications(
                 manager_agent=target.manager_agent,
                 manager_session_id=target.manager_session_id,
                 result_id=target.result_id,
+                **({"_preserve_errors": True} if _preserve_errors else {}),
             )
         except Exception as exc:
+            if _preserve_errors:
+                raise
             observe("claim", cause=exc)
             receipts.append({
                 "status": "publication_claim_failed",
@@ -4831,20 +4867,33 @@ def publish_authority_policy_v2_notifications(
                         result_id=target.result_id,
                         publication_attempt=claim.publication_attempt,
                         publisher_boot_id=claim.publisher_boot_id,
+                        **({"_preserve_errors": True} if _preserve_errors else {}),
                     )
                 )
-            except Exception as record_exc:
+            except BaseException as record_exc:
+                if not _preserve_errors and not isinstance(record_exc, Exception):
+                    raise
                 # A failure-bookkeeping write failure keeps the prior
                 # ``publishing`` lease safely reclaimable and must not abort
                 # the pass; the original queue error stays authoritative.
                 # Keep the original queue failure primary; record the actual
                 # secondary bookkeeping cause without replacing it.
-                exc.add_note("publication failure bookkeeping also failed: " + type(record_exc).__name__)
-                observe("failure", cause=exc)
+                if _preserve_errors:
+                    try:
+                        BaseException.__setattr__(exc, "_v2_publication_failure_secondary",
+                                                  (record_exc, record_exc.__traceback__))
+                    except BaseException:
+                        pass
+                else:
+                    exc.add_note("publication failure bookkeeping also failed: " + type(record_exc).__name__)
+                    observe("failure", cause=exc)
                 reason = type(record_exc).__name__
             else:
-                observe("failure", failure, exc)
+                if not _preserve_errors:
+                    observe("failure", failure, exc)
                 reason = failure.reason
+            if _preserve_errors:
+                raise
             receipts.append({
                 "status": "publish_failed",
                 "reason": reason,
@@ -4861,8 +4910,11 @@ def publish_authority_policy_v2_notifications(
                 result_id=target.result_id,
                 publication_attempt=claim.publication_attempt,
                 publisher_boot_id=claim.publisher_boot_id,
+                **({"_preserve_errors": True} if _preserve_errors else {}),
             )
         except Exception as exc:
+            if _preserve_errors:
+                raise
             observe("ack", cause=exc)
             # The raw tagged put already happened; the retained claim/lease
             # stays recoverable and reclaimable, so a restart republishes and
@@ -4893,7 +4945,7 @@ POST_FINAL_SETTLEMENT_REFUSED = "settlement_refused"
 
 
 def reconcile_authority_policy_v2_post_final(
-    orch, *, root_task_id: str,
+    orch, *, root_task_id: str, _preserve_errors: bool = False,
 ) -> str:
     """Settle the exact final receipt and publish the pending generation (C3d4b).
 
@@ -4936,7 +4988,10 @@ def reconcile_authority_policy_v2_post_final(
     other refusal returns ``settlement_refused`` with the prior residue and zero
     queue calls, and never an ordinary fallback.
 
-    Returns one of the bounded ``POST_FINAL_*`` status strings.
+    Returns bounded semantic ``POST_FINAL_*`` status strings. The selected
+    common/hook/accepted completion passes _preserve_errors: actual acquisition
+    or transaction E1 then escapes before logging, fallback rereads or publication.
+    A genuine already committed settlement remains a prefix, never undone.
     """
     db = getattr(orch, "_db", None)
     from runtime.infrastructure.database import Database
@@ -4947,6 +5002,8 @@ def reconcile_authority_policy_v2_post_final(
             root_task_id
         )
     except Exception:
+        if _preserve_errors:
+            raise
         logger.exception(
             "post-final %s: continuation envelope read failed", root_task_id,
         )
@@ -4960,6 +5017,8 @@ def reconcile_authority_policy_v2_post_final(
             result_id=envelope.result_id,
         )
     except Exception:
+        if _preserve_errors:
+            raise
         logger.exception(
             "post-final %s: settlement receipt identity read failed", root_task_id,
         )
@@ -5000,6 +5059,8 @@ def reconcile_authority_policy_v2_post_final(
             "settled", "already_settled_exact",
         )
     except Exception:
+        if _preserve_errors:
+            raise
         logger.exception(
             "post-final %s: continuation receipt settlement failed", root_task_id,
         )
@@ -5009,13 +5070,14 @@ def reconcile_authority_policy_v2_post_final(
         # is beyond that reader, so complete/authenticate its exact R4 step6
         # bookkeeping through the EXISTING admission-settlement writer.
         settled = _settle_admitted_generation_bookkeeping(
-            db, root_task_id=root_task_id,
+            db, root_task_id=root_task_id, _preserve_errors=_preserve_errors,
         )
     queue = getattr(orch, "_queue", None)
     receipts: list[dict] = []
     if queue is not None:
         receipts = publish_authority_policy_v2_notifications(
             orch, queue, root_task_id=root_task_id, limit=None,
+            _preserve_errors=_preserve_errors,
         )
     if not settled and committed_receipt:
         # The exact receipt is already durably ``callback_consumed`` but the
@@ -5034,7 +5096,9 @@ def reconcile_authority_policy_v2_post_final(
     return POST_FINAL_RECONCILED if settled else POST_FINAL_SETTLEMENT_REFUSED
 
 
-def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
+def _settle_admitted_generation_bookkeeping(
+    db, *, root_task_id: str, _preserve_errors: bool = False,
+) -> bool:
     """Complete exact admitted/settled generation bookkeeping (C3d4b).
 
     Reached only when the transition-only receipt settlement reader could not
@@ -5053,6 +5117,8 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
     try:
         dispatch = db.get_authority_policy_v2_root_dispatch(root_task_id)
     except Exception:
+        if _preserve_errors:
+            raise
         logger.exception("post-final %s: root dispatch read failed", root_task_id)
         return False
     if dispatch is None or getattr(dispatch, "state", None) != "admitted":
@@ -5065,6 +5131,8 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
             generation_id
         )
     except Exception:
+        if _preserve_errors:
+            raise
         logger.exception(
             "post-final %s: admitted generation read failed", root_task_id,
         )
@@ -5086,8 +5154,11 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
             result_id=notification.result_id,
             generation_id=generation_id,
             next_session_id=next_session_id,
+            **({"_preserve_errors": True} if _preserve_errors else {}),
         )
     except Exception:
+        if _preserve_errors:
+            raise
         logger.exception(
             "post-final %s: admitted generation settlement failed", root_task_id,
         )

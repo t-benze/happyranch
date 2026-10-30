@@ -3927,7 +3927,7 @@ pre-final evidence that caused refusal is never required anew. Parent wake,
 notification and cleanup remain with their original owner.
 
 Both actual writers receive the SAME originally captured ordinary validator.
-It retains original state/gate/org/refs/epoch/listener-loop/map/queue identity,
+It retains original state/runtime/gate/org/refs/epoch/listener-loop/map/queue identity,
 including refusal of a same-member replacement map, and renews inside the
 original synchronized RLock, after blocking BEGIN, before mutation and COMMIT.
 Readiness never gates independently owed rollback or native cleanup. Ambient
@@ -3944,6 +3944,24 @@ admission/audit work; original independently owed child/worker joins still run.
 This correction supplies SOURCE dispositions only, with behavior NOT RUN and
 PROOF NOT RUN. Historical focused test pointers above are not execution grants;
 retired units, skipped integration and daily-only E2E limits remain controlling.
+
+The original completion classifier also retains the exact pre-final
+(task, manager, session, INTEGER result) identity from its already acquired
+attempt rows. Original reaper-family and accepted classifications retain their
+first selected tuple through the same forwards. The common consumer carries it to the hook solely for error
+custody: it grants no dispatch, evaluation, stage replay or continuation
+permission and performs no extra acquisition. A later family/attempt/binding/
+proof acquisition error cannot become ordinary escalation, diagnostic pending,
+or a successful reread. Known-v2 refusal and selected post-final calls propagate
+the same first cause/traceback through the store, both common/accepted forwards
+and the original periodic/cold failure owner. Acquired malformed/mixed/absent
+or semantic evidence and deliberate pending outcomes remain bounded; default
+legacy/v1 hook decisions and unselected publication target isolation remain.
+The selected post-final error route reaches existing settlement/publication
+transactions, retaining prior committed prefixes and each actual rollback
+secondary separately. Existing stage/final refusal bookkeeping cannot replace
+the first error. Native startup unsafe connection custody stays sticky beside
+the original cause; it does not replace it. No cleanup gains a readiness gate.
 
 Issue #918 historically tightened that contract without changing the schema by
 accepting exact shipped `agent_enrollments` layouts. Founder THR-229 seq351
@@ -4124,8 +4142,10 @@ distinguished from settlement that was never authenticated.
 The genuine causal accepted-recovery caller and both v2 hook post-final branches
 consume that bounded outcome. Only `POST_FINAL_RECONCILED` keeps their successful
 None/`v2_continued` result; `settlement_refused`, unexpected/not-finalized results
-in these already-final contexts, and reconciliation exceptions return the
-existing explicit `v2_pending` negative. Both common-wrapper branches forward it
+in these already-final contexts return the existing explicit `v2_pending`
+negative. Actual selected reconciliation acquisition/transaction exceptions
+propagate their original cause/traceback to the same failure owner; they cannot
+become pending or be reread into success. Both common-wrapper branches forward it
 before admitted-decision acknowledgement, accepted recovery forwards it before
 receipt/effect settlement, and the cold owner records recovery failure and
 suppresses the ENTIRE final worktree batch. Missing/corrupt N/D or hidden/empty

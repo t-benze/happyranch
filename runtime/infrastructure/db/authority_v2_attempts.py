@@ -647,15 +647,22 @@ class _V2StartupReads:
                 or (phases.begin_attempted and not (phases.committed or phases.rolled_back))
             ):
                 causes = (() if error is None else (error,))
-                self._abort("refusal_transaction", *causes, *phases.cleanup_errors)
-            try:
-                self.check()
-            except _V2StartupConnectionUnsafe as exc:
-                if error is not None:
-                    exc.causes = (error, *exc.causes)
-                raise
+                try:
+                    self._abort("refusal_transaction", *causes, *phases.cleanup_errors)
+                except _V2StartupConnectionUnsafe:
+                    if error is None:
+                        raise
             if error is not None:
+                # Sticky unsafe connection custody survives separately. It must
+                # not replace the writer's original E1/cause/traceback with a
+                # wrapper after an actual rollback/COMMIT uncertainty.
+                if self.unsafe is not None:
+                    try:
+                        BaseException.__setattr__(error, "_v2_refusal_startup_unsafe", self.unsafe)
+                    except BaseException:
+                        pass
                 raise error.with_traceback(error.__traceback__)
+            self.check()
             return outcome
 
 
@@ -692,8 +699,14 @@ class AuthorityV2AttemptsMixin:
             )
             if binding is None:
                 return None
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except ValueError:
+        except ValueError as exc:
+            if isinstance(exc, (json.JSONDecodeError, UnicodeError)) or (
+                exc.__cause__ is not None
+                and not isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+            ):
+                raise
+            return None
+        if not self._v2_session_binding_authenticated_uncommitted(binding):
             return None
         joined = (
             "binding_id", "team", "root_task_id", "manager_agent", "manager_session_id",
@@ -1199,14 +1212,11 @@ class AuthorityV2AttemptsMixin:
         """
         if self._v2_live_attempt_owners.get(attempt_id) != owner_attempt_id:
             return False
-        try:
-            row = self._conn.execute(
-                """SELECT owner_attempt_id, origin_boot_id
-                     FROM authority_policy_v2_attempts WHERE attempt_id=?""",
-                (attempt_id,),
-            ).fetchone()
-        except Exception:
-            return False
+        row = self._conn.execute(
+            """SELECT owner_attempt_id, origin_boot_id
+                 FROM authority_policy_v2_attempts WHERE attempt_id=?""",
+            (attempt_id,),
+        ).fetchone()
         if row is None:
             return False
         return (
@@ -1587,9 +1597,7 @@ class AuthorityV2AttemptsMixin:
         )
         if binding is None:
             return "identity_mismatch", None
-        try:
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except Exception:
+        if not self._v2_session_binding_authenticated_uncommitted(binding):
             return "identity_mismatch", None
         if (
             binding.binding_id != attempt.binding_id
@@ -1884,11 +1892,18 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED, poison=False,
             )
         now = _now().isoformat()
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             observation = capture_authority_policy_v2_schema_observation(self)
             if observation is None:
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="claim_failed",
@@ -1903,7 +1918,7 @@ class AuthorityV2AttemptsMixin:
                 schema_observation=observation,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_failed",
@@ -1915,12 +1930,27 @@ class AuthorityV2AttemptsMixin:
                 )
             self._conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="claim_failed", origin_boot_id=origin_boot_id,
-            )
+        except BaseException as primary:
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_stage_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="claim_failed", origin_boot_id=origin_boot_id,
+                )
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, "_v2_stage_refusal_secondary",
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
             raise
 
     def _authenticate_v2_candidate_pin_joins_uncommitted(
@@ -2369,6 +2399,13 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED, poison=False,
             )
         now = _now().isoformat()
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_authority_policy_v2_candidate_claim_uncommitted(
@@ -2378,7 +2415,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_audit_missing",
@@ -2391,14 +2428,29 @@ class AuthorityV2AttemptsMixin:
                 )
             self._conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="claim_audit_missing",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
-                origin_boot_id=origin_boot_id,
-            )
+        except BaseException as primary:
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_stage_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="claim_audit_missing",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, "_v2_stage_refusal_secondary",
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
             raise
 
     # -- THR-229 checkpoint C3c: the four pre-final evaluation and single
@@ -2599,6 +2651,13 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED, poison=False,
             )
         now = _now().isoformat()
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             outcome = self._evaluate_authority_policy_v2_candidate_uncommitted(
@@ -2608,7 +2667,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "evaluation_failed",
@@ -2621,14 +2680,29 @@ class AuthorityV2AttemptsMixin:
                 )
             self._conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="evaluation_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
-                origin_boot_id=origin_boot_id,
-            )
+        except BaseException as primary:
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_stage_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="evaluation_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, "_v2_stage_refusal_secondary",
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
             raise
 
     def _audit_evaluation_uncommitted(
@@ -2755,6 +2829,13 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED, poison=False,
             )
         now = _now().isoformat()
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_evaluation_uncommitted(
@@ -2764,7 +2845,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "evaluation_audit_missing",
@@ -2777,14 +2858,29 @@ class AuthorityV2AttemptsMixin:
                 )
             self._conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="evaluation_audit_missing",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
-                origin_boot_id=origin_boot_id,
-            )
+        except BaseException as primary:
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_stage_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="evaluation_audit_missing",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, "_v2_stage_refusal_secondary",
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
             raise
 
     def _consume_authority_policy_v2_candidate_uncommitted(
@@ -2885,6 +2981,13 @@ class AuthorityV2AttemptsMixin:
                 code="transaction_owned",
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED, poison=False,
             )
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             outcome = self._consume_authority_policy_v2_candidate_uncommitted(
@@ -2894,7 +2997,7 @@ class AuthorityV2AttemptsMixin:
                 max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "consume_failed",
@@ -2907,14 +3010,29 @@ class AuthorityV2AttemptsMixin:
                 )
             self._conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="consume_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
-                origin_boot_id=origin_boot_id,
-            )
+        except BaseException as primary:
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_stage_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="consume_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, "_v2_stage_refusal_secondary",
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
             raise
 
     def _audit_consumption_uncommitted(
@@ -3045,6 +3163,13 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED, poison=False,
             )
         now = _now().isoformat()
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_consumption_uncommitted(
@@ -3054,7 +3179,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "consume_failed",
@@ -3067,14 +3192,29 @@ class AuthorityV2AttemptsMixin:
                 )
             self._conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="consume_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
-                origin_boot_id=origin_boot_id,
-            )
+        except BaseException as primary:
+            if not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_stage_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="consume_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException as secondary:
+                try:
+                    BaseException.__setattr__(primary, "_v2_stage_refusal_secondary",
+                                              (secondary, secondary.__traceback__))
+                except BaseException:
+                    pass
             raise
 
     @_synchronized
@@ -3390,19 +3530,17 @@ class AuthorityV2AttemptsMixin:
         self, attempt_row: dict, *, _history: list[dict] | None = None,
     ) -> str | None:
         """Return the closed code of exactly one authentic failed-stage obligation."""
-        try:
-            rows = [
-                row for row in (
-                    self.get_audit_logs(attempt_row["root_task_id"])
-                    if _history is None else _history
-                )
-                if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-        except Exception:
-            return None
+        # Unavailable history is not an acquired absence of an obligation.
+        rows = [
+            row for row in (
+                self.get_audit_logs(attempt_row["root_task_id"])
+                if _history is None else _history
+            )
+            if row.get("action") == AUTHORITY_POLICY_V2_HOUSEKEEPING_OBLIGATION_ACTION
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+        ]
         if len(rows) != 1:
             return None
         payload = rows[0]["payload"]
@@ -3611,9 +3749,7 @@ class AuthorityV2AttemptsMixin:
             ):
                 _rollback()
                 return _pending("identity_mismatch")
-            try:
-                self._authenticate_v2_session_binding_uncommitted(binding)
-            except Exception:
+            if not self._v2_session_binding_authenticated_uncommitted(binding):
                 _rollback()
                 return _pending("identity_mismatch")
 
@@ -3980,7 +4116,7 @@ class AuthorityV2AttemptsMixin:
                 receipt_settled=settled,
                 task_disposition=task_disposition,
             )
-        except Exception as primary:
+        except BaseException as primary:
             if not rollback_attempted:
                 try:
                     _rollback()
@@ -4013,14 +4149,21 @@ class AuthorityV2AttemptsMixin:
                 and self._v2_live_attempt_owners.get(attempt.attempt_id)
                 == owner_attempt_id
             ):
-                self._mark_v2_refusal_failure_authority(
-                    attempt.attempt_id, owner_attempt_id,
-                )
-                self._record_v2_failed_stage_obligation(
-                    attempt_id=attempt.attempt_id,
-                    owner_attempt_id=owner_attempt_id, code=refusal_code,
-                )
-                self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
+                try:
+                    self._mark_v2_refusal_failure_authority(
+                        attempt.attempt_id, owner_attempt_id,
+                    )
+                    self._record_v2_failed_stage_obligation(
+                        attempt_id=attempt.attempt_id,
+                        owner_attempt_id=owner_attempt_id, code=refusal_code,
+                    )
+                    self._forget_v2_live_owner(attempt.attempt_id, owner_attempt_id)
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_refusal_failure_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
             raise
 
     def _v2_housekeeping_target_from_row(

@@ -267,6 +267,9 @@ def _sweep_org_zombies(
                         validate()
                         consumption = _consume_zombie_fingerprint(
                             db, task_id, fingerprint, t, orchestrator,
+                            pre_final_identity=(task_id, agent, t.current_session_id,
+                                                fingerprint["id"])
+                            if policy_family == "v2" else None,
                         )
                         from runtime.orchestrator.run_step import _HumanFailedRecoveryOperation
                         if isinstance(consumption, _HumanFailedRecoveryOperation) or consumption in (
@@ -407,6 +410,7 @@ def _consume_zombie_fingerprint(
     fingerprint: dict,
     task,
     orchestrator: Orchestrator,
+    *, pre_final_identity: tuple[str, str, str, int] | None = None,
 ) -> object:
     """Consume an orphaned task_result discovered by the ongoing zombie reaper.
 
@@ -436,6 +440,7 @@ def _consume_zombie_fingerprint(
         recovery_reentry=True,
         reclaim_terminal_worktree=False,
         after_human_recovery=bookkeeping,
+        pre_final_identity=pre_final_identity,
     )
 
 

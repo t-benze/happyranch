@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 from runtime.infrastructure.database import (
     AttachmentCorrectionStopped, Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
 )
-from runtime.infrastructure.db.authority_v2_attempts import _V2StartupConnectionUnsafe
+from runtime.infrastructure.db.authority_v2_attempts import _V2StartupConnectionUnsafe, _V2StartupEvidenceUnavailable
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.executors import _meaningful_stderr
@@ -229,9 +229,10 @@ class _StartupSweepOwner:
 
     def fail(self, cause: BaseException) -> None:
         unsafe = cause if isinstance(cause, _V2StartupConnectionUnsafe) else None
-        if unsafe is not None:
-            cause = next((original for original in unsafe.causes
-                          if not isinstance(original, Exception)), cause)
+        if unsafe is not None and unsafe.causes:
+            cause = unsafe.causes[0]  # Original E1 precedes cleanup/cancellation E2.
+        if isinstance(cause, _V2StartupEvidenceUnavailable) and cause.__cause__ is not None:
+            cause = cause.__cause__
         with self._lock:
             self.delivery['teardown_incomplete'] = True
             if self._first is None:
@@ -527,7 +528,10 @@ class _StartupSweepOwner:
                 except BaseException:
                     pass
             if self._first_chain is not None:
-                raise cause from self._first_chain
+                try:
+                    BaseException.__setattr__(cause, "_startup_sweep_unsafe", self._first_chain)
+                except BaseException:
+                    pass
             raise cause
 
 
@@ -2717,6 +2721,7 @@ def _consume_accepted_completion_recovery(
         root_task_id=task_id, result_row_id=_resolved_recovery_row,
     )
     _recovery_kind = getattr(_recovery_context, "kind", None)
+    original_v2_identity = getattr(_recovery_context, "pre_final_identity", None)
     if _recovery_kind == "causal":
         # THR-229 C3d4b: the causal result R of a FINALIZED v2 continuation is
         # post-final bookkeeping only -- never the ordinary decision body.  Settle
@@ -2730,11 +2735,9 @@ def _consume_accepted_completion_recovery(
             HOOK_V2_PENDING, POST_FINAL_RECONCILED,
             reconcile_authority_policy_v2_post_final,
         )
-        try:
-            post_final = reconcile_authority_policy_v2_post_final(orch, root_task_id=task_id)
-        except Exception:
-            logger.exception("run_step %s: v2 post-final recovery failed", task_id)
-            return HOOK_V2_PENDING
+        post_final = reconcile_authority_policy_v2_post_final(
+            orch, root_task_id=task_id, _preserve_errors=True,
+        )
         if post_final != POST_FINAL_RECONCILED:
             return HOOK_V2_PENDING
         return
@@ -2742,6 +2745,7 @@ def _consume_accepted_completion_recovery(
         return _consume_completion_report(
             orch, task_id, report, result_row_id=_resolved_recovery_row,
             reclaim_terminal_worktree=False,
+            pre_final_identity=original_v2_identity,
         )
     if _is_human_failed_recovery(orch, current, report):
         return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id)
@@ -2758,6 +2762,7 @@ def _consume_accepted_completion_recovery(
             return _consume_completion_report(
                 orch, task_id, report, result_row_id=result_row_id,
                 reclaim_terminal_worktree=False,
+                pre_final_identity=original_v2_identity,
             )
         transitioned = db.consume_accepted_blocked_task_completion_recovery(
             task_id=task_id, agent=agent, session_id=session_id,
@@ -2879,6 +2884,7 @@ def _consume_accepted_completion_recovery(
             recovery_owner=(agent, session_id) if current.task_type == "task" else None,
             recovery_result_id=result_row_id if current.task_type == "task" else None,
             reclaim_terminal_worktree=False,
+            pre_final_identity=original_v2_identity,
         )
         if isinstance(outcome, str):
             # Accepted transport is not effect settlement. Preserve the actual
@@ -2898,14 +2904,10 @@ def _consume_accepted_completion_recovery(
             # causal continuation is already reconciled by that hook: do not
             # run the v1-only receipt bridge, or repeat post-final work and lose
             # a genuine settled prefix merely because publication is pending.
-            try:
-                continued_context = db.authority_policy_v2_completion_dispatch_context(
-                    root_task_id=task_id, result_row_id=_resolved_recovery_row,
-                )
-                continued_kind = getattr(continued_context, "kind", None)
-            except Exception:
-                logger.exception("run_step %s: continued recovery classification failed", task_id)
-                return "v2_pending"
+            continued_context = db.authority_policy_v2_completion_dispatch_context(
+                root_task_id=task_id, result_row_id=_resolved_recovery_row,
+            )
+            continued_kind = getattr(continued_context, "kind", None)
             if continued_kind == "causal":
                 return
             if continued_kind != "no_v2":
@@ -3116,6 +3118,7 @@ class _V2DecisionDispatchOutcome(NamedTuple):
     kind: str
     manager_agent: str | None = None
     causal_result_id: int | None = None
+    pre_final_identity: tuple[str, str, str, int] | None = None
 
 
 def _v2_report_binds(db, task_id, spending_result_id, report) -> bool:
@@ -3153,7 +3156,10 @@ def _v2_decision_dispatch_gate(
     )
     kind = getattr(context, "kind", None)
     if kind == "no_v2":
-        return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_ORDINARY)
+        return _V2DecisionDispatchOutcome(
+            _V2_DECISION_DISPATCH_ORDINARY,
+            pre_final_identity=getattr(context, "pre_final_identity", None),
+        )
     if kind == "later":
         # A genuine later result on a FULLY TERMINAL v2 lineage is ordinary ONLY
         # when the supplied report IS that exact result's persisted material
@@ -3163,7 +3169,10 @@ def _v2_decision_dispatch_gate(
         if not _v2_report_binds(db, task_id, result_row_id, report):
             logger.warning("run_step %s: v2 later report identity conflict", task_id)
             return skip
-        return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_ORDINARY)
+        return _V2DecisionDispatchOutcome(
+            _V2_DECISION_DISPATCH_ORDINARY,
+            pre_final_identity=getattr(context, "pre_final_identity", None),
+        )
     if kind == "causal":
         # The causal result R of a v2 attempt is continuation bookkeeping only:
         # it never spends, remints, evaluates or re-enters the normal effect.
@@ -3200,6 +3209,7 @@ def _v2_decision_dispatch_gate(
         if getattr(claim, "status", None) == "claimed":
             return _V2DecisionDispatchOutcome(
                 _V2_DECISION_DISPATCH_ADMITTED, manager_agent, causal_result_id,
+                getattr(context, "pre_final_identity", None),
             )
         return skip
     if kind == "receipt":
@@ -3221,6 +3231,7 @@ def _v2_decision_dispatch_gate(
             if getattr(claim, "status", None) == "claimed":
                 return _V2DecisionDispatchOutcome(
                     _V2_DECISION_DISPATCH_ADMITTED, manager_agent, causal_result_id,
+                    getattr(context, "pre_final_identity", None),
                 )
             return skip
         if state == "claimed":
@@ -3255,6 +3266,7 @@ def _consume_completion_report(
     recovery_result_id: int | None = None,
     reclaim_terminal_worktree: bool = True,
     after_human_recovery: Callable[[], None] | None = None,
+    pre_final_identity: tuple[str, str, str, int] | None = None,
 ) -> _HumanFailedRecoveryOperation | str | None:
     """Guard the common consumer with the v2 decision-dispatch receipt.
 
@@ -3307,6 +3319,10 @@ def _consume_completion_report(
     outcome = _v2_decision_dispatch_gate(orch, task_id, report, resolved_row_id, agent)
     if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
         return
+    # A reaper/accepted caller's first selection cannot be replaced by this
+    # later classification. This tuple selects error custody, never permission.
+    if pre_final_identity is None:
+        pre_final_identity = outcome.pre_final_identity
     if outcome.kind == _V2_DECISION_DISPATCH_ORDINARY:
         if _is_human_failed_recovery(orch, task, report):
             accepted = db.selected_human_leaf_recovery_result(task_id=task_id, agent=agent,
@@ -3318,6 +3334,7 @@ def _consume_completion_report(
                     bookkeeping=after_human_recovery)
         return _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
+            pre_final_identity=pre_final_identity,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
             **reclaim_kwargs,
@@ -3330,11 +3347,12 @@ def _consume_completion_report(
     try:
         body_outcome = _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
+            pre_final_identity=pre_final_identity,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
             recovery_result_id=recovery_result_id,
             **reclaim_kwargs,
         )
-    except BaseException:
+    except BaseException as primary:
         # On exception, attempt the prescribed refusal with that SAME causal
         # identity; already committed effects are preserved.
         try:
@@ -3347,8 +3365,12 @@ def _consume_completion_report(
                     "run_step %s: v2 decision refusal not settled (%s)",
                     task_id, getattr(refusal, "reason", None),
                 )
-        except Exception:  # pragma: no cover - fail-closed defensive
-            logger.exception("run_step %s: v2 decision refusal failed", task_id)
+        except BaseException as secondary:
+            try:
+                BaseException.__setattr__(primary, "_v2_dispatch_refusal_secondary",
+                                          (secondary, secondary.__traceback__))
+            except BaseException:
+                pass
         raise
     if isinstance(body_outcome, str):
         # A retained pending obligation is not an applied decision. Forward the
@@ -3379,6 +3401,7 @@ def _consume_completion_report_body(
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
     reclaim_terminal_worktree: bool = True,
+    pre_final_identity: tuple[str, str, str, int] | None = None,
 ) -> str | None:
     """Consume a persisted CompletionReport and apply its transition.
 
@@ -3598,7 +3621,9 @@ def _consume_completion_report_body(
         # team (Engineering v1). The hook returns "continue_same_root" only
         # when the policy's narrow continue clause matched and the named
         # same-root permitted action was executed + audited atomically;
-        # EVERY other outcome — ambiguity, malformed/missing/unknown output,
+        # Selected original v2 acquisition/transaction errors escape to the
+        # existing sweep/cold failure owner before ordinary escalation effects.
+        # For the legacy/v1 hook, every other outcome — ambiguity, malformed/missing/unknown output,
         # timeout/provider error, policy/team/digest mismatch, audit failure,
         # cancellation, exhausted limits, stale/CAS conflict, restart-
         # incomplete state, ineligibility, or any successor/supersede/
@@ -3608,6 +3633,7 @@ def _consume_completion_report_body(
         hook_outcome = run_authority_hook(
             orch, task, agent, reason, result_row_id,
             manager_self_evaluation=report.manager_self_evaluation,
+            pre_final_identity=pre_final_identity,
         )
         if hook_outcome == "continue_same_root":
             # Same-root continuation already executed (audited): the root
