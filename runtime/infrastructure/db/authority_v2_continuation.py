@@ -224,7 +224,7 @@ class AuthorityV2ContinuationMixin:
             envelope = AuthorityPolicyV2ContinueEnvelope.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 envelope has a corrupt canonical payload") from exc
         if envelope.envelope_id != row["envelope_id"]:
             raise ValueError("authority v2 envelope identity mismatch")
@@ -240,7 +240,7 @@ class AuthorityV2ContinuationMixin:
             notification = AuthorityPolicyV2RecoveryNotification.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 notification has a corrupt canonical payload") from exc
         if notification.notification_id != row["notification_id"]:
             raise ValueError("authority v2 notification identity mismatch")
@@ -256,7 +256,7 @@ class AuthorityV2ContinuationMixin:
             dispatch = AuthorityPolicyV2RootDispatch.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 root dispatch has a corrupt canonical payload") from exc
         if dispatch.root_task_id != row["root_task_id"]:
             raise ValueError("authority v2 root dispatch identity mismatch")
@@ -348,22 +348,21 @@ class AuthorityV2ContinuationMixin:
         comparison must fail closed on it instead of observing an apparent
         absence.
         """
-        try:
-            rows = []
-            for row in self.get_audit_logs(root_task_id):
-                if row.get("action") != action or row.get("agent") != manager_agent:
-                    continue
-                payload = row.get("payload")
-                if not isinstance(payload, dict):
-                    if include_opaque:
-                        rows.append(row)
-                    continue
-                if attempt_id is not None and payload.get("attempt_id") != attempt_id:
-                    continue
-                rows.append(row)
-            return rows
-        except Exception:
-            return None
+        # A successfully read opaque/mismatched payload is evidence to reject.
+        # SQL, decode and synchronizer errors are not an empty/sentinel read.
+        rows = []
+        for row in self.get_audit_logs(root_task_id):
+            if row.get("action") != action or row.get("agent") != manager_agent:
+                continue
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                if include_opaque:
+                    rows.append(row)
+                continue
+            if attempt_id is not None and payload.get("attempt_id") != attempt_id:
+                continue
+            rows.append(row)
+        return rows
 
     @classmethod
     def _v2_identity_observation(cls, payload, field: str, expected, kind: str) -> str:
@@ -773,6 +772,29 @@ class AuthorityV2ContinuationMixin:
             "generation_id": generation_id,
         }
 
+    def _v2_session_binding_authenticated_uncommitted(
+        self, binding: AuthorityPolicyV2SessionBinding,
+    ) -> bool:
+        """Keep binding rejection separate from unavailable pinned history.
+
+        The existing authenticator owns the COMPLETE release/activation/selector
+        proof. Its explicit ValueErrors reject successfully read missing/mixed
+        history. Row validators also wrap expected model/key/type failures in
+        ValueError. SQL/lock faults and actual JSON acquisition/decode failures
+        are unavailable observations and must escape even when a decoder has
+        chained them under ValueError; never retry them as terminal false/skip.
+        """
+        try:
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except ValueError as exc:
+            if isinstance(exc, (json.JSONDecodeError, UnicodeError)) or (
+                exc.__cause__ is not None
+                and not isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+            ):
+                raise
+            return False
+        return True
+
     def _authenticate_v2_post_final_evidence_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, require_dispatch_generation: bool = True,
@@ -841,9 +863,7 @@ class AuthorityV2ContinuationMixin:
         )
         if binding is None:
             return "identity_mismatch", None
-        try:
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except Exception:
+        if not self._v2_session_binding_authenticated_uncommitted(binding):
             return "identity_mismatch", None
         if (
             binding.binding_id != attempt.binding_id
@@ -1615,7 +1635,7 @@ class AuthorityV2ContinuationMixin:
         raw_decision = result_row["decision_json"]
         try:
             decision = json.loads(raw_decision) if raw_decision else None
-        except Exception:
+        except (TypeError, ValueError):
             decision = None
         return {
             "task_id": root_task_id,
@@ -1663,7 +1683,7 @@ class AuthorityV2ContinuationMixin:
             report = completion_report_from_result_row(
                 root_task_id, dict(result_row), fallback_agent=manager_agent,
             )
-        except Exception:
+        except ValidationError:
             return None
         return {
             **report.model_dump(),
@@ -4345,14 +4365,16 @@ class AuthorityV2ContinuationMixin:
     def _v2_spending_report_digest(cls, row) -> str | None:
         """Durable exact report identity digest, or ``None`` when underivable.
 
-        A failure to derive the normalized identity fails closed: the caller
-        treats it as a malformed/absent report, never as an ordinary path.
+        A successfully projected but unrepresentable report returns None,
+        never ordinary permission. Actual projection failures propagate to the
+        original owner instead of becoming a terminal false/skip.
         """
+        # Projection errors are unavailable evidence. Only a successfully
+        # projected but unrepresentable JSON value is a malformed report.
+        identity = cls._v2_spending_report_identity(row)
         try:
-            return authority_policy_v2_sha256(
-                cls._v2_spending_report_identity(row)
-            )
-        except Exception:
+            return authority_policy_v2_sha256(identity)
+        except (TypeError, ValueError):
             return None
 
     def _authenticate_v2_spending_result_uncommitted(
@@ -4392,7 +4414,7 @@ class AuthorityV2ContinuationMixin:
             return None
         try:
             decision = json.loads(raw)
-        except Exception:
+        except (TypeError, ValueError):
             return None
         if not isinstance(decision, dict):
             return None
@@ -5037,9 +5059,7 @@ class AuthorityV2ContinuationMixin:
         )
         if binding2 is None:
             return "identity_mismatch", None
-        try:
-            self._authenticate_v2_session_binding_uncommitted(binding2)
-        except Exception:
+        if not self._v2_session_binding_authenticated_uncommitted(binding2):
             return "identity_mismatch", None
         if (
             binding2.team != candidate.team

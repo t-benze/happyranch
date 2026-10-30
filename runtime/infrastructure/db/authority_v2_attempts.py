@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, TypeVar
 
+from pydantic import ValidationError
+
 from runtime.infrastructure.db._shared import (
     _late_database_now as _now,
     _synchronized,
@@ -897,10 +899,10 @@ class AuthorityV2AttemptsMixin:
         root_task_id = attempt_row["root_task_id"]
         manager_agent = attempt_row["manager_agent"]
         attempt_id = attempt_row["attempt_id"]
-        try:
-            history = self.get_audit_logs(root_task_id) if _history is None else _history
-        except Exception:
-            return False
+        # Acquisition failure is unavailable evidence, not a Boolean mismatch.
+        # In particular a nested a0..a3 read must keep its original exception
+        # all the way through terminal classification to the cold failure owner.
+        history = self.get_audit_logs(root_task_id) if _history is None else _history
         expected = {
             "stage": stage,
             "attempt_id": attempt_id,
@@ -921,22 +923,19 @@ class AuthorityV2AttemptsMixin:
             expected["candidate_id"] = candidate_id
         if require_finalization:
             expected["finalization_state"] = "unfinalized"
-        try:
-            candidates = []
-            for row in history:
-                if (
-                    row.get("action") != AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
-                    or row.get("agent") != manager_agent
-                ):
-                    continue
-                payload = row.get("payload")
-                if not self._v2_result_stage_is_other_history(payload, attempt_row, expected):
-                    candidates.append(payload)
-            return len(candidates) == 1 and self._v2_json_type_sensitive_equal(
-                candidates[0], expected,
-            )
-        except Exception:
-            return False
+        candidates = []
+        for row in history:
+            if (
+                row.get("action") != AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                or row.get("agent") != manager_agent
+            ):
+                continue
+            payload = row.get("payload")
+            if not self._v2_result_stage_is_other_history(payload, attempt_row, expected):
+                candidates.append(payload)
+        return len(candidates) == 1 and self._v2_json_type_sensitive_equal(
+            candidates[0], expected,
+        )
 
     def _authenticate_v2_attempt_stage_audit_uncommitted(
         self, attempt_row: dict, stage: str, *, require_unfinalized: bool = False,
@@ -1099,7 +1098,7 @@ class AuthorityV2AttemptsMixin:
             attempt = AuthorityPolicyV2Attempt.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 attempt has a corrupt canonical payload") from exc
         if attempt.attempt_id != row["attempt_id"]:
             raise ValueError("authority v2 attempt identity mismatch")
@@ -1356,7 +1355,7 @@ class AuthorityV2AttemptsMixin:
             return False
         try:
             parsed = json.loads(raw)
-        except Exception:
+        except (TypeError, ValueError):
             return False
         if not isinstance(parsed, dict):
             return False
@@ -1367,7 +1366,7 @@ class AuthorityV2AttemptsMixin:
             return False
         try:
             return authority_policy_v2_sha256(carrier) == attempt.assessment_digest
-        except Exception:
+        except (TypeError, ValueError):
             return False
 
     def _advance_v2_attempt_stage_uncommitted(
@@ -1395,7 +1394,7 @@ class AuthorityV2AttemptsMixin:
             candidate = AuthorityPolicyV2Candidate.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 candidate has a corrupt canonical payload") from exc
         if candidate.candidate_id != row["candidate_id"]:
             raise ValueError("authority v2 candidate identity mismatch")
@@ -1409,7 +1408,7 @@ class AuthorityV2AttemptsMixin:
             pin = AuthorityPolicyV2Pin.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 pin has a corrupt canonical payload") from exc
         if pin.candidate_id != row["candidate_id"]:
             raise ValueError("authority v2 pin identity mismatch")
@@ -2077,7 +2076,7 @@ class AuthorityV2AttemptsMixin:
             audit = AuthorityPolicyV2CandidateAudit.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception:
+        except ValidationError:
             return False
         # Every closed event field must equal the persisted column (identity,
         # event, candidate, attempt/result/owner/boot AND the created_at
@@ -2089,10 +2088,7 @@ class AuthorityV2AttemptsMixin:
         for column, value in snapshot.items():
             if row[column] != value:
                 return False
-        try:
-            canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
-        except Exception:
-            return False
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
         if canonical != row["canonical_payload_json"]:
             return False
         if (
@@ -2176,7 +2172,7 @@ class AuthorityV2AttemptsMixin:
             evaluation = AuthorityPolicyV2Evaluation.model_validate_json(
                 row["canonical_payload_json"]
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise ValueError("authority v2 evaluation has a corrupt canonical payload") from exc
         if evaluation.evaluation_id != row["evaluation_id"]:
             raise ValueError("authority v2 evaluation identity mismatch")

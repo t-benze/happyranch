@@ -3720,7 +3720,14 @@ identity with no real persisted result row on a root that HAS v2 history
 (including `None`/bool/string/unknown integer) is a fail-closed `foreign` skip,
 never the ordinary/v1 absence path; and every other unmatched/malformed/foreign
 identity is a fail-closed skip, never ordinary permission, with a classification
-read failure also fail-closed. An actual SQL/decode/synchronizer or material-read
+read failure also fail-closed. This includes every nested terminal-proof audit
+read (a0..a3, final, publication, settlement, admission, spent and decision),
+pinned binding/release/activation/selector authentication, and ordinary report
+projection. Successfully decoded malformed, absent, mismatched or wrong-type/
+key/cardinality evidence retains its original rejection; an unavailable read
+cannot supply a Boolean/sentinel rejection or permission for another read.
+All complete proof and original read/lock/transaction allowances remain.
+An actual SQL/decode/synchronizer or material-read
 exception propagates through the common and accepted-recovery boundary on the
 same selected original INTEGER/result. Accepted recovery never reclassifies the
 first failed observation as foreign and retries it away; both common-forwarding

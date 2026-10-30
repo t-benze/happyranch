@@ -91,7 +91,13 @@ original root/owner/session/envelope/generation/candidate/result/selector tuple
 and requires captured root membership; historical A-after-B proof remains valid.
 Completion classification and actual material-read exceptions propagate through
 the common/accepted boundary on the same original selected INTEGER/result. A
-second successful read cannot erase the first failed observation. Both accepted
+second successful read cannot erase the first failed observation. Nested a0..a3,
+final/publication/settlement/admission/spent/decision audit reads and pinned
+binding/release/activation/selector authentication retain the same error boundary.
+SQL/synchronizer/audit-JSON acquisition and unexpected projection failures escape;
+successfully read malformed/absent/mismatched/type/key/cardinality observations
+retain their original rejection and complete historical proof. No extra read,
+transaction, write or native ownership transfer is introduced. Both accepted
 common-forwarding branches preserve original pending negatives. The cold sweep's
 existing exception owner records unresolved failure before readiness and suppresses
 the ENTIRE final batch; authenticated successful no-op skips remain distinct.
