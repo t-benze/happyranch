@@ -3143,7 +3143,10 @@ def _v2_decision_dispatch_gate(
     entry), and ``skip`` for every other outcome -- causal continuation replay,
     a duplicate/restarted/refused receipt, a foreign or malformed identity, a
     drifted later report -- after performing the
-    interruption-refusal bookkeeping where required.  This is the production
+    interruption-refusal bookkeeping where required. Actual spend/claim/refusal
+    failures propagate even when this later receipt has no pre-final attempt:
+    the acquired original result/receipt already selects error custody, never
+    extra execution or replay permission. This is the production
     authority rule: reader absence or a mock's ``None`` is never ordinary
     permission. Actual classification/material-read failures propagate to the
     original caller, preserving its pending result and cold failure ownership.
@@ -3194,7 +3197,7 @@ def _v2_decision_dispatch_gate(
             result_id=causal_result_id,
             generation_id=getattr(context, "generation_id", None),
             next_session_id=getattr(context, "next_session_id", None),
-            spending_result_id=spending_result_id,
+            spending_result_id=spending_result_id, _preserve_errors=True,
         )
         if getattr(spend, "status", None) not in ("spent", "already_spent_exact"):
             logger.warning(
@@ -3204,7 +3207,7 @@ def _v2_decision_dispatch_gate(
             return skip
         claim = db.claim_authority_policy_v2_decision_dispatch(
             root_task_id=task_id, manager_agent=manager_agent,
-            result_id=causal_result_id,
+            result_id=causal_result_id, _preserve_errors=True,
         )
         if getattr(claim, "status", None) == "claimed":
             return _V2DecisionDispatchOutcome(
@@ -3226,7 +3229,7 @@ def _v2_decision_dispatch_gate(
                 return skip
             claim = db.claim_authority_policy_v2_decision_dispatch(
                 root_task_id=task_id, manager_agent=manager_agent,
-                result_id=causal_result_id,
+                result_id=causal_result_id, _preserve_errors=True,
             )
             if getattr(claim, "status", None) == "claimed":
                 return _V2DecisionDispatchOutcome(
@@ -3239,18 +3242,15 @@ def _v2_decision_dispatch_gate(
             # effect or after a failed acknowledgement): audited refusal
             # bookkeeping with the EXACT causal identity, never a second
             # consumer.
-            try:
-                refusal = db.refuse_authority_policy_v2_decision_dispatch(
-                    root_task_id=task_id, manager_agent=manager_agent,
-                    result_id=causal_result_id,
+            refusal = db.refuse_authority_policy_v2_decision_dispatch(
+                root_task_id=task_id, manager_agent=manager_agent,
+                result_id=causal_result_id, _preserve_errors=True,
+            )
+            if getattr(refusal, "status", None) != "refused":
+                logger.warning(
+                    "run_step %s: v2 decision refusal pending (%s)",
+                    task_id, getattr(refusal, "reason", None),
                 )
-                if getattr(refusal, "status", None) != "refused":
-                    logger.warning(
-                        "run_step %s: v2 decision refusal pending (%s)",
-                        task_id, getattr(refusal, "reason", None),
-                    )
-            except Exception:
-                logger.exception("run_step %s: v2 decision refusal failed", task_id)
             return skip
         # ``applied``/``refused`` are terminal: read-only, never a second consumer.
         return skip
@@ -3358,7 +3358,7 @@ def _consume_completion_report(
         try:
             refusal = db.refuse_authority_policy_v2_decision_dispatch(
                 root_task_id=task_id, manager_agent=manager_agent,
-                result_id=causal_result_id,
+                result_id=causal_result_id, _preserve_errors=True,
             )
             if getattr(refusal, "status", None) != "refused":
                 logger.warning(
@@ -3381,18 +3381,18 @@ def _consume_completion_report(
     # effects survive. Failed rollback or COMMIT/late wrapper failure can leave
     # committed/unknown effects. No negative/lost return permits consumer reentry;
     # restart bookkeeping authenticates the actual receipt, not the failed return.
-    try:
-        ack = db.acknowledge_authority_policy_v2_decision_dispatch(
-            root_task_id=task_id, manager_agent=manager_agent,
-            result_id=causal_result_id,
+    # This is the same winning causal receipt, including when no unfinalized
+    # attempt exists for R2. An actual error must reach the original sweep/cold
+    # owner so its entire captured root batch is suppressed, not merely marked.
+    ack = db.acknowledge_authority_policy_v2_decision_dispatch(
+        root_task_id=task_id, manager_agent=manager_agent,
+        result_id=causal_result_id, _preserve_errors=True,
+    )
+    if getattr(ack, "status", None) not in ("applied", "already_applied_exact"):
+        logger.warning(
+            "run_step %s: v2 decision acknowledgement not settled (%s)",
+            task_id, getattr(ack, "reason", None),
         )
-        if getattr(ack, "status", None) not in ("applied", "already_applied_exact"):
-            logger.warning(
-                "run_step %s: v2 decision acknowledgement not settled (%s)",
-                task_id, getattr(ack, "reason", None),
-            )
-    except Exception:  # pragma: no cover - fail-closed defensive
-        logger.exception("run_step %s: v2 decision acknowledgement failed", task_id)
 
 
 def _consume_completion_report_body(

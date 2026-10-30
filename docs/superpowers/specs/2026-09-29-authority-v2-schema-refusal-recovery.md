@@ -61,6 +61,31 @@ secondary separately. Existing stage/final refusal bookkeeping cannot replace
 the first error. Native startup unsafe connection custody stays sticky beside
 the original cause; it does not replace it. No cleanup gains a readiness gate.
 
+The selected completion error route also covers the real next-result spend,
+decision claim, acknowledgement and claimed-replay refusal. The common gate and
+winning caller use the existing optional ``_preserve_errors`` writer contract;
+actual evidence/BEGIN/audit/COMMIT and late-wrapper failures escape to the same
+original failure owner instead of being logged as pending success. Each owned
+rollback obligation is marked before its sole attempt. A failed denial rollback
+is not retried; body E1/traceback remains primary beside actual rollback E2 and
+its traceback. Caller BEGIN/SAVEPOINT still returns semantic ``transaction_owned``
+before owned work, and acquired denials retain their bounded outcomes. Default
+public outcomes and private coding composition retain their transaction owners.
+The spend binding proof uses the existing semantic-denial/unavailable partition.
+
+A reserved/receipt R2 need not have its own unfinalized attempt. In that case the
+classifier retains the exact tuple from its already acquired original result
+row solely for error custody; it neither creates proof nor changes dispatch
+permission. A caller's first tuple/INTEGER still wins over later classification.
+If a root terminal transition committed before acknowledgement E1, or an earlier
+root was captured before replay-refusal E1 in the same sweep, that E1 suppresses
+the ENTIRE retained root DB batch, including admission/audit. A separate marker
+denial cannot restore lost attribution. Previously committed spend/claim/root
+prefixes survive; original child/worker joins and native/close/unsafe-custody
+barriers remain owed through cancellation, stop and late publication. Unsupported
+cold ``workflow_start`` still remains pending/recovery_failed without a bootstrap
+bridge or ready-only recovery consumer. SOURCE only; behavior/proof NOT RUN.
+
 ## Current startup observation extension — ROOT13137
 
 The actual authority startup consuming lifetime now exports fixed scalar counter/

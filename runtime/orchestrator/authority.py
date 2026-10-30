@@ -4039,8 +4039,9 @@ def run_authority_hook(
     ``"escalate"`` (fail closed — the caller proceeds through the exact
     existing escalation path). Known v2 completion acquisition/transaction
     errors escape to the existing caller's failure owner. Before family load,
-    only the exact pre-final identity retained by the ORIGINAL common classifier
-    selects this error route; legacy/v1/default callers retain their outcomes.
+    the exact original identity retained by the common classifier or caller
+    selects this error route, including an acquired reserved/receipt R2 without
+    an unfinalized attempt; legacy/v1/default callers retain their outcomes.
     Acquired semantic denials and intentional v2 pending remain bounded.
 
     ``result_row_id`` is the immutable ``task_results`` row id whose
