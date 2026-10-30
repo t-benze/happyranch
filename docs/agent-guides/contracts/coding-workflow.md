@@ -62,8 +62,17 @@ After a durable reservation, those same proofs precede exact writer.validation
 marking INSIDE native_writer; warning follows only its genuine successful exit,
 settlement and original owner/registry disposition. Entry/no-yield, failed close,
 rollback/outer exit/settlement or same-primary cleanup notes never mean no effect.
-Active/unknown native owners, publisher/lease/profile operations or transitional
-cutover defer; none is recovered or adopted. Positive original COMMIT alone
+Active/unknown native owners defer, with one built-in registration-only exception
+(Founder THR320seq477): after complete strict native-state validation, an `unknown`
+`disk_sweep` record with empty agents AND teams may pass the historical-state gate
+only when its writer key is absent from the SAME currently mounted
+`admission.writers`. A present key whose value is false or None still refuses.
+Actual mounted-owner identity and CURRENT writer reservations are revalidated at
+all three safety calls: preflight, pre-write and pre-COMMIT. Every other current
+writer, publisher/lease/profile operation and transitional cutover still refuses;
+existing own/competing built-in registrar cases remain unchanged. The record stays
+UNKNOWN; no process absence, settlement, cleanup, recovery or adoption is inferred.
+Positive original COMMIT alone
 publishes collected full-reader watermarks under the same DB lock. COMMIT and
 post-COMMIT publication uncertainty propagate with actual effects retained;
 no optional warning/retry follows. Resource absence defers availability with
