@@ -24,7 +24,7 @@ authentic bootstrap activations/bindings for both system and retained human orig
 orphan rows refuse. Human imports keep their six original rows and receipts.
 Fresh package capability gates new options/mapping/settings/start only; replay,
 unchanged Disabled-retain and admitted stages/return/cancellation use saved pins.
-Availability starts nothing and grants no authority. Full contract: AGENTS.md,
+Availability starts nothing and grants no authority. Full contract: [coding workflow contracts](contracts/coding-workflow.md),
 “Current built-in coding definition”. Loaded identity and scratch remain unproved.
 
 
