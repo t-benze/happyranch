@@ -33,7 +33,7 @@ from pathlib import Path
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
-    signature, snapshot,
+    signature, snapshot, trees_equal,
 )
 
 LOG = logging.getLogger(__name__)
@@ -402,7 +402,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
         raise Retain('git_identity_changed_during_admission')
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
-    if {k: signature(v) for k, v in latest.items()} != {k: signature(v) for k, v in tree.items()}:
+    if not trees_equal(latest, tree, deadline):
         raise Retain('tree_changed_during_admission')
     check(deadline)
     # Re-open without following ancestors; bind complete observed root identity.
@@ -611,7 +611,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 phase['attribution_unknown'] = True
                 report_checkpoint()
                 fresh = admit(candidate, evidence, deadline, now=now)
-                if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
+                if not trees_equal(tree, fresh, deadline):
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
                     mutation_started = True
