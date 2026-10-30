@@ -282,7 +282,11 @@ class CodingBuiltinStore:
 
         for key, state in states.items():
             budget.step()
-            if state.state != 'settled' and key != own and not competing_builtin(key):
+            historical_sweep = (state.state == 'unknown' and state.publisher == 'disk_sweep'
+                                and not state.agents and not state.teams
+                                and key not in admission.writers)
+            if (state.state != 'settled' and key != own and not competing_builtin(key)
+                    and not historical_sweep):
                 raise _Deferred('native_writer_unsettled')
         for key in admission.writers:
             budget.step()
