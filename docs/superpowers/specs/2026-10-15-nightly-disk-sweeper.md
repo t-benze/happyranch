@@ -330,7 +330,16 @@ Resource assertions accompany actual incomplete reports, preserved filesystem/
 sidecars/outputs/outside controls, no later admission/mutation/Git action and
 truthful pre/post-measurement allocation with zero removal credit. Empty maps
 are defensive source-reviewed semantics only: successful snapshots include `''`.
-Existing c12 partial/supervision assertions remain. Focused supported selection:
+Existing c12 partial/actual-unlink supervision assertions remain. Both blocked-Git
+supervision rows require a real runnable sleep child in the owned worker group
+within one second of fixture launch, before the ORIGINAL two-second total budget
+expires. Startup/import/checkpoint work consumes that same budget; readiness does
+not renew it. The rows assert actual deadline versus shutdown, responsive heartbeat,
+leader reaping/child stop, second org unreached and truthful persisted incomplete/
+partial accounting when publication is safe. Unsafe pending publication remains
+separately owned by `correction_stop_invalid`/`publication_refusal`: visible refusal
+and preserved pending evidence, with no promise of a final summary under every kill
+timing. Focused supported selection:
 
 ```bash
 TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/verify_disk_sweeper.py --cases 1 12 19 21

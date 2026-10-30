@@ -881,33 +881,67 @@ def c12():
         repo,q=f.worktree('TASK-2');binpath=f.base/'bin';binpath.mkdir();pidfile=f.base/'sleep.pid'
         shim=binpath/'git';shim.write_text('#!/bin/sh\nsleep 20 &\nprintf "%s" "$!" > "$SWEEP_FIXTURE_PID"\nwait\n');shim.chmod(0o700)
         second=f.base/'zz-unreached-org';(second/'org').mkdir(parents=True);(second/'org/config.yaml').write_text('disk_sweep: {mode: "off"}')
-        async def exercise(cancel):
+        async def exercise(cancel: bool) -> dict:
             summary=f.base/('cancel.json' if cancel else 'deadline.json')
-            ticks=0
-            async def heartbeat():
+            ticks=0;budget=2;spawned={}
+            real_spawn=asyncio.create_subprocess_exec
+            async def observe_spawn(*args: str, **kw: object) -> asyncio.subprocess.Process:
+                # Observe the ORIGINAL production window; readiness never resets it.
+                spawned['deadline']=float(args[args.index('--deadline')+1])
+                spawned['started']=float(args[args.index('--started-monotonic')+1])
+                process=await real_spawn(*args, **kw)
+                spawned['process']=process
+                return process
+            async def heartbeat() -> None:
                 nonlocal ticks
                 while True:ticks+=1;await asyncio.sleep(.01)
             tick=asyncio.create_task(heartbeat())
-            worker=asyncio.create_task(ds.run_worker([str(f.org),str(second)],summary,dry_run=True,budget=2 if cancel else .25))
-            if cancel:
-                for _ in range(100):
-                    if pidfile.exists():break
-                    await asyncio.sleep(.01)
-                assert pidfile.exists(),'child did not start'
-                worker.cancel()
-            started=time.monotonic()
-            try:await worker
-            except asyncio.CancelledError:pass
-            tick.cancel()
+            with patch.object(asyncio,'create_subprocess_exec',observe_spawn):
+                worker=asyncio.create_task(ds.run_worker([str(f.org),str(second)],summary,dry_run=True,budget=budget))
+                ready_until=time.monotonic()+1
+                try:
+                    while not pidfile.exists() and not worker.done() and time.monotonic()<ready_until:
+                        await asyncio.sleep(.01)
+                    ready=time.monotonic()
+                    assert pidfile.exists(),'blocked Git readiness missing before ORIGINAL fixture deadline'
+                    deadline=spawned['deadline'];process=spawned['process']
+                    assert ready<min(ready_until,deadline),(ready,ready_until,deadline)
+                    assert deadline==spawned['started']+budget,spawned
+                    pid=int(pidfile.read_text());proc=Path(f'/proc/{pid}/stat')
+                    assert proc.exists() and not proc.read_text().split(') ')[1].startswith('Z '),'Git sleep was not runnable at readiness'
+                    assert os.getpgid(pid)==process.pid,'Git sleep outside owned worker group'
+                    checkpoint=json.loads(summary.read_text())
+                    assert checkpoint['deadline_monotonic']==deadline,checkpoint
+                    assert [item['org'] for item in checkpoint['orgs']]==[f.org.name],checkpoint
+                    assert not summary.with_name(summary.name+'.pending').exists(),'blocked Git phase still publishing'
+                    if cancel:worker.cancel()
+                    started=time.monotonic();cancelled=False
+                    try:await worker
+                    except asyncio.CancelledError:cancelled=True
+                    assert cancelled==cancel
+                finally:
+                    # An assertion failure still stops/reaps this fixture's child.
+                    if not worker.done():
+                        worker.cancel()
+                        try:await worker
+                        except asyncio.CancelledError:pass
+                    tick.cancel()
+                    try:await tick
+                    except asyncio.CancelledError:pass
             assert time.monotonic()-started<3 and ticks>=2
             report=json.loads(summary.read_text());assert report['outcome']=='incomplete' and report['interruption']==('shutdown' if cancel else 'deadline'),report
             assert str(second) in report['unreached_orgs'],report
-            assert report['budget_seconds']==(2 if cancel else .25),report
-            if pidfile.exists():
-                pid=int(pidfile.read_text());proc=Path(f'/proc/{pid}/stat')
-                assert not proc.exists() or proc.read_text().split(') ')[1].startswith('Z '),'deleting child survived'
-                pidfile.unlink()
-            return report['interruption']
+            assert report['budget_seconds']==budget and report['deadline_monotonic']==deadline,report
+            assert cancel or time.monotonic()>=deadline,'deadline supervisor returned before ORIGINAL deadline'
+            assert report['partial_mutation']=='unknown' and report['worker_pid']==process.pid,report
+            assert process.returncode is not None and not Path(f'/proc/{process.pid}').exists(),'worker leader not reaped'
+            assert not proc.exists() or proc.read_text().split(') ')[1].startswith('Z '),'deleting child survived'
+            assert all(phase['removed_attributable_bytes']==0 for phase in report['orgs'][0]['phases'].values()),report
+            assert not (p/'nested/a').exists() and (p/'nested/payload').exists() and q.exists(),'preview changed original partial effects'
+            pidfile.unlink()
+            return dict(interruption=report['interruption'],budget=budget,original_deadline=deadline,
+                        ready_after=ready-spawned['started'],remaining_at_readiness=deadline-ready,
+                        ticks=ticks,worker_reaped=True,git_child_nonrunnable=True)
         with patch.dict(os.environ,PATH=str(binpath)+':'+os.environ['PATH'],SWEEP_FIXTURE_PID=str(pidfile)):
             a=asyncio.run(exercise(False));b=asyncio.run(exercise(True))
         # Interrupt an ACTUAL admitted removal in a supervised process, after
