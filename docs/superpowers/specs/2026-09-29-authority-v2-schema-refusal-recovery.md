@@ -14,6 +14,35 @@ Status: historical implementation contract for THR-229 / GitHub issue #918.
 The v2 schema-gate portion was superseded by founder THR-229 seq351; the
 recovery and idempotency portions remain current.
 
+## Current zombie writer correction — TASK-13753
+
+The real reaper preserves explicit pending/startup-held/lost-owner and selected
+human-operation outcomes before marker work. Both Database marker/cancellation
+writers renew the SAME original admission after their original RLock and blocking
+BEGIN waits and before mutation/COMMIT, retaining original map and queue identity
+as well as state/gate/org/refs/epoch/loop. A same-member map replacement refuses;
+standalone construction is not a production bypass. Owed cleanup has no fresh
+readiness gate, and ambient BEGIN/SAVEPOINT is never committed or rolled back.
+
+Complete continued final evidence is a prefix, not settlement. Clearing also
+requires complete ordinary completion with no blocking Q, or the exact consumed
+Q and complete typed settlement evidence. Terminal refusal requires its existing
+closed typed stage/completion/candidate proof and matching authentic root
+ESCALATED or child FAILED disposition, without restoring the missing pre-final
+evidence that may have caused refusal or issuing another parent wake.
+
+Successfully acquired semantic denial remains bounded. Actual acquisition,
+audit decode, lock and unexpected projection failures retain the original FIRST
+exception/cause/traceback; another read cannot erase them. Owned writer rollback
+is attempted at most once. Its failure alone propagates; with an earlier body or
+COMMIT error it is separately retained with its traceback, and guarded recording
+cannot replace the first error. Only successful owned precommit rollback proves
+restoration; committed/uncertain COMMIT, cleanup and late-return prefixes survive.
+A failed sweep suppresses its ENTIRE root DB batch and retains its manifest;
+independently owed original child/worker joins remain. SOURCE only: behavior NOT
+RUN, PROOF NOT RUN, native UNKNOWN and operator acceptance UNVERIFIED. Existing
+resource, retired-unit, skipped-integration and daily-only E2E limits remain.
+
 ## Current startup observation extension — ROOT13137
 
 The actual authority startup consuming lifetime now exports fixed scalar counter/

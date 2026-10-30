@@ -3242,23 +3242,22 @@ class AuthorityV2AttemptsMixin:
         expected = self._v2_refusal_stage_payload(
             attempt_row, candidate_id, refusal_code, finalization_state,
         )
-        try:
-            candidates = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-                and row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED
-            ]
-        except Exception:
-            return False
+        # Acquisition/decode/projection failure is unavailable evidence, never
+        # an acquired semantic negative. Preserve it for the original caller.
+        candidates = [
+            row for row in self.get_audit_logs(attempt_row["root_task_id"])
+            if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+            and row["payload"].get("stage") == AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED
+        ]
         if len(candidates) != 1:
             return False
         payload = candidates[0]["payload"]
         if set(payload.keys()) != set(expected.keys()):
             return False
-        return all(payload.get(key) == value for key, value in expected.items())
+        return self._v2_json_type_sensitive_equal(payload, expected)
 
     def _v2_refusal_completion_payload(
         self, *, attempt_row: dict, refusal_code: str,
@@ -3288,16 +3287,13 @@ class AuthorityV2AttemptsMixin:
         where ``recovery_claimed`` says the stored evidence carries the exact
         recovery receipt fields.
         """
-        try:
-            candidates = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") == "completion_report"
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-        except Exception:
-            return False, False
+        candidates = [
+            row for row in self.get_audit_logs(attempt_row["root_task_id"])
+            if row.get("action") == "completion_report"
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+        ]
         if len(candidates) != 1:
             return False, False
         payload = candidates[0]["payload"]
@@ -3341,21 +3337,18 @@ class AuthorityV2AttemptsMixin:
         self, attempt_row: dict, *, refusal_code: str,
     ) -> str | None:
         """Authenticate exactly one complete root-escalated or child-failed shape."""
-        try:
-            rows = [
-                row for row in self.get_audit_logs(attempt_row["root_task_id"])
-                if row.get("action") in (
-                    "escalation", AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
-                )
-                and row.get("agent") == attempt_row["manager_agent"]
-                and isinstance(row.get("payload"), dict)
-                and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
-            ]
-            task = self._conn.execute(
-                "SELECT * FROM tasks WHERE id=?", (attempt_row["root_task_id"],),
-            ).fetchone()
-        except Exception:
-            return None
+        rows = [
+            row for row in self.get_audit_logs(attempt_row["root_task_id"])
+            if row.get("action") in (
+                "escalation", AUTHORITY_POLICY_V2_REFUSAL_TASK_FAILED_ACTION,
+            )
+            and row.get("agent") == attempt_row["manager_agent"]
+            and isinstance(row.get("payload"), dict)
+            and row["payload"].get("attempt_id") == attempt_row["attempt_id"]
+        ]
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (attempt_row["root_task_id"],),
+        ).fetchone()
         if len(rows) != 1 or task is None:
             return None
         payload = rows[0]["payload"]
@@ -3371,7 +3364,7 @@ class AuthorityV2AttemptsMixin:
                 and task["status"] == TaskStatus.ESCALATED.value
                 and task["note"] == note
                 and set(payload) == set(expected)
-                and all(payload.get(key) == value for key, value in expected.items())
+                and self._v2_json_type_sensitive_equal(payload, expected)
             ):
                 return "escalated"
             return None
@@ -3388,7 +3381,7 @@ class AuthorityV2AttemptsMixin:
             and task["note"] == note
             and task["completed_at"] is not None
             and set(payload) == set(expected)
-            and all(payload.get(key) == value for key, value in expected.items())
+            and self._v2_json_type_sensitive_equal(payload, expected)
         ):
             return "failed"
         return None
@@ -3499,10 +3492,14 @@ class AuthorityV2AttemptsMixin:
         already-finalized J returns a read-only exact replay only when its exact
         refusal/completion evidence authenticates, and is never repaired.
         """
-        # Ordinary callers use exactly their existing connection operations.
-        # Private startup observes these REAL boundaries, including cleanup that
-        # fails before the existing exception handler attempts cleanup again.
+        # Ordinary callers use their original connection operations. Private
+        # startup still observes each REAL boundary and retains sticky failed
+        # cleanup/COMMIT uncertainty. A failed denial rollback is never retried.
+        rollback_attempted = False
+
         def _rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
             if _startup_phases is None:
                 self._conn.rollback()
             else:
@@ -3983,8 +3980,20 @@ class AuthorityV2AttemptsMixin:
                 receipt_settled=settled,
                 task_disposition=task_disposition,
             )
-        except Exception:
-            _rollback()
+        except Exception as primary:
+            if not rollback_attempted:
+                try:
+                    _rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_v2_refusal_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+                    try:
+                        BaseException.add_note(primary, f"v2 refusal rollback also failed: {secondary!r}"[:1024])
+                    except BaseException:
+                        pass
             # Failure ownership is established BEFORE poisoning: only the exact
             # process-local winning token that this caller presented proves the
             # authentic uninterrupted owner.  A malformed/foreign/nested/

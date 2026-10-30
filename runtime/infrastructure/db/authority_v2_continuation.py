@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from typing import Callable
 
 from pydantic import ValidationError
 
@@ -6346,8 +6347,14 @@ class AuthorityV2ContinuationMixin:
                 task_id, agent, session_id,
             ):
                 return None
-            self._authenticate_v2_session_binding_uncommitted(binding)
-        except Exception:
+            if not self._v2_session_binding_authenticated_uncommitted(binding):
+                return None
+        except ValueError as exc:
+            if isinstance(exc, (json.JSONDecodeError, UnicodeError)) or (
+                exc.__cause__ is not None
+                and not isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+            ):
+                raise
             return None
         if (
             binding.root_task_id != task_id
@@ -6376,14 +6383,48 @@ class AuthorityV2ContinuationMixin:
         except ValueError:
             return False
         if attempt.finalization_state == "continued":
-            code, _ = self._authenticate_v2_post_final_evidence_uncommitted(
+            code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
                 root_task_id=task_id, manager_agent=agent,
                 manager_session_id=session_id, result_id=result_id,
             )
-            return (
-                code is None
-                and task_row["status"] == TaskStatus.PENDING.value
-                and task_row["block_kind"] is None
+            if (code is not None or task_row["status"] != TaskStatus.PENDING.value
+                    or task_row["block_kind"] is not None):
+                return False
+            assert ctx is not None
+            # Final J/K/P/V/E/N/D is only a committed prefix. Reuse the exact
+            # settlement rules, read-only, inside this ORIGINAL marker writer.
+            # Never call a self-committing settlement writer from here.
+            receipts = self._conn.execute(
+                "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+                (task_id, agent),
+            ).fetchall()
+            blocking = [
+                receipt for receipt in receipts
+                if self._v2_receipt_blocks_ordinary(
+                    receipt, result_id=result_id, manager_session_id=session_id,
+                )
+            ]
+            if not blocking:
+                return self._authenticate_v2_ordinary_completion_evidence_uncommitted(
+                    root_task_id=task_id, manager_agent=agent,
+                    result_row=ctx["result_row"],
+                )
+            if len(blocking) != 1:
+                return False
+            receipt = blocking[0]
+            if not (
+                self._v2_receipt_identity_is_well_formed(receipt)
+                and receipt["state"] == "callback_consumed"
+                and receipt["recovery_session_id"] == session_id
+                and receipt["accepted_result_id"] == result_id
+                and receipt["accepted_result_session_id"] == session_id
+            ):
+                return False
+            return self._authenticate_v2_settlement_evidence_uncommitted(
+                root_task_id=task_id, manager_agent=agent, result_id=result_id,
+                manager_session_id=session_id, result_row=ctx["result_row"],
+                attempt=ctx["attempt"], candidate=ctx["candidate"],
+                envelope=ctx["envelope"], notification=ctx["notification"],
             )
         if attempt.finalization_state != AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED:
             return False
@@ -6414,28 +6455,39 @@ class AuthorityV2ContinuationMixin:
         )
         if not completion_ok:
             return False
+        receipts = self._conn.execute(
+            "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
+            (task_id, agent),
+        ).fetchall()
+        blocking = [
+            receipt for receipt in receipts
+            if self._v2_receipt_blocks_ordinary(
+                receipt, result_id=result_id, manager_session_id=session_id,
+            )
+        ]
         if recovery_claimed:
-            receipts = self._conn.execute(
-                """SELECT * FROM task_completion_recoveries
-                   WHERE task_id=? AND agent=? AND recovery_session_id=?""",
-                (task_id, agent, session_id),
-            ).fetchall()
-            if len(receipts) != 1 or not (
-                receipts[0]["state"] == "callback_consumed"
-                and receipts[0]["accepted_result_id"] == result_id
-                and receipts[0]["accepted_result_session_id"] == session_id
+            if len(blocking) != 1 or not (
+                self._v2_receipt_identity_is_well_formed(blocking[0])
+                and blocking[0]["state"] == "callback_consumed"
+                and blocking[0]["recovery_session_id"] == session_id
+                and blocking[0]["accepted_result_id"] == result_id
+                and blocking[0]["accepted_result_session_id"] == session_id
             ):
                 return False
-        if not self._authenticate_v2_refusal_escalation_uncommitted(
+        elif blocking:
+            return False
+        disposition = self._authenticate_v2_refusal_escalation_uncommitted(
             attempt_row, refusal_code=attempt.refusal_code,
-        ):
+        )
+        if disposition is None:
             return False
         if candidate is not None and not self._authenticate_v2_candidate_audit_uncommitted(
             candidate, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_REFUSED,
         ):
             return False
         return (
-            task_row["status"] == TaskStatus.ESCALATED.value
+            disposition in (TaskStatus.ESCALATED.value, TaskStatus.FAILED.value)
+            and task_row["status"] == disposition
             and task_row["block_kind"] is None
         )
 
@@ -6443,7 +6495,7 @@ class AuthorityV2ContinuationMixin:
     def consume_v2_fingerprint_and_clear_zombie(
         self, *, task_id: str, expected_agent: str,
         expected_session_id: str, result_id: int,
-        expected_zombie_flagged_at,
+        expected_zombie_flagged_at, validate_admission: Callable[[], None],
     ) -> bool:
         """Clear a v2 zombie marker only after exact R consumption committed.
 
@@ -6452,6 +6504,10 @@ class AuthorityV2ContinuationMixin:
         v2 continued/refused receipt while holding ``BEGIN IMMEDIATE``.  Any
         owner, result, marker, cancellation or lifecycle race is a zero-write
         denial and retains the winning marker/result history.
+        The SAME captured admission is renewed after the original RLock/BEGIN
+        waits and before writes/COMMIT. Caller transactions remain untouched.
+        Only successful owned precommit rollback establishes restoration;
+        COMMIT/cleanup/late wrapper failure retains committed or unknown effects.
         """
         marker = self._zombie_marker_value(expected_zombie_flagged_at)
         if (
@@ -6460,8 +6516,19 @@ class AuthorityV2ContinuationMixin:
             or self._conn.in_transaction
         ):
             return False
+        validate_admission()  # Inside the original synchronized RLock.
+        begin_attempted = False
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True  # Mark BEFORE the sole actual attempt.
+            self._conn.rollback()
+
         try:
+            begin_attempted = True
             self._conn.execute("BEGIN IMMEDIATE")
+            validate_admission()
             task = self._conn.execute(
                 "SELECT * FROM tasks WHERE id=?", (task_id,),
             ).fetchone()
@@ -6487,8 +6554,9 @@ class AuthorityV2ContinuationMixin:
                     task_row=task,
                 )
             ):
-                self._conn.rollback()
+                rollback()
                 return False
+            validate_admission()
             cursor = self._conn.execute(
                 """UPDATE tasks SET zombie_flagged_at=NULL, updated_at=?
                    WHERE id=? AND assigned_agent=? AND current_session_id=?
@@ -6497,30 +6565,60 @@ class AuthorityV2ContinuationMixin:
                  expected_session_id, marker),
             )
             if cursor.rowcount != 1:
-                self._conn.rollback()
+                rollback()
                 return False
             self.insert_audit_log_uncommitted(
                 task_id, expected_agent, "zombie_cleared",
                 {"reason": "zombie recovered — flag cleared"},
             )
+            validate_admission()
             self._conn.commit()
             return True
-        except Exception:
-            self._conn.rollback()
+        except BaseException as primary:
+            if begin_attempted and not rollback_attempted:
+                try:
+                    rollback()  # Owed cleanup has no fresh readiness gate.
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_zombie_writer_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+                    try:
+                        BaseException.add_note(primary, f"zombie writer rollback also failed: {secondary!r}"[:1024])
+                    except BaseException:
+                        pass
             raise
 
     @_synchronized
     def cancel_zombie_without_fingerprint(
         self, *, task_id: str, expected_agent: str,
         expected_session_id: str, expected_zombie_flagged_at,
-        cancelled_at: str,
+        cancelled_at: str, validate_admission: Callable[[], None],
     ) -> bool:
-        """Atomically cancel one exact v2 zombie only while R remains absent."""
+        """Cancel an exact v2 zombie while R is absent under captured admission.
+
+        Renew after the original RLock/BEGIN waits and before writes/COMMIT.
+        Caller BEGIN/SAVEPOINT is untouched. Rollback is attempted at most once;
+        only successful owned precommit rollback proves restoration, never a
+        failed/uncertain COMMIT, cleanup or late synchronized return.
+        """
         marker = self._zombie_marker_value(expected_zombie_flagged_at)
         if marker is None or not isinstance(cancelled_at, str) or self._conn.in_transaction:
             return False
+        validate_admission()  # Inside the original synchronized RLock.
+        begin_attempted = False
+        rollback_attempted = False
+
+        def rollback() -> None:
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            self._conn.rollback()
+
         try:
+            begin_attempted = True
             self._conn.execute("BEGIN IMMEDIATE")
+            validate_admission()
             task = self._conn.execute(
                 "SELECT * FROM tasks WHERE id=?", (task_id,),
             ).fetchone()
@@ -6537,7 +6635,7 @@ class AuthorityV2ContinuationMixin:
                     session_id=expected_session_id,
                 ) is None
             ):
-                self._conn.rollback()
+                rollback()
                 return False
             result = self._conn.execute(
                 """SELECT 1 FROM task_results
@@ -6545,8 +6643,9 @@ class AuthorityV2ContinuationMixin:
                 (task_id, expected_agent, expected_session_id),
             ).fetchone()
             if result is not None:
-                self._conn.rollback()
+                rollback()
                 return False
+            validate_admission()
             cursor = self._conn.execute(
                 """UPDATE tasks
                       SET status=?, cancelled_at=?, completed_at=?, block_kind=NULL,
@@ -6567,14 +6666,27 @@ class AuthorityV2ContinuationMixin:
                 ),
             )
             if cursor.rowcount != 1:
-                self._conn.rollback()
+                rollback()
                 return False
             self.insert_audit_log_uncommitted(
                 task_id, expected_agent, "zombie_cancelled",
                 {"reason": "zombie cancelled after TTL expiry"},
             )
+            validate_admission()
             self._conn.commit()
             return True
-        except Exception:
-            self._conn.rollback()
+        except BaseException as primary:
+            if begin_attempted and not rollback_attempted:
+                try:
+                    rollback()
+                except BaseException as secondary:
+                    try:
+                        BaseException.__setattr__(primary, "_zombie_writer_rollback_secondary",
+                                                  (secondary, secondary.__traceback__))
+                    except BaseException:
+                        pass
+                    try:
+                        BaseException.add_note(primary, f"zombie writer rollback also failed: {secondary!r}"[:1024])
+                    except BaseException:
+                        pass
             raise

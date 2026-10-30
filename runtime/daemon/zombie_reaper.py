@@ -10,11 +10,14 @@ approval). This is a NARROW periodic reaper, NOT a general health monitor.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time as _time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from pydantic import ValidationError
 
 from runtime.daemon.queue import HEARTBEAT_INTERVAL_SECONDS
 from runtime.infrastructure.audit_logger import AuditLogger
@@ -54,6 +57,7 @@ def _session_policy_family(db: Database, task) -> str:
     if not task.assigned_agent or not task.current_session_id:
         return "legacy_or_none"
     from runtime.orchestrator.active_authority_policy import (
+        ActiveAuthorityPolicyError,
         load_session_policy_binding,
         load_session_policy_snapshot,
     )
@@ -75,7 +79,17 @@ def _session_policy_family(db: Database, task) -> str:
             db=db, store=AuthorityPolicyStore(db), task_id=task.id,
             session_id=task.current_session_id, agent_name=task.assigned_agent,
         )
-    except Exception:
+    except ActiveAuthorityPolicyError:
+        return "malformed"
+    except ValueError as exc:
+        # Match the existing v2 binding rejection partition. Successfully read
+        # corrupt models/history deny; SQL/lock/decode/unexpected projection
+        # failures retain their ORIGINAL observation, even under ValueError.
+        if isinstance(exc, (json.JSONDecodeError, UnicodeError)) or (
+            exc.__cause__ is not None
+            and not isinstance(exc.__cause__, (ValidationError, KeyError, TypeError))
+        ):
+            raise
         return "malformed"
     return "legacy_or_none"
 
@@ -144,6 +158,8 @@ def _sweep_org_zombies(
     from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
+    sweep_failure = None
+    outer_delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
     root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
     root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
@@ -253,7 +269,9 @@ def _sweep_org_zombies(
                             db, task_id, fingerprint, t, orchestrator,
                         )
                         from runtime.orchestrator.run_step import _HumanFailedRecoveryOperation
-                        if isinstance(consumption, _HumanFailedRecoveryOperation) or consumption == "lost_owner":
+                        if isinstance(consumption, _HumanFailedRecoveryOperation) or consumption in (
+                            "v2_pending", "startup_held", "lost_owner",
+                        ):
                             # The exact selected operation owns legacy bookkeeping;
                             # pending/loss must never clear through this fallback.
                             continue
@@ -263,12 +281,13 @@ def _sweep_org_zombies(
                             # result/session binding, v2 consumption receipt,
                             # owner/session and original marker under
                             # BEGIN IMMEDIATE.  A race preserves the winner.
-                            db.consume_v2_fingerprint_and_clear_zombie(
+                            write(db.consume_v2_fingerprint_and_clear_zombie,
                                 task_id=task_id,
                                 expected_agent=agent,
                                 expected_session_id=t.current_session_id or "",
                                 result_id=fingerprint.get("id"),
                                 expected_zombie_flagged_at=t.zombie_flagged_at,
+                                validate_admission=validate,
                             )
                         elif policy_family == "legacy_or_none":
                             # Unchanged v1/no-policy behavior.
@@ -298,6 +317,7 @@ def _sweep_org_zombies(
                                 expected_session_id=t.current_session_id or "",
                                 expected_zombie_flagged_at=t.zombie_flagged_at,
                                 cancelled_at=now.isoformat(),
+                                validate_admission=validate,
                             )
                         if committed and orchestrator is not None:
                             from runtime.orchestrator.run_step import (
@@ -353,14 +373,28 @@ def _sweep_org_zombies(
                                     raise
                                 if exc is not postcommit_error:
                                     postcommit_error.add_note("zombie cleanup also failed: " + repr(exc)[:512])
-    except BaseException:
+    except BaseException as exc:
         root_tail_failed = True
+        sweep_failure = exc
         raise
     finally:
         root_delivery['active'] = False
         _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-        _root_worktree_batch(orchestrator, root_transitions,
-            teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
+        if sweep_failure is None:
+            _root_worktree_batch(orchestrator, root_transitions,
+                teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
+        else:
+            # A failed observation cannot authorize even admission/audit work
+            # in the root batch. Preserve its whole in-memory manifest and the
+            # first error; independently owed child joins stay with their owner.
+            try:
+                BaseException.__setattr__(sweep_failure, "_zombie_root_transitions", root_transitions)
+            except BaseException:
+                pass
+            if outer_delivery is not None and outer_delivery['orch'] is orchestrator:
+                outer_delivery['suppress_root_batch'] = True
+                outer_delivery['teardown_incomplete'] = True
+                outer_delivery['events'].extend(root_transitions)
 
 
 # ---------------------------------------------------------------------------
@@ -470,8 +504,15 @@ async def zombie_reaper_loop(
                     elif (exc is not primary and len(secondary_errors) < 8
                           and not any(exc is item for item in secondary_errors)):
                         secondary_errors.append(exc)
-                        primary.add_note("zombie cleanup also failed: " + repr(exc)[:512])
+                        try:
+                            BaseException.add_note(primary, "zombie cleanup also failed: " + repr(exc)[:512])
+                        except BaseException:
+                            pass
                     state._startup_recovery._retain_secondary(exc)
+                    rollback = getattr(exc, "_zombie_writer_rollback_secondary", None)
+                    if rollback is not None:
+                        secondary, _ = rollback  # Original traceback is retained on exc.
+                        state._startup_recovery._retain_secondary(secondary)
 
                 async def join_worktree(worker: asyncio.Task) -> None:
                     notifications: list[BaseException] = []
@@ -527,7 +568,7 @@ async def zombie_reaper_loop(
                         worker = asyncio.create_task(
                             _await_terminal_task_worktree(org.orchestrator, task.id))
                         await join_worktree(worker)
-                    if root_transitions:
+                    if root_transitions and not delivery.get('suppress_root_batch', False):
                         worker = asyncio.create_task(_await_root_worktree_batch(
                             org.orchestrator, root_transitions,
                             teardown_incomplete=root_tail_failed or delivery['teardown_incomplete']))

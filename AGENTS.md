@@ -247,7 +247,8 @@ inline hook, including audit failure. Callers without an orchestrator retain
 original audit/error behavior.
 Every captured committed child is joined on success or exceptional unwind,
 including failed v2/legacy parent publication. An ended child error/cancellation
-does not skip later children or the root batch. An earlier sweep/audit/publication
+does not skip later children or a root batch still authorized by a successful
+sweep. A failed sweep suppresses the entire root DB batch. An earlier sweep/audit/publication
 cause and traceback stay first; otherwise each original child/root join's raised
 outcome and original traceback select the primary, independently of secondary
 notification order. An already-failed cleanup stays primary over later waiter
@@ -739,6 +740,23 @@ keeps stop.json/no-follow, date reservation, initial summary before native write
 same-night/no-catchup and the original budget; later refusal reports actual
 marker/report/writer/process scope without rollback or a successful-sweep claim.
 Owned worker termination/reap/report and native writer retirement remain owed.
+
+Both v2 zombie writers retain the SAME captured ordinary admission, including
+the original org-map and queue objects, inside the original RLock and after
+blocking BEGIN, before mutation and COMMIT. A same-member replacement map is
+not the original selection. Explicit pending/startup-held/lost-owner/human
+operations keep their marker. Continued finalization alone is insufficient:
+the marker writer authenticates complete ordinary or exact consumed-Q settlement
+evidence. Refusal uses closed typed stage/completion evidence and the authentic
+root-ESCALATED or child-FAILED disposition without another wake/notification.
+Successfully acquired semantic denials remain bounded; acquisition/decode/lock
+and unexpected projection failures retain the FIRST exception and traceback.
+Owned rollback is attempted at most once, retains its actual secondary failure
+separately, and never consumes an ambient BEGIN/SAVEPOINT. Only successful owned
+precommit rollback proves restoration; uncertain COMMIT/cleanup/late returns
+retain their prefix. A failed sweep suppresses the ENTIRE root DB batch while
+retaining its manifest and independently owed child/worker joins. These are
+SOURCE contracts; behavior and proof remain NOT RUN.
 
 Workspace cleanup renews admission inside its original native reservation,
 report audit and awaited task-ID writer. Original executor workers remain joined

@@ -3901,7 +3901,9 @@ through `Database.consume_v2_fingerprint_and_clear_zombie`: one
 current session generation, immutable result identity, original non-null marker
 and the unique allowed v2 consumption receipt. Any result, owner, session,
 marker, cancellation, replacement or receipt mismatch is a zero-write denial;
-an audit/commit failure rolls back the clear. For a result-absent TTL expiry,
+only successful owned precommit rollback establishes restoration of the clear.
+Failed/uncertain COMMIT, cleanup or late synchronized return retains committed
+or unknown effects. For a result-absent TTL expiry,
 `Database.cancel_zombie_without_fingerprint` uses one transaction to predicate
 the exact owner/session/marker, `in_progress`, null block/cancellation state and
 continued absence of an exact task/agent/session result, then atomically writes
@@ -3912,6 +3914,36 @@ fall back to legacy mutation. Focused coverage lives in
 `tests/test_authority_v2_startup_reaper.py`; the dual-text editor/browser,
 complete parity sweep, main convergence and final review/QA/CI remain later
 units.
+
+The reaper preserves the original explicit `v2_pending`, `startup_held`,
+`lost_owner` or human-operation outcome before marker work. A continued final
+J/K/P/V/E/N/D prefix with Pending/null block is not consumption: the marker
+writer reuses complete typed ordinary completion evidence with no blocking Q,
+or exactly one well-formed consumed Q plus its complete completion/settled audit
+proof. It neither settles Q nor reruns policy. Terminal refusal authenticates
+the closed typed stage and completion, the corresponding genuine root
+ESCALATED or non-root FAILED task proof, and optional candidate evidence; missing
+pre-final evidence that caused refusal is never required anew. Parent wake,
+notification and cleanup remain with their original owner.
+
+Both actual writers receive the SAME originally captured ordinary validator.
+It retains original state/gate/org/refs/epoch/listener-loop/map/queue identity,
+including refusal of a same-member replacement map, and renews inside the
+original synchronized RLock, after blocking BEGIN, before mutation and COMMIT.
+Readiness never gates independently owed rollback or native cleanup. Ambient
+BEGIN/SAVEPOINT remains zero-write refusal without caller commit/rollback.
+Successfully acquired absent/mixed/corrupt/semantic evidence stays a denial;
+actual SQL/lock/audit-JSON/decode or unexpected projection failure propagates
+with its FIRST cause/traceback rather than becoming False/None/malformed or a
+successful reread. Each writer attempts its original owned rollback at most
+once; a denial-rollback failure propagates without a second attempt. Body/COMMIT
+failure stays primary if rollback also fails, retaining the actual secondary
+exception/traceback through guarded diagnostics. A failed sweep preserves its
+whole captured manifest and suppresses the ENTIRE root DB batch, including its
+admission/audit work; original independently owed child/worker joins still run.
+This correction supplies SOURCE dispositions only, with behavior NOT RUN and
+PROOF NOT RUN. Historical focused test pointers above are not execution grants;
+retired units, skipped integration and daily-only E2E limits remain controlling.
 
 Issue #918 historically tightened that contract without changing the schema by
 accepting exact shipped `agent_enrollments` layouts. Founder THR-229 seq351
@@ -4966,7 +4998,8 @@ inline hook, including audit failure. Callers without an orchestrator retain
 original audit/error behavior.
 Every captured committed child is joined on success or exceptional unwind,
 including failed v2/legacy parent publication. An ended child error/cancellation
-does not skip later children or the root batch. An earlier sweep/audit/publication
+does not skip later children or a root batch still authorized by a successful
+sweep. A failed sweep suppresses the entire root DB batch. An earlier sweep/audit/publication
 cause and traceback stay first; otherwise each original child/root join's raised
 outcome and original traceback select the primary, independently of secondary
 notification order. An already-failed cleanup stays primary over later waiter
