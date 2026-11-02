@@ -2383,11 +2383,33 @@ async def cancel_task(
     The corresponding idempotence guards in ``_complete`` / ``_fail`` are the
     other half of the race lock.
     """
+    from runtime.orchestrator.run_step import _JobTailErrors, _kill_jobs_for_terminating_task
+
+    cancel_orch = org.orchestrator
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
+    errors = _JobTailErrors()
+    committed_jobs: dict[str, dict] = {}
+    control_outcomes: list[dict] = []
+    root_outcome: dict = {}
+
+    def finish_jobs() -> None:
+        nonlocal root_tail_failed
+        # Only positive committed captures enter this ledger. Mark before the
+        # hook: an exceptional submission must never be retried in finally.
+        for tid, capture in committed_jobs.items():
+            if capture['attempted']:
+                continue
+            capture['attempted'] = True
+            try:
+                capture['operation'] = _kill_jobs_for_terminating_task(capture['orch'], tid)
+            except BaseException as error:
+                capture['error'] = (error, error.__traceback__)
+                errors.remember(('cancel_job_hook', tid), error)
+                root_tail_failed = True
+
     try:
         from runtime.infrastructure.audit_logger import AuditLogger
-        from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
 
         root = org.db.get_task(task_id)
         if root is None:
@@ -2400,10 +2422,10 @@ async def cancel_task(
             # Workflow-owned execution has no ordinary delegated subtree. Its durable fence
             # precedes containment, whose controls run outside org.db_lock.
             owner = org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts
-            with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
+            with _defer_root_worktree_batches(cancel_orch, root_transitions) as delivery:
                 try:
                     return await _await_worktree_cleanup(owner.cancel, task_id,
-                                                        _cleanup_owner=org.orchestrator)
+                                                        _cleanup_owner=cancel_orch)
                 finally:
                     root_tail_failed |= delivery['teardown_incomplete']
         if root.status in _TERMINAL_TASK_STATUSES and not (
@@ -2446,6 +2468,8 @@ async def cancel_task(
                 raise HTTPException(status_code=409, detail={'code': 'coding_cancellation_reconciliation_required'}) from None
             if cancellation is not None:
                 to_cancel = cancellation['tasks']
+                for tid in to_cancel:
+                    committed_jobs[tid] = dict(orch=cancel_orch, attempted=False)
                 prior_statuses = cancellation['prior']
                 prior_block_kinds = cancellation['block_kinds']
                 root_tail_failed |= cancellation.get('teardown_incomplete', False)
@@ -2469,9 +2493,12 @@ async def cancel_task(
                         stack.extend(org.db.get_children(tid))
             for tid in to_cancel:
                 if cancellation is None:
-                    with _capture_root_worktree_transition(org.orchestrator, tid, 'cancel_task', root_transitions):
+                    with _capture_root_worktree_transition(cancel_orch, tid, 'cancel_task', root_transitions):
                         org.db.update_task(tid, status=TaskStatus.CANCELLED, block_kind=None,
                             note=note, cancelled_at=now, completed_at=now)
+                        # update_task returned after its own COMMIT. Capture
+                        # before context publication and the separate audit.
+                        committed_jobs[tid] = dict(orch=cancel_orch, attempted=False)
                     audit.log_task_cancelled(task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor)
                 from runtime.orchestrator.task_pause import prepared_cancel_controls
                 controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
@@ -2521,7 +2548,7 @@ async def cancel_task(
             )
             if not had_live_subprocess:
                 _maybe_post_thread_followup(
-                    org.orchestrator, tid,
+                    cancel_orch, tid,
                     status=TaskStatus.FAILED, auto_revisit_spawned=False,
                 )
 
@@ -2535,10 +2562,28 @@ async def cancel_task(
         # already exited — fine, the DB row is already in its terminal shape.
         killed: list[dict] = []
         for tid, agent, control in controls_to_invoke:
+            outcome = dict(task_id=tid, agent=agent, control=control)
+            control_outcomes.append(outcome)
+
+            def invoke_control(control=control, outcome=outcome):
+                # The native callable can outlive its cancelled asyncio waiter.
+                # Keep its actual outcome on that SAME original control capture.
+                try:
+                    outcome['result'] = control()
+                except BaseException as error:
+                    outcome['error'] = (error, error.__traceback__)
+                    raise
+                finally:
+                    outcome['finished'] = True
+
             try:
-                await asyncio.to_thread(control)
+                await asyncio.to_thread(invoke_control)
                 killed.append({"task_id": tid, "agent": agent})
+            except asyncio.CancelledError as exc:
+                outcome['waiter_error'] = (exc, exc.__traceback__)
+                raise
             except Exception as exc:
+                outcome['waiter_error'] = (exc, exc.__traceback__)
                 root_tail_failed |= cancellation is not None
                 logger.warning(
                     "cancel %s: opaque cancel control invocation failed: %s",
@@ -2550,12 +2595,16 @@ async def cancel_task(
             if cancellation is None:
                 org.sessions.clear(tid, agent)
         for tid, agent, pid in pids_without_control:
+            outcome = dict(task_id=tid, agent=agent, pid=pid)
+            control_outcomes.append(outcome)
             try:
                 os.kill(pid, signal.SIGTERM)
+                outcome['request_issued'] = True
                 killed.append({"task_id": tid, "agent": agent, "pid": pid})
-            except ProcessLookupError:
-                pass
+            except ProcessLookupError as exc:
+                outcome['error'] = (exc, exc.__traceback__)
             except OSError as exc:
+                outcome['error'] = (exc, exc.__traceback__)
                 root_tail_failed |= cancellation is not None
                 logger.warning(
                     "cancel %s: os.kill(%s, SIGTERM) failed: %s", tid, pid, exc,
@@ -2575,17 +2624,17 @@ async def cancel_task(
 
         # Phase 4: kill persistent jobs owned by any cancelled task. Fire-and-
         # forget so the route response isn't blocked on the 5s SIGTERM grace.
-        for tid in to_cancel:
-            _kill_jobs_for_terminating_task(org.orchestrator, tid)
+        finish_jobs()
+        errors.raise_first()
 
-        if org.orchestrator is not None:
+        if cancel_orch is not None:
             from runtime.orchestrator.run_step import (
                 _await_terminal_task_worktree,
             )
             for tid in to_cancel:
                 task = org.db.get_task(tid)
                 if not root_transitions and task is not None and task.parent_task_id is not None:
-                    await _await_terminal_task_worktree(org.orchestrator, tid)
+                    await _await_terminal_task_worktree(cancel_orch, tid)
 
         return {
             "ok": True,
@@ -2593,12 +2642,24 @@ async def cancel_task(
             "cancelled": to_cancel,
             "killed": killed,
         }
-    except BaseException:
+    except BaseException as error:
         root_tail_failed = True
-        raise
+        errors.remember('cancel_request', error)
     finally:
+        # Phase4 remains in its normal position. Exceptional exits discharge
+        # only still-unattempted, positively committed captures, off all locks.
+        finish_jobs()
         if root_transitions:
-            await _await_root_worktree_batch(org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
+            try:
+                root_outcome['result'] = await _await_root_worktree_batch(
+                    cancel_orch, root_transitions, teardown_incomplete=root_tail_failed)
+            except BaseException as error:
+                root_outcome['error'] = (error, error.__traceback__)
+                errors.remember('cancel_root_cleanup', error)
+        if errors.primary is not None:
+            BaseException.__setattr__(errors.primary, '_cancel_task_outcomes',
+                                      (committed_jobs, control_outcomes, root_outcome))
+        errors.raise_first()
 
 
 # ── Task attachment routes (THR-109) ─────────────────────────────────────────

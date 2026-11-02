@@ -25,7 +25,13 @@ Sessionless carriers remain valid; accepted recovery keeps the separate exact
 ledger/INTEGER-result conditional writer. After a positive terminal CAS or an
 accepted completed/nonroot consumed receipt, verdict/history failure still owes
 that capture's job hook exactly once outside writer locks, under the same current
-owner predicates. No transition/receipt replay follows. Its E1/object/traceback
+owner predicates. Direct cancel retains tasks from a positive coding-batch return
+and captures each legacy per-task COMMIT before its separate audit/publication.
+It attempts each unattempted job hook on exceptional/cancelled unwind as well. One hook failure
+cannot skip other committed hooks or independent root work. Its native control
+outcomes remain separately retained if the original waiter is cancelled; document
+cancel keeps its separate receiver. No transition/receipt replay follows.
+Its E1/object/traceback
 stays primary across actual later job, owner-reread and root-finally errors or
 cancellation; those later errors are retained separately. Root before/after captures remain
 outside the native teardown/publication tail, with both unwind layers and whole
@@ -5241,7 +5247,12 @@ existing maintenance barrier before either Task or native Thread submission.
 They remain visible through grace, backstop, parent/root work, actual native exit
 and original-loop retirement. Active/unknown tails refuse idle/detach/DB close;
 enqueue/start-then-raise or missing acknowledgements retain the same owner without
-resubmission or waiting for an absent worker. Task termination also records stop
+resubmission or waiting for an absent worker. The private foreign-loop request
+observes one fixed five-second acknowledgement window per original signal stage,
+unchanged by cancellation. Missing acknowledgement returns UNKNOWN/refusal with
+the same callback/Future/wrapper and sticky uncertainty retained even after late
+actual completion. Other original stages/targets remain owed; this bound proves
+neither no-run nor native exit/retirement. Task termination also records stop
 intent on the actual registered pending spawn's owning loop. A later successful
 SAME Process receives no script input and owes its original stop/reap/pumps and
 finalization. Pause alone does not create this task-ended obligation.

@@ -16,6 +16,7 @@ import os
 import shutil
 import signal
 import threading
+import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -130,6 +131,7 @@ class _JobRegistration:
     # exists. Pause alone never creates this obligation.
     task_ended: bool = False
     task_end_handoffs: dict = field(default_factory=dict)
+    task_end_custody: dict = field(default_factory=dict)
     task_end_errors: dict = field(default_factory=dict)
     task_end_lock: object = field(default_factory=threading.RLock, repr=False)
 
@@ -1144,8 +1146,12 @@ def in_flight_job_ids(*, db) -> list[str]:
     return [_validate_registration(r).job_id for r in tuple(_INFLIGHT.values()) if r.db is db]
 
 
+# This private request acknowledgement bound is not a native-stop deadline.
+_TASK_END_ACK_SECONDS = 5.0
+
+
 async def _task_end_on_runner_loop(r, sig):
-    """One identity-bound request/acknowledgement on the actual runner's loop."""
+    """One identity-bound request, with finite observation of missing proof."""
     loop = r.task.get_loop()
     current = asyncio.get_running_loop()
 
@@ -1160,11 +1166,12 @@ async def _task_end_on_runner_loop(r, sig):
             return True  # SAME pending creation must reconcile before stdin.
         return _signal_registered_job(r, 'task_ended', sig)
 
-    if current is loop:
-        return request()
-    # A worker tail must never operate an asyncio Task/Process on a foreign
-    # loop. Retain the actual callback/Future even when posting enqueues then
-    # raises; there is no retry or inference that the callback did not run.
+    def retain(kind, error):
+        with r.task_end_lock:
+            r.task_end_errors.setdefault((kind, sig), (error, error.__traceback__))
+
+    # Selection only: no DB validation, callback, await or loop handoff under
+    # this mutex. Keep the SAME request/Future even after enqueue-then-raise.
     with r.task_end_lock:
         handoff = r.task_end_handoffs.get(sig)
         submit = handoff is None
@@ -1172,29 +1179,123 @@ async def _task_end_on_runner_loop(r, sig):
             handoff = Future()
             handoff.set_running_or_notify_cancel()
             r.task_end_handoffs[sig] = handoff
-        failed_submission = r.task_end_errors.get(('submission', sig))
-    if failed_submission is not None:
-        raise failed_submission[0].with_traceback(failed_submission[1])
+            custody = dict(registration=r, loop=loop, future=handoff, request=request,
+                           foreign=current is not loop,
+                           deadline=time.monotonic() + _TASK_END_ACK_SECONDS,
+                           posting_started=False, posted=False, acknowledged=False,
+                           wrappers={})
+            r.task_end_custody[sig] = custody
+        else:
+            custody = r.task_end_custody[sig]
+        failed = (r.task_end_errors.get(('submission', sig))
+                  or r.task_end_errors.get(('acknowledgement', sig))
+                  or r.task_end_errors.get(('wrapper_setup', sig)))
+    if failed is not None:
+        raise failed[0].with_traceback(failed[1])
     if submit:
         def deliver():
+            error = None
             try:
-                handoff.set_result(request())
-            except BaseException as error:
-                r.task_end_errors.setdefault(sig, (error, error.__traceback__))
+                custody['result'] = custody['request']()
+            except BaseException as caught:
+                error = caught
+                custody['error'] = (error, error.__traceback__)
+                retain('callback', error)
                 r.tail_failed = True
-                handoff.set_exception(error)
+            # Publish acknowledgement before completing the Future: its waiter
+            # may resume immediately on another loop. Late actual outcomes never
+            # clear prior uncertainty, even when the request really succeeded.
+            custody['acknowledged_at'] = time.monotonic()
+            custody['acknowledged'] = True
+            try:
+                if error is None:
+                    handoff.set_result(custody['result'])
+                else:
+                    handoff.set_exception(error)
+            except BaseException as completion_error:
+                retain('completion', completion_error)
+                r.tail_failed = True
+        custody['deliver'] = deliver
         try:
-            if not loop.is_running() or loop.is_closed():
-                raise RuntimeError('job_task_end_loop_unavailable')
-            loop.call_soon_threadsafe(deliver)
+            if current is loop:
+                deliver()  # Original-loop fast path has no loop post or await.
+            else:
+                if not loop.is_running() or loop.is_closed():
+                    raise RuntimeError('job_task_end_loop_unavailable')
+                custody['posting_started'] = True
+                loop.call_soon_threadsafe(deliver)
+                custody['posted'] = True
         except BaseException as error:
-            r.task_end_errors.setdefault(('submission', sig), (error, error.__traceback__))
+            retain('submission', error)
             r.tail_failed = True
             raise
-    from runtime.daemon.startup_recovery import _await_startup_owned
-    def retain(error):
-        r.task_end_errors.setdefault(('waiter', sig), (error, error.__traceback__))
-    return await _await_startup_owned(asyncio.wrap_future(handoff), retain)
+
+    # Each actual caller loop retains its own wrapper of the original Future.
+    # asyncio.wait never cancels it on timeout or waiter cancellation. No
+    # replacement completion, signal replay, polling or general waiter change.
+    owned = custody['wrappers'].get(current)
+    if owned is None:
+        try:
+            owned = asyncio.wrap_future(handoff)
+            custody['wrappers'][current] = owned
+
+            def observe(done):
+                try:
+                    done.result()
+                except BaseException as error:
+                    retain('wrapper', error)
+            custody.setdefault('observers', {})[current] = observe
+            owned.add_done_callback(observe)
+        except BaseException as error:
+            retain('wrapper_setup', error)
+            r.tail_failed = True
+            BaseException.__setattr__(error, '_job_task_end_custody', custody)
+            raise
+
+    primary = traceback = None
+    while True:
+        remaining = custody['deadline'] - time.monotonic()
+        if handoff.done() or owned.done() or remaining <= 0:
+            break
+        try:
+            await asyncio.wait((owned,), timeout=remaining)
+        except asyncio.CancelledError as error:
+            # Prefer an already actual callback failure over later cancellation;
+            # otherwise keep the first cancellation/message/traceback intact.
+            earlier = custody.get('error')
+            if primary is None:
+                primary, traceback = earlier if earlier is not None else (error, error.__traceback__)
+            retain('waiter', error)
+        except BaseException as error:
+            if primary is None:
+                primary, traceback = error, error.__traceback__
+            retain('wait', error)
+            break
+
+    acknowledged = (handoff.done() and custody['acknowledged']
+                    and (not custody['foreign']
+                         or custody['acknowledged_at'] <= custody['deadline']))
+    if not acknowledged:
+        try:
+            raise RuntimeError('job_task_end_acknowledgement_unknown')
+        except RuntimeError as error:
+            retain('acknowledgement', error)
+            r.tail_failed = True
+            if primary is None:
+                primary, traceback = error, error.__traceback__
+    else:
+        # Consume only this original callback's actual outcome. Its wrapper
+        # remains retained even when delivery to the waiter loop is delayed.
+        try:
+            result = handoff.result()
+        except BaseException as error:
+            if primary is None:
+                primary, traceback = error, error.__traceback__
+            retain('outcome', error)
+    if primary is not None:
+        BaseException.__setattr__(primary, '_job_task_end_custody', custody)
+        raise primary.with_traceback(traceback)
+    return result
 
 
 async def terminate_jobs_for_task(
@@ -1219,7 +1320,11 @@ async def terminate_jobs_for_task(
             failures.append((r, 'request', error, error.__traceback__))
             # A waiter cancellation can follow the actual acknowledged TERM.
             # That original request still owes its KILL stage exactly once.
-            if r.task_ended and r not in requested:
+            custody = r.task_end_custody.get(signal.SIGTERM)
+            # Unknown posting may still deliver this SAME TERM later. Its
+            # original independent KILL stage remains owed, without reposting
+            # TERM or pretending that acknowledgement proved native exit.
+            if (r.task_ended or custody is not None and custody['posting_started']) and r not in requested:
                 requested.append(r)
             if primary is None:
                 primary, traceback = error, error.__traceback__

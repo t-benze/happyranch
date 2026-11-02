@@ -230,8 +230,12 @@ parent/root work. Positive submission, body/run completion, actual native exit,
 original-loop handoff and retirement acknowledgements are required; active or
 unknown tails refuse dependent idle/remove/swap/direct/global/lifespan DB close.
 Enqueue/start-then-raise and missing acknowledgements retain the original owner,
-without resubmission, shield spin or an absent-worker wait. Actual earlier and
-later errors/tracebacks occupy separate fixed slots. Active maintenance is not
+without resubmission, shield spin or an absent-worker wait. Each private foreign-loop signal-stage request has one fixed five-second
+acknowledgement window,
+including repeated cancellation. Missing proof returns UNKNOWN/refusal and retains
+the same callback/Future/wrapper; a late real outcome cannot clear uncertainty or
+certify no-run/native exit/retirement. Other original stages/targets stay owed.
+Actual earlier and later errors/tracebacks occupy separate fixed slots. Active maintenance is not
 an early reason to skip independent drains. Positive final native/maintenance/
 executor/reader/service/runner barriers still precede DB destruction. Job and disk
 spawn/reap/report waits preserve the first observed cause, original traceback
@@ -249,8 +253,15 @@ Marked projection native uncertainty escapes operation isolation to the retained
 maintenance barrier and stops further ticks; ordinary errors remain isolated.
 Positive ordinary terminal CAS and accepted completed/nonroot recovery receipts
 owe their same-owner job hook exactly once, outside writer locks, even when
-verdict/history bookkeeping fails. No terminal/receipt replay or lost-owner waiver
-follows. Bookkeeping or job-drain E1 retains its original object/traceback through
+verdict/history bookkeeping fails. Direct cancellation retains the tasks in a
+positive coding-batch return; each legacy per-task COMMIT is captured before its
+separate audit/publication. Exceptional or cancelled unwind attempts each
+still-owed hook once, without
+skipping other committed hooks or independent root work after a hook failure.
+Document cancellation retains its separate dispatcher. Original control outcomes
+and later hook/root errors remain attributable beside the first request cause.
+No terminal/receipt replay or lost-owner waiver follows. Bookkeeping or job-drain
+E1 retains its original object/traceback through
 later owner-reread/root-finally E2 or cancellation; actual later errors stay
 separately retained. Task-ended stop intent also binds to the SAME real pending
 job registration on its actual runner loop. After the SAME successful creation,

@@ -444,6 +444,15 @@ Drain/idle refuse active or unknown tails without an absent-worker wait, retry o
 inferred no-run; direct close, remove, runtime swap, global and lifespan close
 consult the same barrier. Earlier bookkeeping/job E1 and original traceback stay
 primary across later independent cleanup errors, retained in fixed slots.
+Direct cancel retains a positive coding-batch return and captures each legacy
+per-task COMMIT before its separate audit/publication. It attempts each job hook
+once on exceptional/cancelled unwind, retaining the original request cause,
+actual control/hook outcomes and independent root work.
+The private foreign-loop request has one fixed five-second acknowledgement window
+per original signal stage. Missing acknowledgement returns UNKNOWN/refusal while
+retaining the same callback/Future/wrapper and sticky custody, including late real
+outcomes. Neither this bound nor late success proves native exit or retirement;
+other original targets/stages remain owed without request replay.
 Active maintenance is joined or refuses destruction before the final idle
 preflight. Positive original startup/read/service/revocation/host/
 consumer/queue/job/maintenance barriers and executor closure permit dependent

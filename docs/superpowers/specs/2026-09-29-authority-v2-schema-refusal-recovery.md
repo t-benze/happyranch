@@ -108,8 +108,19 @@ submission/start/handoff/retirement acknowledgement refuses dependent destructio
 without resubmission or an absent-worker wait. A positive terminal CAS or accepted
 completed/nonroot consumed receipt still owes its job hook exactly once when
 verdict/history fails, under the original current-owner checks and outside writer
-locks. Original bookkeeping/drain E1 and its traceback survive later owner-reread,
-root-join E2 or cancellation, with actual later errors retained independently.
+locks. Direct cancel retains tasks from a positive coding-batch return and
+captures each legacy per-task COMMIT before its separate audit/publication.
+It attempts each unattempted hook on exceptional/cancelled unwind without
+skipping other captures or root work.
+The first request cause and actual later control/hook/root outcomes stay distinct.
+Its document dispatcher remains separate. Each private foreign-loop signal-stage
+request has one fixed five-second acknowledgement window through cancellation.
+Missing acknowledgement gives UNKNOWN/refusal with the original callback/Future/
+wrapper retained, no replay and sticky uncertainty even after a late real outcome.
+Remaining original stages/targets still progress; the bound proves neither no-run
+nor native exit/retirement. Original bookkeeping/drain E1 and its traceback
+survive later owner-reread, root-join E2 or cancellation, with actual later errors
+retained independently.
 Task-end intent targets the SAME registered pending spawn on its owning loop;
 a successful late Process receives no script input and owes original native/
 pump/finalization cleanup. Pause's committed drain and cold first-cause ownership

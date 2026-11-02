@@ -58,6 +58,13 @@ intent suppresses script stdin and owes original Process stop/reap, pumps and
 finalization; failed creation supplies no invented Process. This is distinct from
 Pause, which still lets actual committed work drain. Foreign-loop handoff failure
 retains the actual registration/request/error without retry or PID adoption.
+Each original private foreign-loop signal-stage request has a fixed five-second
+acknowledgement window, unchanged by repeated waiter cancellation. Missing acknowledgement returns
+UNKNOWN/refusal without cancelling/completing/replacing its retained Future or
+wrapper. The same callback and late actual outcome stay attributable and cannot
+clear the sticky uncertainty. The original TERM/grace/KILL stages and other
+targets remain owed; an uncertain TERM post never resubmits TERM. This observes
+missing proof only, not no-run, native exit, release or settlement.
 The registration also occupies the org's existing native-user close barrier through its committed
 postcommit tail, or remains retained on uncertainty. The separate ordinary task-
 termination tail registers under existing maintenance before Task/Thread submission,
@@ -65,7 +72,12 @@ retaining its original attachment through grace/backstop/parent/root DB work and
 actual native/loop retirement. Active or unknown submission/start/exit/handoff/
 retirement refuses dependent close without resubmission or an absent-worker wait.
 Positive terminal/consumed-receipt cleanup is attempted exactly once even after
-verdict/history failure, with original ownership and outside writer locks. Earlier
+verdict/history failure, with original ownership and outside writer locks. Direct
+cancel captures tasks from a positive coding-batch return; each legacy per-task
+COMMIT is captured before its separate audit/publication. Exceptional/cancelled
+unwind attempts every unattempted hook once; a hook failure skips neither other committed hooks nor independent
+root work. Original request cancellation/E1 and actual later control/hook/root
+outcomes remain distinct; document cancel retains its separate dispatcher. Earlier
 bookkeeping/drain E1/object/traceback survives later root/owner/cancellation E2;
 actual later errors remain independently retained, without terminal/receipt replay.
 Signals, output pumps,
