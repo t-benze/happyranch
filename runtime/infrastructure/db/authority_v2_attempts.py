@@ -1036,6 +1036,7 @@ class AuthorityV2AttemptsMixin:
 
     def _v2_contender_is_authentic_owner(
         self, *, attempt_id: str, owner_attempt_id: str, origin_boot_id: str,
+        raise_on_read_failure: bool = False,
     ) -> bool:
         """True only when this caller presents the real uninterrupted owner proof.
 
@@ -1044,6 +1045,11 @@ class AuthorityV2AttemptsMixin:
         Persisted UUID strings are readable identity markers, not proof, so a
         wrong-boot / wrong-token / wrong-tuple contender is classified as
         unauthorized and never changes the original owner's liveness.
+
+        Transaction owners require an available read before proceeding: an
+        ordinary SELECT failure must escape rather than cache unavailable proof
+        as False before a later authenticator could succeed. Diagnostic-only
+        classification keeps its bounded False without guessing ownership.
         """
         if self._v2_live_attempt_owners.get(attempt_id) != owner_attempt_id:
             return False
@@ -1054,6 +1060,8 @@ class AuthorityV2AttemptsMixin:
                 (attempt_id,),
             ).fetchone()
         except Exception:
+            if raise_on_read_failure:
+                raise
             return False
         if row is None:
             return False
@@ -1930,7 +1938,7 @@ class AuthorityV2AttemptsMixin:
         now = _now().isoformat()
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         conn = self._conn
         try:
@@ -2711,7 +2719,7 @@ class AuthorityV2AttemptsMixin:
         now = _now().isoformat()
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         conn = self._conn
         try:
@@ -2969,7 +2977,7 @@ class AuthorityV2AttemptsMixin:
         now = _now().isoformat()
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         conn = self._conn
         try:
@@ -3153,7 +3161,7 @@ class AuthorityV2AttemptsMixin:
         now = _now().isoformat()
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         conn = self._conn
         try:
@@ -3311,7 +3319,7 @@ class AuthorityV2AttemptsMixin:
             )
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         conn = self._conn
         try:
@@ -3499,7 +3507,7 @@ class AuthorityV2AttemptsMixin:
         now = _now().isoformat()
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         conn = self._conn
         try:
@@ -4087,7 +4095,7 @@ class AuthorityV2AttemptsMixin:
                 owner_attempt_id is not None
                 and self._v2_contender_is_authentic_owner(
                     attempt_id=attempt.attempt_id, owner_attempt_id=owner_attempt_id,
-                    origin_boot_id=attempt.origin_boot_id,
+                    origin_boot_id=attempt.origin_boot_id, raise_on_read_failure=True,
                 )
             )
             # Optional candidate (K) identity, if one was created.

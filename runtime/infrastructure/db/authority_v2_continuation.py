@@ -1175,7 +1175,7 @@ class AuthorityV2ContinuationMixin:
             )
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         now = _now().isoformat()
         conn = self._conn

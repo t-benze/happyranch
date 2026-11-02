@@ -2967,6 +2967,15 @@ failure rethrows the same primary on the captured original connection; clean
 rollback retains each owner's existing rethrow or bounded-pending handling.
 Opaque primary errors keep their existing propagation, without broadening
 those primary catches. Failure of a diagnostic note cannot replace the primary.
+The six pre-final stages, final continuation and terminal refusal owner require
+an available initial ownership read before fresh mutation. An ordinary failure
+of that read escapes as the same error; it cannot be cached as False while a
+later authenticator succeeds and writes. The stage/final entries stop before
+BEGIN; terminal refusal stops before writes in its original transaction and
+retains the original error through failed cleanup. Missing registration or a
+durable mismatch remains unauthenticated, never guessed ownership. Diagnostic
+classification retains its bounded handling. Historical terminal replay and
+old-boot/failed-owner/obligation housekeeping still require no new live token.
 An ordinary failure at any of the six pre-final stages or the final continuation
 marks the already authenticated owner for refusal-only housekeeping and revokes
 its live token before rollback or obligation persistence. Authentication requires
