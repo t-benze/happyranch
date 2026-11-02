@@ -88,6 +88,12 @@ class DaemonState:
         # A marked original failure retains its actual Process and blocks
         # destruction even after its Python wrapper has ended.
         with self._maintenance_workers_lock:
+            cleanup = getattr(worker, '_worktree_cleanup_owner', None)
+            if cleanup is not None:
+                if not cleanup.retirement_ready:
+                    return
+                if worker not in self._maintenance_workers and not cleanup.retired:
+                    raise RuntimeError('worktree_cleanup_retirement_owner_missing')
             if worker.done() and not worker.cancelled():
                 failure = worker.exception()
                 if failure is None or not getattr(failure, "maintenance_native_unsettled", False):
@@ -112,6 +118,13 @@ class DaemonState:
             workers = tuple(self._maintenance_workers)
         for worker in workers:
             try:
+                cleanup = getattr(worker, '_worktree_cleanup_owner', None)
+                if cleanup is not None:
+                    # Missing submission/native/loop/retirement acknowledgement
+                    # is retained custody, not an endlessly awaitable operation.
+                    failure = cleanup.maintenance_error()
+                    if failure is not None:
+                        raise failure
                 if worker is asyncio.current_task():
                     raise _OrgBusyError("maintenance_self_join_refused")
                 completion = asyncio.wrap_future(worker) if isinstance(worker, Future) else worker

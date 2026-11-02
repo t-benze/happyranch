@@ -2402,7 +2402,8 @@ async def cancel_task(
             owner = org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts
             with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
                 try:
-                    return await _await_worktree_cleanup(owner.cancel, task_id)
+                    return await _await_worktree_cleanup(owner.cancel, task_id,
+                                                        _cleanup_owner=org.orchestrator)
                 finally:
                     root_tail_failed |= delivery['teardown_incomplete']
         if root.status in _TERMINAL_TASK_STATUSES and not (

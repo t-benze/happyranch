@@ -1269,26 +1269,250 @@ async def _await_root_worktree_batch(orch, transitions, *, teardown_incomplete=F
     if startup is not None:
         return startup.merge(transitions, teardown_incomplete=teardown_incomplete)
     return await _await_worktree_cleanup(_root_worktree_batch, orch, transitions,
+                                        _cleanup_owner=orch,
                                         teardown_incomplete=teardown_incomplete)
 
 
 async def _await_terminal_task_worktree(orch: "Orchestrator", task_id: str) -> TerminalWorktreeReclaimOutcome:
     """Await the existing child hook outside the event loop and owner locks."""
-    return await _await_worktree_cleanup(_reclaim_terminal_task_worktree, orch, task_id)
+    return await _await_worktree_cleanup(_reclaim_terminal_task_worktree, orch, task_id,
+                                        _cleanup_owner=orch)
 
 
-async def _await_worktree_cleanup(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
-    cancelled = False
-    while True:
+class _WorktreeCleanupOwner:
+    """Custody of ONE callable, independent of its cancellable asyncio wrapper."""
+
+    def __init__(self, orch: Any, operation: Callable[..., Any], args: tuple, kwargs: dict) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.lock = threading.RLock()
+        self.orch, self.operation = orch, operation
+        self.args, self.kwargs = args, kwargs
+        self.state = None if orch is None else orch._startup_state
+        self.org = None if orch is None else orch._startup_org
+        self.gate = None if orch is None else orch._startup_recovery
+        self.refs = None if self.org is None else self.org._startup_admission_refs
+        self.org_map = None if self.state is None else self.state.orgs
+        self.runtime = None if self.state is None else self.state.runtime
+        self.queue = None if self.state is None else self.state.queue
+        self.epoch = None if self.gate is None else self.gate.epoch
+        self.original_loop = None if self.gate is None else self.gate._loop
+        self.receiver = getattr(operation, '__self__', None)
+        self.receiver_slot = None
+        if self.org is not None and self.receiver is not None:
+            for name in ('workflow_drafts', 'workflow_reviews'):
+                if getattr(self.org, name) is self.receiver:
+                    self.receiver_slot = name
+                    break
+            if self.receiver_slot is None:
+                raise RuntimeError('worktree_cleanup_receiver_changed')
+        self.validate()
+        self.completion = Future()
+        self.completion.set_running_or_notify_cancel()
+        self.completion._worktree_cleanup_owner = self
+        self.worker = None
+        self.wrapper_observed = False
+        self.wrapper_result = None
+        self.started = self.finished = self.handed_off = self.acknowledged = False
+        self.retirement_ready = self.retired = self.unknown = False
+        self.result = self.primary = self.traceback = self.unsettled = None
+        # Actual errors cannot be displaced by repeated cancellation notes.
+        self.errors = dict.fromkeys(('submission', 'wrapper', 'worker_outcome', 'native', 'handoff',
+                                    'retirement', 'coroutine_close', 'diagnostic'))
+        self.error_tracebacks = self.errors.copy()
+        self.notifications = []
+        if self.state is not None:
+            with self.state._maintenance_workers_lock:
+                self.state._maintenance_workers.add(self.completion)
+
+    def validate(self) -> None:
+        # Reference renewal only: independently owed cleanup needs no readiness.
+        if self.orch is None:
+            return
+        if (self.orch._startup_state is not self.state
+                or self.orch._startup_org is not self.org
+                or self.orch._startup_recovery is not self.gate
+                or self.state is None and (self.org is not None or self.gate is not None)
+                or self.state is not None and (self.org is None
+                    or self.state.orgs is not self.org_map or self.state.runtime is not self.runtime
+                    or self.state.queue is not self.queue or self.state._startup_recovery is not self.gate
+                    or self.org_map.get(self.org.slug) is not self.org
+                    or self.org.orchestrator is not self.orch
+                    or self.org.db is not self.orch._db
+                    or self.org._startup_state is not self.state
+                    or self.org._startup_recovery is not self.gate
+                    or self.org._startup_admission_refs is not self.refs
+                    or not isinstance(self.refs, tuple) or len(self.refs) != 7
+                    or any(current is not original for current, original in zip(
+                        (self.org.orchestrator, self.org.db, self.org.sessions, self.org.thread_queue,
+                         self.org.dream_queue, self.org.wake_queue, self.org.schedule_queue), self.refs)))
+                or self.gate is not None and (self.gate.epoch != self.epoch
+                    or self.gate._loop is not self.original_loop)
+                or self.receiver_slot is not None and (
+                    getattr(self.org, self.receiver_slot) is not self.receiver
+                    or self.receiver.org is not self.org)):
+            raise RuntimeError('worktree_cleanup_attachment_changed')
+
+    def fail(self, kind: str, error: BaseException) -> None:
+        with self.lock:
+            if self.errors[kind] is None:
+                self.errors[kind] = error
+                self.error_tracebacks[kind] = error.__traceback__
+
+    def retain(self, error: BaseException) -> None:
+        if not isinstance(error, asyncio.CancelledError):
+            self.fail('wrapper', error)
+        elif len(self.notifications) < 8:
+            self.notifications.append(error)
+
+    def select(self, error: BaseException) -> None:
+        # ONLY the original wait selects precedence, never callback order.
+        if self.primary is None:
+            self.primary, self.traceback = error, error.__traceback__
         try:
-            result = await asyncio.shield(worker)
-            break
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
+            BaseException.__setattr__(self.primary, '_worktree_cleanup_owner', self)
+        except BaseException as diagnostic:
+            self.fail('diagnostic', diagnostic)
+
+    def current_owner(self) -> bool:
+        self.validate()
+        return True
+
+    def run(self) -> Any:
+        with self.lock:
+            self.started = True
+        try:
+            self.validate()
+            if self.operation is _reclaim_terminal_task_worktree:
+                result = self.operation(*self.args, current_owner=self.current_owner, **self.kwargs)
+            else:
+                result = self.operation(*self.args, **self.kwargs)
+            with self.lock:
+                self.result = result  # SAME typed disposition/receipts/process facts.
+            return result
+        except BaseException as error:
+            self.fail('native', error)
+            raise
+        finally:
+            with self.lock:
+                self.finished = True
+                try:
+                    self.loop.call_soon_threadsafe(self.acknowledge)
+                except BaseException as error:
+                    self.fail('handoff', error)
+                else:
+                    self.handed_off = True
+
+    def acknowledge(self) -> None:
+        # Posting can enqueue then raise. Only a successful original post AND
+        # this original-loop observation acknowledge actual callable completion.
+        with self.lock:
+            if self.finished and self.handed_off:
+                self.acknowledged = True
+
+    def maintenance_error(self) -> BaseException | None:
+        with self.lock:
+            if not self.unknown:
+                return None
+            if self.unsettled is None:
+                self.unsettled = RuntimeError('worktree_cleanup_native_unsettled')
+                self.unsettled.maintenance_native_unsettled = True
+                self.unsettled._worktree_cleanup_owner = self
+            return self.unsettled
+
+    def finish(self) -> None:
+        self.acknowledge()
+        with self.lock:
+            if self.worker is not None and self.worker.done() and not self.wrapper_observed:
+                self.wrapper_observed = True
+                try:
+                    self.wrapper_result = self.worker.result()
+                except BaseException as error:
+                    self.fail('worker_outcome', error)
+            self.unknown = (not self.finished or not self.acknowledged
+                or self.worker is None or self.worker.cancelled()
+                or not self.wrapper_observed
+                or self.errors['worker_outcome'] is not self.errors['native']
+                or self.errors['worker_outcome'] is None and self.wrapper_result is not self.result
+                or self.errors['submission'] is not None or self.errors['handoff'] is not None
+                or getattr(self.result, 'kind', None) == 'unknown'
+                or any(getattr(error, 'maintenance_native_unsettled', False)
+                       for error in self.errors.values() if error is not None))
+            failure = self.maintenance_error()
+            if failure is not None and self.primary is not None:
+                self.primary.maintenance_native_unsettled = True
+            # Complete this custody notification even when the original native
+            # callable is unknown/missing; drain must refuse, never wait forever
+            # for an absent worker. Late native outcomes stay in these fixed slots.
+            failure = failure or self.errors['native']
+            if failure is None:
+                self.completion.set_result(self.result)
+            else:
+                self.completion.set_exception(failure)
+            if not self.unknown:
+                self.retirement_ready = True
+                try:
+                    if self.state is not None:
+                        self.state._retire_maintenance_worker(self.completion)
+                        with self.state._maintenance_workers_lock:
+                            if self.completion in self.state._maintenance_workers:
+                                raise RuntimeError('worktree_cleanup_retirement_unacknowledged')
+                    self.retired = True
+                except BaseException as error:
+                    self.retirement_ready = False
+                    self.unknown = True
+                    self.fail('retirement', error)
+                    # A partial retirement cannot drop this original obligation.
+                    with self.state._maintenance_workers_lock:
+                        self.state._maintenance_workers.add(self.completion)
+                    if self.primary is None:
+                        self.select(error)
+                    self.primary.maintenance_native_unsettled = True
+
+
+def _submit_worktree_cleanup(operation: Callable[..., Any], *args: Any,
+                             _cleanup_owner: Any = None, **kwargs: Any) -> _WorktreeCleanupOwner:
+    """Retain before the sole submission, including an enqueue-then-raise."""
+    owner = _WorktreeCleanupOwner(_cleanup_owner, operation, args, kwargs)
+    coroutine = None
+    try:
+        coroutine = asyncio.to_thread(owner.run)
+        owner.worker = asyncio.create_task(coroutine)
+    except BaseException as error:
+        owner.select(error)
+        owner.fail('submission', error)
+        if coroutine is not None:
+            try:
+                coroutine.close()
+            except BaseException as cleanup:
+                owner.fail('coroutine_close', cleanup)
+    return owner
+
+
+async def _join_worktree_cleanup(owner: _WorktreeCleanupOwner) -> Any:
+    from runtime.daemon.startup_recovery import _await_startup_owned
+    if owner.worker is not None:
+        try:
+            result = await _await_startup_owned(owner.worker, owner.retain)
+            if not owner.finished or result is not owner.result:
+                error = RuntimeError('worktree_cleanup_original_outcome_missing')
+                error.maintenance_native_unsettled = True
+                owner.fail('wrapper', error)
+                owner.select(error)
+        except BaseException as error:
+            owner.select(error)
+    owner.finish()
+    if owner.primary is not None:
+        raise owner.primary.with_traceback(owner.traceback)
+    if owner.unknown and getattr(owner.result, 'kind', None) != 'unknown':
+        raise owner.maintenance_error()
+    return owner.result
+
+
+async def _await_worktree_cleanup(operation: Callable[..., Any], *args: Any,
+                                  _cleanup_owner: Any = None, **kwargs: Any) -> Any:
+    owner = _submit_worktree_cleanup(operation, *args, _cleanup_owner=_cleanup_owner, **kwargs)
+    asyncio.current_task()._worktree_cleanup_owner = owner
+    return await _join_worktree_cleanup(owner)
 
 
 def _reclaim_terminal_task_worktree(

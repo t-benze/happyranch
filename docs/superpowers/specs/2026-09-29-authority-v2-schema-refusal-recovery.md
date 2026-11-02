@@ -86,6 +86,28 @@ barriers remain owed through cancellation, stop and late publication. Unsupporte
 cold ``workflow_start`` still remains pending/recovery_failed without a bootstrap
 bridge or ready-only recovery consumer. SOURCE only; behavior/proof NOT RUN.
 
+The S1a cleanup correction retains a local original callable owner under the
+existing maintenance barrier BEFORE its sole native submission. The shared
+waiter preserves the SAME first cause/message/traceback and already-ended-error
+race rule, consuming the SAME worker outcome. Actual later native failures and
+tracebacks remain in fixed slots independently of repeated cancellation notes.
+Cancelled wrappers and enqueue-then-raise or missing handoff/retirement
+acknowledgements retain unknown native custody; no shield spin, inferred no-run
+or resubmission follows. Positive callable completion and successful original-loop
+handoff/retirement are required. Drain refuses unknown ownership without an
+unbounded wait for a possibly absent worker. Reference renewal preserves the
+original org/map/dispatcher; owed cleanup gains no new readiness gate.
+
+At the actual periodic join, a normally returned typed root ``unknown`` retains
+the SAME disposition/receipts/process facts and original owner through maintenance,
+idle/detach and DB-close, and stops dependent periodic activity. Earlier E1 stays
+primary beside actual later outcomes. Independently owed original children and
+an otherwise authorized root tail still join; a failed sweep suppresses the
+ENTIRE root DB batch, including admission/report. Safe/preserved/deferred keep
+their local meanings, with no host/native closure inference or extra allowance.
+Behavior NOT RUN; PROOF NOT RUN. This source repair does not discharge wider
+shutdown, original resource/case eligibility or operator acceptance.
+
 ## Current startup observation extension — ROOT13137
 
 The actual authority startup consuming lifetime now exports fixed scalar counter/

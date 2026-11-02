@@ -292,7 +292,8 @@ async def reconcile_portability(
             if body.disposition == "cancel":
                 with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
                     try:
-                        return await _await_worktree_cleanup(owner.cancel, task_id)
+                        return await _await_worktree_cleanup(owner.cancel, task_id,
+                                                            _cleanup_owner=org.orchestrator)
                     finally:
                         root_tail_failed |= delivery['teardown_incomplete']
             # A transport result/PID cannot establish finalized containment.

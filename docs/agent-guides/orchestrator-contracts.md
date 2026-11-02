@@ -2315,6 +2315,30 @@ offloads only the child hooks and captured root batch. Nonterminal or lost-CAS
 paths create no event. Schema normalization and already-terminal history remain
 excluded.
 
+The shared finite cleanup waiter registers a local original callable owner under
+the daemon maintenance barrier before submission can enqueue and raise. It
+consumes the SAME wrapper outcome and retains the SAME first cause/message/
+traceback, with an already-ended failure preceding racing waiter cancellation.
+Later actual worker errors/tracebacks occupy fixed slots independently of bounded
+repeated-cancellation notes. A cancelled wrapper never proves native exit or
+no-run and is never shield-spun or resubmitted. Positive callable completion,
+successful original-loop handoff and retirement acknowledgement are required;
+missing submission/wrapper/acknowledgement retains unknown ownership and makes
+drain refuse rather than wait forever for an absent worker. Original org/map/
+dispatcher references are renewed before effects, without fresh readiness for
+owed cleanup. The two direct task/portability draft/review cancel calls bind their
+actual dispatcher and orchestrator; return shapes and ordering are unchanged.
+
+The periodic join consumes normal typed `unknown` root results as well as raised
+errors, retaining the original disposition, receipts/process facts and callable
+at the maintenance/idle/detach/DB-close barrier. It continues all independently
+owed original child joins and an otherwise authorized root tail before propagating
+the first cause; a failed sweep still suppresses the ENTIRE root DB batch,
+including admission/report. Unknown native custody stops dependent periodic
+activity. No retry, new sweep or allowance follows. Safe/preserved/deferred are
+local dispositions, not host closure. This S1a source correction has behavior
+NOT RUN / PROOF NOT RUN; wider shutdown and operator acceptance stay open.
+
 Dirty, local-only, open/closed-unmerged PR, active session/control/PID/job,
 unsettled host/recovery, held, successor-use-unresolved, foreign, protected or
 unknown evidence retains. Terminality and a cleared tracker are not quiescence.

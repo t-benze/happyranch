@@ -490,7 +490,8 @@ async def zombie_reaper_loop(
                 validate_org()
                 from runtime.orchestrator.run_step import (
                     _defer_root_worktree_batches, _RootWorktreeTransitions,
-                    _await_root_worktree_batch, _await_terminal_task_worktree,
+                    _root_worktree_batch, _reclaim_terminal_task_worktree,
+                    _submit_worktree_cleanup, _join_worktree_cleanup,
                 )
                 root_transitions = _RootWorktreeTransitions()
                 child_worktrees = []
@@ -498,12 +499,14 @@ async def zombie_reaper_loop(
                 primary = None
                 primary_traceback = None
                 secondary_errors = []
+                cleanup_outcomes = []
+                native_unsettled = False
                 delivery = {"teardown_incomplete": False}
-                from runtime.daemon.startup_recovery import _await_startup_owned
 
                 def retain_failure(exc):
-                    nonlocal primary, primary_traceback, root_tail_failed
+                    nonlocal primary, primary_traceback, root_tail_failed, native_unsettled
                     root_tail_failed = True
+                    native_unsettled |= getattr(exc, 'maintenance_native_unsettled', False)
                     if primary is None:
                         primary, primary_traceback = exc, exc.__traceback__
                     elif (exc is not primary and len(secondary_errors) < 8
@@ -513,46 +516,53 @@ async def zombie_reaper_loop(
                             BaseException.add_note(primary, "zombie cleanup also failed: " + repr(exc)[:512])
                         except BaseException:
                             pass
+                    # One actual outcome per independently owed original join;
+                    # cancellation diagnostics cannot evict the real failures.
+                    BaseException.__setattr__(primary, '_zombie_cleanup_outcomes', cleanup_outcomes)
+                    if native_unsettled:
+                        primary.maintenance_native_unsettled = True
                     state._startup_recovery._retain_secondary(exc)
                     rollback = getattr(exc, "_zombie_writer_rollback_secondary", None)
                     if rollback is not None:
                         secondary, _ = rollback  # Original traceback is retained on exc.
                         state._startup_recovery._retain_secondary(secondary)
 
-                async def join_worktree(worker: asyncio.Task) -> None:
-                    notifications: list[BaseException] = []
+                async def join_worktree(operation, *args, **kwargs) -> None:
+                    # Registration preceded submission. The native owner retains
+                    # its SAME result and fixed error/traceback slots even when
+                    # cancellation selects another first cause at this wait.
+                    owner = None
+                    outcome = dict(owner=None, result=None, selected=None)
+                    cleanup_outcomes.append(outcome)
                     selected = None
-                    worker_failure = None
-
-                    def retain_notification(exc: BaseException) -> None:
-                        if (len(notifications) < 8
-                              and not any(exc is item for item in notifications)):
-                            notifications.append(exc)
-
                     try:
-                        await _await_startup_owned(worker, retain_notification)
+                        owner = _submit_worktree_cleanup(operation, *args,
+                            _cleanup_owner=org.orchestrator, **kwargs)
+                        outcome['owner'] = owner
+                        outcome['result'] = await _join_worktree_cleanup(owner)
                     except BaseException as exc:
-                        # The original join selects cause/traceback order;
-                        # secondary callback delivery can put cancellation first.
                         selected = exc
+                        outcome['selected'] = (exc, exc.__traceback__)
                         retain_failure(exc)
                     finally:
-                        # Cancellation traffic cannot exhaust custody of the
-                        # SAME original worker's outcome. Observe it only after
-                        # completion, after selecting the helper's primary and
-                        # before folding bounded cancellation diagnostics.
-                        if worker.done():
-                            try:
-                                worker.result()
-                            except BaseException as exc:
-                                worker_failure = exc
+                        if owner is not None:
+                            outcome['result'] = owner.result
+                            failure = owner.errors['native']
+                            if failure is not None and failure is not selected:
+                                retain_failure(failure)
+                            wrapper_failure = owner.errors['worker_outcome']
+                            if (wrapper_failure is not None and wrapper_failure is not selected
+                                    and wrapper_failure is not failure):
+                                retain_failure(wrapper_failure)
+                            # A normal unknown root result has the same custody as
+                            # wrapper/submission/handoff uncertainty. Its exact
+                            # receipts and processes remain on this original owner.
+                            failure = owner.maintenance_error()
+                            if failure is not None:
+                                retain_failure(failure)
+                            for exc in owner.notifications:
                                 if exc is not selected:
                                     retain_failure(exc)
-                        else:
-                            retain_failure(RuntimeError("zombie_cleanup_outcome_unsettled"))
-                        for exc in notifications:
-                            if exc is not selected and exc is not worker_failure:
-                                retain_failure(exc)
 
                 try:
                     with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
@@ -570,14 +580,12 @@ async def zombie_reaper_loop(
                     # Join each once outside capture/DB locks; one ended error
                     # or cancellation cannot discard the remaining obligations.
                     for task in child_worktrees:
-                        worker = asyncio.create_task(
-                            _await_terminal_task_worktree(org.orchestrator, task.id))
-                        await join_worktree(worker)
+                        await join_worktree(
+                            _reclaim_terminal_task_worktree, org.orchestrator, task.id)
                     if root_transitions and not delivery.get('suppress_root_batch', False):
-                        worker = asyncio.create_task(_await_root_worktree_batch(
-                            org.orchestrator, root_transitions,
-                            teardown_incomplete=root_tail_failed or delivery['teardown_incomplete']))
-                        await join_worktree(worker)
+                        await join_worktree(
+                            _root_worktree_batch, org.orchestrator, root_transitions,
+                            teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
                 if primary is not None:
                     raise primary.with_traceback(primary_traceback)
                 validate_state()
@@ -587,7 +595,11 @@ async def zombie_reaper_loop(
                     raise
                 logger.warning("zombie reaper selected runtime retired: %s", exc)
                 break
-            except Exception:
+            except Exception as exc:
+                if getattr(exc, 'maintenance_native_unsettled', False):
+                    # Independent original joins above are still owed, but no
+                    # dependent org/tick may start after uncertain native cleanup.
+                    raise
                 logger.exception(
                     "zombie reaper sweep failed for org %s", org.slug,
                 )

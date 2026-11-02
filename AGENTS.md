@@ -262,6 +262,23 @@ notes are full; no unfinished worker is treated as successful. Root teardown
 stays incomplete after a tail failure. No terminal
 replay, rescan or cleanup-success inference follows.
 
+The periodic cleanup join consumes the original typed root disposition, including
+normal `unknown` returns. Before the sole off-loop submission, the local cleanup
+owner is registered under the existing maintenance barrier; it retains the SAME
+callable, wrapper, disposition, receipts/process facts and fixed actual error/
+traceback slots. Callable completion and successful original-loop handoff and
+retirement acknowledgements are required. A cancelled wrapper, enqueue-then-raise,
+missing acknowledgement or unknown disposition retains custody at idle/detach/
+DB-close and stops dependent periodic ticks, without another cleanup attempt.
+Independent original child joins and an otherwise authorized root tail still run;
+failed sweeps suppress the ENTIRE root DB batch. Direct draft/review cancel and
+child/root waiters renew their original org/map/receiver references without a new
+readiness gate. The SAME first cancellation/traceback survives success or later
+failure; already-ended errors retain precedence. Actual later native outcomes
+remain separately retained even after cancellation notes fill. Safe/preserved/
+deferred keep their local meanings; no full host closure follows. These precise
+S1a corrections are SOURCE only: behavior NOT RUN, PROOF NOT RUN.
+
 Daemon-bound thread invocation requires the supplied host to be present and
 identical to the actual bound daemon host, including direct entry with an omitted
 default. Missing/replaced/cross-owner hosts refuse before reservation or preparation;
