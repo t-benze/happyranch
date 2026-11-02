@@ -1,5 +1,349 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+## Controlling local correction — ROOT13808 / Founder THR327seq35/29/28A/26
+
+This section governs the current diagnostic delivery and accumulated test-source
+attribution. Read the [current repository diagnostic contract](../../AGENTS.md)
+and [current Linux package contract](managed-remote-access-linux-package.md)
+first. The ROOT13151 “Current” label, 96-byte private-only frame, ONE outer
+record and second-line-refusal rules below are historical Stage1 statements.
+Their headings, receipts, failures and bytes remain history; they do not govern
+the version1 native/stage records at saved candidate
+`38d519647beca97dc23cb89b2ade661f1132969c` (C). TASK13824 reconstructs these
+answers from C source for its documentation-only descendant; this is neither
+original-author intent nor independent T1/D1 closure. No production, test or
+workflow source is changed by this correction.
+
+The manager accepted TASK13791's SAME24 design and seventeen compositions after
+TASK13793 DESIGN ONLY PASS. Its result SHA256 is
+`d6bc8dde61fc780494d67cf9e54807f863c87ec6a12031ad8c72c385520c88b7`.
+Those are authored examples and design evidence, never actual child/error/run,
+installer, package-download or teardown observations. TASK13788/13790 REVISE,
+13795/13796 assessment-only, 13739 provenance correction, 13282 erratum and
+13151 step19 retain their original subjects. TASK13810 FAILED after3600s without
+an accepted completion/output registration; TASK13819 BLOCK/full review
+incomplete supplies no approval or QA advancement.
+
+### Current parity for the existing diagnostic cases
+
+The real owned nested child's stderr has a 4096-byte physical allowance plus
+ONE128-byte overflow read. Its parser considers at most16 complete512-byte
+frames, counts LF saturating at17, and retains at most two distinct constants.
+Parsing quotas suppress matching without ending the physical drain early.
+Only complete ASCII `[PYI-PID:ERROR] BODY\n`, a canonical positive31-bit PID,
+and the exact E/X/I grammar qualify. E/X reconstruct respectively
+`Could not load PyInstaller's embedded PKG archive from the executable (<redacted>)`
+and `Could not side-load PyInstaller's PKG archive from external file (<redacted>)`;
+I reconstructs `Failed to pre-initialize embedded python interpreter!`.
+The whole operand and PID are suppressed; no raw text/hash/exception fallback.
+The separate exact private-refusal vocabulary still requires genuine exit78.
+
+Native state is derived, not guessed: actual launched zero-byte EOF with known
+read/close is `empty`; private-only is distinct from native messages;
+unlaunched/missing/legacy data is `unavailable`. Error losses
+U8/CT/PE/RE/CE/SD/JS/TL/CX precede truncation BL/FL/FC/ML, then UN/redacted,
+then the available observed/private-only/empty classifications. Redacted and
+truncated flags remain independent. Earlier reconstructed constants survive
+later loss. Private reason/diagnostic_state, native state, launch/wait/kill and
+actual exit/reap are separate facts; null never means zero/false/empty.
+
+Go emits version1 observations in actual reached order:
+`admission_child → stopped_admission_child → package_body`, with an optional
+final failure. Python accepts closed1024-byte stage frames and at most four
+outer lines (three stages plus a fixed refusal) within the ORIGINAL combined
+stdout+fd2 4096-byte allowance plus one sentinel. It rejects duplicate/reversed
+stages, stages after failure, contradictory outcomes and invalid closed shapes.
+A missing prefix earns TL/incomplete, preserving only validated observations;
+it never earns invented successes. The literal unversioned H reader is separate
+and contributes no native stream or preceding success. A second legitimate
+ordered stage is consequently not the historical “second-line refusal” case.
+
+N3 independently reconstructs a closed checkpoint, freezes original initiating
+status/category/cancellation and immutable input identities into the existing
+4096B installer JSON, and records its own SD/JS/TL/CX locally. Recovered primitive
+serialization retains JS/error/fallback. The after-main-close512B capsule records
+actual receipt save/close, later OE/WE/FE/CE, wrapper status and cancellation;
+`status_save=prepared` does not prove that capsule's own save. A later collection
+or root acquisition failure cannot mutate earlier Go/native/Python facts or the
+original installer failure. Product teardown, receipt/capsule availability,
+upload and workflow scratch removal are independent outcomes.
+
+The affected existing cases retain their four answers here; rows name every
+covered SAME24 ID rather than create a second case campaign. All are SOURCE
+ONLY / NOT RUN / PROOF NOT RUN at C and this documentation descendant. Seam
+answer for these diagnostic rows: **NO new production seam**; use the real
+existing private receipt/status path, never a copied parser or test-only caller.
+
+| Existing case and accepted IDs | Observable contract at the actual owner | Credible regression | Nearest keeper and precise gap / distinct risk |
+| --- | --- | --- | --- |
+| E1a.diag-exit; A01,A02,A03 | Real child fd2 yields only reconstructed E/X/I or exact private reason, with actual child exit/reap; true empty, private-only and unavailable remain distinct. | Discard fd2, forward operand/PID, or call missing acquisition empty. | `lifecyclePackageChild` / existing N3 `package_install` own process/direct-call status; older fixed-reason records cannot observe pre-Python native text. Service-journal collectors observe another channel. |
+| E1a.diag-loss; A04,A05,A09 | Recognized constants survive hostile/partial/flooded input with owner-local loss; raw cap/drain/once-close/join stay bounded. | Stop draining at a parse quota, accept partial EOF or unknown text, reset shared stdout/fd2 budget. | Existing E1a combined-budget case owns outer acquisition; `lifecyclePackageNativeSentence`/`finishNative` own the newly visible inner channel, distinct from journal capture/tails. No extra runtime coverage is inferred. |
+| E1a.diag-deadline/both; A07,A08,A10,A11 | Original contexts/fd3–6/SAME-OFD/authority/order remain; actual child/outer wait, kill, reap, writer/reader close and initiating status stay distinct. | Renew a deadline, treat kill-request as reap, collapse child255/outer78/install1, or overwrite prior failure on cancellation. | Existing child ProcessState and outer process projection own their respective waits; N3 capsule owns only later save/close/cancel. One layer's receipt cannot prove another's cleanup or descendant quiescence. |
+| E1a.diag-loss/diag-exit; A06,A12 | Actual success prefixes and body failure survive N3 sanitizer/serializer loss; fallback retains JS; missing prefix stays incomplete. | Invent preceding successes, copy N3 loss into child.native, or label fallback complete. | Python `accept_frame` and closed stage projection own transport; N3 checkpoint/serializer owns subsequent collection. Existing single-record Stage1 cannot own multi-stage preservation or later loss isolation. |
+| E1a.subject/manager; A11,B02 | SAME consumed identities and installed AND loaded authority remain; degraded/status1 is availability only. | Substitute package hash for loaded authority or renew descriptor/context ownership. | Existing installed/loaded readers and E1a/E2/M13 remain keepers; a provenance join proves bytes, not readiness or installation success. |
+| E1a.failed-install/E6-final/H38; B04,B07 | Preserve original installer failure, affirmative never-started cleanup predicates versus actual-generation Stop/dial/SAME-peer proof, and independent later cleanup attempts. | Infer absence from flag0/missingIP, conflate product and workflow cleanup, or let a failed upload suppress the other upload. | Existing `cleanup`, shipping `virtual_removed`/`stop_completed`, installer/status/cleanup receipts own different final transitions. Upload/scratch outcomes cannot retroactively certify product cleanup. Historical40321214462/1 limited never-started receipt and40210816942/1 failed cleanup keep their attribution. |
+| E1a direct-call/package retention; B01,B02,B03,B05,B06,C05 | Retain/download exact full consumed TAR and manifest, actual run/attempt and ordinary hash/provenance joins, even after install failure; unknown fields remain null. | Upload only digest/wheel, hash rebuilt bytes, equate TAR with artifact digest, or claim missing upload/download success. | Existing builder→PACKAGE_TAR, immutable input identities and separate always uploads are source keepers; no actual downloaded package/native error exists yet. Founder35 supersedes the old B01/B06 archive-reader/custom-downloader qualification requirements: existing authenticated `gh run download`, normal timeouts and ordinary hashes only. |
+| Existing CI admission/publication cases; C01,C02,C03,C04 | Only the manager's eventual exact reviewed branch push/attempt1 may enter; all-event singleton and original shared request/byte/time bounds remain. | Relax singleton, trust stale H conflict, ignore companion PR record or publish corrected source without renewed gates. | Existing two CI admission guards own externally consumed workflow shape. PR synchronize plus push can create a companion record; conditional refusal risk remains OPEN/MANAGER-OWNED before publication. Source workflow is read-only here; no probe or event guarantee. |
+
+The seventeen accepted compositions are reconciled to their owning boundaries:
+`original_body_failure`, `all_success`, `missing_prefix_at_outer_acquisition`,
+`sanitize_after_original_package_error`,
+`serialize_after_original_package_error_recovered`,
+`serialize_after_original_package_error_unrecovered`,
+`open_after_original_package_error`, `write_after_original_package_error`,
+`fsync_after_original_package_error`, `close_after_original_package_error`,
+`recovered_serialize_then_close_failure`, `child_read_error_then_n3_sanitize_serialize_and_close_failure`,
+`capsule_missing_after_original_package_error`, `root_read_failure_after_saved_receipt`,
+`cancel_after_body_failure_and_receipt_snapshot`,
+`success_then_n3_serialize_recovered`, and
+`sanitize_after_original_package_error_with_prior_child_read_error`. Their common contract is preservation of independently
+validated earlier facts; their distinct risks are inner capture, outer transport,
+N3 checkpoint/encoding, receipt save/close, capsule availability and root acquisition.
+The accepted arithmetic842B frame /2660B combined transport /3664B receipt /
+243B specimen capsule is document sizing, not runtime measurement or a new cap.
+
+Both useful secret-safe ACTUAL native error and downloadable exact full consumed
+package remain mandatory after the sole eventual automatic run; missing either
+means incomplete delivery and no rerun. Installer historically FAILED/cause
+UNKNOWN; same-boot NOT REACHED, R1/R2 HELD, N6/reboot/live-cleanup unproved.
+No install/recovery/transport decision changes. Historical2/3 publications and
+attempts remain SPENT; exclusive final1 each ROOT13808 UNSPENT; this leaf spends0.
+
+### Accumulated Go authoring answers reconstructed from C
+
+Scope is full B=`616712a34b761999f078ef099b59a6b8b94e7b2f`..C,
+not just H..C. Mechanical declaration reconciliation finds85 added `Test`
+entrypoints (including two fixture entrypoints) and six changed bodies. The
+manager's seventh changed slice, `TestUnexpectedAcceptFailureAutomaticallyTearsDownAndIsReported`,
+has an unchanged body followed by new fixture comments. No named Test removal
+or skip change appears. Shared `validConfig` replaces one `ExpectedPeer` with
+the same singleton `ExpectedPeers`; `fakeEngine.Start` adds optional `startFn`,
+whose nil path retains its old receipt/error/events. Their unchanged consumers
+are explicitly listed below. This also corrects the conservative inventory's
+omission of shared-helper attribution; it does not claim all semantic changes
+can be discovered by declaration comparison.
+
+These are current-source answers, not an assertion that old authoring records
+already supplied them. TASK13160's E/SAME campaign design and the PR body's
+TASK10580 four-owner block remain attributable historical evidence only. In
+particular the current contextless-Start table has13 pending-delivery rows;
+the older single injected-clock description is not its present implementation.
+
+Four answers are the four data columns in the following tables. Every named
+loop dimension is included. A keeper is the closest assertion owner, not a
+claim of equivalent executable coverage. Common answers apply only to explicitly
+named owners/cases. All results/proofs for these retained Go tests are **NOT RUN /
+PROOF NOT RUN** under the controlling suspension/no-execution allocation. No
+red/green, causal or repetition evidence exists here; lint is not test-authoring
+or behavioral PASS. Python units RETIRED; integration INCLUDING callback,
+lifespan and SessionTracker SKIPPED THR243seq42.
+
+Seam dispositions used in every row:
+
+- **N** — no test-only production export/flag/wrapper/dead path needed by this
+  owner; existing Engine/Dialer/Listener/notifier/process boundaries and test-side
+  files/channels control inputs. Fixtures do not implement Sidecar's result.
+- **F (YES, retained exception)** — exact `newServer` factory, six-method
+  `tsnetServer` (Start,ClearAuthKey,Up,Status,Listen,Close), stored server,
+  `productionTSNetServer` and default constructor mapping under THR228seq590.
+  Actual users are main's `NewTSNetEngine`, the retained main_test real-adapter
+  consumer, `testTSNetEngine` and the adapter owners below. The whitespace owner
+  wraps the real factory and directly calls ClearAuthKey before substituting a
+  fake. No clock/poll/LocalClient override survives. This is an approved existing
+  YES seam, not a blanket NO or authority to edit/expand it.
+- **H (retained historical closure)** — the exact seq585/590 unselected legacy
+  supervisor/helper closure, including the restored305B `systemdStopSidecar`,
+  six existing helper uses/three legacy supervisor calls. Actual legacy calls
+  are `runCompositeOrdering`, `TestRepeatedWaitingCannotExtendStartupDeadline`
+  and `startHR8466Supervisor`; helper users include real-query admission tests
+  and that harness's callback. Shipping `runConnectorSupervisor` selects
+  `superviseManagedConnector`. These assertions confer NO managed lifecycle2
+  authority/admission/withdrawal/join/timing coverage. Retention is not fresh
+  source-edit or execution authority. See the preserved seq585/590 passages below.
+
+File references: [main_test.go](../../app/linux/tsnet-sidecar/cmd/happyranch-tsnet-sidecar/main_test.go),
+[health_consumer_test.go](../../app/linux/tsnet-sidecar/cmd/happyranch-tsnet-sidecar/health_consumer_test.go),
+[engine_tsnet_test.go](../../app/linux/tsnet-sidecar/engine_tsnet_test.go),
+[sidecar_test.go](../../app/linux/tsnet-sidecar/sidecar_test.go).
+
+#### main_test.go — all25 added entrypoints
+
+| Owner / complete case dimensions | Observable assertion | Credible production regression | Named nearest keeper / distinct gap | Seam |
+| --- | --- | --- | --- | --- |
+| `TestConnectorHealthChild` (healthy/waiting fixture modes) | Fixture emits v1 generation/sequence health records on inherited FD; ordinary invocation returns without assertion. Actual owners are `TestCompositeReadinessAcceptsConnectorFirstAndSidecarFirst` and `TestRepeatedWaitingCannotExtendStartupDeadline`. | Supervisor drops the inherited health FD or admits waiting as healthy; owners then miss READY or wrongly notify. | `TestConnectorHealthFixtureChild` has controlled barriers and different owning consumer assertions. Neither fixture entrypoint is standalone assertion coverage. | H; fixture only. |
+| `TestCompositeReadinessAcceptsConnectorFirstAndSidecarFirst` (initiallyActive false/true) | Exactly one READY after composite callback/child health in either ordering; supervisor joins after cancellation. | Publish READY from one component or repeat READY on each record. | `TestConsumerCompositeReadinessAllHealthyPermutations` owns real command parsing/barrier delivery; this isolates injected absent/present predicate plus child-FD coordination. Positive paths overlap; no extra managed coverage. | H. |
+| `TestRepeatedWaitingCannotExtendStartupDeadline` | Waiting child with absent sidecar returns1 within300ms for20ms startup; no READY/WATCHDOG. | Reset startup timer on waiting records. | `TestConsumerNeverRecoversHonorsOriginalDeadline` owns ready/healthy but unhealthy-sidecar case and STOPPING bound, not repeated waiting input. | H. |
+| `TestSystemdSidecarHealthRequiresCompleteAuthoritativeState` | Healthy→presentHealthy; activating/start→presentUnhealthy; garbage→unknown. | Treat transitional state or garbage as healthy. | `TestSystemdSidecarHealthTruthTableRepresentatives` extends state combinations; this is the small baseline, with overlapping rows, not a separate stronger keeper. | H. |
+| `TestSystemdSidecarHealthAcceptsEveryHealthyPropertyOrder` (all24 orders) | Each full four-property permutation is healthy; enumeration count24. | Restore positional parsing. | `TestSystemdSidecarHealthRequiresCompleteAuthoritativeState` tests one order. Consumer permutation owner adds notification/process risk, not more parser permutations. | H. |
+| `TestSystemdSidecarHealthRejectsDuplicatedProperties` (each of4 keys × same/conflicting value) | Every duplicate returns unknown. | Last/first-key-wins accepts duplicate state. | `TestSystemdSidecarHealthRejectsMalformedRecords` covers key/framing defects, not repeated known keys. | H. |
+| `TestSystemdSidecarHealthRejectsMissingAndEmptyProperties` (each4 keys missing/empty) | Unknown for each omitted or empty required field. | Default missing field or accept empty non-PID value. | `TestSystemdSidecarHealthRejectsDuplicatedProperties` has all required fields; each omission/empty branch is separately exercised here. | H. |
+| `TestSystemdSidecarHealthRejectsMalformedRecords` (`line missing separator`,`empty key`,`misspelled key`,`extra unknown key`,`interior blank line`,`old positional reply`,`control byte in value`,`second equals in MainPID`) | All eight exact malformed replies return unknown. | Ignore unknown/blank/control records or parse numeric PID prefix. | Missing/empty/duplicate owners above cover other parser guards. Unknown-key fixture is otherwise complete; numeric/control cases isolate their shape boundaries. | H. |
+| `TestSystemdSidecarHealthMainPIDBoundaries` (1,-1,abc,leading-space42,4.2,overflow;0;2/42) | First six unknown, active/running/success/0 unhealthy,2/42 healthy. | Parse prefix/overflow, accept PID1 or label active PID0 healthy. | `TestSystemdSidecarHealthTruthTableRepresentatives` tests combinations at0/2, not numeric spellings/range. | H. |
+| `TestSystemdSidecarHealthTruthTableRepresentatives` (all13 literal tuples) | Exact absent/unknown/unhealthy classification for inactive/dead success PID0/2; inactive/running0; reloading/start2; active/activating/deactivating/failed start PID0/2; active/running exit-code2. | Collapse inactive-with-PID into absence or treat exit-code as success. | `TestSystemdSidecarHealthResultAndStateCombinationTable` adds inactive exit-code and full start/exit-code cross-product. Shared tuples overlap, without claiming a distinct gap for the same tuple. | H. |
+| `TestSystemdSidecarHealthFailsClosedOnProbeFailure` (valid stdout+exit1,unstartable,empty) | All unknown despite otherwise healthy bytes/nonexecution. | Trust stdout after command error. | `TestSystemdSidecarHealthRejectsFailedAndTruncatedOutputs` repeats nonzero/unstartable/empty and adds framing. Repeated subset is acknowledged redundancy, not new independent coverage. | H. |
+| `TestSystemdSidecarHealthQueriesNamedPropertiesWithoutValueFlag` | Logged argv names sidecar service and all four properties, no `--value`; output classified healthy. | Switch to positional `--value` or query wrong unit/property set. | Healthy-order test owns output classification, not actual command argv. This shape is externally consumed systemctl contract. | H. |
+| `TestAdmissionRemovalWaitsForSidecarBeforeConnectorCleanup` | Callback events begin probe,sidecar-stop,probe and return true. | Return success immediately after issuing stop. | `TestAdmissionRemovalUsesRealNamedQueryAndStop` adds actual argv/process; this owner isolates helper callback order, and does NOT itself assert connector cleanup. | H. |
+| `TestAdmissionRemovalIsIdempotentWhenSidecarAlreadyStopped` | Absent callback returns true without stop. | Signal an already absent sidecar. | Previous ordering owner starts present; real H4 branch below overlaps absence with process/argv risk. | H. |
+| `TestAdmissionRemovalUnknownFailsClosedWithoutCleanup` | Unknown callback returns false, stop untouched. | Treat query error/unknown as absence or issue stop anyway. | Idempotent owner starts positively absent; `TestConsumerNegativeAdmissionNeverCleansUpChild` adds real child/no-TERM boundary. | H. |
+| `TestStructuredChildHealthAcceptsExactRecords` | Production scanner delivers v1 version1/sequence1/ready from `healthRecord`; no failed-channel result. | Scanner rejects canonical v1 or misdecodes fields. | Reject-malformed owner is negative-only. Input and canonical expectation share `healthRecord`/childHealth serialization, so this is limited round-trip/consumer coverage, not an independent wire-byte oracle or v2 keeper. | N. |
+| `TestStructuredChildHealthRejectsMalformedPartialAndUnknownShape` (not-json,missing-state,extra-key literals) | Each LF-terminated supplied input produces a failure. | Remove all scanner shape/canonical checks so these inputs deliver. | Exact-record positive above is nearest. No unterminated EOF specimen exists despite the name; missing/extra records can fail earlier canonical comparison. This does NOT isolate every named shape guard. | N. |
+| `TestStructuredChildHealthAbortsPendingDeliveryOnStop` | With decoded record blocked on unbuffered delivery, stop joins scanner, closes records, delivers no record/failure. | Use uncancellable send or omit channel close. | `TestConsumerScannerJoinedOnChildExitWithPendingRecord` adds real child/Wait path; direct owner isolates channel cancellation. Stack-name synchronization is a fixture limitation, not protocol evidence. | N. |
+| `TestStopTwiceUsesSameProductionInstanceAndReceiptsEachInvocation` | SAME stopper called twice and exact two `lifecycle_stop_complete run=4242 invocation=1/2` lines. | Deduplicate second stop invocation or emit wrong binding/order. | `TestConcurrentStopIsIdempotent` owns Sidecar once-only resources, not CLI stopTwice's per-invocation receipt shape; the stopper is a fixture, not a real Stop completion. | N. |
+| `TestDiagnosticReceiptHasStableRedactedCategories` (all20 literal error rows; direct-start-configuration-validation;13 finite reasons+invalid;real-adapter-sidecar-cancel) | Fixed actor/unit/outcome/terminal, exact7/8 keys and category/phase/subreason, no listed canaries; direct invalid Start is configuration; real cancelled adapter reports context_cancelled and credential remains. | String-match sentinel instead of errors.Is, retain raw cause, omit/expand finite subreason or lose direct boundary category. | `TestShippingFailureMatrixUsesStableCategories` owns Sidecar propagation, adapter failure table owns producers; this owns emitted JSON. It does not exercise native child diagnostic transport or prove absence of every possible secret. | N; F for real-adapter subcase. |
+| `TestWatchdogLoopReportsHealthyProcessAndStops` | At least one notification, every call WATCHDOG, loop joins on cancel. | Drop heartbeat or keep loop alive after cancellation. | `TestWatchdogFailureCancelsService` covers failing notifier, not successful loop/join. | N. |
+| `TestWatchdogFailureCancelsService` | Notify error cancels context and returns nonnil failed-channel result. | Swallow notify failure or fail to cancel. | Healthy-loop owner does not fail Notify. | N. |
+| `TestWithoutNotifySocketPreventsHelperNotification` | Exact PATH/OTHER environment remains, NOTIFY_SOCKET removed. | Forward notification authority to helper. | `assertHR8466NoFixtureLeak` checks actual child/query env in legacy consumers; this isolates list transformation with an independent expected literal. | N. |
+| `TestAdmissionRemovalUsesRealNamedQueryAndStop` (H4 absent,H5 present→stop→absent,H6 stop fails) | No stop/notify leak for absent; exactly one logged stop for present; failure refuses. PATH stand-in never reaches PID1. | Misroute unit/query, leak notify authority, double stop or accept stop failure. | Callback ordering/idempotent/unknown tests miss process argv/env; consumer ordering owns later real child TERM. No managed withdrawal proof. | H. |
+| `TestSidecarReadyPublicationRechecksCaller` (live,cancelled,deadline) | Live emits exact READY+STATUS calls; terminal context yields error/no calls. | Publish without caller recheck or alter notification tuple. | Legacy composite readiness observes child+sidecar predicates; this owns Sidecar main's final publication boundary. | N. |
+
+#### health_consumer_test.go — all28 added entrypoints
+
+All consumer rows use the actual legacy `startHR8466Supervisor`/real child FD and
+PATH query fixture. Shell `show-done` is reply emission before command/parser
+completion; only recorded probe results or the final supervisor result establish
+the corresponding completed boundary. Test-owned rescue events are excluded
+from product-event assertions. H below never means selected managed coverage.
+
+| Owner / complete case dimensions | Observable assertion | Credible production regression | Named nearest keeper / distinct gap | Seam |
+| --- | --- | --- | --- | --- |
+| `TestConnectorHealthFixtureChild` (barrier plan states,malformed,exit/signal) | Fixture checks notify absence, emits planned canonical v1 or malformed records and child events; unselected invocation no-op. Asserting owners are every `TestConsumer*` and `TestReviewExpiredPostReadyObservationCannotRefreshWatchdog` below. | Supervisor loses inherited FD/env stripping/owned Wait; asserting owners miss health, leak authority or fail joins. | Simpler `TestConnectorHealthChild` has no entered/released barriers. Fixture-generated health is an input, not product readiness or standalone assertion coverage. | H; fixture only. |
+| `TestSystemdSidecarHealthResultAndStateCombinationTable` (all16 named tuples) | inactive/dead ×success/exit-code ×PID0/2; inactive/running success/exit-code0; unsupported/reloading2; active/activating/deactivating/failed start/exit-code ×PID0/2; active/running/exit-code2 match literal expected classes. | Classify non-success inactive0 as present or unsupported/PID2 as absent. | `TestSystemdSidecarHealthTruthTableRepresentatives` overlaps several tuples but lacks full exit-code combination set. No distinct new gap for identical shared tuples. | H. |
+| `TestSystemdSidecarHealthRejectsFailedAndTruncatedOutputs` (exit2;truncated-three-keys,empty,bare-newline,double-trailing,interior-blank;unstartable) | Every supplied reply/error unknown. | Accept double LF/partial key set or trust nonzero stdout. | `TestSystemdSidecarHealthFailsClosedOnProbeFailure` owns overlapping exit/unstartable/empty subset; new distinct inputs are framing/truncation. Repetition is redundant for shared inputs. | H. |
+| `TestSystemdSidecarStateDeadlinesAndCancellation` (one-second,earlier-parent,already-cancelled,in-flight) | Real query returns unknown within3s;1s path900–2500ms, earlier parent<900ms; started helper receipt required except pre-cancel, PID ESRCH after result. | Ignore parent/query deadline, detach query or return before Wait. | Probe-failure tests have immediate errors, no entered helper/deadline ownership. ESRCH supplements actual joined result, not general process-tree cleanup proof. | H. |
+| `TestConsumerCompositeReadinessAllHealthyPermutations` (sidecar-first/connector-first ×perm00..23) | Gated real observations prevent premature READY/WATCHDOG; one READY and ordered later watchdog; canonical argv/no env leak. | Publish on child alone, treat reordered show output unhealthy or repeat READY. | Main's simple composite owner isolates injected absent/present callbacks; this adds command parser and completed-delivery risks. Parser permutation test alone cannot own notifications. | H. |
+| `TestConsumerInitialBadObservationDoesNotEarlyReady` (absent,unhealthy,malformed,duplicate,missing,empty,error-exit,unknown-state) | No positive before gated recovery; subsequent healthy pair yields one READY then watchdog. | Treat unknown as healthy or refuse subsequent valid recovery forever. | Composite positive permutation owner never begins with these eight failed classifications. | H. |
+| `TestConsumerNeverRecoversHonorsOriginalDeadline` | Repeated ready/healthy with unhealthy sidecar yields STOPPING near original250ms (200ms..250ms+2s), zero positives, joined result0. | Refresh absolute startup deadline per record. | Main's repeated-waiting owner uses waiting/absent and code1; this owns repeated complete but unhealthy composite inputs and terminal cleanup. | H. |
+| `TestConsumerBadObservationAfterReadySuppressesWatchdog` (same/conflicting duplicate,missing,empty ×each4 keys;nosep-MainPID,garbage,unknownstate,piddiff,exitcode,fail) | After READY+watchdog, bad observation drives STOPPING; watchdog remains1 over300ms and READY1. | Continue readiness after parser/query refusal. | Initial-bad owner covers pre-READY recovery, not post-READY terminal transition; query timeout/cancel owners isolate asynchronous causes. | H. |
+| `TestConsumerQueryDeadlineAfterReadySuppressesWatchdog` | Entered delayed third query returns unknown at real~1s, drives STOPPING with READY/watchdog counts1. | Substitute cached healthy result after query timeout. | Bad-observation owner has immediate replies, not real deadline; recorded lastDuration may be raced by later admission observation, so it is not a universal exact query-index oracle. | H. |
+| `TestConsumerCancelledObservationAfterReadySuppressesWatchdog` | Cancel after third query entered; STOPPING, no new watchdog; final result0 or1 after absence supplied. | Publish after cancelled in-flight query or detach readiness context. | Query-deadline owner does not exercise parent cancellation; final0/1 intentionally does not isolate exit classification. | H. |
+| `TestConsumerAdmissionOrderingBeforeChildCleanup` (initial-absent-no-stop;stop-then-still-present-then-absent healthy/unhealthy) | No stop when absent; one stop while present, no TERM before absence reply, final result0. | Kill child before removing sidecar admission or stop twice. | `TestAdmissionRemovalUsesRealNamedQueryAndStop` stops at helper return; this observes real child TERM and joined supervisor. Reply emission alone does not prove classification timing. | H. |
+| `TestConsumerNegativeAdmissionNeverCleansUpChild` (stop-failure,initially-unknown,stop-then-unknown) | Through actual final result1 after controlled exit, no product TERM; initially unknown no stop. | Treat failed stop/unknown as cleanup permission. | Positive ordering owner eventually supplies absence; this remains refused through final result, excluding test rescue. | H. |
+| `TestConsumerAdmissionTimeoutAndDetachedContext` (five-second-timeout,supplied-context-cancelled,supervisor-uses-detached-context,parent-cancel-uses-background-stop) | Persistent presence refuses after4.5..7s; entered re-observation cancellation returns<2s with helper reaped; supervisor's legacy cleanup observes detached context and stops before child TERM/result0 despite parent cancel. | Renew5s admission, ignore supplied context or pass cancelled parent into legacy cleanup. | Negative-admission owner uses immediate denial; query-deadline owner covers1s query, not5s cleanup/context separation. Detached legacy behavior is not a managed allowance. | H. |
+| `TestConsumerExpiredStartupRefusedAdmissionRejectsLateReady` (unknown-admission,stop-failure) | After startup STOPPING, later healthy records cannot produce positives; no child TERM while stop refused; unknown branch only observes absence later, not final success. | Reopen readiness when late healthy arrives or treat terminality as kill authority. | Never-recovers owner has no late-good input; terminal-child owner terminates by child state instead of startup expiry. | H. |
+| `TestConsumerStoppingTerminalPreventsLateReadyAndWatchdog` | After READY/watchdog then unknown health, STOPPING stays terminal through later healthy record; positives frozen, eventual absence/result0. | Clear stopping latch on later healthy pair. | Bad-after-ready owner proves short bad interval, not late recovery data after terminal latch. | H. |
+| `TestConsumerHealthQuerySpanningStartupDeadlineCannotReady` (ready-record-path,healthy-record-path,real-query-deadline) | Gated healthy completion delivered after original1.5s never readies; real delayed query clipped to600ms (<900ms) unknown/reaped; STOPPING/no positives. | Check deadline only before query, or let query's independent1s extend startup. | Expired-startup owner expires before late record; here query entered/completed healthy before delayed delivery, plus real query clipping. | H. |
+| `TestConsumerTerminalChildStatesBlockLateNotifications` (failed/stopping ×ordinary/late-healthy-stop-failed;parent-cancel;delayed-composite-readiness-and-watchdog-control) | Terminal input freezes positives and withholds TERM without absence; delayed-good control still readies/watchdogs once. | Re-admit on healthy record after child terminal/cancel, or blanket-disable positives. | Stopping-terminal owner starts from failed composite health; these exercise explicit child state/cancel and retained success control. | H. |
+| `TestConsumerReadinessTerminalIndependentOfChildCleanupPermission` | Child failed gives STOPPING while held-present sidecar prevents TERM; supplied absence precedes TERM and final result0; READY1/watchdog0. | Reuse readiness terminal decision as child cleanup permission. | Admission ordering owner triggers stopping directly, not failed child after READY; terminal-child table mostly withholds absence/result. | H. |
+| `TestConsumerCancellationAfterCompletedHealthyQuerySuppressesPositive` (ready,later,watchdog) | Cancel after intended indexed completed healthy query but before delivery; no new positive, exactly one STOPPING and result0. | Omit post-query context fence or gate wrong first unhealthy observation. | In-flight cancel owner cancels during query; this isolates completed healthy publication boundary at all three sites. | H. |
+| `TestConsumerChildExitWhileCompletedHealthyObservationHeld` (ready,later,watchdog) | Child reaped by production Wait before healthy result release; no new positive, STOPPING1, result1. | Publish from stale query after actual child exit. | Completed-query cancel owner keeps child alive; distinct child liveness fence. ESRCH is supported by final supervisor result, not sole join evidence. | H. |
+| `TestConsumerScannerJoinedOnChildExitWithPendingRecord` | Decoded second record blocked on delivery when child exits; after result no scanner stack remains within2s. | Join Wait but abandon scanner send. | Child-exit owner checks notifications/Wait, not surviving scanner; direct scanner-abort owner has no child. Stack-symbol/whole-process scan is fragile and not a protocol oracle. | H. |
+| `TestConsumerLaterCancellationRequiresCompletedFirstProbe` | Delay first unhealthy shell after show-done; wait classified result before arming; gate must capture index2/healthy; cancellation yields no positives/STOPPING1/result0. | Arm on shell emission and test wrong query. | Completed-query-cancel/later owner lacks this deliberately delayed first shell; this is fixture soundness plus actual publication guard, not new product semantics. | H. |
+| `TestConsumerRefusedStopThenSpontaneousExitNotifiesStoppingOnce` | Failed stop, no TERM before/after spontaneous child exit; result1 and STOPPING exactly1. | Double-notify stopping on Wait or reinterpret refused cleanup as clean exit. | Negative-admission owner checks code/no TERM but not once-only STOPPING after prior terminal decision. | H. |
+| `TestConsumerFailurePathTeardownReleasesEnteredGateAndJoins` | Entered query gate is released by test teardown; actual supervisor result joined/h.finished and child ESRCH, repeat release/teardown safe. | Product fails to return/join after cancellation and gate release. | Scanner-abort owner observes scanner; this is harness rescue correctness, not product cleanup coverage. `productEvents` excludes teardown marker by construction, so its marker-absence assertion is self-confirming and adds no product evidence. | H. |
+| `TestReviewExpiredPostReadyObservationCannotRefreshWatchdog` | Completed healthy result held>400ms freshness; release yields no watchdog, READY1/STOPPING1/result0. | Refresh receipt clock at delivery rather than retain preexisting expiry. | Startup-spanning query owner is pre-READY; expired-post-ready matrix below overlaps this positive-absence path and extends refusal/late-input endings. | H. |
+| `TestConsumerPostReadyQueryBoundedByRemainingFreshness` | Delayed second query is unknown,<800ms for400ms window, exactly2 query PIDs and second reaped; no watchdog, STOPPING1/result0 after absence. | Let independent1s query cap extend stale readiness. | Previous owner holds already completed healthy data; this owns in-flight real query clipping. | H. |
+| `TestConsumerTimelyPostReadyPairRenewsThenMissingHealthExpires` | Timely healthy pair renews800ms; no early STOPPING, later silence expires near latest renewal; READY/watchdog/STOPPING each1/result0. | Never renew or renew from initial READY instead of latest pair. | Expired-result owners only negative; this is positive renewal then silence, excluding a blanket no-watchdog fix. | H. |
+| `TestConsumerExpiredPostReadyDeliveryRetainsTerminalAdmissionFence` (refused/unknown ×absent/child-exit) | Expired held healthy result plus two later completed healthy/refused inputs cannot revive positives or TERM; absence ending result0 versus spontaneous exit1/no TERM, STOPPING1. | Clear expiry latch on later input, infer permission from STOPPING or label spontaneous exit clean. | `TestReviewExpiredPostReadyObservationCannotRefreshWatchdog` owns simple expiry with successful cleanup; matrix adds refusal/unknown and both final transitions. Shared initial scenario is deliberate overlap. | H. |
+
+#### engine_tsnet_test.go — all16 added owners
+
+All rows below use F: the approved YES factory exception. Fake upstream reports
+are controlled inputs. Positive receipt/listen/file/close assertions are executed
+by real adapter/Sidecar code if ever run; no real provider authentication is
+proved. Shared `assertNetworkReason` checks ErrNetworkJoin identity, exact safe
+text/finite metadata and absence of raw context cause, not arbitrary-secret
+absence. `runningWithPeer` constructs input only.
+
+| Owner / complete case dimensions | Observable assertion | Credible production regression | Named nearest keeper / distinct gap | Seam |
+| --- | --- | --- | --- | --- |
+| `TestTSNetEngineCarriesConsumedUpDeadlineIntoPeerPoll` | Up consumes time before released; Status shares original750ms deadline/context and preexpiry entry; full positive receipt and one Start/Up/Status/ClearAuthKey. | Allocate fresh peer timeout/context after Up. | `TestTSNetEngineDoesNotRefreshCallerDeadlineWhilePeerIsAbsent` is negative sustained absence; here matching DNS peer arrives and succeeds. | F. |
+| `TestTSNetEngineCapsBackgroundStartupAtEightySeconds` | Up/Status share deadline near80s from adapter entry; cancellation returns ErrNetworkJoin. | Remove private cap or start it per poll. | Previous owner already supplies shorter parent; this independently observes uncapped-parent ceiling, without waiting80s. | F. |
+| `TestTSNetEngineImmediateExpectedHostNameNeedsNoPeerPoll` | Immediate matching HostName returns visible receipt with zero Status calls. | Require DNS-only match or poll despite immediate match. | Consumed-Up owner succeeds via later matching DNS peer. Only ExpectedPeerVisible is asserted here, not every receipt field. | F. |
+| `TestTSNetEngineDoesNotRefreshCallerDeadlineWhilePeerIsAbsent` | No peer until real750ms expiry; empty receipt/network error, reached Status/preexpiry Up and same original context/deadlines. | Renew timer for every missing-peer poll. | Consumed-Up positive owner does not exhaust absent-peer path. | F. |
+| `TestTSNetEngineRejectsCancelledReadinessBeforePositiveReceipt` (context_cancelled,deadline_exceeded,pending_deadline,pending_deadline_cancelled) | Safe terminal reason, empty receipt, zero factory/Start/Up/Status. Delivered cancellation wins elapsed pending clock. | Check only ctx.Err, allocate before entry check or reverse precedence. | Contextless table crosses a future deadline after allocation; these start terminal. Pending context is test-side, no production clock seam. | F. |
+| `TestTSNetEngineDoesNotRenewBudgetAfterContextlessStart` (factory/success;start/success,error;up and peer ×success,error,nil,nonrunning,missing_peer =13) | At reached original750ms pending-delivery deadline, empty receipt; terminal safe reason except late Start/error→ErrEngineStart; precise stage call counts and ClearAuthKey1. | Trust late factory/Start/Up/Status, renew effective context, skip key release, or overwrite Start-error precedence. | Delivered-terminal Sidecar table observes actual Err signaling and downstream effects; this adapter-only table prevents Sidecar's later fence masking an erroneous adapter receipt. Older injected-clock evidence is not current proof. | F. |
+| `TestTSNetEngineMapsInitializationAndReadinessFailures` (start;up_backend,no_ip,no_ip_suffix,backend_lookalike,generic,cancelled,deadline,nil,not_running;peer_error,cancelled,deadline,nil,not_running =15) | Reached producer counts/preexpiry Status; safe exact start/network categories; no dial/listen,close1,credential retained/no marker and canaries absent. | Broaden producer string matching, retain backend cause, skip terminal mapping or consume without positive receipt. | `TestShippingFailureMatrixUsesStableCategories` injects already classified errors, not producer mapping; exact15 shapes isolate Up versus Status. | F. |
+| `TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledUp` | Cancelled context-aware Up gives safe reason,no listen,credential retained/no marker,close1. | Ignore upstream cancellation before receipt/admission. | Apparent-success owner ignores upstream context; this owns context-aware return. Delivered-terminal/start table overlaps Up/cancel but adds other boundaries, not a unique gap for identical inputs. | F. |
+| `TestProductionAdapterViaSidecarRejectsApparentSuccessAfterCancellation` | Up ignores context and returns matching peer after cancel; safe reason,no listen/marker,credential retained,close1. | Trust late positive result. | Cancelled-Up owner may return context error and never present an apparent success. | F. |
+| `TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledPeerPoll` | Matching Status arrives after cancellation; safe reason,no listener/marker,credential retained,close1. | Check Up terminality but omit post-Status fence. | Apparent-Up owner does not reach Status; delivered-terminal matrix repeats this branch with wider error/deadline dimensions. | F. |
+| `TestProductionAdapterViaSidecarWaitsForRunningAndPeerBeforeAdmission` | While Up/Status blocked no probe/listen or consumption marker; final matching peer gives one Up/Status/probe/listen and marker. | Commit/listen before expected peer or skip either wait. | Immediate adapter-only HostName owner cannot own Sidecar durable consumption and connector/listener ordering. | F. |
+| `TestTSNetEngineRejectsNilAndEmptyPeerStatusWithoutReceipt` (nil-up,nil-poll,empty-peer) | Network error/zero receipt, Up reached under original parent and Status when applicable. | Treat nil/empty status as successful peer evidence. | Failure mapping covers nil with exact categories, not sustained empty-peer deadline; exact nil branches overlap intentionally. | F. |
+| `TestTSNetEngineDeadlinePollArbitrationRefusesTerminalReceipt` | Original10ms parent reached; zero receipt and safe deadline_exceeded or peer_wait_deadline; reached Status retains context; terminal-at-entry Status must be deadline_exceeded. | Admit on ticker/Done race, renew context or misclassify reached terminal Status. | Absent-peer owner uses750ms and proves reached polling. Zero-Status here is an earlier fence, NOT evidence that select/ticker was entered or a deterministic arbitration winner. | F. |
+| `TestProductionAdapterViaSidecarTerminalContextWinsOverLateResult` (start ×cancel/deadline ×success;up/peer ×cancel/deadline ×success/error =10) | Enter actual stage before750ms deadline; release after delivered terminal; safe reason,no dial/listen,close1,credential retained/no marker; Start rows clear1/no Up/Status. | Classify late backend before caller terminal, consume/admit on late success or repeat close. | Three narrower cancelled owners above overlap their rows; matrix's additional gaps are real deadline, hostile late errors and contextless Start. Adapter pending-delivery table isolates Err=nil after clock expiry instead. | F. |
+| `TestCredentialWhitespaceAtProductionAuthKeyInput` (clean,lf,crlf,surrounding,unicode_edges,interior ×success/start/up =18) | Real factory AuthKey equals literal expected bytes; direct real ClearAuthKey empties field; fake stages/clear count exact; normalized alias through capacity zero; success consumes/marks and rejects replay, failures retain file/no marker/no SECRET_CANARY. | Remove Unicode trimming, alter interior bytes, clear only on success or commit failure. | `TestStartSuccessConsumesCredentialThenProxiesRawBytes`/staged owner use fake Engine ignoring key; failure map substitutes server before observing actual mapping. Original ReadFile-buffer/upstream string erasure and wrong-UID OS proof remain unobserved. | F; real METHOD invoked manually, fake CALL observed separately, no upstream lifecycle proof. |
+| `TestProductionAdapterViaSidecarReceivesSeventyFiveSecondAcceptanceCeiling` | Real Sidecar→adapter Up deadline bracketed at entry/current+75s; connector deadline cannot exceed it; Start/Up/Listen/Clear1,probe close1,Stop success and server close1. | Let independent adapter80s escape enclosing75s, renew connector budget or repeat admission/close. | Adapter80s owner observes its own cap only; `TestStartEngineUsesTotalAndEarlierCallerDeadlineWithoutRenewal` substitutes Engine and cannot prove default adapter receives75s. This is propagation/count/ownership inspection, not a75s elapsed acceptance measurement. | F. |
+
+#### sidecar_test.go — sixteen added and six changed bodies, plus shared owners
+
+| Owner / complete case dimensions | Observable assertion | Credible production regression | Named nearest keeper / distinct gap | Seam |
+| --- | --- | --- | --- | --- |
+| `TestCredentialFailuresOccurBeforeListenAndAreRedacted` (missing,symlink,loose,empty,whitespace,replay; changed) | Nonnil error lacking lowercase secret, no Engine lifecycle event. | Move refusal after Start or accept nonempty whitespace after normalization. | Symlink-parent owner isolates ancestor guard; whitespace AuthKey owner accepts nonblank normalized data. No exact category/full redaction/wrong-UID proof claimed here. | N. |
+| `TestCredentialPathWithSymlinkedParentFailsClosed` (changed) | Exact ErrCredentialInput identity and zero events when ancestor alias is symlink. | Trust resolved parent or return wrong stable category. | Credential failures table uses final-file symlink, not ancestor. | N. |
+| `TestRedemptionAndDeletionMustBeDurableBeforeListen` (changed; receipts empty,redeemed-only,redeemed+durable) | First two ErrDurableCommit; third ErrNetworkJoin; no listen for any. | Admit on partial receipt or conflate missing peer with durable failure. | Shipping failure matrix's incomplete-peer row adds exact subreason/order/file; this owns the earlier two durable combinations. Does NOT inject deletion/fsync failure despite name. | N. |
+| `TestStartSuccessConsumesCredentialThenProxiesRawBytes` (changed) | Marker/source consumption, bidirectional raw pipe bytes, listener-before-engine stop; proxy dial retains ORIGINAL live caller context rather than cancelled acceptance context. | Use startup context for long-lived proxy or alter byte stream/commit ordering. | Connector success table stops at probe/listen, not subsequent proxy lifetime/data. | N. |
+| `TestSystemdStagedCredentialIsConsumedOnceAndNeverUnlinked` | 0400 exact staged input under CREDENTIALS_DIRECTORY remains, marker written; second start ErrCredentialInput before any engine event. | Unlink systemd-owned file or replay staged key. | Ordinary-source success removes file, so cannot own staged custody; enrolled restart below uses no input. | N. |
+| `TestEnrolledStateRestartDoesNotReadOrRequireCredential` | Missing source plus existing durable marker still starts successfully. | Require enrollment source on enrolled restart. | Staged owner requires key for first enrollment/rejects replay; no credential-byte/empty-allocation assertion here. | N. |
+| `TestStopWhileListenBlockedRejectsPostShutdownAdmission` (changed) | Concurrent second Start while first Listen held returns exact ErrListener with one start; Stop cannot finish before release; late listener no Accept and exact teardown order. | Permit second Start or publish listener after Stop. | Late-listener table expires deadline, not concurrent Start/Stop ownership. | N. |
+| `TestShutdownAcceptCallerYieldsToStopOwner` | Actual Start-owned Accept released during held Listener.Close drains before engine;8 Stop results wait engine,all nil/repeat nil; exact once close order; subprocess is owned/reaped. | Accept-error caller waits for Stop owner while owner joins Accept, causing cycle. | `TestStopJoinsAcceptOwnerAfterTeardown` holds Accept AFTER listener method returns, opposite ordering. Neither is synthetic post-teardown registration coverage. | N. |
+| `TestStopJoinsAcceptOwnerAfterTeardown` | Listener.Close returned but held Accept prevents engine/Stop; after Accept release, engine-return gates all8 Stop/repeat exact ErrEngine; one close order. | Close engine before actual Accept drain or return Stop before engine completion. | Previous owner drains Accept before listener close returns; distinct remaining registration risk. | N. |
+| `TestStopRejectsConnectionReturnedAfterListenerClose` | Late successful Accept after Stop is closed (peer EOF),no proxy dial beyond initial probe; Stop callers/observer join,one listener/engine close. | Register proxy from connection obtained after stop fence. | Listen-blocked owner has no successful Accept; drain matrix begins accepted proxy/in-flight dial. | N. |
+| `TestShutdownOwnersDrainProxiesAndAgreeOnStopError` (stop/listener ×active/inflight ×close-failure false/true =8) | Real active/inflight flows drain/EOF before engine; all8 Stop/repeat agree nil/ErrEngine or listener-precedence ErrListener; Start refuses after stop; joins and once-close order. | Omit proxy join/flow close, let Stop observers disagree or overwrite listener failure with engine error. | ConcurrentStop baseline lacks held phases/error precedence; two Accept owners isolate accept join rather than proxy drain. | N. |
+| `TestShippingFailureMatrixUsesStableCategories` (changed: engine-start,listen,connector;13 reasons+invalid ×value/pointer/wrapped;bare false/true;incomplete-peer-receipt) | Exact safe category/finite subreason,close/order/no admission; network cases keep credential/no marker, bare cases close once, incomplete peer refuses/credential remains. | Strip error metadata across Sidecar, accept hostile reason or return old credential category for engine failure. | Adapter15 producer table owns producer mapping; emitted JSON owner owns serializer; this owns propagation/receipt conversion. File/marker assertions differ by subcase and are not inferred for bare rows. | N. |
+| `TestConnectorImmediateAndDelayedSuccessAdmitExactlyOnce` (immediate,refused,beyond-old-cap,attempt-timeout) | Correct tcp target and bounded original deadline; cleared key,marker/source committed before probe; calls1/2/11/2,one Start/listen and each resource close1; final one listener/engine close. | Retain old retry-count cap, retry arbitrary errors, probe before commit or renew total budget. | Persistent-refusal owner never succeeds; adapter75s owner uses immediate real adapter and cannot own retries/spacing. | N. |
+| `TestConnectorTerminalResultsNeverRetryOrListen` (unclassified,timeout-text-and-net-error,deadline-identity-before-expiry,nil-success,success-close-failure,refused-close-failure,connection-with-terminal-error) | ErrConnector,one call/no listen,returned nonnil resource closes once,engine once. | Treat timeout-looking text/net.Error as retry permission, ignore close failure or leak conn+error. | Retry-positive owner supplies authentic ECONNREFUSED/actual timed-out attempt; these terminal identities lack that eligibility. | N. |
+| `TestConnectorPersistentRefusalExhaustsPhaseDeadline` | Repeated wrapped ECONNREFUSED spacing≥200ms,>9 calls,elapsed connectorBudget..+2s,no listen;each resource/engine close1. | Use attempt count cap, shorten spacing or renew phase. | Per-attempt clipping owner blocks each dial; this returns immediate refusals, exposing spacing/count path. | N. |
+| `TestConnectorPhaseClipsPerAttemptTimeoutAtTenSeconds` | Attempts≤1s with9 calls and last deadline clipped to10s phase rather than nominal ninth full wait;elapsed10..12s,ErrConnector/no listen. | Give each retry a full independent timeout beyond phase. | Persistent-refusal returns immediately; cannot test actual dial-time consumption/clipping. Name's ten seconds is PHASE cap, not per-attempt cap. | N. |
+| `TestConnectorCallerCancellationRefusesBeforeDuringDialAndSpacing` (before,dial,spacing,close) | Before: safe network cancellation,no engine/dial and source retained. Others:one dial/close,ErrConnector/no listen,engine once. | Ignore cancellation in spacing/close or perform work for pre-cancelled caller. | Late-success table uses deadline expiry; this delivered-cancel table covers specific phase seams, with no generic elapsed bound assertion. | N. |
+| `TestStartEngineUsesTotalAndEarlierCallerDeadlineWithoutRenewal` (total-75s,earlier-parent30ms) | Engine sees enclosing75s or exact shorter parent, consumes actual bound; late positive receipt refuses deadline/no probe/listen/consumption,one engine close. | Reset75s after Engine.Start or accept late receipt. | Adapter75s propagation owner succeeds immediately; this fake-Engine owner actually exhausts75s/earlier caller and observes downstream refusal. | N. |
+| `TestConnectorLateDialOrCloseSuccessCannotAdmit` (dial,close,attempt-dial,attempt-close) | Late resource success after total/attempt deadline gives ErrConnector,one dial/close,no listen. | Trust nil dial/close error despite elapsed attempt or parent. | Cancellation owner signals cancel explicitly; this isolates apparently successful contextless producer result after real deadline. | N. |
+| `TestLateListenerAndListenerWithErrorCloseBeforeEngine` (late,resource-with-error) | ErrListener,no Accept,probe close1 and exact start/listen/listener-close/engine-close. | Ignore late Listen or lose returned listener with error. | Listen/Stop concurrency owner returns listener after Stop; these cover deadline and resource+error. | N. |
+| `TestStartupAbsoluteDeadlineRefusesPendingTimerDelivery` (elapsed-entry,late-listener) | Err remains nil/Done pending despite elapsed absolute deadline; entry does no work and exact source bytes/no marker preserved; late listener closes once,no Accept,one probe and Stop no repeat. | Check only delivered Err/Done, missing real absolute clock. | Late-listener owner uses delivered terminal; adapter pending13 table owns adapter work rather than Sidecar entry/listener. | N; pending context test-side only. |
+| `TestConnectorConsumedCallerBudgetCannotRenewRetrySpacing` | Engine uses100ms of original150ms caller; one refused dial/resource close,ErrConnector,no listen,caller DeadlineExceeded;one Start/engine close. | Start a fresh retry-spacing/phase budget after Engine consumed caller time. | Persistent-refusal owner starts with full phase; earlier-parent engine owner expires BEFORE connector; this expires in retry spacing AFTER actual earlier engine consumption. No elapsed upper bound or new timeout seam is asserted. | N. |
+
+The following seven pre-existing bodies are unchanged. `validConfig` retains the
+same one-peer value using its new singleton field; optional `fakeEngine.startFn`
+is nil for them, leaving inputs/execution/assertions unchanged at that fixture
+boundary. This is mechanical helper/API adaptation, not seven new assertions:
+
+| Existing shared-fixture owner | Retained contract / plausible regression | Nearest owner and distinct limit | Seam |
+| --- | --- | --- | --- |
+| `TestValidateRejectsUnsafeTopology` (seven mutation indexes:public control,http control,wildcard connector,other loopback,daemon port,ambiguous role,public DERP) | Each exact ErrConfiguration; dropping relevant topology guard would fail. | `TestDiagnosticReceiptHasStableRedactedCategories` direct-configuration row observes emitted category, not each topology input. | N. |
+| `TestConnectorProbeFailureClosesEngineBeforeListener` | Failed connector probe yields ErrConnector and no listener,engine closed; dropping refusal/close fails. | Terminal-results table extends resource/error classes; no distinct new coverage claimed. | N. |
+| `TestPartialStartAndFailuresCloseListenerFirst` | Held accepted event/hostile Accept failure plus Stop keeps final listener-before-engine order and safe nonnil text; reversing order fails. | Unexpected-accept owner additionally asserts ErrListener/automatic engine close; this older subset is weaker/overlapping. | N. |
+| `TestConcurrentStopIsIdempotent` | Eight same-object Stops leave one listener/engine close; losing once-only owner fails. | Shutdown eight-dimension matrix extends real held drains and result equality; baseline does not assert all Stop return values. | N. |
+| `TestUnexpectedAcceptFailureAutomaticallyTearsDownAndIsReported` | Automatic close completes, later Stop ErrListener/no secret/path and listener-before-engine; swallowing Accept failure fails. | Partial-start owner does not assert exact failure/result. Conservative changed slice is adjacent-comment only. | N. |
+| `TestAcceptedConnectionDialAndCopyFailuresCloseResources` (dial,copy) | Inbound closes on dial failure; outbound also closes on copy failure; Stop succeeds. Leaked copy endpoint fails. | Shutdown matrix covers teardown of active/inflight pipes, not autonomous copy failure. | N. |
+| `TestStopFailureWithPartialResourcesIsListenerFirstAndRedacted` | Listener+engine close errors return safe ErrEngine with listener-before-engine; propagating raw error/reversing cleanup fails. | Drain matrix asserts held engine failure/precedence, not this listener-close-error combination. | N. |
+
+### Attribution reconciliation and unresolved source limitations
+
+Name reconciliation is simple inventory-minus-attributed-names: manager92 minus
+the names above = empty, including the justified unchanged-body slice. Actual91
+added/changed bodies minus attributed names = empty; all seven unchanged shared
+fixture consumers are also named. Two fixture entrypoints are attributed to
+asserting owners, not counted as independent tests of product behavior. Empty
+name difference proves attribution completeness ONLY, not four-answer quality,
+assertion soundness, behavior or independent acceptance.
+
+Neighbor inspection preserves these limits for independent review: repeated
+query-failure and shared truth-table inputs are redundant subsets; scanner
+negative inputs do not isolate every named shape and no partial EOF specimen is
+present; `healthRecord` round-trip construction is not an independent wire oracle;
+whole-process stack-symbol barriers are refactor-fragile; fixture teardown-marker
+absence is true by construction. No keeper claim uses any of those limits as
+managed shipping proof. Near-overlap of late Up cancellation and delivered-terminal
+rows is acknowledged, with the matrix's deadline/error/Start additions stated.
+The preserved seq590 eight losses/consolidations (nil factory/server,raw client/
+Status error,exact returned Status pointer,two mapping couplings,deterministic
+unique-select/no-poll) still lack complete equivalent keepers where recorded.
+No source defect is repaired or failing test removed/skipped/weakened here; these
+are manager/reviewer findings and limits of the current authoring reconstruction.
+
+Normal lint/static checks remain exactly Source Boundary Lint and Web Lint
+(Node24); daily19UTC nonblocking Product E2E gets no new trigger. Exact-C JOB5756
+is historical evidence at C, never a receipt for this documentation descendant.
+Independent bounded accumulated review, final consolidated FULL final-candidate
+review and separate SAME-candidate SOURCE/STATIC QA remain pending. The conditional
+PR synchronize/push/all-event-singleton risk stays OPEN/MANAGER-OWNED. No leaf PR
+body mutation/publication, probe or allowance reservation is authorized.
+
+The historical maintained case record follows byte-for-byte. Unaffected
+assertions retain their stated scope; dated “Current” headings and receipts
+below are not renewed approval, runtime success or a superseding contract.
+
+---
+
+
 **Current PR800 Stage1 nested-diagnostic LOCAL candidate — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
 The manager accepts only the unchanged installer-diagnostic/failed-install-cleanup
 subset of TASK13153 source-diagnosis (SHA256
