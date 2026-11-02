@@ -621,12 +621,24 @@ selected-seven original-plus-safe detachment and literal raw siblings. Metadata
 checks surround the single read; UTF8 counts use indexed codepoints. Early
 remaining-capacity refusal has no returned-slice/input-cap witness. Only the two
 required original trees are materialized; a file may refuse parser storage before
-projection. Borrowed-object projection still owes original PLUS safe bytes.
+projection. Borrowed-object projection still owes original PLUS safe bytes,
+including aliases; every literal replacement pass is charged under the same
+owner. Its independent compact encoded-size predicate creates no second buffer.
+Controller JSON writers now sanitize original literal keys/values before JSON
+escaping, preserve exact builtin types/order/repeated copies, and emit compact
+UTF8 without a final LF. A charged flat original-span plan resolves whole-member
+byte/digest constraints before sanitation; any required change refuses that
+entire member. Exact escape/UTF8/syntax preflight and remaining-owner reservation
+precede one complete candidate, transferred to the atomic writer without another
+parse or encoding. Plain text retains whole-backslash refusal. Retained facts,
+every pass, candidate and bounded scratch share the persistent preparation owner;
+spent work never refunds. No hard RSS or syscall-time guarantee follows.
 The action convenience scenario read is removed; ordinary refusal preserves prior
 complete bytes/snapshots and spent work, without retrying failed sources. Complete
-registry/scan-only raw admission, nested/browser joins, typed Controller writers,
-compact final encoding/publication and prefix/JSONL reuse remain unfinished.
-Legacy encoding/publication and existing raw-backslash refusal remain. Existing
+registry/scan-only raw admission, nested/browser/direct/pair/human-display joins,
+main's compact initial/final result encoding/publication and prefix/JSONL reuse
+remain unfinished. Legacy result encoding/publication and existing raw-backslash
+refusal remain. Existing
 controls supply file/preparation evidence only, with temporal,
 allocation and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.

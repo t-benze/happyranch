@@ -2340,19 +2340,35 @@ indexed JSON grammar materializes only the original context list and one require
 scenario tree; duplicate decoded keys, malformed/trailing/nonfinite/surrogate or
 out-of-bounds numeric input refuses. Parser storage can refuse before projection.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
-aliases and no-match strings. Sanitation is reserved before allocation, preserving
-original context order, full nested order/types/copies and collision postconditions.
+aliases and no-match strings. Every replacement pass pays its whole safe scalar;
+one charged longest-first view preserves the original context list for identity
+comparisons. Sanitation is reserved before allocation, preserving full nested
+order/types/copies and collision postconditions. The independent selected-seven
+compact encoded-size predicate allocates no second scenario buffer.
 Only complete detached claims can replace the prior safe snapshot. The action
 phase's redundant unbounded scenario read is removed; previously refused sources
 are not retried in the second existing opportunity. Ordinary refusal retains spent
 work and eligible siblings; fatal original-context/end loss stops detailed work.
 
-This remains an unfinished compound repair. Controller preparation/text writers
+Controller JSON writers now admit the original typed tree before escaping and
+emit compact UTF8 (comma/colon separators, no final LF). A flat charged plan holds
+original scalar/syntax spans, not a detached safe writer tree. Complete member
+identity metadata is resolved before sanitation: any required change in a member
+containing byte/digest assertions withholds that entire candidate. Unsupported
+types, cycles, surrogates, nonfinite values, key collisions and unregistered
+literal backslashes refuse before pending creation. Exact UTF8/syntax/escape
+preflight precedes reservation of one complete candidate under the same remaining
+owner. Emission uses bounded operations; the admitted buffer transfers directly
+to the existing atomic writer without reparse, sanitation or reencoding. Plain
+text keeps literal sanitation and whole-backslash refusal. Work/facts are
+nonrefundable; these are logical bounds, not hard RSS or syscall-time guarantees.
+
+This remains an unfinished compound repair. Controller preparation/writers
 retain their separate existing persistent owner; it supplies no launcher quota.
 Closed producer/copy registry, scan-only registered raw admission, nested source/
-hex/browser joins, typed Controller writers, compact bounded final encoding/
-publication, prefix and JSONL reuse remain required on this same draft. Legacy
-JSON framing/final encoding and raw-backslash refusal remain. This slice grants
+hex/browser/direct/pair/human-display joins, compact bounded main final/initial
+result encoding/publication, prefix and JSONL reuse remain required on this same
+draft. Legacy result encoding/publication and raw-backslash refusal remain. This slice grants
 no nested/raw structured exemption, complete finite publication, fit or native
 acceptance. Closed observations retain their own gates.
 The completed-ledger exception handler immediately offers its original incomplete

@@ -1312,29 +1312,29 @@ class Controller:
             self._evidence_preparing = False
 
     def _evidence_sanitize(self, text: str) -> str:
-        from run import _evidence_utf8_size
+        from run import _EvidenceCapacity, _evidence_safe, _evidence_utf8_size
         self._check_evidence()
         size = _evidence_utf8_size(text, self._check_evidence)
-        self._evidence_budget.reserve(size, 1, self._check_evidence)
-        self._evidence_budget.settle(size, size)
-        for secret in self._evidence_context[-1]:
-            bound = 10 * size if secret in text else size
-            self._evidence_budget.reserve(bound, 1, self._check_evidence)
+        self._evidence_budget.charge(size, 1, self._check_evidence)
+        context = self._evidence_context[-1]
+        def literal(value: str) -> str:
             try:
-                text = text.replace(secret, "[REDACTED]")
-                size = _evidence_utf8_size(text, self._check_evidence)
-                self._evidence_budget.settle(bound, size)
-                self._check_evidence()
+                for secret in context:
+                    self._check_evidence()
+                    value = value.replace(secret, "[REDACTED]")
+                return value
             except BaseException as exc:
                 self._stop_evidence(exc)
                 raise
-        if any(secret in text for secret in self._evidence_context[-1]):
-            error = ValueError("unsafe evidence sanitation postcondition")
-            self._stop_evidence(error)
-            raise error
-        return text
+        try:
+            return _evidence_safe(text, size, literal, context, self._evidence_budget, self._check_evidence)
+        except _EvidenceCapacity:
+            raise  # Intact original eligibility still permits ordinary refusal.
+        except BaseException as exc:
+            self._stop_evidence(exc)
+            raise
 
-    def _replace_evidence(self, path: Path, text: str) -> None:
+    def _replace_evidence(self, path: Path, candidate: bytearray) -> None:
         self._check_evidence()
         try:
             require(path == self.root / "scenario.json" or path.parent == self.root / "raw",
@@ -1366,15 +1366,21 @@ class Controller:
             self._stop_evidence(exc)
             raise
         temporary = path.with_name(path.name + ".tmp")
-        self._evidence_budget.reserve(0, 4, check)
+        # Admit ALL file/view facts before exclusive pending creation, too.
+        self._evidence_budget.charge(0, 5 + (len(candidate) + 4095) // 4096, check)
         commit = dict(path=path, end=self._evidence_context[0], replaced=False)
         self._evidence_replacements.append(commit)
         try:
             check()
-            with temporary.open("x", encoding="utf8") as stream:
+            with temporary.open("xb", buffering=0) as stream:
                 check()
-                if stream.write(text) != len(text):
-                    raise OSError("short evidence write")
+                with memoryview(candidate) as view:
+                    for offset in range(0, len(view), 4096):
+                        check()
+                        with view[offset:offset + 4096] as chunk:
+                            if stream.write(chunk) != len(chunk):
+                                raise OSError("short evidence write")
+                        check()
             check()
             temporary.replace(path)
             commit["replaced"] = True  # Actual replacement survives every later failure.
@@ -1386,14 +1392,34 @@ class Controller:
             raise
 
     def _atomic_text(self, path: Path, text: str) -> None:
-        self._replace_evidence(path, self._evidence_sanitize(text))
+        from run import _EvidenceUnsafe, _evidence_buffer, _evidence_utf8_size, _ordinary_evidence_error
+        self._check_evidence()
+        try:
+            if type(text) is not str or "\\" in text:
+                raise ValueError("evidence text representation withheld")
+            safe = self._evidence_sanitize(text)
+            size = _evidence_utf8_size(safe, self._check_evidence)
+            self._evidence_budget.charge(48, 5, self._check_evidence)
+            candidate = _evidence_buffer([("literal", [(safe, 0, len(safe))])], size,
+                                         self._evidence_budget, self._check_evidence)
+            self._replace_evidence(path, candidate)
+        except BaseException as exc:
+            if isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc):
+                self._stop_evidence(exc)
+            raise
 
     def _atomic_json(self, path: Path, value: Any) -> None:
+        from run import _EvidenceUnsafe, _evidence_json, _ordinary_evidence_error
         self._check_evidence()
-        # Legacy encoding only in this construction slice. Finite typed admission
-        # and compact pre-escape encoding remain required before compound release.
-        candidate = json.dumps(value, indent=2)
-        self._replace_evidence(path, self._evidence_sanitize(candidate))
+        try:
+            candidate = _evidence_json(value, self._evidence_context[-1],
+                                        self._evidence_budget, self._check_evidence)
+            self._check_evidence()
+            self._replace_evidence(path, candidate)
+        except BaseException as exc:
+            if isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc):
+                self._stop_evidence(exc)
+            raise
 
     def stage_browser_trace(self) -> None:
         if not self.redaction_ready:

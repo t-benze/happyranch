@@ -19,7 +19,7 @@ import time
 import traceback
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from owned import Owned, identity
 import completed
@@ -554,13 +554,9 @@ def scenario_fields(result: dict, sanitize: Callable[[str], str], *, context: li
             detached[safe_key] = detach(result[key], 1)
     if type(detached.get("variants")) is not dict:
         raise _EvidenceUnsafe("scenario required-key sanitation postcondition")
-    # Legacy final encoding remains a separate, unfinished compound boundary.
-    size = 0
-    for chunk in json.JSONEncoder(allow_nan=False, indent=2).iterencode(detached):
-        check()
-        size += _evidence_utf8_size(chunk, check)
-        if size > 8388608:
-            raise _EvidenceCapacity("scenario projection capacity refused")
+    # Independent encoded predicate, SAME collection owner, no second buffer.
+    _evidence_encoded_size(detached, ledger, check)
+    check()
     return detached
 
 
@@ -575,7 +571,6 @@ class _EvidenceUnsafe(ValueError):
 class _EvidenceLedger:
     """Nonrefundable logical work shared by evidence preparation and writers.
 
-    The later finite engine must use this owner, not add another allowance.
     This bounds charged transformations, not Python object headers or syscalls.
     """
     def __init__(self) -> None:
@@ -619,23 +614,362 @@ def _evidence_utf8_size(text: str, check: Callable[[], None], limit: int = 83886
 
 def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context: list[str],
                    ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
-    # Marker overlap is rejected by the original-context owner. Replacements
-    # cannot grow beyond ten bytes per original byte. No-match passes alias.
-    matched = any(secret in text for secret in context)
-    bound = 10 * size if matched else size
-    scratch = bound if matched else 0
-    ledger.reserve(bound + scratch, 1, check)
+    # Original scalar is already charged by the real caller. Plan EVERY pass,
+    # including no-match aliases, before the known literal sanitizer allocates.
+    spans, expected, peak, changed = _evidence_literal_plan(text, size, context, ledger, check)
+    scratch = peak if changed else 0
+    ledger.reserve(scratch, 1, check)
     try:
         safe = sanitize(text)
-        actual = _evidence_utf8_size(safe, check)
-        if actual > bound or any(secret in safe for secret in context):
+        try:
+            actual = _evidence_utf8_size(safe, check, expected)
+        except ValueError as exc:
+            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+        ledger.charge(24, 3, check)
+        if (actual != expected or not _evidence_span_equal([(safe, 0, len(safe))], spans, check)
+                or any(secret in safe for secret in context)):
             raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
         check()
-    except BaseException:
-        ledger.settle(bound + scratch, bound + scratch)
-        raise
-    ledger.settle(bound + scratch, actual)
+    finally:
+        # All actual pass work was spent before the call; scratch release
+        # cannot erase it, including when sanitation raises.
+        ledger.settle(scratch, 0)
     return safe
+
+
+def _evidence_chars(spans: list[tuple[str, int, int]], check: Callable[[], None]) -> Iterator[str]:
+    count = 0
+    for text, begin, end in spans:
+        for index in range(begin, end):
+            if count % 4096 == 0:
+                check()
+            count += 1
+            yield text[index]
+    check()
+
+
+def _evidence_span_equal(left: list, right: list, check: Callable[[], None]) -> bool:
+    a, b = _evidence_chars(left, check), _evidence_chars(right, check)
+    while True:
+        x, y = next(a, None), next(b, None)
+        if x != y:
+            return False
+        if x is None:
+            return True
+
+
+def _evidence_matches(spans: list, secret: str, ledger: _EvidenceLedger,
+                      check: Callable[[], None], *, first: bool = False) -> list[int]:
+    """Nonoverlapping indexed matches; no whole token or matching carry copy."""
+    matches = []
+    if len(spans) == 1:
+        text, begin, end = spans[0]
+        position = begin
+        while True:
+            check()
+            position = text.find(secret, position, end)
+            if position < 0:
+                return matches
+            ledger.charge(16, 2, check)
+            matches.append(position - begin)
+            if first:
+                return matches
+            position += len(secret)
+    # Only the current original secret has a matcher table, never a dictionary
+    # of transformed secrets. Reserve its slots/facts BEFORE allocation.
+    chunks = (len(secret) + 511) // 512
+    ledger.charge(8 * len(secret) + 8 * chunks, len(secret) + chunks, check)
+    prefix = []  # F also bounds the outer reference array to <4096 logical B.
+    for begin in range(0, len(secret), 512):
+        check()
+        prefix.append([0] * min(512, len(secret) - begin))
+    matched = 0
+    for index in range(1, len(secret)):
+        if index % 4096 == 0:
+            check()
+        while matched and secret[index] != secret[matched]:
+            matched = prefix[(matched - 1) // 512][(matched - 1) % 512]
+        if secret[index] == secret[matched]:
+            matched += 1
+        prefix[index // 512][index % 512] = matched
+    matched = 0
+    for position, char in enumerate(_evidence_chars(spans, check)):
+        while matched and char != secret[matched]:
+            matched = prefix[(matched - 1) // 512][(matched - 1) % 512]
+        if char == secret[matched]:
+            matched += 1
+        if matched == len(secret):
+            ledger.charge(16, 2, check)
+            matches.append(position + 1 - matched)
+            if first:
+                return matches
+            matched = 0
+    return matches
+
+
+def _evidence_literal_plan(text: str, size: int, context: list[str] | tuple[str, ...],
+                           ledger: _EvidenceLedger, check: Callable[[], None]) -> tuple:
+    """Literal replacement as charged ORIGINAL spans, without a safe scalar copy.
+
+    The caller owns the original debit. Retained spans refer to that SAME
+    original or the fixed marker. No second decode/sanitation recovers content.
+    """
+    ledger.charge(24, 3, check)
+    spans = [(text, 0, len(text))]
+    peak, changed = size, False
+    for secret in context:
+        if type(secret) is not str or not secret:
+            raise _EvidenceUnsafe("evidence context unavailable")
+        matches = _evidence_matches(spans, secret, ledger, check)
+        secret_size = _evidence_utf8_size(secret, check)
+        safe_size = size + len(matches) * (10 - secret_size)
+        # EVERY replacement pass pays its complete safe scalar, even aliasing.
+        ledger.charge(safe_size, 1, check)
+        if matches:
+            changed = True
+            output = []
+            def retain(source: str, begin: int, end: int) -> None:
+                if begin < end:
+                    ledger.charge(24, 3, check)
+                    output.append((source, begin, end))
+            match_index, offset, cursor = 0, 0, 0
+            for source, begin, end in spans:
+                length = end - begin
+                while match_index < len(matches) and matches[match_index] < offset + length:
+                    start = matches[match_index]
+                    retain(source, begin + max(cursor - offset, 0), begin + max(start - offset, 0))
+                    retain("[REDACTED]", 0, 10)
+                    cursor = start + len(secret)
+                    match_index += 1
+                retain(source, begin + max(cursor - offset, 0), end)
+                offset += length
+                cursor = max(cursor, offset)
+            spans = output
+        size = safe_size
+        peak = max(peak, size)
+    # Check the complete virtual result, including matches across span joins.
+    for secret in context:
+        if _evidence_matches(spans, secret, ledger, check, first=True):
+            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+    check()
+    return spans, size, peak, changed
+
+
+def _evidence_string_size(spans: list, check: Callable[[], None]) -> int:
+    size = 2
+    for char in _evidence_chars(spans, check):
+        code = ord(char)
+        if 0xD800 <= code <= 0xDFFF:
+            raise ValueError("evidence surrogate refused")
+        size += (2 if char in '\"\\\b\f\n\r\t' else 6 if code < 32 else
+                 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
+        if size > 8388608:
+            raise _EvidenceCapacity("evidence encoded capacity refused")
+    return size
+
+
+def _evidence_number(value: int | float, ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
+    if not (type(value) is int and value.bit_length() <= 64
+            or type(value) is float and math.isfinite(value)):
+        raise ValueError("evidence number refused")
+    ledger.reserve(128, 1, check)
+    try:
+        text = repr(value)  # Only a checked builtin 64-bit int or finite float.
+        if len(text) > 128:
+            raise _EvidenceCapacity("evidence number capacity refused")
+    except BaseException:
+        ledger.settle(128, 128)
+        raise
+    ledger.settle(128, len(text))
+    return text
+
+
+def _evidence_encoded_size(value: object, ledger: _EvidenceLedger, check: Callable[[], None]) -> int:
+    """Independent compact predicate only; no complete encoded image."""
+    size, ancestors = 0, set()
+    def add(count: int) -> None:
+        nonlocal size
+        if size + count > 8388608:
+            raise _EvidenceCapacity("evidence encoded capacity refused")
+        size += count
+    def visit(item: object, depth: int) -> None:
+        if depth > 64:
+            raise _EvidenceCapacity("evidence depth capacity refused")
+        ledger.charge(0, 1, check)
+        if type(item) is str:
+            ledger.charge(24, 3, check)
+            add(_evidence_string_size([(item, 0, len(item))], check))
+        elif type(item) in (dict, list):
+            if id(item) in ancestors:
+                raise ValueError("evidence cycle refused")
+            ledger.charge(8, 1, check)
+            ancestors.add(id(item))
+            try:
+                add(2)
+                for index, member in enumerate(item.items() if type(item) is dict else item):
+                    if index:
+                        add(1)
+                    if type(item) is dict:
+                        key, child = member
+                        if type(key) is not str:
+                            raise ValueError("evidence key unavailable")
+                        visit(key, depth + 1)
+                        add(1)
+                        visit(child, depth + 1)
+                    else:
+                        visit(member, depth + 1)
+            finally:
+                ancestors.remove(id(item))
+        elif item is None or type(item) is bool:
+            add(4 if item is None or item is True else 5)
+        elif type(item) in (int, float):
+            add(len(_evidence_number(item, ledger, check)))
+        else:
+            raise ValueError("evidence value unavailable")
+    visit(value, 0)
+    check()
+    return size
+
+
+def _evidence_buffer(tokens: list, size: int, ledger: _EvidenceLedger,
+                      check: Callable[[], None]) -> bytearray:
+    """One complete candidate, exact reservation; emission operations <=6B."""
+    ledger.charge(size, 1, check)
+    ledger.charge(8, 2, check)  # Fixed codepoint/escape scratch, before allocation.
+    candidate = bytearray(size)
+    position, checkpoint = 0, 0
+    def put(code: int) -> None:
+        nonlocal position, checkpoint
+        if position >= size:
+            raise _EvidenceUnsafe("evidence encoding postcondition")
+        if position >= checkpoint:
+            check()
+            checkpoint = position + 4096
+        candidate[position] = code
+        position += 1
+    for kind, content in tokens:
+        if kind == "string":
+            put(34)
+        for char in _evidence_chars(content, check):
+            code = ord(char)
+            if kind == "string" and (code < 32 or char in '\"\\'):
+                put(92)
+                escape = '\"\\\b\f\n\r\t'.find(char)
+                if escape < 0:
+                    for digit in (117, 48, 48, ord("0123456789abcdef"[code >> 4]), ord("0123456789abcdef"[code & 15])):
+                        put(digit)
+                else:
+                    put((34, 92, 98, 102, 110, 114, 116)[escape])
+            elif code < 128:
+                put(code)
+            elif code < 2048:
+                put(192 | code >> 6)
+                put(128 | code & 63)
+            elif code < 65536:
+                put(224 | code >> 12)
+                put(128 | code >> 6 & 63)
+                put(128 | code & 63)
+            else:
+                put(240 | code >> 18)
+                put(128 | code >> 12 & 63)
+                put(128 | code >> 6 & 63)
+                put(128 | code & 63)
+        if kind == "string":
+            put(34)
+    check()
+    if position != size:
+        raise _EvidenceUnsafe("evidence encoding postcondition")
+    return candidate
+
+
+def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLedger,
+                    check: Callable[[], None]) -> bytearray:
+    """Typed original admission -> flat charged spans -> ONE compact candidate.
+
+    No second writer tree. Original references and syntax slots close metadata
+    first; no sanitation/emission chooses a policy before a later identity key.
+    """
+    tokens, ancestors = [], set()
+    authenticated = changed = False
+    def retain(kind: str, content: object) -> None:
+        ledger.charge(24, 3, check)
+        tokens.append((kind, content))
+    def visit(item: object, depth: int = 0, *, key: bool = False) -> None:
+        nonlocal authenticated, changed
+        if depth > 64:
+            raise _EvidenceCapacity("evidence depth capacity refused")
+        ledger.charge(0, 1, check)
+        if type(item) is str:
+            size = _evidence_utf8_size(item, check)
+            ledger.charge(size, 0, check)
+            if "\\" in item:
+                raise ValueError("evidence representation withheld")
+            changed = changed or any(secret in item for secret in context)
+            if key:
+                authenticated = authenticated or item in ("bytes", "byte_length", "sha256", "original_byte_check", "entity_copy") or item.endswith(("_bytes", "_sha256"))
+            retain("key" if key else "original", (item, size))
+        elif type(item) in (dict, list):
+            if id(item) in ancestors:
+                raise ValueError("evidence cycle refused")
+            ledger.charge(8, 1, check)
+            ancestors.add(id(item))
+            try:
+                retain("syntax", "{" if type(item) is dict else "[")
+                for index, member in enumerate(item.items() if type(item) is dict else item):
+                    if index:
+                        retain("syntax", ",")
+                    if type(item) is dict:
+                        name, child = member
+                        if type(name) is not str:
+                            raise ValueError("evidence key unavailable")
+                        visit(name, depth + 1, key=True)
+                        retain("syntax", ":")
+                        visit(child, depth + 1)
+                    else:
+                        visit(member, depth + 1)
+                retain("syntax", "}" if type(item) is dict else "]")
+            finally:
+                ancestors.remove(id(item))
+        elif item is None or type(item) is bool:
+            retain("syntax", "null" if item is None else "true" if item else "false")
+        elif type(item) in (int, float):
+            retain("syntax", _evidence_number(item, ledger, check))
+        else:
+            raise ValueError("evidence value unavailable")
+    visit(value)
+    if authenticated and changed:
+        raise ValueError("authenticated evidence requires original bytes")
+    size, keys = 0, []
+    for index, (kind, content) in enumerate(tokens):
+        check()
+        if kind == "syntax":
+            if content == "{":
+                ledger.charge(8, 1, check)
+                keys.append([])
+            elif content == "}":
+                keys.pop()
+            ledger.charge(24, 3, check)
+            spans = [(content, 0, len(content))]
+            tokens[index] = ("literal", spans)
+            count = len(content)
+        else:
+            text, original_size = content
+            spans, safe_size, _, _ = _evidence_literal_plan(text, original_size, context, ledger, check)
+            if kind == "key":
+                for previous, previous_size in keys[-1]:
+                    if safe_size == previous_size:
+                        ledger.charge(safe_size + previous_size, 1, check)
+                        if _evidence_span_equal(spans, previous, check):
+                            raise ValueError("evidence redacted key collision")
+                ledger.charge(safe_size + 16, 1, check)
+                keys[-1].append((spans, safe_size))
+            tokens[index] = ("string", spans)
+            count = _evidence_string_size(spans, check)
+        if size + count > 8388608:
+            raise _EvidenceCapacity("evidence encoded capacity refused")
+        size += count
+    check()
+    return _evidence_buffer(tokens, size, ledger, check)
 
 
 def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], None],
@@ -997,9 +1331,18 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                 if name not in refused_sources:
                     refused_sources.add(name)  # Slot charged before its acquisition.
 
+            # A derived view, charged once under this SAME opportunity. Original
+            # list/order still owns identity comparisons across acquisitions.
+            ledger.charge(sum(_evidence_utf8_size(s, eligible) for s in context) + 8 * len(context),
+                          len(context), eligible)
+            ordered = tuple(sorted(context, key=lambda s: (-len(s), s)))
+
             def sanitize(text: str) -> str:
                 try:
-                    return redact(text, state["token"], state["context"])
+                    for secret in ordered:
+                        eligible()
+                        text = text.replace(secret, "[REDACTED]")
+                    return text
                 except BaseException:
                     state["fatal"] = True
                     raise
@@ -1031,7 +1374,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                             scenario_text = _evidence_input(scenario_file, ledger, eligible, returned, measured)
                         result = step("SCENARIO_DECODE", lambda: _EvidenceJSON(scenario_text, ledger, eligible).read())
                         detached = step("SCENARIO_PROJECT", lambda: scenario_fields(
-                            result, sanitize, context=context, ledger=ledger, check=eligible))
+                            result, sanitize, context=ordered, ledger=ledger, check=eligible))
                         del scenario_text, result
                         state["safe_scenario"] = detached  # Complete assignment only.
                         receipt.update(detached)
@@ -1082,7 +1425,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                         if "\\" in text:
                             raise ValueError("raw text representation withheld")
                         size = _evidence_utf8_size(text, eligible)
-                        safe = _evidence_safe(text, size, sanitize, context, ledger, eligible)
+                        safe = _evidence_safe(text, size, sanitize, ordered, ledger, eligible)
                         if "\\" in safe or any(secret in safe for secret in state["context"]):
                             state["fatal"] = True
                             raise ValueError("unsafe raw sanitation")

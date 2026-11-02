@@ -330,7 +330,7 @@ def failure_result_controls() -> dict:
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
         acquire(); drain(); commit()
         prior_result = (output/'result.json').read_bytes()
-        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":{"value":"'+b'a'*1000000+b'"}}')
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":{"value":"'+b'a'*600000+b'"}}')
         (root/'raw/large-a.txt').write_bytes(b'b'*700000)
         (root/'raw/large-b.txt').write_bytes(b'c'*700000)
         (root/'raw/large-c.txt').write_bytes(b'd'*700000)
@@ -341,7 +341,7 @@ def failure_result_controls() -> dict:
         for name,content in (('large-a.txt',b'b'*700000),('large-b.txt',b'c'*700000),('large-c.txt',b'd'*700000)):
             if name in chosen: assert (output/name).read_bytes() == content
             else: assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
-        exact(state['safe_scenario'],{'variants':{},'groups':{'value':'a'*1000000}})
+        exact(state['safe_scenario'],{'variants':{},'groups':{'value':'a'*600000}})
         assert (output/'result.json').read_bytes() == prior_result
         assert {'REDACT','TEXT_READ'} <= {f[4][0] for f in failures if f[4][1] == 'CAPACITY'}
         results['F3-shared-nonrefundable-siblings'] = 'same scenario/raw owner exhausts; one full sibling and prior complete result retained'
@@ -365,15 +365,17 @@ def failure_result_controls() -> dict:
         results['F3-no-failed-source-retry'] = 'second existing opportunity preserves first cause/prior result and admits only eligible sibling'
 
     # SAME F2/C3/C6/C7 table: actual save and the existing bare-controller venue.
-    # Legacy JSON bytes are intentional until the remaining compound engine lands.
+    # The actual existing save now uses typed compact bytes, no final LF.
     from e07 import save as e07_save
+    compact_input = {'first':[True,False,None,7,1.5], 'sample':'public\nline', 'quote':'"', 'unicode':'中'}
+    compact_bytes = b'{"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad"}'
     for case in ('save', 'capture', 'missing-token', 'changed-context', 'changed-token',
                  'marker-overlap', 'admission', 'pending'):
         with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
             path = root / 'raw/e07.json'
             prior = b'{"previous":"complete"}'
             path.write_bytes(prior)
-            writer.e07 = {'sample':'public'}
+            writer.e07 = copy.deepcopy(compact_input)
             budget = writer._evidence_budget
             spent = budget.work
             prepared = writer._evidence_context
@@ -393,7 +395,7 @@ def failure_result_controls() -> dict:
                     writer._atomic_json(path, writer.e07)
                 else:
                     e07_save(writer)
-            except (AssertionError, TypeError, FileExistsError) as exc:
+            except (AssertionError, ValueError, FileExistsError) as exc:
                 assert case not in ('save', 'capture'), (case, type(exc).__name__)
                 assert path.read_bytes() == prior, case
                 pending = path.with_name('e07.json.tmp')
@@ -409,7 +411,8 @@ def failure_result_controls() -> dict:
                     assert writer.primary_error is exc and writer.primary_traceback is not None
             else:
                 assert case in ('save', 'capture'), 'unsafe save admitted: '+case
-                assert path.read_bytes() == b'{\n  "sample": "public"\n}'
+                assert path.read_bytes() == compact_bytes
+                exact(json.loads(path.read_bytes()), compact_input)
                 assert not path.with_name('e07.json.tmp').exists()
                 assert writer._evidence_replacements[-1]['path'] == path
                 assert writer._evidence_replacements[-1]['replaced'] is True
@@ -419,18 +422,173 @@ def failure_result_controls() -> dict:
             assert prepared[-2] == (secret,), 'later preparation mutated original snapshot'
             results['F2-save-'+case] = 'actual save/prepared-writer whole bytes or refusal; prior bytes retained; native chronology NOT RUN'
 
+    # C3/C4/C5/F3 at the actual writer/file and selected-seven boundaries.
+    # No registered nested-format positive or collector roundtrip is implied.
+    class StringSubclass(str): pass
+    class IntegerSubclass(int): pass
+    class FloatSubclass(float): pass
+    class ListSubclass(list): pass
+    class DictSubclass(dict): pass
+    cycle = []; cycle.append(cycle)
+    alias = {'value':'a'*1400000}
+    deep = None
+    for _ in range(65): deep = [deep]
+    identity_digest = hashlib.sha256(secret.encode('utf8')).hexdigest()
+    invalid = {
+        'string-subclass': {'sample':StringSubclass('public')},
+        'integer-subclass': {'sample':IntegerSubclass(7)},
+        'float-subclass': {'sample':FloatSubclass(1.5)},
+        'list-subclass': ListSubclass([None]), 'dict-subclass': DictSubclass(sample='public'),
+        'key-subclass': {StringSubclass('sample'):'public'}, 'nonstring-key': {7:'public'},
+        'unsupported': {'sample':object()}, 'nan': {'sample':float('nan')},
+        'infinity': {'sample':float('inf')}, 'surrogate': {'sample':'\ud800'},
+        'key-surrogate': {'\udfff':'public'}, 'integer-overflow': {'sample':1<<64},
+        'cycle': cycle, 'depth': deep, 'facts': [None]*200001,
+        'backslash': {'sample':'public\\path'}, 'key-backslash': {'public\\key':'public'},
+        'collision': {secret:'first','[REDACTED]':'second'},
+        'identity-after': {'sample':secret,'byte_length':len(secret.encode())},
+        'identity-before': {'sha256':identity_digest,'sample':secret},
+        'identity-bytes': {'sample':secret,'bytes':len(secret.encode('utf8'))},
+        'identity-nested-after': {'sample':secret,'later':{'entity_copy':None}},
+        'identity-key-change': {secret:'public','original_byte_check':True},
+        'identity-suffix': {'sample':secret,'later':{'body_bytes':17}},
+        'identity-hash-suffix': {'sample':secret,'later':{'body_sha256':identity_digest}},
+        'encoded-size': {'sample':'\0'*1500000},
+        'candidate-reservation': {'sample':'a'*2200000},
+        'alias-work': {'a':alias,'b':alias},
+    }
+    for case,original in invalid.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw/diagnostic.json'
+            prior = b'{"previous":[true,null,7,"complete"]}'
+            path.write_bytes(prior)
+            acquire(); drain(); commit()
+            old_result = (output/'result.json').read_bytes()
+            old_tree = copy.deepcopy(state['safe_scenario'])
+            spent, owner, context = writer._evidence_budget.work, writer._evidence_budget, writer._evidence_context
+            original_identity = copy.deepcopy(original) if case.startswith('identity-') else None
+            try:
+                writer._atomic_json(path,original)
+            except ValueError as exc:
+                if case == 'encoded-size': assert str(exc) == 'evidence encoded capacity refused'
+                elif case == 'candidate-reservation': assert str(exc) == 'evidence capacity refused'
+                elif case == 'depth': assert str(exc) == 'evidence depth capacity refused'
+                elif case.startswith('identity-'): assert str(exc) == 'authenticated evidence requires original bytes'
+                elif case == 'collision': assert str(exc) == 'evidence redacted key collision'
+            else:
+                raise AssertionError('typed writer admitted '+case)
+            assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists(), case
+            assert writer._evidence_budget is owner and owner.work >= spent and owner.reserved == 0
+            assert writer._evidence_context is context and writer._evidence_fatal is None
+            exact(state['safe_scenario'],old_tree)
+            assert (output/'result.json').read_bytes() == old_result
+            assert (output/'safe.json').read_bytes() == b'{"sample":"public"}'
+            assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            if case.startswith('identity-'):
+                assert original.get('sample') == secret or secret in original, 'negative lost ORIGINAL secret'
+                exact(original,original_identity)
+                writer._atomic_text(root/'raw/eligible-sibling.txt','eligible public sibling\n')
+                assert (root/'raw/eligible-sibling.txt').read_bytes() == b'eligible public sibling\n'
+            results['C4-C5-F3-writer-'+case] = 'whole original candidate refused before pending; prior complete file/tree/result/sibling exact; reached guard attributed where stated'
+
+    for case in ('cross-span-replacement','postcondition'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw/e07.json'
+            prior = b'{"previous":"complete"}'
+            path.write_bytes(prior)
+            # Long original context exercises multiple <=4096B matcher chunks;
+            # the independent full safe oracle is still literal, never rendered.
+            writer.secrets.update({'A'*700,'z'+'p'*600+'[RE'} if case == 'cross-span-replacement' else {'x[RE','cat'})
+            writer.e07 = {'sample':'z'+'p'*600+'A'*700 if case == 'cross-span-replacement' else 'xcat'}
+            if case == 'cross-span-replacement':
+                e07_save(writer)
+                assert path.read_bytes() == b'{"sample":"[REDACTED]DACTED]"}'
+            else:
+                previous_ref = writer.groups['E07']['first_error_ref']
+                try: e07_save(writer)
+                except ValueError as exc:
+                    assert str(exc) == 'unsafe evidence sanitation postcondition'
+                    assert writer.primary_error is exc and writer.primary_traceback is not None
+                    assert writer._evidence_fatal[0] is exc and not writer.redaction_ready
+                else: raise AssertionError('writer sanitation postcondition ignored')
+                fatal = writer._evidence_fatal
+                try: e07_save(writer)
+                except ValueError: pass
+                else: raise AssertionError('fatal save performed another publication')
+                assert writer._evidence_fatal is fatal and writer.groups['E07']['first_error_ref'] == previous_ref
+                assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists()
+            results['C4-C6-C7-writer-'+case] = 'actual full virtual-span sanitation or fatal original first-error/refusal facts; prior bytes retained'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        path = root/'raw/diagnostic.json'
+        writer._atomic_json(path,{'sample':secret})
+        assert path.read_bytes() == b'{"sample":"[REDACTED]"}'
+        writer._atomic_json(path,{secret:secret})
+        assert path.read_bytes() == b'{"[REDACTED]":"[REDACTED]"}'
+        repeated = {'z':[True,False,None,7,1.5,'public\nline','中']}
+        original = {'b':repeated,'a':repeated}
+        literal = {'b':{'z':[True,False,None,7,1.5,'public\nline','中']},
+                   'a':{'z':[True,False,None,7,1.5,'public\nline','中']}}
+        writer._atomic_json(path,original)
+        assert path.read_bytes() == b'{"b":{"z":[true,false,null,7,1.5,"public\\nline","\xe4\xb8\xad"]},"a":{"z":[true,false,null,7,1.5,"public\\nline","\xe4\xb8\xad"]}}'
+        exact(json.loads(path.read_bytes()),literal)
+        exact(original,literal)
+        writer._atomic_json(path,{'first':[18446744073709551615,-18446744073709551615,-0.0,1e308], 'byte_length':7})
+        assert path.read_bytes() == b'{"first":[18446744073709551615,-18446744073709551615,-0.0,1e+308],"byte_length":7}'
+        results['C3-C4-writer-literal-types-alias-key-redaction'] = 'independent complete compact bytes; exact original/repeated type/order; real original secret redacted before escaping; safe identity metadata unchanged'
+
+    for case in ('encoded-predicate','nonrefundable-writer','plain-text-backslash'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw/diagnostic.json'
+            acquire(); drain(); commit()
+            old_result = (output/'result.json').read_bytes()
+            old_tree = copy.deepcopy(state['safe_scenario'])
+            if case == 'encoded-predicate':
+                try:
+                    scenario_fields({'variants':{},'groups':{'value':'\0'*1500000}}, lambda text:text, context=[secret])
+                except ValueError as exc: assert str(exc) == 'evidence encoded capacity refused'
+                else: raise AssertionError('selected-seven encoded predicate admitted >C')
+            elif case == 'nonrefundable-writer':
+                original = {'sample':'a'*1060000}
+                writer._atomic_json(path,original)
+                prior = b'{"sample":"'+b'a'*1060000+b'"}'
+                assert path.read_bytes() == prior
+                owner, spent = writer._evidence_budget, writer._evidence_budget.work
+                try: writer._atomic_json(path,original)
+                except ValueError as exc: assert str(exc) == 'evidence capacity refused'
+                else: raise AssertionError('writer renewed original allowance')
+                assert writer._evidence_budget is owner and owner.work > spent and owner.reserved == 0
+                assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists()
+            else:
+                prior = b'complete previous text\n'
+                path.write_bytes(prior)
+                try: writer._atomic_text(path,'public\\path\n')
+                except ValueError as exc: assert str(exc) == 'evidence text representation withheld'
+                else: raise AssertionError('plain text got structured permission')
+                assert path.read_bytes() == prior and not path.with_name(path.name+'.tmp').exists()
+            exact(state['safe_scenario'],old_tree)
+            assert (output/'result.json').read_bytes() == old_result
+            results['C1-C2-C6-C7-'+case] = 'independent encoded/no-refund/literal-text guard; prior full detached tree and committed bytes survive'
+
     for case in ('R1a','R1b-missing','R1b-decode','R1c-txt','R1c-jsonl','R1c-malformed'):
         with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
             writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
-            # Independent literal oracle precedes the claimed collector seam.
-            assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+            assert (root / 'raw/observations.json').read_bytes() == b'{"sample":"[REDACTED]"}'
+            # ORIGINAL escaped secret injection exercises the independent raw
+            # collector guard; the redacting writer is never its negative oracle.
+            (root / 'raw/observations.json').write_bytes(b'{"sample":"PRIVATE_SENTINEL\\"\\n"}')
             if case == 'R1b-missing':
                 (root / 'scenario.json').unlink()
             elif case == 'R1b-decode':
                 (root / 'scenario.json').write_text('{')
             if case.startswith('R1c'):
                 name = 'unsupported.jsonl' if case == 'R1c-jsonl' else 'unsupported.txt'
-                writer._atomic_text(root / 'raw' / name, '{\\' if case == 'R1c-malformed' else 'public\\path\n')
+                original = '{\\' if case == 'R1c-malformed' else 'public\\path\n'
+                try: writer._atomic_text(root / 'raw' / name, original)
+                except ValueError: pass
+                else: raise AssertionError('plain backslash writer admitted')
+                assert not (root/'raw'/name).exists() and not (root/'raw'/(name+'.tmp')).exists()
+                (root/'raw'/name).write_text(original)
             complete, error = acquire()
             drain()
             value = commit()
@@ -440,7 +598,7 @@ def failure_result_controls() -> dict:
             assert (output / 'failure.txt').is_file(), 'ordinary refusal suppressed safe raw sibling'
             assert not complete and not state['fatal'] and error is not None
             assert (output / 'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
-            assert (output / 'safe.json').read_bytes() == b'{\n  "sample": "public"\n}'
+            assert (output / 'safe.json').read_bytes() == b'{"sample":"public"}'
             assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False and value['timing']['cleanup']['ok'] is False
             if case.startswith('R1b'):
                 assert value['variants'] == {} and 'groups' not in value
@@ -464,16 +622,17 @@ def failure_result_controls() -> dict:
         writer._atomic_json(root / 'raw/observations.json', {'sample':'public-v1'})
         acquire(); drain(); commit()
         earlier = (output / 'result.json').read_bytes()
-        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert (output / 'observations.json').read_bytes() == b'{"sample":"public-v1"}'
         snapshot = copy.deepcopy(state['safe_scenario'])
         writer._atomic_json(root / 'raw/observations.json', {'sample':secret})
-        assert (root / 'raw/observations.json').read_bytes() == b'{\n  "sample": "PRIVATE_SENTINEL\\"\\n"\n}'
+        assert (root / 'raw/observations.json').read_bytes() == b'{"sample":"[REDACTED]"}'
+        (root / 'raw/observations.json').write_bytes(b'{"sample":"PRIVATE_SENTINEL\\"\\n"}')
         (root / 'scenario.json').write_text('{')
         writer._atomic_text(root / 'raw/new.txt','new safe sibling\n')
         complete, error = acquire()  # Only the second original opportunity.
         drain()
         assert not complete and error is not None and state['safe_scenario'] == snapshot
-        assert (output / 'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert (output / 'observations.json').read_bytes() == b'{"sample":"public-v1"}'
         assert not (output / 'observations.json.tmp').exists()
         assert (output / 'new.txt').read_bytes() == b'new safe sibling\n'
         # Genuine later serialization refusal leaves the initial actual result.
@@ -506,7 +665,7 @@ def failure_result_controls() -> dict:
             assert failures == [] if empty is None else failures[0][3] == 'REQUIRED'
             assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
             if empty != 'observations.json':
-                assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public"\n}'
+                assert (output/'observations.json').read_bytes() == b'{"sample":"public"}'
             assert value['status'] == 'FAIL'
             results['B09-B11-complete-safe-file' if empty is None else 'B09-B11-empty-required-'+empty] = 'actual safe presence/required emptiness and decoded FAIL publication; no native acceptance'
 
@@ -626,14 +785,14 @@ def failure_result_controls() -> dict:
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
         writer._atomic_json(root/'raw/observations.json', {'sample':'public-v1'})
         acquire(); drain()
-        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
+        assert (output/'observations.json').read_bytes() == b'{"sample":"public-v1"}'
         writer._atomic_json(root/'raw/observations.json', {'sample':'public-v2'})
         acquire()  # Original second acquisition, no extra source.
         (output/'observations.json.tmp').mkdir()
         drain()
         assert len(errors) == 1 and 'observations.json' in failed_members
-        assert (output/'observations.json').read_bytes() == b'{\n  "sample": "public-v1"\n}'
-        assert published['observations.json'] == b'{\n  "sample": "public-v1"\n}'
+        assert (output/'observations.json').read_bytes() == b'{"sample":"public-v1"}'
+        assert published['observations.json'] == b'{"sample":"public-v1"}'
         results['B10-B11-prior-member-precommit'] = 'actual pending-open refusal preserves old commit without a retry'
 
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
