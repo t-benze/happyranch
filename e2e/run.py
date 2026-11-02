@@ -1009,32 +1009,32 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
 
 
 class _EvidenceJSON:
-    """Only the two already-required original trees, indexed strict JSON.
+    """Indexed strict grammar for required trees AND registered raw scans.
 
-    Raw members never call this materializer. There is no scanner/admission mode.
-    Scalar preflight indexes originals; decode uses <=1024-byte chunks and a
-    separately precharged final join. No complete token slice or validation tree.
+    Scan mode retains only active key/syntax state and the current scalar.
+    Scalar preflight/decode is shared; no raw tree, full token plan or reparse.
     """
     def __init__(self, text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> None:
         self.text, self.ledger, self.check, self.index = text, ledger, check, 0
+        self.end = len(text)
 
     def error(self) -> None:
         # Do not retain the whole refused image in a JSONDecodeError diagnostic.
         raise json.JSONDecodeError("invalid evidence JSON", "", 0)
 
     def whitespace(self) -> None:
-        while self.index < len(self.text) and self.text[self.index] in " \t\r\n":
+        while self.index < self.end and self.text[self.index] in " \t\r\n":
             if self.index % 4096 == 0:
                 self.check()
             self.index += 1
 
     def codepoint(self, index: int) -> tuple[int, int]:
-        if index >= len(self.text):
+        if index >= self.end:
             self.error()
         code = ord(self.text[index])
         index += 1
         if code == 92:
-            if index >= len(self.text):
+            if index >= self.end:
                 self.error()
             escape = self.text[index]
             index += 1
@@ -1044,7 +1044,7 @@ class _EvidenceJSON:
                 self.error()
             code, index = self.hex4(index)
             if 0xD800 <= code <= 0xDBFF:
-                if index + 2 > len(self.text) or self.text[index] != "\\" or self.text[index + 1] != "u":
+                if index + 2 > self.end or self.text[index] != "\\" or self.text[index + 1] != "u":
                     self.error()
                 low, index = self.hex4(index + 2)
                 if not 0xDC00 <= low <= 0xDFFF:
@@ -1059,25 +1059,25 @@ class _EvidenceJSON:
     def hex4(self, index: int) -> tuple[int, int]:
         code = 0
         for _ in range(4):
-            if index >= len(self.text) or self.text[index] not in "0123456789abcdefABCDEF":
+            if index >= self.end or self.text[index] not in "0123456789abcdefABCDEF":
                 self.error()
             code = code * 16 + int(self.text[index], 16)
             index += 1
         return code, index
 
     def string(self) -> str:
-        if self.index >= len(self.text) or self.text[self.index] != '"':
+        if self.index >= self.end or self.text[self.index] != '"':
             self.error()
         start = self.index + 1
         cursor, size = start, 0
-        while cursor < len(self.text) and self.text[cursor] != '"':
+        while cursor < self.end and self.text[cursor] != '"':
             if cursor % 4096 == 0:
                 self.check()
             code, cursor = self.codepoint(cursor)
             size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
             if size > 8388608:
                 raise _EvidenceCapacity("JSON scalar capacity refused")
-        if cursor >= len(self.text):
+        if cursor >= self.end:
             self.error()
         # Charge decoded storage, chunk references, and join BEFORE decoding.
         chunks = (size + 1020) // 1021
@@ -1109,12 +1109,12 @@ class _EvidenceJSON:
         start = self.index
         if self.text[self.index] == "-":
             self.index += 1
-        if self.index >= len(self.text):
+        if self.index >= self.end:
             self.error()
         if self.text[self.index] == "0":
             self.index += 1
         elif self.text[self.index] in "123456789":
-            while self.index < len(self.text) and self.text[self.index] in "0123456789":
+            while self.index < self.end and self.text[self.index] in "0123456789":
                 self.index += 1
                 if self.index - start > 128:
                     raise _EvidenceCapacity("JSON number spelling refused")
@@ -1122,13 +1122,13 @@ class _EvidenceJSON:
             self.error()
         floating = False
         for delimiter, signs in ((".", False), ("eE", True)):
-            if self.index < len(self.text) and self.text[self.index] in delimiter:
+            if self.index < self.end and self.text[self.index] in delimiter:
                 floating = True
                 self.index += 1
-                if signs and self.index < len(self.text) and self.text[self.index] in "+-":
+                if signs and self.index < self.end and self.text[self.index] in "+-":
                     self.index += 1
                 digits = self.index
-                while self.index < len(self.text) and self.text[self.index] in "0123456789":
+                while self.index < self.end and self.text[self.index] in "0123456789":
                     self.index += 1
                     if self.index - start > 128:
                         raise _EvidenceCapacity("JSON number spelling refused")
@@ -1144,65 +1144,117 @@ class _EvidenceJSON:
             self.error()
         return value
 
-    def value(self, depth: int = 0) -> Any:
+    def value(self, depth: int = 0, scalar: Callable[[str], None] | None = None) -> Any:
         self.check()
         if depth > 64:
             raise _EvidenceCapacity("JSON depth capacity refused")
         self.whitespace()
-        if self.index >= len(self.text):
+        if self.index >= self.end:
             self.error()
         self.ledger.charge(0, 1, self.check)
         char = self.text[self.index]
         if char == '"':
-            return self.string()
+            value = self.string()
+            if scalar is not None:
+                try:
+                    scalar(value)
+                finally:
+                    value = None
+                return None
+            return value
         if char in "-0123456789":
             return self.number()
         for spelling, primitive in (("true", True), ("false", False), ("null", None)):
-            if self.text.startswith(spelling, self.index):
+            if self.text.startswith(spelling, self.index, self.end):
                 self.index += len(spelling)
                 return primitive
         if char not in "[{":
             self.error()
         self.ledger.charge(8, 1, self.check)
-        output = {} if char == "{" else []
+        # Active original-key set only in scan mode; arrays have no retained
+        # members. The same recursion is the charged depth-bounded syntax stack.
+        output = ({} if scalar is None else set()) if char == "{" else ([] if scalar is None else None)
         close = "}" if char == "{" else "]"
         self.index += 1
         self.whitespace()
-        if self.index < len(self.text) and self.text[self.index] == close:
+        if self.index < self.end and self.text[self.index] == close:
             self.index += 1
-            return output
-        while True:
-            if char == "{":
-                key = self.string()
-                if key in output:
-                    self.error()  # Decoded escaped-equal keys, before their value.
+            return output if scalar is None else None
+        try:
+            while True:
+                if char == "{":
+                    key = self.string()
+                    if key in output:
+                        self.error()  # Decoded escaped-equal keys, before their value.
+                    if scalar is not None:
+                        scalar(key)
+                    self.whitespace()
+                    if self.index >= self.end or self.text[self.index] != ":":
+                        self.error()
+                    self.index += 1
+                    self.ledger.charge(16, 1, self.check)
+                    if scalar is None:
+                        output[key] = self.value(depth + 1)
+                    else:
+                        output.add(key)  # Same decoded key, no additional string copy.
+                        del key
+                        self.value(depth + 1, scalar)
+                else:
+                    self.ledger.charge(8, 1, self.check)
+                    if scalar is None:
+                        output.append(self.value(depth + 1))
+                    else:
+                        self.value(depth + 1, scalar)
                 self.whitespace()
-                if self.index >= len(self.text) or self.text[self.index] != ":":
+                if self.index >= self.end:
                     self.error()
+                delimiter = self.text[self.index]
                 self.index += 1
-                self.ledger.charge(16, 1, self.check)
-                output[key] = self.value(depth + 1)
-            else:
-                self.ledger.charge(8, 1, self.check)
-                output.append(self.value(depth + 1))
-            self.whitespace()
-            if self.index >= len(self.text):
-                self.error()
-            delimiter = self.text[self.index]
-            self.index += 1
-            if delimiter == close:
-                return output
-            if delimiter != ",":
-                self.error()
-            self.whitespace()
+                if delimiter == close:
+                    return output if scalar is None else None
+                if delimiter != ",":
+                    self.error()
+                self.whitespace()
+        finally:
+            if scalar is not None:
+                if output is not None:
+                    output.clear()
+                key = None
 
     def read(self) -> Any:
         result = self.value()
         self.whitespace()
-        if self.index != len(self.text):
+        if self.index != self.end:
             self.error()
         self.check()
         return result
+
+    def scan(self, top: str, scalar: Callable[[str], None], *, jsonl: bool = False) -> None:
+        """Validate the SAME image; JSONL bounds are indices, never line copies."""
+        try:
+            if jsonl and not self.text:
+                self.error()  # Empty evidence is never a launch witness.
+            while True:
+                if jsonl:
+                    self.end = self.text.find("\n", self.index)
+                    if self.end < 0:
+                        self.error()  # Even a valid unfinished last object refuses.
+                self.whitespace()
+                if self.index >= self.end or self.text[self.index] != top:
+                    self.error()
+                self.ledger.charge(8, 1, self.check)  # Record's root syntax frame, before entry.
+                self.value(scalar=scalar)
+                self.whitespace()
+                if self.index != self.end:
+                    self.error()
+                self.check()
+                if not jsonl:
+                    return
+                self.index = self.end + 1  # Preserve the original full LF image.
+                if self.index == len(self.text):
+                    return
+        finally:
+            self.text = ""  # Refused-image traceback keeps syntax facts, not input.
 
 
 def redact(text: str, token: str, context: list[str]) -> str:
@@ -1417,21 +1469,50 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                         continue
                     if path.suffix in {".txt", ".json", ".jsonl"}:
                         def read_raw() -> str:
-                            with path.open(encoding="utf8", errors="replace", newline="") as stream:
+                            with path.open(encoding="utf8", errors="strict", newline="") as stream:
                                 return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
                         text = step("TEXT_READ", read_raw)
                         mark("REDACT")
                         eligible()
-                        if "\\" in text:
-                            raise ValueError("raw text representation withheld")
-                        size = _evidence_utf8_size(text, eligible)
-                        safe = _evidence_safe(text, size, sanitize, ordered, ledger, eligible)
-                        if "\\" in safe or any(secret in safe for secret in state["context"]):
-                            state["fatal"] = True
-                            raise ValueError("unsafe raw sanitation")
+                        if path.name in {"observations.json", "e07.json", "e07-prefix.json",
+                                         "browser-events.json", "e05-browser-events.json", "launch-witnesses.jsonl"}:
+                            ledger.charge(32, 4, eligible)  # Scanner/callback/bounds before allocation.
+                            def raw_scalar(value: str) -> None:
+                                eligible()
+                                if "\\" in value:
+                                    raise ValueError("raw decoded representation withheld")
+                                # Required replacement is an ordinary WHOLE-member
+                                # refusal, before the independent promised safe pass.
+                                for secret in ordered:
+                                    ledger.charge(8, 1, eligible)
+                                    if secret in value:
+                                        raise ValueError("raw decoded content withheld")
+                                size = _evidence_utf8_size(value, eligible)
+                                safe = _evidence_safe(value, size, sanitize, ordered, ledger, eligible)
+                                ledger.charge(8, 1, eligible)
+                                if safe != value:
+                                    raise _EvidenceUnsafe("raw unchanged postcondition")
+
+                            top = "[" if path.name in {"browser-events.json", "e05-browser-events.json"} else "{"
+                            _EvidenceJSON(text, ledger, eligible).scan(
+                                top, raw_scalar, jsonl=path.name == "launch-witnesses.jsonl")
+                            safe = text  # ONE original image, only after full closure.
+                        else:
+                            if "\\" in text:
+                                raise ValueError("raw text representation withheld")
+                            size = _evidence_utf8_size(text, eligible)
+                            safe = _evidence_safe(text, size, sanitize, ordered, ledger, eligible)
+                            if "\\" in safe or any(secret in safe for secret in state["context"]):
+                                state["fatal"] = True
+                                raise ValueError("unsafe raw sanitation")
                         eligible()
-                        ledger.charge(_evidence_utf8_size(safe, eligible), 1, eligible)
-                        content = step("TEXT_UTF8", lambda: safe.encode("utf8"))
+                        size = _evidence_utf8_size(safe, eligible)
+                        # Literal emission preserves original whitespace/escapes/LFs.
+                        # Charge span facts before allocation; the buffer precharges
+                        # its complete bytes and bounded scratch before encoding.
+                        ledger.charge(48, 5, eligible)
+                        content = step("TEXT_UTF8", lambda: _evidence_buffer(
+                            [("literal", [(safe, 0, len(safe))])], size, ledger, eligible))
                         staged[path.name] = content
                     elif path.suffix == ".png":
                         staged[path.name] = step("IMAGE_READ", path.read_bytes)
@@ -1444,6 +1525,8 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                     if fatal:
                         raise
                     remember_refusal(path.name)
+                finally:
+                    text = safe = content = None
                 eligible()
             mark("REQUIRED")
             eligible()

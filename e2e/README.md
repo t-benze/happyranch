@@ -2332,7 +2332,7 @@ checks are cooperative observations, not kernel-I/O or crash-atomicity proof.
 
 Each launcher collection opportunity now carries one nonrenewing C=8388608,
 F=200000, depth64 owner through its original context/scenario inputs, strict JSON,
-selected-seven detachment and literal raw siblings. Descriptor size/identity is
+selected-seven detachment and raw siblings. Descriptor size/identity is
 checked around the same single bounded read; returned-slice facts are recorded
 only after return. Remaining-capacity refusal before read is not an input-cap
 witness. UTF8 sizing indexes codepoints without a whole encoding copy. The strict
@@ -2365,12 +2365,32 @@ nonrefundable; these are logical bounds, not hard RSS or syscall-time guarantees
 
 This remains an unfinished compound repair. Controller preparation/writers
 retain their separate existing persistent owner; it supplies no launcher quota.
-Closed producer/copy registry, scan-only registered raw admission, nested source/
-hex/browser/direct/pair/human-display joins, compact bounded main final/initial
-result encoding/publication, prefix and JSONL reuse remain required on this same
-draft. Legacy result encoding/publication and raw-backslash refusal remain. This slice grants
-no nested/raw structured exemption, complete finite publication, fit or native
-acceptance. Closed observations retain their own gates.
+Registered raw outer admission now uses the SAME indexed strict grammar in
+scan-only mode at the single existing raw read. Exact object names are
+observations.json, e07.json and e07-prefix.json; exact array names are
+browser-events.json and e05-browser-events.json. launch-witnesses.jsonl requires
+nonempty evidence of complete object records, each with its original terminal LF.
+No suffix/key-name wildcard applies. Strict UTF8 acquisition refuses invalid bytes.
+Active syntax/key sets and the current decoded scalar are charged before retention;
+no raw tree, complete token/span plan, safe image or reparse is created. Escaped
+equal duplicate keys refuse before their values. Grammar, framing, finite bounded
+numbers, depth/facts and every original decoded key/value must pass. Public quote,
+LF, Unicode and escaped-solidus syntax is allowed; any decoded backslash or
+original secret withholds the WHOLE new member. Required replacement is ordinary
+while eligibility remains valid; promised sanitizer/postcondition failure is fatal.
+Every unchanged safe pass and repeated occurrence costs remaining owner work.
+After full closure, one precharged literal UTF8 candidate preserves the ENTIRE
+original whitespace/escapes/LFs and transfers directly to staging/publication.
+JSONL record boundaries are indices in the SAME returned image, never line copies
+or a new allowance. Later malformed/unfinished records withhold the whole image;
+previous full commits survive. Scenario-only returned-slice annotations stay truthful.
+
+Closed producer/copy registry, nested source/hex/browser/direct/pair/human-display
+joins, compact bounded main final/initial result encoding/publication, E07 prefix
+and Controller witness tree-parse reuse remain required on this same draft.
+Legacy result publication and plain/unregistered R1 whole-backslash refusal remain.
+No nested encoding permission, complete finite publication, fit or native acceptance
+follows. Closed observations retain their own gates.
 The completed-ledger exception handler immediately offers its original incomplete
 collection claim to the existing observer: UNKNOWN window/operation/reason and U/U
 lengths, one charged <=512-byte opportunity, no later enrichment or retry.

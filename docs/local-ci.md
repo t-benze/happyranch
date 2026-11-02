@@ -617,7 +617,7 @@ with UNKNOWN/U annotations and its same one charged diagnostic opportunity.
 Preparation/text writers retain their existing persistent ledger. Each launcher
 collection now uses its own original nonrenewing C8388608/F200000/depth64 owner
 for bounded original context/scenario acquisition, strict indexed outer JSON,
-selected-seven original-plus-safe detachment and literal raw siblings. Metadata
+selected-seven original-plus-safe detachment and raw siblings. Metadata
 checks surround the single read; UTF8 counts use indexed codepoints. Early
 remaining-capacity refusal has no returned-slice/input-cap witness. Only the two
 required original trees are materialized; a file may refuse parser storage before
@@ -635,12 +635,26 @@ every pass, candidate and bounded scratch share the persistent preparation owner
 spent work never refunds. No hard RSS or syscall-time guarantee follows.
 The action convenience scenario read is removed; ordinary refusal preserves prior
 complete bytes/snapshots and spent work, without retrying failed sources. Complete
-registry/scan-only raw admission, nested/browser/direct/pair/human-display joins,
-main's compact initial/final result encoding/publication and prefix/JSONL reuse
-remain unfinished. Legacy result encoding/publication and existing raw-backslash
-refusal remain. Existing
-controls supply file/preparation evidence only, with temporal,
-allocation and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
+producer/copy registry, nested/browser/direct/pair/human-display joins, main's
+compact initial/final result encoding/publication and E07 prefix/Controller witness
+tree-parse reuse remain unfinished. At the existing single raw read, the same
+indexed strict grammar now scans registered observations.json/e07.json/e07-prefix.json
+objects, browser-events.json/e05-browser-events.json arrays and nonempty
+launch-witnesses.jsonl complete LF-terminated object records without a raw tree,
+full token plan, second safe image or reparse. Strict UTF8, decoded duplicates
+before values, every original decoded scalar/key and finite grammar/depth/facts
+are checked under the SAME remaining scenario owner. Public quote/LF/Unicode/
+escaped-solidus syntax is admitted; original secrets and decoded backslashes
+withhold the whole member. Required replacement is ordinary under intact
+eligibility; sanitizer/postcondition failure stops detailed work. All records,
+repetitions, unchanged safe passes, active keys and the exact original candidate
+remain charged before allocation; no per-line/member reset. A late incomplete
+record withholds the entire new image, preserving prior commits. The one admitted
+literal UTF8 candidate retains ALL original bytes and transfers directly into
+staging/publication. No suffix/key-name or nested encoding grant follows. Legacy
+result publication and plain/unregistered R1 whole-backslash refusal remain.
+Existing controls supply file/preparation evidence only, with temporal, allocation
+and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.
 
 

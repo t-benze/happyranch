@@ -325,6 +325,154 @@ def failure_result_controls() -> dict:
                     assert failures[0][4][2:] == (4194341,4194341)
             results['F3-json-'+case] = 'actual full scenario file/tree/type/order or whole-claim refusal; eligible sibling exact'
 
+    # C1/C3/C5-C7/F3/R1: registered RAW scans, independently literal bytes.
+    # Scan positives preserve noncompact framing, unlike the separate C3 writer.
+    raw_object = b' { "first" : [true, false, null, 7, 1.5], "sample":"public\\nline", "quote":"\\\"", "slash":"a\\/b", "unicode":"\xe4\xb8\xad", "pair":"\\ud83d\\ude00", "copies":[{"b":2,"a":1},{"b":2,"a":1}] }\n'
+    raw_array = b' [ {"sample":"public\\nline", "quote":"\\\"", "slash":"a\\/b", "unicode":"\xe4\xb8\xad"}, [true, false, null, 7, 1.5], [true, false, null, 7, 1.5] ] \n'
+    raw_lines = b' {"index":1, "sample":"public\\nline", "slash":"a\\/b"} \n{"index":2,"unicode":"\xe4\xb8\xad","quote":"\\\""}\n'
+    object_value = {'first':[True,False,None,7,1.5],'sample':'public\nline','quote':'"',
+                    'slash':'a/b','unicode':'中','pair':'😀','copies':[{'b':2,'a':1},{'b':2,'a':1}]}
+    array_value = [{'sample':'public\nline','quote':'"','slash':'a/b','unicode':'中'},
+                   [True,False,None,7,1.5],[True,False,None,7,1.5]]
+    line_values = [{'index':1,'sample':'public\nline','slash':'a/b'}, {'index':2,'unicode':'中','quote':'"'}]
+    raw_positives = {
+        'observations.json': (raw_object,object_value),
+        'e07.json': (raw_object,object_value),
+        'e07-prefix.json': (raw_object,object_value),
+        'browser-events.json': (raw_array,array_value),
+        'e05-browser-events.json': (raw_array,array_value),
+        'launch-witnesses.jsonl': (raw_lines,line_values),
+    }
+    for name,(source_bytes,wanted) in raw_positives.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            (root/'raw'/name).write_bytes(source_bytes)
+            complete,error = acquire(); drain(); commit()
+            assert error is None and not state['fatal'] and not errors, (name,failures)
+            assert (root/'raw'/name).read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == source_bytes, name
+            assert published[name] is staged[name]  # Direct candidate ownership transfer.
+            assert hashlib.sha256((output/name).read_bytes()).digest() == hashlib.sha256(source_bytes).digest()
+            decoded = ([json.loads(part) for part in source_bytes.split(b'\n')[:-1]]
+                       if name.endswith('.jsonl') else json.loads((output/name).read_bytes()))
+            exact(decoded,wanted)
+            assert not (output/(name+'.tmp')).exists()
+            results['C3-C5-raw-positive-'+name] = 'entire literal original source/staged/published bytes, independent full type/key/list order; no raw tree'
+
+    raw_refusals = {
+        'wrong-object': ('observations.json',b'[]'),
+        'wrong-e07': ('e07.json',b'null'),
+        'wrong-prefix': ('e07-prefix.json',b'[]'),
+        'wrong-array': ('browser-events.json',b'{}'),
+        'wrong-e05-array': ('e05-browser-events.json',b'{}'),
+        'empty': ('observations.json',b''),
+        'truncated': ('observations.json',b'{"x":['),
+        'trailing': ('observations.json',b'{} null'),
+        'comma': ('observations.json',b'{"x":1,}'),
+        'duplicate': ('observations.json',b'{"x":1,"\\u0078":"SYNTHETIC_TOKEN"}'),
+        'escape': ('observations.json',b'{"x":"\\q"}'),
+        'surrogate-high': ('observations.json',b'{"x":"\\ud800"}'),
+        'surrogate-low': ('observations.json',b'{"x":"\\udc00"}'),
+        'surrogate-pair': ('observations.json',b'{"x":"\\ud800\\u0041"}'),
+        'utf8': ('observations.json',b'{"x":"\xff"}'),
+        'control': ('observations.json',b'{"x":"raw\nline"}'),
+        'nan': ('observations.json',b'{"x":NaN}'),
+        'infinity': ('observations.json',b'{"x":Infinity}'),
+        'nonfinite': ('observations.json',b'{"x":1e999}'),
+        'integer': ('observations.json',b'{"x":18446744073709551616}'),
+        'int-spelling': ('observations.json',b'{"x":-1234567890123456789012}'),
+        'float-spelling': ('observations.json',b'{"x":0.'+b'1'*127+b'}'),
+        'zero': ('observations.json',b'{"x":01}'),
+        'fraction': ('observations.json',b'{"x":1.}'),
+        'exponent': ('observations.json',b'{"x":1e+}'),
+        'depth': ('observations.json',b'{"x":'+b'['*65+b'null'+b']'*65+b'}'),
+        'facts': ('observations.json',b'{"x":['+b'null,'*100001+b'null]}'),
+        'secret-value': ('observations.json',b'{"x":"SYNTHETIC_TOKEN"}'),
+        'secret-key': ('observations.json',b'{"SYNTHETIC_TOKEN":1}'),
+        'escaped-secret-value': ('observations.json',b'{"x":"PRIVATE_SENTINEL\\\"\\n"}'),
+        'escaped-secret-key': ('observations.json',b'{"PRIVATE_SENTINEL\\\"\\n":1}'),
+        'backslash': ('observations.json',b'{"x":"public\\\\path"}'),
+        'nested-json': ('observations.json',b'{"payload_file":{"text":"{\\\"x\\\":\\\"public\\\\nline\\\"}"}}'),
+        'unregistered-json': ('familiar.json',raw_object),
+        'unregistered-jsonl': ('familiar.jsonl',raw_lines),
+        'line-incomplete': ('launch-witnesses.jsonl',b'{"index":1}\n{"index":2}'),
+        'line-malformed': ('launch-witnesses.jsonl',b'{"index":1}\n{"index":}\n'),
+        'line-duplicate': ('launch-witnesses.jsonl',b'{"index":1}\n{"x":1,"\\u0078":2}\n'),
+        'line-type': ('launch-witnesses.jsonl',b'{"index":1}\n[]\n'),
+        'line-secret': ('launch-witnesses.jsonl',b'{"index":1}\n{"x":"SYNTHETIC_TOKEN"}\n'),
+        'line-backslash': ('launch-witnesses.jsonl',b'{"index":1}\n{"x":"public\\\\path"}\n'),
+        'line-empty': ('launch-witnesses.jsonl',b''),
+        'line-blank': ('launch-witnesses.jsonl',b'{"index":1}\n\n'),
+        'line-facts': ('launch-witnesses.jsonl',(b'{"x":['+b'null,'*50001+b'null]}\n')*2),
+        'scalar-work': ('observations.json',b'{"x":"'+b'a'*1700000+b'"}'),
+        'candidate-work': ('observations.json',b'{}'+b' '*4200000),
+    }
+    for case,(name,source_bytes) in raw_refusals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            # Establish real prior full file/tree/FAIL commits, then refuse a
+            # changed image at the second EXISTING collection opportunity.
+            prior = b'{"prior":"safe"}\n' if name.endswith('.jsonl') else (b'[]' if name in ('browser-events.json','e05-browser-events.json') else b'{"prior":"safe"}')
+            (root/'raw'/name).write_bytes(prior)
+            acquire(); drain(); commit()
+            old_tree, old_result = copy.deepcopy(state['safe_scenario']), (output/'result.json').read_bytes()
+            old_buffer, first = staged[name], failures[0]
+            (root/'raw'/name).write_bytes(source_bytes)
+            (root/'raw/eligible.txt').write_bytes(b'eligible ordinary sibling\n')
+            complete,error = acquire(); drain()
+            assert not complete and error is not None and not state['fatal'] and not errors, case
+            refusal = next(f for f in failures if f[0] is error[0])
+            assert refusal[4][0] == ('TEXT_READ' if case == 'utf8' else 'TEXT_UTF8' if case == 'candidate-work' else 'REDACT'), (case,refusal[4])
+            if case in ('int-spelling','float-spelling','depth','facts','line-facts','scalar-work','candidate-work'):
+                assert refusal[4][1] == 'CAPACITY', (case,refusal[4])
+            if case == 'duplicate':
+                assert isinstance(error[0],json.JSONDecodeError), 'duplicate must refuse BEFORE its sensitive value'
+            assert name in state['refused_sources'] and failures[0] is first
+            assert staged[name] is old_buffer and published[name] is old_buffer
+            assert (output/name).read_bytes() == prior and not (output/(name+'.tmp')).exists(), case
+            exact(state['safe_scenario'],old_tree)
+            assert (output/'result.json').read_bytes() == old_result
+            assert (root/'raw'/name).read_bytes() == source_bytes
+            if case not in ('facts','line-facts','scalar-work','candidate-work'):
+                assert (output/'eligible.txt').read_bytes() == b'eligible ordinary sibling\n', case
+            # Guard exhaustion may also withhold the later sibling; no refund.
+            results['C1-C5-C7-raw-refusal-'+case] = 'whole new image withheld; prior full bytes/tree/FAIL and first cause retained; ordinary/fact/work boundary attributed'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        (root/'raw/observations.json').write_bytes(b'{"x":"public\\\\path"}')
+        acquire(); drain(); commit()
+        first,prior_result = failures[0],(output/'result.json').read_bytes()
+        assert 'observations.json' not in staged and not (output/'observations.json').exists()
+        (root/'raw/observations.json').write_bytes(raw_object)
+        (root/'raw/eligible.txt').write_bytes(b'eligible after refusal\n')
+        acquire(); drain()
+        assert 'observations.json' not in staged and not (output/'observations.json').exists()
+        assert not (output/'observations.json.tmp').exists() and failures[0] is first
+        assert (output/'result.json').read_bytes() == prior_result
+        assert (output/'eligible.txt').read_bytes() == b'eligible after refusal\n'
+        results['C6-C7-raw-no-retry'] = 'new refused member never staged, second opportunity never retries repaired source; first cause and eligible sibling preserved'
+
+    # SAME remaining scenario owner across registered raw siblings. Each 1M
+    # scalar costs input1M + decoded/chunk/join2M + two safe passes2M +
+    # candidate1M plus positive facts/keys. Scenario100k costs about600k.
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain(); commit()
+        prior_result = (output/'result.json').read_bytes()
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":"'+b'a'*100000+b'"}')
+        images = {'e07.json': b'{"x":"'+b'b'*1000000+b'"}',
+                  'e07-prefix.json': b'{"x":"'+b'c'*1000000+b'"}',
+                  'e05-browser-events.json': b'["'+b'd'*1000000+b'"]'}
+        for name,image in images.items(): (root/'raw'/name).write_bytes(image)
+        complete,error = acquire(); drain()
+        chosen = [name for name in images if name in staged]
+        assert len(chosen) == 1 and not complete and error is not None and not state['fatal'] and not errors, chosen
+        for name,image in images.items():
+            if name in chosen:
+                assert staged[name] == (output/name).read_bytes() == image
+            else:
+                assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
+        assert any(f[4][:2] == ('REDACT','CAPACITY') for f in failures)
+        assert (output/'result.json').read_bytes() == prior_result
+        exact(state['safe_scenario'],{'variants':{},'groups':'a'*100000})
+        results['C1-C6-C7-raw-shared-owner'] = 'one exact full registered sibling, shared original scenario work and no refund; later parser capacity preserves prior FAIL'
+
     # One owner's nonrefundable scenario work continues into the SAME raw
     # enumeration. Each raw scalar fits alone; together only one can stage.
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
@@ -655,14 +803,14 @@ def failure_result_controls() -> dict:
                 elif name.endswith('.jsonl'):
                     writer._atomic_text(root/'raw'/name,'{}\n')
                 elif name.endswith('.json'):
-                    writer._atomic_json(root/'raw'/name,{'sample':'public'})
+                    writer._atomic_json(root/'raw'/name,[] if name in ('browser-events.json','e05-browser-events.json') else {'sample':'public'})
                 else:
                     writer._atomic_text(root/'raw'/name,'safe log\n')
             if empty is not None:
                 (root/'raw'/empty).write_bytes(b'')
             complete, error = acquire(); drain(); value = commit()
-            assert complete is (empty is None) and error is None and not errors
-            assert failures == [] if empty is None else failures[0][3] == 'REQUIRED'
+            assert complete is (empty is None) and (error is not None if empty == 'observations.json' else error is None) and not errors
+            assert failures == [] if empty is None else failures[0][3] == ('REDACT' if empty == 'observations.json' else 'REQUIRED')
             assert value['variants'] == {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}}
             if empty != 'observations.json':
                 assert (output/'observations.json').read_bytes() == b'{"sample":"public"}'
