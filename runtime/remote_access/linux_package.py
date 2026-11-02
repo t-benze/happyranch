@@ -157,19 +157,310 @@ def _require_managed_package_context() -> None:
     _check_managed_holder()
 
 
+# Private diagnostic language. Never use these projections for admission or
+# installation decisions, public errors, audit data or arbitrary stderr.
+_PACKAGE_NATIVE_SENTENCES = (
+    "Could not load PyInstaller's embedded PKG archive from the executable (<redacted>)",
+    "Could not side-load PyInstaller's PKG archive from external file (<redacted>)",
+    "Failed to pre-initialize embedded python interpreter!",
+)
+_PACKAGE_LOSSES = ("BL", "FL", "FC", "ML", "UN", "U8", "CT", "PE", "RE", "CE", "SD", "JS", "TL", "CX")
+_PACKAGE_STAGES = ("admission_child", "stopped_admission_child", "package_body")
+_PACKAGE_REASONS = (
+    "entry_context", "effective_uid", "operation", "incoming_image", "admission_deadline",
+    "executable_open", "bootstrap_operation", "bootstrap_pair", "open_pair", "admission_current",
+    "admission_child", "inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair",
+    "stopped_admission_deadline", "stopped_current", "stopped_admission_child", "retire_policy",
+    "package_body", "final_refresh", "final_current",
+)
+_PACKAGE_PRIVATE_REASONS = (
+    "effective_uid", "deadline", "context_before", "entry_input", "admission_contract",
+    "admission_history", "admission_dropin", "uninstall_prefix", "uninstall_images",
+    "admission_context_after", "body_guard_before", "body_history", "body_contract",
+    "body_install", "body_uninstall", "body_context_after", "body_guard_after",
+    "body_response", "context_release",
+)
+_PACKAGE_DIAGNOSTIC_STATES = ("observed", "absent", "unavailable", "malformed", "unallowlisted", "truncated", "contradictory")
+_PACKAGE_ERROR_CATEGORIES = (
+    "archive_duplicate_member", "archive_member_invalid", "archive_mode_invalid", "archive_owner_invalid",
+    "install_mode_invalid", "inventory_invalid", "managed_configuration_invalid", "managed_identity_invalid",
+    "managed_identity_missing", "managed_lifecycle_context_required", "managed_lifecycle_deadline",
+    "managed_lifecycle_incompatible", "managed_lifecycle_operation_invalid", "managed_lifecycle_owner_required",
+    "managed_lifecycle_owner_unknown", "managed_lifecycle_refused", "managed_lifecycle_response_invalid",
+    "managed_loaded_contract_mismatch", "managed_manager_unavailable", "managed_package_context_required",
+    "managed_transaction_pending", "managed_uninstall_incomplete", "managed_worker_refused",
+    "manifest_count_invalid", "manifest_hash_mismatch", "manifest_invalid", "manifest_membership_mismatch",
+    "manifest_mode_invalid", "manifest_path_invalid", "notice_invalid", "notice_inventory_mismatch",
+    "package_input_invalid", "sbom_invalid", "sbom_inventory_mismatch", "service_manager_failed",
+    "service_not_ready", "service_unit_invalid", "transaction_state_invalid", "wheel_invalid",
+)
+
+
+def _package_literal(value: object, choices: tuple[str, ...], *, nullable: bool = False) -> str | None:
+    if value is None and nullable:
+        return None
+    if type(value) is str:
+        for literal in choices:
+            if value == literal:
+                return literal
+    raise ValueError("private_diagnostic_invalid")
+
+
+def _package_integer(value: object, low: int, high: int) -> int | None:
+    if value is None or type(value) is int and low <= value <= high:
+        return value
+    raise ValueError("private_diagnostic_invalid")
+
+
+def _package_boolean(value: object) -> bool | None:
+    if value is None or type(value) is bool:
+        return value
+    raise ValueError("private_diagnostic_invalid")
+
+
+def _package_keys(value: object, keys: tuple[str, ...]) -> dict:
+    if type(value) is not dict or set(value) != set(keys):
+        raise ValueError("private_diagnostic_invalid")
+    return value
+
+
+def _package_loss_projection(value: object, order: tuple[str, ...] = _PACKAGE_LOSSES) -> list[str] | None:
+    if value is None:
+        return None
+    if type(value) is not list or len(value) > len(order):
+        raise ValueError("private_diagnostic_invalid")
+    result = [_package_literal(code, order) for code in value]
+    if result != [code for code in order if code in result]:
+        raise ValueError("private_diagnostic_invalid")
+    return result
+
+
+def _package_json(raw: bytes, limit: int = 1024) -> object:
+    if len(raw) > limit or any(b > 127 for b in raw):
+        raise ValueError("private_diagnostic_invalid")
+    def no_constant(_value: str) -> None:
+        raise ValueError("private_diagnostic_invalid")
+    value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=no_constant)
+    pending = [(value, 0)]
+    nodes = 0
+    while pending:
+        item, depth = pending.pop()
+        nodes += 1
+        if depth > 8 or nodes > 512 or type(item) not in (dict, list, str, int, bool, type(None)):
+            raise ValueError("private_diagnostic_invalid")
+        if type(item) is str and (not item.isascii() or any(ord(c) < 32 for c in item)):
+            raise ValueError("private_diagnostic_invalid")
+        if type(item) is dict:
+            pending.extend((k, depth + 1) for k in item)
+            pending.extend((v, depth + 1) for v in item.values())
+        elif type(item) is list:
+            pending.extend((v, depth + 1) for v in item)
+    return value
+
+
+def _package_process_projection(record: dict) -> dict[str, object]:
+    process = _package_keys(record["process"], ("launch", "wait", "wait_error", "kill", "writer_close"))
+    result = {
+        "launch": _package_literal(process["launch"], ("not_attempted", "failed", "started", "unknown")),
+        "wait": _package_literal(process["wait"], ("not_attempted", "pending", "reaped", "failed", "unknown")),
+        "wait_error": _package_boolean(process["wait_error"]),
+        "kill": _package_literal(process["kill"], ("not_requested", "requested", "sent", "not_found", "failed", "unknown")),
+        "writer_close": _package_literal(process["writer_close"], ("ok", "error", "not_opened", "unknown")),
+    }
+    reaped = _package_boolean(record["reaped"])
+    helper_exit = _package_integer(record["helper_exit"], -64, 255)
+    reap_exit = _package_integer(record["reap_exit"], -64, 255)
+    killed = _package_boolean(record["kill_requested"])
+    _package_boolean(record["deadline_elapsed"])
+    if (helper_exit != reap_exit or helper_exit is not None and reaped is not True
+            or reap_exit is not None and reaped is not True
+            or result["wait"] == "reaped" and reaped is not True
+            or reaped is True and result["wait"] != "reaped"
+            or result["wait"] == "unknown" and reaped is not None
+            or result["wait"] in ("not_attempted", "pending", "failed") and reaped is not False
+            or result["launch"] in ("not_attempted", "failed") and (reaped is not False or reap_exit is not None)
+            or reaped is True and result["launch"] != "started"
+            or result["wait"] in ("not_attempted", "pending") and result["wait_error"] is not None
+            or result["kill"] == "not_requested" and killed is not False
+            or result["kill"] == "unknown" and killed is not None
+            or result["kill"] in ("requested", "sent", "not_found", "failed") and killed is not True):
+        raise ValueError("private_diagnostic_invalid")
+    return result
+
+
+def _managed_package_child_projection(value: object) -> dict[str, object]:
+    child = _package_keys(value, ("reason", "diagnostic_state", "helper_exit", "deadline_elapsed", "kill_requested", "reaped", "reap_exit", "native", "process"))
+    result = {"reason": _package_literal(child["reason"], _PACKAGE_PRIVATE_REASONS, nullable=True),
+              "diagnostic_state": _package_literal(child["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES),
+              "helper_exit": _package_integer(child["helper_exit"], -64, 255),
+              "deadline_elapsed": _package_boolean(child["deadline_elapsed"]),
+              "kill_requested": _package_boolean(child["kill_requested"]),
+              "reaped": _package_boolean(child["reaped"]),
+              "reap_exit": _package_integer(child["reap_exit"], -64, 255),
+              "process": _package_process_projection(child)}
+    n = _package_keys(child["native"], ("source", "state", "messages", "eof", "bytes_seen", "frames_seen", "redacted", "truncated", "losses", "read", "close"))
+    if type(n["messages"]) is not list or len(n["messages"]) > 2 or type(n["redacted"]) is not bool or type(n["truncated"]) is not bool:
+        raise ValueError("private_diagnostic_invalid")
+    native = {
+        "source": _package_literal(n["source"], ("nested_frozen_stderr",)),
+        "state": _package_literal(n["state"], ("observed", "empty", "private_only", "unavailable", "redacted", "truncated", "error")),
+        "messages": [_package_literal(m, _PACKAGE_NATIVE_SENTENCES) for m in n["messages"]],
+        "eof": _package_boolean(n["eof"]),
+        "bytes_seen": _package_integer(n["bytes_seen"], 0, 4224),
+        "frames_seen": _package_integer(n["frames_seen"], 0, 17),
+        "redacted": n["redacted"], "truncated": n["truncated"],
+        "losses": _package_loss_projection(n["losses"]),
+        "read": _package_literal(n["read"], ("eof", "limit", "error", "cancelled", "not_started", "unavailable", "unknown")),
+        "close": _package_literal(n["close"], ("ok", "error", "not_opened", "unknown")),
+    }
+    losses = native["losses"] or []
+    has = lambda *codes: any(code in losses for code in codes)
+    complete = (result["process"]["launch"] == "started" and native["eof"] is True
+                and native["read"] == "eof" and native["close"] == "ok"
+                and native["bytes_seen"] is not None and native["frames_seen"] is not None and native["losses"] is not None)
+    truncated = has("BL", "FL", "FC", "ML")
+    if has("U8", "CT", "PE", "RE", "CE", "SD", "JS", "TL", "CX"):
+        state = "error"
+    elif truncated:
+        state = "truncated"
+    elif has("UN"):
+        state = "redacted"
+    elif result["process"]["launch"] != "started":
+        state = "unavailable"
+    elif native["messages"]:
+        state = "observed"
+    elif result["reason"] is not None or n["state"] == "private_only" and complete and native["frames_seen"] == 1 and native["bytes_seen"] and not losses and result["helper_exit"] == 78:
+        state = "private_only"
+    elif complete and native["bytes_seen"] == native["frames_seen"] == 0 and native["losses"] == []:
+        state = "empty"
+    else:
+        state = "unavailable"
+    if (native["state"] != state or native["truncated"] != truncated
+            or len(set(native["messages"])) != len(native["messages"])
+            or native["eof"] is True and native["read"] != "eof"
+            or native["read"] == "eof" and native["eof"] is not True
+            or (native["bytes_seen"] or 0) > 4096 and not has("BL")
+            or native["frames_seen"] == 17 and not has("FC")
+            or native["messages"] and not native["frames_seen"]
+            or native["read"] == "limit" and not has("BL")
+            or native["read"] in ("error", "cancelled") and not has("RE")
+            or native["close"] == "error" and not has("CE")
+            or (native["frames_seen"] or native["messages"]) and not native["bytes_seen"]
+            or (has("UN", "U8", "CT", "PE", "SD", "CX") or any(m in _PACKAGE_NATIVE_SENTENCES[:2] for m in native["messages"])) and not native["redacted"]):
+        raise ValueError("private_diagnostic_invalid")
+    expected = ("contradictory" if has("CX") else "malformed" if has("U8", "CT", "PE", "SD", "JS")
+                else "unavailable" if has("RE", "CE", "TL") or not complete or result["process"]["writer_close"] != "ok"
+                else "truncated" if truncated else "unallowlisted" if has("UN")
+                else "observed" if result["reason"] is not None else "absent")
+    if (result["diagnostic_state"] != expected
+            or expected == "observed" and (result["reason"] is None or result["reaped"] is not True or result["helper_exit"] != 78 or result["reap_exit"] != 78)
+            or expected == "observed" and native["frames_seen"] < len(native["messages"]) + 1
+            or expected != "observed" and result["reason"] is not None):
+        raise ValueError("private_diagnostic_invalid")
+    result["native"] = native
+    return result
+
+
+def _empty_managed_package_diagnostic() -> dict[str, object]:
+    return {"reason": None, "diagnostic_state": "unavailable", "helper_exit": None,
+            "deadline_elapsed": None, "kill_requested": False, "reaped": False, "reap_exit": None,
+            "outcome": "unknown", "process": {"launch": "not_attempted", "wait": "not_attempted", "wait_error": None, "kill": "not_requested", "writer_close": "not_opened"},
+            "transport": {"bytes_seen": None, "stdout_seen": None, "frames_seen": None, "eof": None, "read": "not_started", "close": "not_opened", "losses": None}, "stages": []}
+
+
+def _managed_package_identities_projection(value: object) -> dict[str, object]:
+    record = _package_keys(value, ("tar", "connector", "sidecar", "wheel", "manifest", "verified"))
+    result = {}
+    for key in ("tar", "connector", "sidecar", "wheel", "manifest"):
+        item = record[key]
+        if item is None:
+            result[key] = None
+        elif (type(item) is list and len(item) == 2 and type(item[0]) is int and 0 <= item[0] <= 536870912
+              and type(item[1]) is str and re.fullmatch(r"[0-9a-f]{64}", item[1]) is not None):
+            result[key] = [item[0], item[1]]
+        else:
+            raise ValueError("private_diagnostic_invalid")
+    result["verified"] = _package_boolean(record["verified"])
+    if result["verified"] is True and any(result[k] is None for k in ("tar", "connector", "sidecar", "wheel", "manifest")):
+        raise ValueError("private_diagnostic_invalid")
+    return result
+
+
+def _managed_package_diagnostic_projection(value: object) -> dict[str, object]:
+    d = _package_keys(value, tuple(_empty_managed_package_diagnostic()))
+    result = {"reason": _package_literal(d["reason"], _PACKAGE_REASONS, nullable=True),
+              "diagnostic_state": _package_literal(d["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES),
+              "helper_exit": _package_integer(d["helper_exit"], -64, 255),
+              "deadline_elapsed": _package_boolean(d["deadline_elapsed"]),
+              "kill_requested": _package_boolean(d["kill_requested"]),
+              "reaped": _package_boolean(d["reaped"]), "reap_exit": _package_integer(d["reap_exit"], -64, 255),
+              "outcome": _package_literal(d["outcome"], ("success", "refused", "deadline", "response_invalid", "unknown")),
+              "process": _package_process_projection(d)}
+    t = _package_keys(d["transport"], ("bytes_seen", "stdout_seen", "frames_seen", "eof", "read", "close", "losses"))
+    transport = {"bytes_seen": _package_integer(t["bytes_seen"], 0, 4097),
+                 "stdout_seen": _package_integer(t["stdout_seen"], 0, 4097),
+                 "frames_seen": _package_integer(t["frames_seen"], 0, 4), "eof": _package_boolean(t["eof"]),
+                 "read": _package_literal(t["read"], ("eof", "limit", "error", "cancelled", "not_started", "unavailable", "unknown")),
+                 "close": _package_literal(t["close"], ("ok", "error", "not_opened", "unknown")),
+                 "losses": _package_loss_projection(t["losses"])}
+    if ((transport["bytes_seen"] or 0) + (transport["stdout_seen"] or 0) > 4097
+            or transport["eof"] is True and transport["read"] != "eof"):
+        raise ValueError("private_diagnostic_invalid")
+    result["transport"] = transport
+    stages = d["stages"]
+    if type(stages) is not list or len(stages) > 3:
+        raise ValueError("private_diagnostic_invalid")
+    result["stages"] = []
+    last = -1
+    failed = False
+    for triple in stages:
+        if type(triple) is not list or len(triple) != 3:
+            raise ValueError("private_diagnostic_invalid")
+        stage = _package_literal(triple[0], _PACKAGE_STAGES)
+        outcome = _package_literal(triple[1], ("success", "failure"))
+        child = _managed_package_child_projection(triple[2])
+        index = _PACKAGE_STAGES.index(stage)
+        if index <= last or failed or outcome == "success" and (child["helper_exit"] != 0 or child["reaped"] is not True or child["deadline_elapsed"] is True or child["process"]["writer_close"] != "ok" or child["process"]["wait_error"] is not False):
+            raise ValueError("private_diagnostic_invalid")
+        last, failed = index, outcome == "failure"
+        result["stages"].append([stage, outcome, child])
+    if result["diagnostic_state"] in ("observed", "absent"):
+        reason = result["reason"]
+        if (transport["losses"] != [] or transport["eof"] is not True or transport["read"] != "eof"
+                or transport["close"] != "ok" or transport["bytes_seen"] is None or transport["stdout_seen"] is None
+                or transport["bytes_seen"] + transport["stdout_seen"] > 4096 or result["reaped"] is not True):
+            raise ValueError("private_diagnostic_invalid")
+        if result["diagnostic_state"] == "observed":
+            if reason is None or result["helper_exit"] != 78:
+                raise ValueError("private_diagnostic_invalid")
+            if reason in _PACKAGE_STAGES:
+                count = _PACKAGE_STAGES.index(reason) + 1
+                if not failed or not result["stages"] or result["stages"][-1][0] != reason:
+                    raise ValueError("private_diagnostic_invalid")
+                frames = count
+            else:
+                count = (1 if reason in ("inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair", "stopped_admission_deadline", "stopped_current") else 2 if reason == "retire_policy" else 3 if reason in ("final_refresh", "final_current") else 0)
+                if failed:
+                    raise ValueError("private_diagnostic_invalid")
+                frames = count + 1
+        else:
+            if reason is not None or result["helper_exit"] != 0 or failed:
+                raise ValueError("private_diagnostic_invalid")
+            count, frames = 3, 3
+        if [v[0] for v in result["stages"]] != list(_PACKAGE_STAGES[:count]) or transport["frames_seen"] != frames:
+            raise ValueError("private_diagnostic_invalid")
+    elif result["reason"] is not None:
+        raise ValueError("private_diagnostic_invalid")
+    return result
+
+
 def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, object],
                            descriptor_map: Mapping[int, int], *,
                            _package_diagnostic: dict[str, object] | None = None) -> bytes:
-    """Closed executable entry and internal descriptors, with actual child reap.
+    """Fixed executable/descriptors, bounded concurrent drain and actual reap.
 
-    Expiry refuses; it never unlocks a borrowed flock. A surviving package
-    writer retains its own inherited descriptor even if this gate is killed.
-    Spawn-action duplicates belong only to the parent until spawn returns;
-    close them before waiting for output, without closing borrowed originals.
-    Relinquish ownership before close: Linux may release the FD even when
-    close raises, so retrying could close a reused descriptor.
-    Final close errors refuse only when no body or kill/reap error is already
-    propagating; all remaining owned closes are still attempted.
+    Diagnostics are a private observation of the unchanged operation. Owned
+    descriptors are relinquished before once-only close; borrowed ones stay.
     """
     if (executable not in {_MANAGED_EXECUTABLE, "/proc/self/fd/5", "/proc/self/fd/6"}
             or executable == "/proc/self/fd/5" and operation != "managed-package"
@@ -184,103 +475,154 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     if len(raw) > 4096 or time.monotonic_ns() >= deadline:
         raise PackageError("managed_lifecycle_refused")
     diagnostic = (_package_diagnostic if _package_diagnostic is not None else {}) if operation == "managed-package" else None
-    # Exact full lines only; nested metadata is validated as one closed record.
-    reasons = {
-        "entry_context", "effective_uid", "operation", "incoming_image",
-        "admission_deadline", "executable_open", "bootstrap_operation",
-        "bootstrap_pair", "open_pair", "admission_current", "admission_child",
-        "inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair",
-        "stopped_admission_deadline", "stopped_current", "stopped_admission_child",
-        "retire_policy", "package_body", "final_refresh", "final_current",
-    }
-    lines = {b"managed_package_refusal:" + reason.encode("ascii") + b"\n": reason
-             for reason in reasons}
-    private_reasons = {
-        "effective_uid", "deadline", "context_before", "entry_input",
-        "admission_contract", "admission_history", "admission_dropin",
-        "uninstall_prefix", "uninstall_images", "admission_context_after",
-        "body_guard_before", "body_history", "body_contract", "body_install",
-        "body_uninstall", "body_context_after", "body_guard_after", "body_response",
-        "context_release",
-    }
-    def nested_record(raw: bytes) -> tuple[str, dict[str, object]] | None:
-        prefix = b"managed_package_child_refusal:"
-        if not raw.startswith(prefix) or not raw.endswith(b"\n"):
-            return None
-        try:
-            record = json.loads(raw[len(prefix):-1], object_pairs_hook=_reject_duplicate_keys)
-        except (ValueError, UnicodeError, PackageError, RecursionError):
-            return None
-        if (type(record) is not dict or set(record) != {"reason", "child"}
-                or type(record["reason"]) is not str
-                or record["reason"] not in {"admission_child", "stopped_admission_child", "package_body"}):
-            return None
-        child = record["child"]
-        if (type(child) is not dict or set(child) != {
-                "reason", "diagnostic_state", "helper_exit", "deadline_elapsed",
-                "kill_requested", "reaped", "reap_exit"}
-                or type(child["diagnostic_state"]) is not str
-                or child["diagnostic_state"] not in {
-                    "observed", "absent", "unavailable", "malformed", "unallowlisted", "truncated", "contradictory"}
-                or any(type(child[k]) is not bool for k in ("deadline_elapsed", "kill_requested", "reaped"))
-                or any(child[k] is not None and (type(child[k]) is not int or not -64 <= child[k] <= 255)
-                       for k in ("helper_exit", "reap_exit"))
-                or child["helper_exit"] != child["reap_exit"]
-                or not child["reaped"] and child["helper_exit"] is not None):
-            return None
-        if child["diagnostic_state"] == "observed":
-            if (type(child["reason"]) is not str or child["reason"] not in private_reasons
-                    or not child["reaped"] or child["helper_exit"] != 78):
-                return None
-        elif child["reason"] is not None:
-            return None
-        return record["reason"], child
-
-    frame_limit = 1024
+    if diagnostic is not None:
+        diagnostic.update(_empty_managed_package_diagnostic())
+        diagnostic["outcome"] = "refused"
+    process = diagnostic["process"] if diagnostic is not None else {}
+    transport = diagnostic["transport"] if diagnostic is not None else {}
+    losses: set[str] = set()
+    stages: list[list[object]] = []
+    bare: str | None = None
+    failure_seen = False
     frame = bytearray()
+    frame_overflow = False
     diagnostic_bytes = diagnostic_lines = 0
     diagnostic_eof = False
-    diagnostic_loss: str | None = None
-    frame_overflow = False
-    if diagnostic is not None:
-        diagnostic.update(reason=None, diagnostic_state="unavailable", helper_exit=None,
-                          deadline_elapsed=None, reaped=False, outcome="refused",
-                          kill_requested=False, reap_exit=None, child=None)
+    diagnostic_read = "not_started"
+    diagnostic_close = "not_opened"
+    result = bytearray()
+
+    def accept_frame(raw_frame: bytes) -> None:
+        nonlocal bare, failure_seen
+        if diagnostic_lines > 4:
+            losses.update(("CX", "TL"))
+            return
+        if raw_frame.startswith(b"managed_package_refusal:"):
+            reason = next((r for r in _PACKAGE_REASONS if raw_frame == b"managed_package_refusal:" + r.encode("ascii") + b"\n"), None)
+            if reason is None:
+                losses.add("TL")
+            elif bare is not None or failure_seen:
+                losses.add("CX")
+            else:
+                bare = reason
+            return
+        try:
+            success = raw_frame.startswith(b"managed_package_child_observation:")
+            prefix = b"managed_package_child_observation:" if success else b"managed_package_child_refusal:"
+            if not raw_frame.startswith(prefix):
+                raise ValueError
+            record = _package_json(raw_frame[len(prefix):-1])
+            if type(record) is dict and "version" not in record and not success:
+                # Literal historical H envelope. Validate its exact old grammar;
+                # it supplies no new native stream or preceding success facts.
+                old = _package_keys(record, ("reason", "child"))
+                _package_literal(old["reason"], _PACKAGE_STAGES)
+                child = _package_keys(old["child"], ("reason", "diagnostic_state", "helper_exit", "deadline_elapsed", "kill_requested", "reaped", "reap_exit"))
+                state = _package_literal(child["diagnostic_state"], _PACKAGE_DIAGNOSTIC_STATES)
+                for key in ("deadline_elapsed", "kill_requested", "reaped"):
+                    if type(child[key]) is not bool:
+                        raise ValueError
+                for key in ("helper_exit", "reap_exit"):
+                    _package_integer(child[key], -64, 255)
+                if child["helper_exit"] != child["reap_exit"] or not child["reaped"] and child["helper_exit"] is not None:
+                    raise ValueError
+                if state == "observed":
+                    _package_literal(child["reason"], _PACKAGE_PRIVATE_REASONS)
+                    if not child["reaped"] or child["helper_exit"] != 78:
+                        raise ValueError
+                elif child["reason"] is not None:
+                    raise ValueError
+                losses.add("TL")
+                return
+            key = "stage" if success else "reason"
+            record = _package_keys(record, ("version", key, "child"))
+            if type(record["version"]) is not int or record["version"] != 1:
+                raise ValueError
+            stage = _package_literal(record[key], _PACKAGE_STAGES)
+            child = _managed_package_child_projection(record["child"])
+            if (bare is not None or failure_seen or stages and _PACKAGE_STAGES.index(stage) <= _PACKAGE_STAGES.index(stages[-1][0])):
+                losses.add("CX")
+                return
+            if success and (child["helper_exit"] != 0 or child["reaped"] is not True or child["deadline_elapsed"] is True or child["process"]["wait_error"] is not False or child["process"]["writer_close"] != "ok"):
+                losses.add("CX")
+                return
+            stages.append([stage, "success" if success else "failure", child])
+            failure_seen = not success
+        except (ValueError, UnicodeError, PackageError, RecursionError, TypeError, KeyError):
+            losses.add("TL")
+
     source_read = source_write = output_read = output_write = null = -1
     error_read = error_write = -1
     duplicates: list[int] = []
+    writer_fds: set[int] = set()
+    reader_fds: set[int] = set()
+    writer_error = False
+
+    def close_owned(descriptor: int) -> None:
+        nonlocal diagnostic_close, writer_error
+        is_writer = descriptor in writer_fds
+        is_reader = descriptor in reader_fds
+        writer_fds.discard(descriptor)
+        reader_fds.discard(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            if diagnostic is not None:
+                losses.add("CE")
+                if is_reader:
+                    diagnostic_close = "error"
+                if is_writer:
+                    writer_error = True
+                    process["writer_close"] = "error"
+            raise
+        if diagnostic is not None:
+            if is_reader and diagnostic_close != "error":
+                diagnostic_close = "ok"
+            if is_writer and not writer_fds and not writer_error:
+                process["writer_close"] = "ok"
+
     child: int | None = None
     unwinding = False
     try:
         source_read, source_write = os.pipe2(os.O_CLOEXEC)
+        writer_fds.add(source_write)
+        process["writer_close"] = "unknown"
         output_read, output_write = os.pipe2(os.O_CLOEXEC)
+        writer_fds.add(output_write)
+        reader_fds.add(output_read)
         null = os.open(os.devnull, os.O_RDWR | os.O_CLOEXEC)
         if diagnostic is not None:
             error_read, error_write = os.pipe2(os.O_CLOEXEC)
+            writer_fds.add(error_write)
+            reader_fds.add(error_read)
+            diagnostic_read, diagnostic_close = "unknown", "unknown"
         mapping = {0: source_read, 1: output_write,
                    2: error_write if diagnostic is not None else null, **descriptor_map}
         actions = []
         for target, source in mapping.items():
             duplicate = fcntl.fcntl(source, fcntl.F_DUPFD_CLOEXEC, 10)
             duplicates.append(duplicate)
+            if target in (1, 2):
+                writer_fds.add(duplicate)
             actions.append((os.POSIX_SPAWN_DUP2, duplicate, target))
         environment = {k: v for k, v in os.environ.items() if k != "NOTIFY_SOCKET"}
         if time.monotonic_ns() >= deadline:
             raise PackageError("managed_lifecycle_deadline")
+        process["launch"] = "failed"
         child = os.posix_spawn(executable, [executable, operation], environment, file_actions=actions)
+        process.update(launch="started", wait="pending")
         while duplicates:
-            os.close(duplicates.pop())
+            close_owned(duplicates.pop())
         descriptor, output_write = output_write, -1
-        os.close(descriptor)
+        close_owned(descriptor)
         if error_write >= 0:
             descriptor, error_write = error_write, -1
-            os.close(descriptor)
+            close_owned(descriptor)
         if time.monotonic_ns() >= deadline or os.write(source_write, raw) != len(raw):
             raise PackageError("managed_lifecycle_refused")
         descriptor, source_write = source_write, -1
-        os.close(descriptor)
+        close_owned(descriptor)
         os.set_blocking(output_read, False)
-        result = bytearray()
         with selectors.DefaultSelector() as selector:
             selector.register(output_read, selectors.EVENT_READ)
             if diagnostic is not None:
@@ -295,9 +637,6 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     raise PackageError("managed_lifecycle_deadline")
                 for key, _events in ready:
                     is_output = key.fd == output_read
-                    # One allowance across both streams and readiness batches.
-                    # Keep one overflow sentinel, including at the exact cap;
-                    # after fd2 overflow, never acquire more stdout bytes.
                     available = 4096 - len(result) - diagnostic_bytes
                     if available < 0:
                         raise PackageError("managed_lifecycle_response_invalid")
@@ -305,62 +644,52 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                     if not piece:
                         selector.unregister(key.fd)
                         if not is_output:
-                            diagnostic_eof = True
+                            diagnostic_eof, diagnostic_read = True, "eof"
                             if frame or frame_overflow:
-                                diagnostic_loss = diagnostic_loss or "malformed"
+                                losses.update(("PE", "TL"))
                         continue
                     if is_output:
                         result.extend(piece)
                         if len(result) + diagnostic_bytes > 4096:
                             if diagnostic is not None:
-                                diagnostic_loss = "truncated"
-                                diagnostic.update(reason=None, child=None)
-                                frame.clear()
+                                losses.update(("BL", "TL"))
                             raise PackageError("managed_lifecycle_response_invalid")
                     else:
                         diagnostic_bytes += len(piece)
                         if diagnostic_bytes + len(result) > 4096:
-                            diagnostic_loss = "truncated"
-                            diagnostic.update(reason=None, child=None)
+                            losses.update(("BL", "TL"))
+                            diagnostic_read = "limit"
                             frame.clear()
-                            # Stop after one bounded overflow read; no unlimited
-                            # stderr drain or detached pipe beyond the deadline.
                             selector.unregister(error_read)
                             descriptor, error_read = error_read, -1
-                            os.close(descriptor)
+                            close_owned(descriptor)
                             continue
-                        # Transient input only; never retain arbitrary stderr.
                         for byte in piece:
-                            if diagnostic_loss == "truncated":
-                                break
-                            if len(frame) < frame_limit:
+                            if len(frame) < 1024:
                                 frame.append(byte)
                             else:
                                 frame_overflow = True
                             if byte == 10:
                                 diagnostic_lines += 1
-                                if frame_overflow:
-                                    diagnostic_loss = diagnostic_loss or "malformed"
+                                if diagnostic_lines > 4:
+                                    losses.update(("CX", "TL"))
+                                elif frame_overflow:
+                                    losses.update(("FL", "TL"))
                                 else:
-                                    closed = nested_record(bytes(frame))
-                                    if bytes(frame) in lines:
-                                        closed = (lines[bytes(frame)], None)
-                                    if closed is None:
-                                        state = ("unallowlisted" if all(32 <= c <= 126 for c in frame[:-1])
-                                                 else "malformed")
-                                        diagnostic_loss = diagnostic_loss or state
-                                    elif diagnostic_lines == 1 and diagnostic_loss is None:
-                                        diagnostic.update(reason=closed[0], child=closed[1])
-                                    else:
-                                        diagnostic_loss = diagnostic_loss or "contradictory"
+                                    accept_frame(bytes(frame))
                                 frame.clear()
                                 frame_overflow = False
         while True:
-            reaped, status = os.waitpid(child, os.WNOHANG)
+            try:
+                reaped, status = os.waitpid(child, os.WNOHANG)
+            except BaseException:
+                process.update(wait="failed", wait_error=True)
+                raise
             if reaped:
                 child = None
                 helper_exit = os.waitstatus_to_exitcode(status)
                 elapsed = time.monotonic_ns() >= deadline
+                process.update(wait="reaped", wait_error=helper_exit != 0)
                 if diagnostic is not None:
                     diagnostic.update(helper_exit=helper_exit, deadline_elapsed=elapsed,
                                       reaped=True, reap_exit=helper_exit)
@@ -375,27 +704,35 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
     except BaseException as exc:
         unwinding = True
         if diagnostic is not None:
-            if diagnostic["deadline_elapsed"] is None:
-                diagnostic["deadline_elapsed"] = time.monotonic_ns() >= deadline
+            if isinstance(exc, PackageError) and "_initiating" not in diagnostic:
+                category = next((c for c in _PACKAGE_ERROR_CATEGORIES if len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] == c), None)
+                diagnostic["_initiating"] = {"kind": "package_error", "category": category, "status": 1}
+            if not diagnostic_eof and diagnostic_read != "limit":
+                diagnostic_read = "cancelled" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "error"
+                losses.add("RE")
             if isinstance(exc, PackageError):
-                diagnostic["outcome"] = {
-                    "managed_lifecycle_deadline": "deadline",
-                    "managed_lifecycle_response_invalid": "response_invalid",
-                }.get(str(exc), "refused")
+                diagnostic["outcome"] = {"managed_lifecycle_deadline": "deadline", "managed_lifecycle_response_invalid": "response_invalid"}.get(str(exc), "refused")
         raise
     finally:
         try:
             if child is not None:
-                # This is our unreaped child, not a rediscovered service PID.
                 try:
+                    process["kill"] = "requested"
                     if diagnostic is not None:
                         diagnostic["kill_requested"] = True
                     os.kill(child, signal.SIGKILL)
+                    process["kill"] = "sent"
                 except ProcessLookupError:
-                    pass
-                # No detached success or timed unlock. If kernel exit lags, the
-                # caller remains the original owner until this actual reap.
-                _pid, status = os.waitpid(child, 0)
+                    process["kill"] = "not_found"
+                except BaseException:
+                    process["kill"] = "failed"
+                    raise
+                try:
+                    _pid, status = os.waitpid(child, 0)
+                except BaseException:
+                    process.update(wait="failed", wait_error=True)
+                    raise
+                process.update(wait="reaped", wait_error=True)
                 if diagnostic is not None:
                     diagnostic.update(reaped=True, reap_exit=os.waitstatus_to_exitcode(status))
         except BaseException:
@@ -410,27 +747,50 @@ def _spawn_fixed_lifecycle(executable: str, operation: str, request: dict[str, o
                 descriptor = remaining.pop()
                 if descriptor >= 0:
                     try:
-                        os.close(descriptor)
+                        close_owned(descriptor)
                     except OSError as exc:
-                        # Never retry a possibly released FD; still attempt all
-                        # other owned closes, including after kill/reap errors.
                         if close_error is None:
                             close_error = exc
             if diagnostic is not None:
-                if diagnostic["deadline_elapsed"] is None:
-                    diagnostic["deadline_elapsed"] = time.monotonic_ns() >= deadline
+                diagnostic["deadline_elapsed"] = time.monotonic_ns() >= deadline if diagnostic["deadline_elapsed"] is None else diagnostic["deadline_elapsed"]
                 if frame or frame_overflow:
-                    diagnostic_loss = diagnostic_loss or "malformed"
+                    losses.add("TL")
                 if not diagnostic_eof:
-                    diagnostic_loss = diagnostic_loss or "unavailable"
-                if diagnostic["helper_exit"] == 0 and diagnostic["reason"] is not None:
-                    diagnostic_loss = diagnostic_loss or "contradictory"
-                if diagnostic["child"] is not None and diagnostic["helper_exit"] != 78:
-                    diagnostic_loss = diagnostic_loss or "contradictory"
-                if diagnostic_loss is not None:
-                    diagnostic.update(reason=None, child=None, diagnostic_state=diagnostic_loss)
-                else:
-                    diagnostic["diagnostic_state"] = "observed" if diagnostic["reason"] is not None else "absent"
+                    losses.add("TL")
+                # Reap after cancellation is still an actual helper exit.
+                if diagnostic["helper_exit"] is None and diagnostic["reaped"] is True:
+                    diagnostic["helper_exit"] = diagnostic["reap_exit"]
+                helper_exit = diagnostic["helper_exit"]
+                known_prefix = [triple[0] for triple in stages]
+                expected = None
+                reason = None
+                if helper_exit == 0:
+                    expected = list(_PACKAGE_STAGES)
+                    if bare is not None or failure_seen:
+                        losses.add("CX")
+                elif helper_exit == 78:
+                    if failure_seen:
+                        reason = stages[-1][0]
+                        expected = list(_PACKAGE_STAGES[:_PACKAGE_STAGES.index(reason) + 1])
+                    elif bare is not None:
+                        reason = bare
+                        count = (1 if bare in ("inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair", "stopped_admission_deadline", "stopped_current") else 2 if bare == "retire_policy" else 3 if bare in ("final_refresh", "final_current") else 0)
+                        expected = list(_PACKAGE_STAGES[:count])
+                        if bare in _PACKAGE_STAGES:
+                            losses.add("TL")
+                    else:
+                        losses.add("TL")
+                elif bare is not None or failure_seen:
+                    losses.add("CX")
+                if expected is None or known_prefix != expected:
+                    losses.add("TL")
+                if process.get("writer_close") == "error":
+                    losses.add("TL")
+                diagnostic.update(reason=reason if not losses else None,
+                                  diagnostic_state=("observed" if reason else "absent") if not losses else "contradictory" if "CX" in losses else "unavailable",
+                                  stages=stages)
+                transport.update(bytes_seen=diagnostic_bytes, stdout_seen=len(result), frames_seen=min(diagnostic_lines, 4), eof=diagnostic_eof,
+                                 read=diagnostic_read, close=diagnostic_close, losses=[code for code in _PACKAGE_LOSSES if code in losses])
                 if close_error is not None and not unwinding:
                     diagnostic["outcome"] = "refused"
             if close_error is not None and not unwinding:
@@ -598,8 +958,28 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
             # Authenticate ONE immutable incoming image before using its two
             # fixed existing executables. No extraction/temp/stage precedes B.
             _require_package_source(package)
-            incoming = sealed("happyranch-incoming-package", package.read_bytes())
-            files, _manifest = _read_verified(Path(f"/proc/self/fd/{incoming}"))
+            incoming_bytes = package.read_bytes()
+            diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
+            identities = {key: None for key in ("tar", "connector", "sidecar", "wheel", "manifest", "verified")}
+            if diagnostic is not None:
+                diagnostic["identities"] = identities
+                if len(incoming_bytes) <= 536870912:
+                    identities["tar"] = [len(incoming_bytes), hashlib.sha256(incoming_bytes).hexdigest()]
+            incoming = sealed("happyranch-incoming-package", incoming_bytes)
+            del incoming_bytes
+            try:
+                files, _manifest = _read_verified(Path(f"/proc/self/fd/{incoming}"))
+            except BaseException:
+                if diagnostic is not None and sys.exc_info()[0] not in (SystemExit, KeyboardInterrupt):
+                    identities["verified"] = False
+                raise
+            if diagnostic is not None:
+                # These exact immutable members are subsequently sealed below.
+                for key, member in (("connector", "bin/happyranch-connector"), ("sidecar", "bin/happyranch-tsnet-sidecar"), ("wheel", "share/happyranch.whl"), ("manifest", "manifest.json")):
+                    member_bytes = files[member]
+                    if len(member_bytes) <= 536870912:
+                        identities[key] = [len(member_bytes), hashlib.sha256(member_bytes).hexdigest()]
+                identities["verified"] = all(identities[key] is not None for key in ("tar", "connector", "sidecar", "wheel", "manifest"))
             connector = sealed("happyranch-connector", files["bin/happyranch-connector"], True)
             executable = sealed("happyranch-tsnet-sidecar", files["bin/happyranch-tsnet-sidecar"], True)
             mapping = {3: incoming, 4: connector, 5: executable}
@@ -629,8 +1009,12 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
                 diagnostic["outcome"] = "response_invalid"
             raise
         return result
-    except BaseException:
+    except BaseException as exc:
         unwinding = True
+        diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
+        if diagnostic is not None and isinstance(exc, PackageError) and "_initiating" not in diagnostic:
+            category = next((c for c in _PACKAGE_ERROR_CATEGORIES if len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] == c), None)
+            diagnostic["_initiating"] = {"kind": "package_error", "category": category, "status": 1}
         raise
     finally:
         close_error: OSError | None = None

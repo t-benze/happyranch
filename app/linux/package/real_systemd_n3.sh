@@ -1408,79 +1408,260 @@ start_managed_target() {
   return "$start_status"
 }
 
-# Direct package caller: no arbitrary exception, stderr, path or result body is
-# retained. Each original call owns one bounded receipt, including cancellation.
+# Direct package caller. Only independently validated closed private projections
+# reach these two existing sinks; original operation/cancellation stays latched.
 package_install() {
-  local status=0 receipt
+  local status=0 receipt capsule presence=unknown
   package_call_count=$((package_call_count + 1))
   (( package_call_count <= 16 )) || return 1
   receipt="$diagnostics/installer-$package_call_count.json"
-  sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" "$receipt" <<'PY_PACKAGE' || status=$?
+  capsule="$diagnostics/installer-$package_call_count-status.txt"
+  sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" "$receipt" "$capsule" <<'PY_PACKAGE' || status=$?
 import json
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
-from runtime.remote_access.linux_package import install_linux_package, _MANAGED_PACKAGE_DIAGNOSTIC
+from runtime.remote_access.linux_package import (
+    install_linux_package, PackageError, _MANAGED_PACKAGE_DIAGNOSTIC,
+    _empty_managed_package_diagnostic, _managed_package_diagnostic_projection,
+    _managed_package_identities_projection, _package_process_projection,
+    _PACKAGE_ERROR_CATEGORIES, _PACKAGE_NATIVE_SENTENCES, _PACKAGE_LOSSES,
+    _PACKAGE_REASONS, _PACKAGE_PRIVATE_REASONS,
+)
 
-facts = {"reason": None, "diagnostic_state": "unavailable", "helper_exit": None,
-         "deadline_elapsed": None, "reaped": False, "outcome": "refused",
-         "kill_requested": False, "reap_exit": None}
-status = 1
+facts = _empty_managed_package_diagnostic()
+identities = {k: None for k in ("tar", "connector", "sidecar", "wheel", "manifest", "verified")}
+original_status = None
+initiating = {"kind": "unknown", "category": None, "status": None}
 cancelled = False
-saved = False
+cancel_status = None
+phase = "install"
+losses = []
+encoding = "unknown"
+save = "unknown"
+receipt_close = "not_opened"
+
 
 def cancel(signum, _frame):
-    global cancelled, status
+    global cancelled, cancel_status, original_status, initiating
     cancelled = True
-    status = 128 + signum
+    cancel_status = 128 + signum
+    if original_status is None:
+        prior = facts.get("_initiating")
+        if (type(prior) is dict and set(prior) == {"kind", "category", "status"}
+                and prior["kind"] == "package_error" and type(prior["status"]) is int and prior["status"] == 1
+                and (prior["category"] is None or type(prior["category"]) is str and prior["category"] in _PACKAGE_ERROR_CATEGORIES)):
+            original_status = 1
+            initiating = {"kind": "package_error", "category": next((c for c in _PACKAGE_ERROR_CATEGORIES if c == prior["category"]), None), "status": 1}
+        else:
+            original_status = cancel_status
+            initiating = {"kind": "cancel", "category": None, "status": original_status}
     for item in (signal.SIGINT, signal.SIGTERM):
         signal.signal(item, signal.SIG_IGN)
-    raise SystemExit(128 + signum)
+    # Collection observes later cancellation without rewriting frozen JSON or
+    # interrupting owned once-only closes. No new deadline or operation retry.
+    if phase == "install":
+        raise SystemExit(cancel_status)
+
 
 for item in (signal.SIGINT, signal.SIGTERM):
     signal.signal(item, cancel)
 token = _MANAGED_PACKAGE_DIAGNOSTIC.set(facts)
 try:
     install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
-    status = 0
+    original_status = 0
+    initiating = {"kind": "return", "category": None, "status": 0}
+except PackageError as exc:
+    if original_status is None:
+        original_status = 1
+        category = next((c for c in _PACKAGE_ERROR_CATEGORIES if len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] == c), None)
+        initiating = {"kind": "package_error", "category": category, "status": 1}
 except SystemExit as exc:
-    status = exc.code if type(exc.code) is int and 0 <= exc.code <= 255 else 1
+    if original_status is None:
+        original_status = exc.code if type(exc.code) is int and 0 <= exc.code <= 255 else 1
+        initiating = {"kind": "other", "category": None, "status": original_status}
 except BaseException:
-    status = 1
+    if original_status is None:
+        original_status = 1
+        initiating = {"kind": "other", "category": None, "status": 1}
 finally:
+    phase = "collection"
     _MANAGED_PACKAGE_DIAGNOSTIC.reset(token)
-    record = {"operation": "install", "status": status, "cancelled": cancelled,
-              "diagnostic": facts}
-    descriptor = -1
+    prior = facts.get("_initiating")
+    if (initiating["kind"] != "cancel" and type(prior) is dict
+            and set(prior) == {"kind", "category", "status"} and prior["kind"] == "package_error"
+            and type(prior["status"]) is int and prior["status"] == 1
+            and (prior["category"] is None or type(prior["category"]) is str and prior["category"] in _PACKAGE_ERROR_CATEGORIES)):
+        original_status = 1
+        initiating = {"kind": "package_error", "category": next((c for c in _PACKAGE_ERROR_CATEGORIES if c == prior["category"]), None), "status": 1}
+
+# Independent N3 validation creates a checkpoint in small units. A bad later
+# unit never discards an already validated prefix or copies unchecked fields.
+checkpoint = _empty_managed_package_diagnostic()
+try:
+    source = {k: v for k, v in facts.items() if k not in ("identities", "_initiating")}
+    if set(source) != set(checkpoint):
+        raise ValueError
+    _package_process_projection(source)
+    candidate = dict(source, transport=checkpoint["transport"], stages=[])
+    # The original reason is retained only after its transport has validated.
+    candidate.update(reason=None, diagnostic_state="unavailable")
+    checked = _managed_package_diagnostic_projection(candidate)
+    checkpoint = checked
+    candidate = dict(checkpoint, transport=source["transport"])
+    checkpoint = _managed_package_diagnostic_projection(candidate)
+    if type(source["stages"]) is not list or len(source["stages"]) > 3:
+        raise ValueError
+    for triple in source["stages"]:
+        candidate = dict(checkpoint, stages=checkpoint["stages"] + [triple])
+        checkpoint = _managed_package_diagnostic_projection(candidate)
+    checkpoint = _managed_package_diagnostic_projection(source)
+except BaseException:
+    losses.extend(("SD", "TL"))
+try:
+    identities = _managed_package_identities_projection(facts.get("identities", identities))
+except BaseException:
+    if "SD" not in losses:
+        losses.append("SD")
+    if "TL" not in losses:
+        losses.append("TL")
+
+order = ("SD", "JS", "TL", "CX", "OE", "WE", "FE", "CE")
+
+def collection():
+    return {"state": "error" if losses else "complete", "losses": [c for c in order[:4] if c in losses], "encoding": encoding}
+
+record = {"version": 1, "operation": "install", "status": original_status,
+          "cancelled": cancelled, "initiating": initiating,
+          "diagnostic": checkpoint, "identities": identities,
+          "collection": {}, "save": "prepared"}
+
+# Fallback is only over the preceding closed checkpoint, fixed keys/literals,
+# bounded scalars and SHA256. It never stringifies an object or exception.
+fixed = set(_PACKAGE_ERROR_CATEGORIES + _PACKAGE_NATIVE_SENTENCES + _PACKAGE_LOSSES + _PACKAGE_REASONS + _PACKAGE_PRIVATE_REASONS)
+fixed.update("version operation install status cancelled initiating kind category return package_error cancel other unknown diagnostic identities collection save prepared reason diagnostic_state helper_exit deadline_elapsed kill_requested reaped reap_exit outcome process transport stages launch wait wait_error kill writer_close not_attempted failed started pending requested sent not_found not_requested ok error not_opened success refused deadline response_invalid bytes_seen stdout_seen frames_seen eof read close losses not_started unavailable observed absent malformed unallowlisted truncated contradictory native source nested_frozen_stderr state messages redacted empty private_only limit tar connector sidecar wheel manifest verified complete encoding primary fallback".split())
+
+def primitive(value):
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "true" if value else "false"
+    if type(value) is int and -64 <= value <= 536870912:
+        return str(value)
+    if type(value) is str and (value in fixed or len(value) == 64 and all(c in "0123456789abcdef" for c in value)):
+        return '"' + value + '"'
+    if type(value) is list:
+        return "[" + ",".join(primitive(v) for v in value) + "]"
+    if type(value) is dict:
+        return "{" + ",".join(primitive(k) + ":" + primitive(value[k]) for k in sorted(value)) + "}"
+    raise ValueError
+
+raw = None
+try:
+    encoding = "primary"
+    record["collection"] = collection()
+    raw = (json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+    if len(raw) > 4096:
+        raise ValueError
+except BaseException:
+    losses.append("JS")
+    encoding = "fallback"
+    record["collection"] = collection()
     try:
-        raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+        raw = (primitive(record) + "\n").encode("ascii")
         if len(raw) > 4096:
             raise ValueError
+    except BaseException:
+        raw = None
+        encoding = "unavailable"
+        save = "serialize_error"
+
+descriptor = -1
+if raw is not None:
+    try:
+        save = "open_error"
         descriptor = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+        save = "write_error"
         view = memoryview(raw)
         while view:
             count = os.write(descriptor, view)
             if count <= 0:
                 raise OSError
             view = view[count:]
+        save = "fsync_error"
         os.fsync(descriptor)
-        saved = True
+        save = "saved"
     except BaseException:
-        saved = False
+        losses.append({"open_error": "OE", "write_error": "WE", "fsync_error": "FE"}[save])
     finally:
         if descriptor >= 0:
+            owned, descriptor = descriptor, -1
+            receipt_close = "error"
             try:
-                os.close(descriptor)
-            except OSError:
-                saved = False
-raise SystemExit(status or (0 if saved else 1))
+                os.close(owned)
+                receipt_close = "ok"
+            except BaseException:
+                losses.append("CE")
+
+status = cancel_status or original_status or (1 if losses or save != "saved" or receipt_close != "ok" else 0)
+try:
+    observed = os.lstat(sys.argv[2])
+    present = "1" if stat.S_ISREG(observed.st_mode) else "unknown"
+except FileNotFoundError:
+    present = "0"
+except OSError:
+    present = "unknown"
+if present != "1":
+    status = cancel_status or original_status or 1
+# This capsule owns after-main-close facts only. Its own save remains prepared;
+# a later acquired complete capsule, not this field, establishes availability.
+values = (
+    ("status", str(status)), ("original_status", str(original_status) if original_status is not None else "unknown"),
+    ("cancelled", "1" if cancelled else "0"), ("receipt_present", present),
+    ("receipt_save", save), ("receipt_close", receipt_close),
+    ("collection_state", "error" if losses else "complete" if encoding == "primary" and save == "saved" and receipt_close == "ok" and present == "1" else "unknown"),
+    ("collection_losses", ",".join(c for c in order if c in losses) or "none"),
+    ("receipt_encoding", encoding), ("status_save", "prepared"),
+)
+descriptor = -1
+try:
+    raw = "".join(k + "=" + v + "\n" for k, v in values).encode("ascii")
+    if len(raw) > 512:
+        raise ValueError
+    descriptor = os.open(sys.argv[3], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    view = memoryview(raw)
+    while view:
+        count = os.write(descriptor, view)
+        if count <= 0:
+            raise OSError
+        view = view[count:]
+    os.fsync(descriptor)
+except BaseException:
+    status = cancel_status or original_status or 1
+finally:
+    if descriptor >= 0:
+        owned, descriptor = descriptor, -1
+        try:
+            os.close(owned)
+        except BaseException:
+            status = cancel_status or original_status or 1
+raise SystemExit(cancel_status or status)
 PY_PACKAGE
-  # A pre-main failure or abrupt kill may have no Python receipt. Record that
-  # loss and the original call status; writing it never overwrites that status.
-  printf 'status=%s\nreceipt_present=%s\n' "$status" "$([[ -f "$receipt" ]] && echo 1 || echo 0)" >"$diagnostics/installer-$package_call_count-status.txt" || {
+  # Preserve any existing capsule, including partial/invalid bytes. Only a
+  # genuinely absent sink permits this shell-owned unknown fallback.
+  if [[ ! -e "$capsule" && ! -L "$capsule" ]]; then
     (( status != 0 )) || status=1
-  }
+    if [[ -f "$receipt" && ! -L "$receipt" ]]; then
+      presence=1
+    elif [[ ! -e "$receipt" && ! -L "$receipt" ]]; then
+      presence=0
+    fi
+    (set -o noclobber; printf 'status=%s\noriginal_status=unknown\ncancelled=unknown\nreceipt_present=%s\nreceipt_save=unknown\nreceipt_close=unknown\ncollection_state=unknown\ncollection_losses=unknown\nreceipt_encoding=unknown\nstatus_save=prepared\n' "$status" "$presence" >"$capsule") || {
+      (( status != 0 )) || status=1
+    }
+  fi
   return "$status"
 }
 

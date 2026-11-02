@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'task/TASK-6475']
 
 jobs:
   # THR-291 seq40: Python units and their gate are retired.
@@ -51,75 +51,321 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed N3 PARTIAL installer + same-boot diagnostic (Ubuntu 24.04)
-    # Founder THR327seq5/7 / sole ROOT13151: Stage1 LOCAL preparation only.
-    # Shared publications1/3, automatic attempts1/3; first reservation SPENT.
-    # Remaining TWO+TWO UNALLOCATED. No child push/run, including review-only.
-    # Manager alone
-    # may later reserve an effect after FULL local review + exact-head static QA
-    # and fresh custody/effect reconciliation. Preparation spends neither.
-    # Next single update preparation only: publicb3c22353 -> distinct40hex after
-    # == PRhead == checkout == proof subject, same repo/PR800/task6475/main,
-    # synchronize/attempt1. No list of three future updates or retry allocation.
-    # TASK13017's seq648 FAILED40210816942/1 and every older grant stay spent.
-    # PARTIAL remains unconditionally incomplete/nonzero. R1/R2/scope_complete
-    # HELD; unchanged20min, observer, schedule, quiet readers and recovery rules.
-    # No venue/reboot/merge/deploy; static source is no installer/cleanup proof.
+    # Founder THR327seq35/29/28A/26 / sole ROOT13808. Preparation only:
+    # historical TWO/THREE publications/attempts SPENT; final ONE each remains
+    # manager-owned and UNSPENT until the one normal push after local gates.
+    # No rerun/manual route, future self-SHA, new token scope or cancellation.
     if: >-
-      ${{ github.event_name == 'pull_request' &&
-          github.event.action == 'synchronize' &&
-          github.event.number == 800 &&
+      ${{ github.event_name == 'push' &&
           github.repository == 't-benze/happyranch' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          github.event.pull_request.head.ref == 'task/TASK-6475' &&
-          github.event.pull_request.base.ref == 'main' &&
-          github.event.before == 'b3c22353a13d662e2327d00dabd7e3c001251e61' &&
-          github.event.after != '' &&
+          github.ref == 'refs/heads/task/TASK-6475' &&
+          github.event.repository.full_name == github.repository &&
+          github.event.created == false && github.event.deleted == false &&
+          github.event.forced == false &&
+          github.event.before == 'ea7db390a830e0f22a489789d9c57056930fd38f' &&
           github.event.after != github.event.before &&
-          github.event.after == github.event.pull_request.head.sha &&
-          github.run_attempt == '1' }}
+          github.event.after == github.sha && github.run_attempt == '1' }}
+    concurrency:
+      group: managed-n3-pr800-sole-diagnostic
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      # Repeat the refusal at the step boundary as well as job selection:
-      # rerunning an old selected job must never reach package build/execution.
-      - name: Validate single-update allocation before any build
-        env:
-          N3_EVENT_NAME: ${{ github.event_name }}
+      - name: Admit sole push before checkout or build effects
         run: |
-          python3 - <<'PYGUARD'
+          set -euo pipefail
+          N3_ADMISSION_HOME="${RUNNER_TEMP}/managed-n3-admission-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -- "$N3_ADMISSION_HOME"
+          export N3_ADMISSION_HOME
+          echo "N3_ADMISSION_HOME=$N3_ADMISSION_HOME" >> "$GITHUB_ENV"
+          cat > "$N3_ADMISSION_HOME/admit.py" <<'PYGUARD'
+          import http.client
           import json
+          import math
           import os
-          import re
           from pathlib import Path
-          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          pr = event.get("pull_request", {})
-          head = pr.get("head", {})
-          base = pr.get("base", {})
-          after = event.get("after")
-          allowed = (
-              os.environ.get("N3_EVENT_NAME") == "pull_request"
-              and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
-              and os.environ.get("GITHUB_REPOSITORY") == "t-benze/happyranch"
-              and event.get("action") == "synchronize"
-              and type(event.get("number")) is int and event["number"] == 800
-              and head.get("ref") == "task/TASK-6475"
-              and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
-              and base.get("ref") == "main"
-              and event.get("before") == "b3c22353a13d662e2327d00dabd7e3c001251e61"
-              and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
-              and after != event["before"] and after == head.get("sha")
-          )
-          if not allowed:
-              raise SystemExit("Managed N3 allocation refused")
+          import re
+          import subprocess
+          import sys
+          import time
+
+          P = "/repos/t-benze/happyranch"
+          H = "ea7db390a830e0f22a489789d9c57056930fd38f"
+          ADMISSION_HOME = Path(os.environ["N3_ADMISSION_HOME"])
+          STATE = ADMISSION_HOME / "status.json"
+          check = int(sys.argv[1])
+          start = time.monotonic()
+          account = {"deadline": time.monotonic() + 1200, "active": 0, "requests": 0, "bodies": 0, "headers": 0, "event": None, "tree": None, "check1": "refused", "check2": "unreached"}
+
+
+          def closed_json(raw):
+              def pairs(items):
+                  out = {}
+                  for key, value in items:
+                      if key in out:
+                          raise ValueError
+                      out[key] = value
+                  return out
+              def invalid(_value):
+                  raise ValueError
+              obj = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=pairs, parse_constant=invalid)
+              pending = [(obj, 0)]
+              count = 0
+              while pending:
+                  item, depth = pending.pop()
+                  count += 1
+                  if depth > 32 or count > 20000 or type(item) is float and not math.isfinite(item):
+                      raise ValueError
+                  if type(item) is dict:
+                      pending.extend((k, depth + 1) for k in item)
+                      pending.extend((v, depth + 1) for v in item.values())
+                  elif type(item) is list:
+                      pending.extend((v, depth + 1) for v in item)
+              return obj
+
+
+          def save():
+              pending = ADMISSION_HOME / "status.pending"
+              with pending.open("x", encoding="ascii") as stream:
+                  stream.write(json.dumps(account, sort_keys=True, separators=(",", ":")) + "\n")
+              os.replace(pending, STATE)
+
+
+          def remaining():
+              left = min(10 - (time.monotonic() - start), 20 - account["active"] - (time.monotonic() - start), account["deadline"] - time.monotonic())
+              if left <= 0:
+                  raise ValueError
+              return min(2, left)
+
+
+          # Header acquisition is bounded before the stdlib parser consumes it. It
+          # includes status lines/interim responses; no redirect/auth/proxy fallback.
+          class HeaderStream:
+              def __init__(self, stream, sock):
+                  self.stream, self.sock = stream, sock
+                  self.used = 0
+              def readline(self, limit=-1):
+                  self.sock.settimeout(remaining())
+                  cap = 16384 - self.used
+                  if cap <= 0:
+                      raise ValueError
+                  raw = self.stream.readline(min(cap, limit) if limit > 0 else cap)
+                  if self.used == 0 and not (raw.startswith(b"HTTP/1.1 200 ") or raw.startswith(b"HTTP/1.0 200 ")):
+                      raise ValueError
+                  # Also debit chunk framing/trailers conservatively; neither
+                  # can provide an unbounded hidden line-read channel.
+                  self.used += len(raw)
+                  account["headers"] += len(raw)
+                  if account["headers"] > 229376 or not raw.endswith(b"\n"):
+                      raise ValueError
+                  return raw
+              def __getattr__(self, name):
+                  return getattr(self.stream, name)
+
+
+          class HeaderSocket:
+              def __init__(self, sock):
+                  self.sock = sock
+              def makefile(self, mode):
+                  return HeaderStream(self.sock.makefile(mode), self.sock)
+
+
+          class Response(http.client.HTTPResponse):
+              def __init__(self, sock, *args, **kwargs):
+                  super().__init__(HeaderSocket(sock), *args, **kwargs)
+
+
+          def get(path):
+              account["requests"] += 1
+              if account["requests"] > 14:
+                  raise ValueError
+              connection = http.client.HTTPSConnection("api.github.com", 443, timeout=remaining())
+              connection.response_class = Response
+              try:
+                  connection.connect()
+                  sock = connection.sock
+                  connection.request("GET", path, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "User-Agent": "happyranch-pr800-admission", "Accept-Encoding": "identity", "Connection": "close"})
+                  response = connection.getresponse()
+                  headers = response.getheaders()
+                  for name in ("Content-Type", "Content-Length", "Content-Encoding", "Transfer-Encoding", "Link"):
+                      if len([v for k, v in headers if k.lower() == name.lower()]) > 1:
+                          raise ValueError
+                  if (response.status != 200 or response.getheader("Content-Encoding", "identity") != "identity"
+                          or response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() not in ("application/json", "application/vnd.github+json")):
+                      raise ValueError
+                  length = response.getheader("Content-Length")
+                  if length is not None and (re.fullmatch(r"0|[1-9][0-9]*", length) is None or int(length) > 524288):
+                      raise ValueError
+                  body = bytearray()
+                  while True:
+                      sock.settimeout(remaining())
+                      available = min(65536, 524288 - len(body), 4194304 - account["bodies"])
+                      if available <= 0:
+                          raise ValueError
+                      chunk = response.read1(available)
+                      account["bodies"] += len(chunk)
+                      body.extend(chunk)
+                      if len(body) > 524288 or account["bodies"] > 4194304:
+                          raise ValueError
+                      if not chunk or response.isclosed():
+                          break
+                  if length is not None and len(body) != int(length):
+                      raise ValueError
+                  if "rel=\"next\"" in response.getheader("Link", "") or "rel=next" in response.getheader("Link", ""):
+                      raise ValueError
+                  return closed_json(bytes(body))
+              finally:
+                  connection.close()
+
+
+          def canonical_sha(value):
+              if type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None:
+                  raise ValueError
+              return value
+
+
+          def positive(value):
+              if type(value) is not int or not 0 < value <= 2**63 - 1:
+                  raise ValueError
+              return value
+
+
+          def pr_tuple(pr):
+              if (type(pr.get("number")) is not int or pr["number"] != 800 or pr.get("state") != "open"
+                      or pr.get("merged") is not False or pr.get("draft") is not False
+                      or pr["head"]["ref"] != "task/TASK-6475" or pr["head"]["sha"] != C or pr["base"]["ref"] != "main"):
+                  raise ValueError
+              for role in ("head", "base"):
+                  repo = pr[role]["repo"]
+                  if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
+                      raise ValueError
+              return (800, C, "task/TASK-6475", "main", 1207510174)
+
+
+          def run_tuple(run):
+              if (positive(run["id"]) != R or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1
+                      or type(run.get("workflow_id")) is not int or run["workflow_id"] != 293424328
+                      or run["path"] != ".github/workflows/ci.yml" or run["head_sha"] != C
+                      or run["head_branch"] != "task/TASK-6475" or run["event"] != "push"
+                      or run["status"] != "in_progress" or run["conclusion"] is not None):
+                  raise ValueError
+              for name in ("repository", "head_repository"):
+                  repo = run[name]
+                  if type(repo.get("id")) is not int or repo["id"] != 1207510174 or repo.get("full_name") != "t-benze/happyranch" or repo.get("private") is not False:
+                      raise ValueError
+              created = run["created_at"]
+              if type(created) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", created) is None:
+                  raise ValueError
+              return (R, 1, C, 293424328, positive(run["check_suite_id"]), created)
+
+
+          def singleton(doc):
+              if type(doc.get("total_count")) is not int or doc["total_count"] != 1 or type(doc.get("workflow_runs")) is not list or len(doc["workflow_runs"]) != 1:
+                  raise ValueError
+              return run_tuple(doc["workflow_runs"][0])
+
+
+          try:
+              if check == 2:
+                  with STATE.open("rb") as stream:
+                      raw = stream.read(16385)
+                      if len(raw) > 16384:
+                          raise ValueError
+                      loaded = closed_json(raw)
+                  if type(loaded) is not dict or set(loaded) != set(account) or loaded["check1"] != "allowed" or loaded["check2"] != "unreached":
+                      raise ValueError
+                  account = loaded
+                  if (type(account["active"]) not in (int, float) or not 0 <= account["active"] < 20
+                          or type(account["deadline"]) not in (int, float) or not math.isfinite(account["deadline"])
+                          or account["requests"] != 7 or type(account["requests"]) is not int
+                          or type(account["bodies"]) is not int or not 0 <= account["bodies"] <= 4194304
+                          or type(account["headers"]) is not int or not 0 <= account["headers"] <= 229376):
+                      raise ValueError
+                  account["check2"] = "refused"
+              elif check != 1:
+                  raise ValueError
+              save()  # Fail-closed default before any dependent effect.
+              run_id = os.environ["GITHUB_RUN_ID"]
+              if re.fullmatch(r"[1-9][0-9]{0,18}", run_id) is None:
+                  raise ValueError
+              R = positive(int(run_id))
+              if check == 1:
+                  with open(os.environ["GITHUB_EVENT_PATH"], "rb") as stream:
+                      raw = stream.read(262145)
+                  if len(raw) > 262144:
+                      raise ValueError
+                  event = closed_json(raw)
+                  C = canonical_sha(event["after"])
+                  if (event["ref"] != "refs/heads/task/TASK-6475" or event["before"] != H
+                          or any(event[k] is not False for k in ("created", "deleted", "forced"))
+                          or type(event["repository"]["id"]) is not int or event["repository"]["id"] != 1207510174
+                          or event["repository"]["full_name"] != "t-benze/happyranch" or event["repository"]["private"] is not False):
+                      raise ValueError
+              else:
+                  original = account["event"]
+                  if type(original) is not dict or set(original) != {"before", "head", "run_id", "attempt"}:
+                      raise ValueError
+                  C = canonical_sha(original["head"])
+              if (os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_RUN_ATTEMPT"] != "1"
+                      or os.environ["GITHUB_REPOSITORY"] != "t-benze/happyranch" or os.environ["GITHUB_REF"] != "refs/heads/task/TASK-6475"
+                      or os.environ["GITHUB_WORKFLOW_REF"] != "t-benze/happyranch/.github/workflows/ci.yml@refs/heads/task/TASK-6475"
+                      or C == H or os.environ["GITHUB_SHA"] != C):
+                  raise ValueError
+              identity = {"before": H, "head": C, "run_id": R, "attempt": 1}
+              if check == 2 and account["event"] != identity:
+                  raise ValueError
+              account["event"] = identity
+              if check == 2:
+                  head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=remaining()).strip()
+                  tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True, timeout=remaining()).strip()
+                  subprocess.check_call(["git", "diff", "--quiet", "HEAD", "--"], timeout=remaining())
+                  if head != C or canonical_sha(tree) != account["tree"]:
+                      raise ValueError
+              opening_pr = pr_tuple(get(P + "/pulls/800"))
+              workflow = get(P + "/actions/workflows/293424328")
+              if type(workflow.get("id")) is not int or workflow["id"] != 293424328 or workflow.get("path") != ".github/workflows/ci.yml" or workflow.get("state") != "active" or workflow.get("name") != "CI":
+                  raise ValueError
+              own = run_tuple(get(P + "/actions/runs/" + str(R)))
+              history = P + "/actions/workflows/293424328/runs?branch=task%2FTASK-6475&head_sha=" + C + "&per_page=100&page=1"
+              first = singleton(get(history))
+              second = singleton(get(history))
+              closing = run_tuple(get(P + "/actions/runs/" + str(R)))
+              closing_pr = pr_tuple(get(P + "/pulls/800"))
+              if first != second or first != own or first != closing or opening_pr != closing_pr:
+                  raise ValueError
+              remaining()
+              account["check" + str(check)] = "allowed"
+          except BaseException:
+              raise SystemExit("Managed N3 admission refused; sole automatic attempt remains spent/incomplete") from None
+          finally:
+              account["active"] += time.monotonic() - start
+              save()
           PYGUARD
+          python3 "$N3_ADMISSION_HOME/admit.py" 1
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ github.event.after }}
-      - name: Validate checked out allocation subject before build preparation
-        env:
-          N3_SUBJECT_SHA: ${{ github.event.after }}
-        run: test "$(git rev-parse HEAD)" = "$N3_SUBJECT_SHA"
+          fetch-depth: 0 # Retain H ancestry across any reviewed LOCAL corrective commits.
+      - name: Bind immutable checkout and tree before build preparation
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor ea7db390a830e0f22a489789d9c57056930fd38f HEAD
+          python3 - <<'PYTREE'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          path = Path(os.environ["N3_ADMISSION_HOME"]) / "status.json"
+          state = json.loads(path.read_text())
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          if re.fullmatch(r"[0-9a-f]{40}", tree) is None or state["check1"] != "allowed" or state["tree"] is not None:
+              raise SystemExit("Managed N3 checkout refused")
+          state["tree"] = tree
+          path.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+          PYTREE
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -127,7 +373,32 @@ jobs:
           python-version: "3.14"
       - name: Sync build dependencies
         run: uv sync --frozen --group build
+      - name: Initialize owned package retention before build
+        run: |
+          set -euo pipefail
+          N3_PACKAGE_STAGE="$(mktemp -d "${RUNNER_TEMP}/managed-n3-package.XXXXXXXX")"
+          export N3_PACKAGE_STAGE
+          echo "N3_PACKAGE_STAGE=$N3_PACKAGE_STAGE" >> "$GITHUB_ENV"
+          echo "N3_PACKAGE_UPLOAD=$N3_PACKAGE_STAGE/unavailable.tar" >> "$GITHUB_ENV"
+          echo "N3_PACKAGE_MANIFEST=$N3_PACKAGE_STAGE/unavailable.json" >> "$GITHUB_ENV"
+          python3 - <<'PYMANIFEST'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          stage = Path(os.environ["N3_PACKAGE_STAGE"])
+          manifest = {"version": 1, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
+                      "before": "ea7db390a830e0f22a489789d9c57056930fd38f", "head": os.environ["GITHUB_SHA"],
+                      "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                      "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
+                      "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1, "harness_uuid": None,
+                      "build": "unattempted", "package": None, "consumed": None}
+          with (stage / "package-manifest.json").open("x", encoding="ascii") as stream:
+              stream.write(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
+          PYMANIFEST
       - name: Build actual package
+        id: package_build
         run: |
           set -euo pipefail
           package_tmp="$(mktemp -d)"
@@ -139,15 +410,219 @@ jobs:
           wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
           uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
           uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
+      - name: Retain and verify exact final TAR outside disposable build scratch
+        run: |
+          python3 - <<'PYRETAIN'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+
+          stage = Path(os.environ["N3_PACKAGE_STAGE"])
+          source = Path(os.environ["PACKAGE_TMP"]) / "happyranch-linux-amd64.tar"
+          source_fd = copy_fd = -1
+          try:
+              source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+              observed = os.fstat(source_fd)
+              if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1 or not 0 < observed.st_size <= 536870912:
+                  raise ValueError
+              copy_fd = os.open(stage / "package.pending", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+              digest = hashlib.sha256()
+              total = 0
+              while True:
+                  chunk = os.read(source_fd, 65536)
+                  if not chunk:
+                      break
+                  total += len(chunk)
+                  if total > observed.st_size:
+                      raise ValueError
+                  digest.update(chunk)
+                  view = memoryview(chunk)
+                  while view:
+                      count = os.write(copy_fd, view)
+                      if count <= 0:
+                          raise OSError
+                      view = view[count:]
+              if total != observed.st_size:
+                  raise ValueError
+              os.fsync(copy_fd)
+              os.lseek(copy_fd, 0, os.SEEK_SET)
+              copied = hashlib.sha256()
+              copied_size = 0
+              while True:
+                  chunk = os.read(copy_fd, 65536)
+                  if not chunk:
+                      break
+                  copied_size += len(chunk)
+                  if copied_size > total:
+                      raise ValueError
+                  copied.update(chunk)
+              if copied_size != total or copied.digest() != digest.digest():
+                  raise ValueError
+              os.fchmod(copy_fd, 0o444)
+          finally:
+              # Relinquish before each once-only close; still attempt the other close.
+              try:
+                  if copy_fd >= 0:
+                      owned, copy_fd = copy_fd, -1
+                      os.close(owned)
+              finally:
+                  if source_fd >= 0:
+                      owned, source_fd = source_fd, -1
+                      os.close(owned)
+          os.rename(stage / "package.pending", stage / "happyranch-linux-amd64.tar")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="ascii") as stream:
+              stream.write("PACKAGE_TAR=" + str(stage / "happyranch-linux-amd64.tar") + "\n")
+              stream.write("N3_PACKAGE_UPLOAD=" + str(stage / "happyranch-linux-amd64.tar") + "\n")
+              stream.write("N3_PACKAGE_MANIFEST=" + str(stage / "package-manifest.json") + "\n")
+          manifest = json.loads((stage / "package-manifest.json").read_text())
+          manifest.update(build="success", package={"tar": [total, digest.hexdigest()], "connector": None, "sidecar": None, "wheel": None, "manifest": None, "verified": None})
+          with (stage / "manifest.pending").open("x", encoding="ascii") as stream:
+              stream.write(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
+          os.replace(stage / "manifest.pending", stage / "package-manifest.json")
+          PYRETAIN
+      - name: Revalidate sole push immediately before fixture entry
+        run: python3 "$N3_ADMISSION_HOME/admit.py" 2
       - name: Exercise PARTIAL installer + same-boot diagnostic against pinned Headscale and peer
         env:
-          PACKAGE_TAR: ${{ env.PACKAGE_TMP }}/happyranch-linux-amd64.tar
           PROOF_SUBJECT_SHA: ${{ github.event.after }}
           N3_DIAGNOSTICS_DIR: ${{ runner.temp }}/managed-n3-evidence
         run: app/linux/package/real_systemd_n3.sh
       - name: Validate successful Managed N3 execution artifact
         if: success()
         run: python app/linux/package/n3_evidence.py validate "${{ runner.temp }}/managed-n3-evidence/execution-evidence.json" --expected-subject "${{ github.event.after }}"
+      - name: Retain actual consumed identities and admission disposition
+        if: always()
+        env:
+          N3_BUILD_OUTCOME: ${{ steps.package_build.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p -- "${RUNNER_TEMP}/managed-n3-evidence"
+          if [[ -n "${N3_ADMISSION_HOME:-}" && -f "$N3_ADMISSION_HOME/status.json" ]]; then
+            cp -- "$N3_ADMISSION_HOME/status.json" "${RUNNER_TEMP}/managed-n3-evidence/admission-status.json"
+          fi
+          if [[ -n "${N3_PACKAGE_STAGE:-}" && -f "$N3_PACKAGE_STAGE/package-manifest.json" ]]; then
+            uv run python - <<'PYCONSUMED'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+
+          from runtime.remote_access.linux_package import _package_json, _managed_package_identities_projection
+
+          def read_regular(path, limit):
+              descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+              try:
+                  info = os.fstat(descriptor)
+                  if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
+                      raise ValueError
+                  raw = bytearray()
+                  while True:
+                      chunk = os.read(descriptor, min(65536, limit - len(raw) + 1))
+                      if not chunk:
+                          break
+                      raw.extend(chunk)
+                      if len(raw) > limit:
+                          raise ValueError
+                  if len(raw) != info.st_size:
+                      raise ValueError
+                  return bytes(raw)
+              finally:
+                  os.close(descriptor)
+
+          stage = Path(os.environ["N3_PACKAGE_STAGE"])
+          diag = Path(os.environ["RUNNER_TEMP"]) / "managed-n3-evidence"
+          manifest = _package_json(read_regular(stage / "package-manifest.json", 16384), 16384)
+          expected = {"version": 1, "repository": "t-benze/happyranch", "pr": 800, "branch": "task/TASK-6475",
+                      "before": "ea7db390a830e0f22a489789d9c57056930fd38f", "head": os.environ["GITHUB_SHA"],
+                      "event": "push", "workflow_id": 293424328, "workflow_path": ".github/workflows/ci.yml",
+                      "run_id": int(os.environ["GITHUB_RUN_ID"]), "attempt": 1}
+          if (type(manifest) is not dict or set(manifest) != set(expected) | {"tree", "harness_uuid", "build", "package", "consumed"}
+                  or any(type(manifest[k]) is not type(v) or manifest[k] != v for k, v in expected.items())
+                  or type(manifest["tree"]) is not str or re.fullmatch(r"[0-9a-f]{40}", manifest["tree"]) is None
+                  or type(manifest["build"]) is not str or manifest["build"] not in ("unattempted", "success", "failed", "unknown")
+                  or manifest["harness_uuid"] is not None and (type(manifest["harness_uuid"]) is not str or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", manifest["harness_uuid"]) is None)):
+              raise ValueError
+          for key in ("package", "consumed"):
+              if manifest[key] is not None:
+                  manifest[key] = _managed_package_identities_projection(manifest[key])
+          collection_failed = False
+          if manifest["build"] == "unattempted" and os.environ["N3_BUILD_OUTCOME"] != "skipped":
+              manifest["build"] = "failed" if os.environ["N3_BUILD_OUTCOME"] == "failure" else "unknown"
+          # Rehash the exact retained bytes independently, without extracting the archive.
+          if manifest["package"] is not None:
+              descriptor = os.open(stage / "happyranch-linux-amd64.tar", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+              try:
+                  info = os.fstat(descriptor)
+                  if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 536870912:
+                      raise ValueError
+                  digest, size = hashlib.sha256(), 0
+                  while True:
+                      chunk = os.read(descriptor, 65536)
+                      if not chunk:
+                          break
+                      size += len(chunk)
+                      if size > 536870912:
+                          raise ValueError
+                      digest.update(chunk)
+                  if [size, digest.hexdigest()] != manifest["package"]["tar"]:
+                      raise ValueError
+              finally:
+                  os.close(descriptor)
+              for number in range(1, 17):
+                  path = diag / ("installer-" + str(number) + ".json")
+                  try:
+                      raw = read_regular(path, 4096)
+                  except FileNotFoundError:
+                      continue
+                  except BaseException:
+                      collection_failed = True
+                      continue
+                  try:
+                      receipt = _package_json(raw, 4096)
+                      if (type(receipt) is not dict or set(receipt) != {"version", "operation", "status", "cancelled", "initiating", "diagnostic", "identities", "collection", "save"}
+                              or type(receipt["version"]) is not int or receipt["version"] != 1 or receipt["operation"] != "install"):
+                          raise ValueError
+                      consumed = _managed_package_identities_projection(receipt["identities"])
+                      if consumed["tar"] is not None:
+                          if consumed["tar"] != manifest["package"]["tar"] or manifest["consumed"] is not None and manifest["consumed"] != consumed:
+                              raise ValueError
+                          manifest["consumed"] = consumed
+                          # These members came from the actual sealed input.
+                          manifest["package"] = consumed
+                  except BaseException:
+                      # Keep every earlier validated fact. A later invalid or
+                      # missing unit cannot erase it or create new provenance.
+                      collection_failed = True
+              try:
+                  raw = read_regular(diag / "execution-evidence.json", 1048576)
+                  doc = json.loads(raw)
+                  value = doc["run"]["id"]
+                  if (type(value) is not str or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value) is None
+                          or doc["subject"]["git_head"] != manifest["head"] or doc["subject"]["package_sha256"] != manifest["package"]["tar"][1]):
+                      raise ValueError
+                  manifest["harness_uuid"] = value
+              except FileNotFoundError:
+                  pass  # Fixture may have been unreached after check2 refusal.
+              except BaseException:
+                  collection_failed = True
+          raw = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+          if len(raw) > 16384:
+              raise ValueError
+          with (stage / "manifest.pending").open("xb") as stream:
+              stream.write(raw)
+              stream.flush()
+              os.fsync(stream.fileno())
+          os.replace(stage / "manifest.pending", stage / "package-manifest.json")
+          if collection_failed:
+              raise SystemExit("Managed N3 consumed provenance incomplete; earlier validated facts retained")
+          PYCONSUMED
+          fi
+      # Each always() step is independent: install, validation, manifest or
+      # either upload failure never suppresses the other upload or removal.
       - name: Upload Managed N3 execution evidence and diagnostics
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -155,10 +630,28 @@ jobs:
           name: managed-n3-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/managed-n3-evidence
           if-no-files-found: error
-
-      - name: Remove owned package scratch
+          retention-days: 90
+      - name: Upload exact consumed full frozen application TAR and manifest
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: managed-n3-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.N3_PACKAGE_UPLOAD }}
+            ${{ env.N3_PACKAGE_MANIFEST }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove exact owned workflow package scratch and staging after both uploads
         if: always()
         run: |
-          if [[ -n "${PACKAGE_TMP:-}" && -d "$PACKAGE_TMP" ]]; then
-            rm -rf -- "$PACKAGE_TMP"
-          fi
+          status=0
+          for owned in "${PACKAGE_TMP:-}" "${N3_PACKAGE_STAGE:-}" "${N3_ADMISSION_HOME:-}"; do
+            if [[ -n "$owned" ]]; then
+              if [[ -d "$owned" && ! -L "$owned" ]]; then
+                rm -rf -- "$owned" || status=1
+              elif [[ -e "$owned" || -L "$owned" ]]; then
+                status=1
+              fi
+            fi
+          done
+          exit "$status"

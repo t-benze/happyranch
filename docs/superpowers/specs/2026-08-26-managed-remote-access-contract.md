@@ -1,5 +1,94 @@
 # Managed Remote Access — Normative Contract
 
+**Current PR800 local diagnostics — Founder THR327seq35/29/28A/26; sole ROOT TASK-13808.**
+
+This controlling diagnostic contract supersedes only the active collection,
+nested stderr and package-retention directions in the historical snapshots below.
+TASK13808 explicitly succeeds TASK13786; accepted design TASK13791 and independent
+TASK13793 DESIGN ONLY PASS remain design evidence. Historical failures, approvals,
+spent grants and original records keep their original attribution. No repair or
+installer cause is established. Public PR800 remains OPEN/unmerged at
+`ea7db390a830e0f22a489789d9c57056930fd38f` during these LOCAL gates.
+
+The actual nested frozen child's stderr is acquired under the original context:
+4096 bytes plus one128-byte overflow read; at most16 complete512-byte frames,
+17 saturating LF count, two distinct constant messages. Parsing quotas do not
+close the pipe early. Only complete ASCII `[PYI-PID:ERROR] BODY\n` frames with a
+canonical positive31-bit PID and the exact E/X/I bodies are recognized. E and X
+reconstruct respectively `Could not load PyInstaller's embedded PKG archive from
+the executable (<redacted>)` and `Could not side-load PyInstaller's PKG archive
+from external file (<redacted>)`; I reconstructs `Failed to pre-initialize embedded
+python interpreter!`. Entire E/X operands, PID and all other text are suppressed.
+No arbitrary child text, secret paths/environment, raw hashes or exception prose
+is retained. The existing exact private refusal vocabulary remains separate.
+
+Version1 private child records carry native observations and process facts.
+Native states are observed, empty, private_only, unavailable, redacted, truncated,
+error; finite ordered loss codes BL/FL/FC/ML/UN/U8/CT/PE/RE/CE/SD/JS/TL/CX describe
+only that acquisition owner. Read/EOF/close, actual launch/wait/kill and helper
+exit/reap stay distinct; unknown is never empty/false/zero. Constant observations
+survive later read, close or collection loss. Success observations at each of the
+three actual child sites precede a later failure; missing prefixes remain missing.
+Go writes bounded version1 stage frames, Python accepts closed1024-byte frames
+under its original combined4096+single-sentinel allowance, and each downstream
+boundary validates the entire closed record. The literal unversioned H reader
+remains separate and supplies no invented native observation.
+
+Each existing installer JSON (4096B cap) freezes original initiating status,
+category, cancellation snapshot, validated diagnostic and SAME immutable input
+identities. N3 independently reconstructs a safe checkpoint; its collection
+SD/JS/TL/CX stays local. Primitive fallback retains JS/error rather than claiming
+a successful primary serializer. The existing512B after-close status capsule
+retains actual save/close and later OE/WE/FE/CE, wrapper exit and cancellation.
+Neither file predicts its own future save. A later N3 or root acquisition loss
+cannot rewrite earlier child records, erase an original install failure, or turn
+missing evidence into success. No private fields enter public/API/audit/evidence-v4.
+
+The existing CI package construction is unchanged. The final regular frozen TAR
+is copied outside disposable scratch, its size/SHA256 verified, and those retained
+bytes become PACKAGE_TAR. The closed package-manifest records actual run/attempt,
+C/tree, build and actual consumed TAR/connector/sidecar/wheel/manifest identities;
+unknown/unreached fields are null, and no future artifact ID is invented. Separate
+`managed-n3-evidence-R-1` and `managed-n3-package-R-1` artifacts retain diagnostics
+and the full TAR plus manifest for90days subject to actual service retention.
+Both uploads use independent always conditions before exact owned workflow scratch
+and staging removal, including install/other-upload failure. Product teardown,
+installer status, uploads and workflow removal remain distinct. Hard runner loss
+can still prevent publication/removal and keeps delivery incomplete.
+
+The sole automatic diagnostic selects only this same-repo branch PUSH from H to
+a distinct canonical C==checkout==PR800 head, workflow293424328/ci.yml, attempt1.
+Two anonymous bounded public admission checks (before checkout/build and immediately
+before fixture entry) each make seven exact reads and require the all-event C
+history singleton to be the current in-progress attempt1. A shared20s/14-request/
+4MiB body/224KiB header account, original job timeout and fixed concurrency without
+cancellation apply. Redirects, stale/moving identities, duplicates, reruns, missing
+or denied metadata refuse; there is no credential/token/permission/settings change,
+manual route or extra attempt. A real guard refusal is failed/incomplete and SPENT.
+
+Founder35 selects existing authenticated `gh run download` with existing credential
+custody and normal timeouts, followed by TAR SHA256 and recorded consumed-provenance
+joins. No custom downloader, redirect qualification, archive-reader prerequisite,
+internal extraction/comparison or tool provisioning belongs to this delivery.
+Actual useful secret-safe error AND downloadable exact consumed full package are
+both required after the ONE run; source/static inspection is no behavioral PASS.
+
+Historical TWO of THREE publications and automatic attempts are SPENT. Exclusive
+final ONE each belongs to ROOT13808 and remains UNSPENT during leaf-local work.
+Local normal commits/bundle only; no leaf push/PR mutation/run/install/service,
+merge/deploy/restart/reboot or historical cleanup. FULL independent B..C review,
+then separate SAME-C SOURCE/STATIC QA and normal lint/hooks precede manager gating.
+Required PR/merge checks are exactly Source Boundary Lint and Web Lint(Node24),
+lint/static only. Python units RETIRED; suspended behavior/proofs NOT RUN; general
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED THR243seq42. Daily
+19UTC nonblocking Product E2E and all same-boot/R1-R2/N6/reboot/live-cleanup holds,
+recovery, encrypted tsnet→authorizing connector→loopback and descriptor/OFD/deadline
+custody remain unchanged. Both final grants are shared, never replenished.
+
+The following ROOT13151 “Current” snapshot is historical and superseded only by
+the bounded diagnostic/collection directions above; its original bytes follow.
+
+
 **Current PR800 Stage1 nested-diagnostic LOCAL candidate — Founder THR327seq5/7 / sole delivery ROOT TASK-13151.**
 The manager accepts only the unchanged installer-diagnostic/failed-install-cleanup
 subset of TASK13153 source-diagnosis (SHA256

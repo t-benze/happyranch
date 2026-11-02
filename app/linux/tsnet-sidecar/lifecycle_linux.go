@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -3674,14 +3675,90 @@ func lifecyclePackageCurrent(ctx context.Context, p *LifecyclePair, stopped bool
 
 }
 
+type lifecyclePackageProcessDiagnostic struct {
+	Launch      string `json:"launch"`
+	Wait        string `json:"wait"`
+	WaitError   *bool  `json:"wait_error"`
+	Kill        string `json:"kill"`
+	WriterClose string `json:"writer_close"`
+}
+
+type lifecyclePackageNativeDiagnostic struct {
+	Source     string   `json:"source"`
+	State      string   `json:"state"`
+	Messages   []string `json:"messages"`
+	EOF        *bool    `json:"eof"`
+	BytesSeen  *int     `json:"bytes_seen"`
+	FramesSeen *int     `json:"frames_seen"`
+	Redacted   bool     `json:"redacted"`
+	Truncated  bool     `json:"truncated"`
+	Losses     []string `json:"losses"`
+	Read       string   `json:"read"`
+	Close      string   `json:"close"`
+}
+
 type lifecyclePackageChildDiagnostic struct {
-	Reason          *string `json:"reason"`
-	DiagnosticState string  `json:"diagnostic_state"`
-	HelperExit      *int    `json:"helper_exit"`
-	DeadlineElapsed bool    `json:"deadline_elapsed"`
-	KillRequested   bool    `json:"kill_requested"`
-	Reaped          bool    `json:"reaped"`
-	ReapExit        *int    `json:"reap_exit"`
+	Reason          *string                           `json:"reason"`
+	DiagnosticState string                            `json:"diagnostic_state"`
+	HelperExit      *int                              `json:"helper_exit"`
+	DeadlineElapsed bool                              `json:"deadline_elapsed"`
+	KillRequested   bool                              `json:"kill_requested"`
+	Reaped          bool                              `json:"reaped"`
+	ReapExit        *int                              `json:"reap_exit"`
+	Native          lifecyclePackageNativeDiagnostic  `json:"native"`
+	Process         lifecyclePackageProcessDiagnostic `json:"process"`
+}
+
+const lifecyclePackageEmbeddedError = "Could not load PyInstaller's embedded PKG archive from the executable (<redacted>)"
+const lifecyclePackageExternalError = "Could not side-load PyInstaller's PKG archive from external file (<redacted>)"
+const lifecyclePackageInterpreterError = "Failed to pre-initialize embedded python interpreter!"
+
+var lifecyclePackageLossOrder = []string{"BL", "FL", "FC", "ML", "UN", "U8", "CT", "PE", "RE", "CE", "SD", "JS", "TL", "CX"}
+
+func (n *lifecyclePackageNativeDiagnostic) loss(code string) {
+	if !lifecycleOneOf(code, n.Losses...) {
+		n.Losses = append(n.Losses, code)
+	}
+}
+
+// Reconstruct constants only. Even a syntactically plausible operand/PID is
+// discarded in its entirety; never retain a substring, hash or exception.
+func lifecyclePackageNativeSentence(frame []byte) string {
+	if len(frame) == 0 || len(frame) > 512 || frame[len(frame)-1] != '\n' {
+		return ""
+	}
+	for _, b := range frame[:len(frame)-1] {
+		if b < 32 || b > 126 {
+			return ""
+		}
+	}
+	raw := string(frame[:len(frame)-1])
+	if !strings.HasPrefix(raw, "[PYI-") {
+		return ""
+	}
+	pid, body, ok := strings.Cut(raw[len("[PYI-"):], ":ERROR] ")
+	if !ok || len(pid) == 0 || len(pid) > 10 || pid[0] == '0' {
+		return ""
+	}
+	for _, b := range []byte(pid) {
+		if b < '0' || b > '9' {
+			return ""
+		}
+	}
+	n, err := strconv.ParseUint(pid, 10, 31)
+	if err != nil || n == 0 {
+		return ""
+	}
+	if body == lifecyclePackageInterpreterError {
+		return lifecyclePackageInterpreterError
+	}
+	for _, sentence := range []string{lifecyclePackageEmbeddedError, lifecyclePackageExternalError} {
+		prefix := strings.TrimSuffix(sentence, "<redacted>)")
+		if strings.HasPrefix(body, prefix) && strings.HasSuffix(body, ")") {
+			return sentence
+		}
+	}
+	return ""
 }
 
 // Only private package guard/call boundaries, never exception text or operands.
@@ -3698,15 +3775,76 @@ func lifecyclePackagePrivateReason(reason string) bool {
 	return false
 }
 
+func (d *lifecyclePackageChildDiagnostic) finishNative() {
+	n := &d.Native
+	ordered := []string{}
+	for _, code := range lifecyclePackageLossOrder {
+		if lifecycleOneOf(code, n.Losses...) {
+			ordered = append(ordered, code)
+		}
+	}
+	n.Losses = ordered
+	has := func(codes ...string) bool {
+		for _, code := range codes {
+			if lifecycleOneOf(code, n.Losses...) {
+				return true
+			}
+		}
+		return false
+	}
+	n.Truncated = has("BL", "FL", "FC", "ML")
+	n.Redacted = n.Redacted || has("UN", "U8", "CT", "PE", "SD", "CX")
+	complete := d.Process.Launch == "started" && n.EOF != nil && *n.EOF && n.Read == "eof" && n.Close == "ok" && n.BytesSeen != nil && n.FramesSeen != nil
+	switch {
+	case has("U8", "CT", "PE", "RE", "CE", "SD", "JS", "TL", "CX"):
+		n.State = "error"
+	case n.Truncated:
+		n.State = "truncated"
+	case has("UN"):
+		n.State = "redacted"
+	case d.Process.Launch != "started":
+		n.State = "unavailable"
+	case len(n.Messages) > 0:
+		n.State = "observed"
+	case d.Reason != nil:
+		n.State = "private_only"
+	case complete && *n.BytesSeen == 0 && *n.FramesSeen == 0:
+		n.State = "empty"
+	default:
+		n.State = "unavailable"
+	}
+	switch {
+	case has("CX"):
+		d.DiagnosticState = "contradictory"
+	case has("U8", "CT", "PE", "SD", "JS"):
+		d.DiagnosticState = "malformed"
+	case has("RE", "CE", "TL") || !complete || d.Process.WriterClose != "ok":
+		d.DiagnosticState = "unavailable"
+	case n.Truncated:
+		d.DiagnosticState = "truncated"
+	case has("UN"):
+		d.DiagnosticState = "unallowlisted"
+	case d.Reason != nil:
+		d.DiagnosticState = "observed"
+	default:
+		d.DiagnosticState = "absent"
+	}
+	if d.DiagnosticState != "observed" {
+		d.Reason = nil
+	}
+}
+
 func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, connector, executable *os.File, request lifecyclePackageRequest, admission bool, output io.Writer) (diagnostic lifecyclePackageChildDiagnostic, failure error) {
 	diagnostic.DiagnosticState = "unavailable"
+	diagnostic.Native = lifecyclePackageNativeDiagnostic{Source: "nested_frozen_stderr", State: "unavailable", Messages: []string{}, Losses: []string{}, Read: "not_started", Close: "not_opened"}
+	diagnostic.Process = lifecyclePackageProcessDiagnostic{Launch: "not_attempted", Wait: "not_attempted", Kill: "not_requested", WriterClose: "not_opened"}
 	defer func() {
 		if deadline, bounded := ctx.Deadline(); bounded {
 			diagnostic.DeadlineElapsed = !time.Now().Before(deadline)
 		}
+		diagnostic.finishNative()
 	}()
-	// Always execute the authenticated, retained input image, including when
-	// recovery removed/replaced the active installed pathname.
+	// The executable and borrowed SAME-OFD mappings remain unchanged.
 	cmd := exec.CommandContext(ctx, "/proc/self/fd/5", "managed-private", request.Operation)
 	cmd.ExtraFiles = []*os.File{p.lock, incoming, connector, executable}
 	cmd.Env = append(os.Environ(), "HAPPYRANCH_LIFECYCLE_DEADLINE_NS="+strconv.FormatInt(request.DeadlineNS, 10))
@@ -3717,85 +3855,195 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	cmd.Stdin = strings.NewReader(body)
 	cmd.Stdout = output
 	if output == io.Discard {
-		cmd.Stdout = nil // /dev/null, without an inherited copy pipe to join.
+		cmd.Stdout = nil
 	}
-	// Own the pipe explicitly: a descendant retaining stderr cannot detach a
-	// copy goroutine beyond the original context. No new timeout/reap allowance.
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return diagnostic, ErrLifecycle
 	}
+	var closeOnce sync.Once
+	var readerCloseErr error
+	closeReader := func() { closeOnce.Do(func() { readerCloseErr = reader.Close() }) }
 	deadline, bounded := ctx.Deadline()
 	if !bounded || reader.SetReadDeadline(deadline) != nil {
-		reader.Close()
-		writer.Close()
+		closeReader()
+		diagnostic.Native.Close = "ok"
+		if readerCloseErr != nil {
+			diagnostic.Native.Close = "error"
+			diagnostic.Native.loss("CE")
+		}
+		diagnostic.Process.WriterClose = "ok"
+		if writer.Close() != nil {
+			diagnostic.Process.WriterClose = "error"
+		}
 		return diagnostic, ErrLifecycle
 	}
-	stopRead := context.AfterFunc(ctx, func() { reader.Close() })
-	defer stopRead()
+	closedOnCancel := make(chan struct{})
+	stopRead := context.AfterFunc(ctx, func() { closeReader(); close(closedOnCancel) })
+	defer func() {
+		if !stopRead() {
+			<-closedOnCancel
+		}
+	}()
 	cmd.Stderr = writer
 	var killRequested atomic.Bool
+	var killState atomic.Int32
 	cmd.Cancel = func() error {
 		killRequested.Store(true)
-		return cmd.Process.Kill()
+		killState.Store(1)
+		err := cmd.Process.Kill()
+		switch {
+		case err == nil:
+			killState.Store(2)
+		case errors.Is(err, os.ErrProcessDone):
+			killState.Store(3)
+		default:
+			killState.Store(4)
+		}
+		return err
 	}
-	type observation struct{ reason, state string }
+	type observation struct {
+		native       lifecyclePackageNativeDiagnostic
+		reason       string
+		privateCount int
+	}
 	observed := make(chan observation, 1)
 	go func() {
-		result := observation{state: "absent"}
-		var frame [96]byte
-		used, total, lines := 0, 0, 0
+		result := observation{native: diagnostic.Native}
+		n := &result.native
+		total, lines := 0, 0
+		n.BytesSeen, n.FramesSeen = &total, &lines
+		eof := false
+		n.EOF, n.Read = &eof, "unknown"
+		var frame [512]byte
+		used, length := 0, 0
 		var piece [128]byte
 		for {
-			n, readErr := reader.Read(piece[:])
-			total += n
+			count, readErr := reader.Read(piece[:])
+			total += count
 			if total > 4096 {
-				result = observation{state: "truncated"}
+				// Acquired LF counts include the one physical overflow read,
+				// even though none of that suppressed frame is matched.
+				for _, value := range piece[:count] {
+					if value == '\n' && lines < 17 {
+						lines++
+					}
+				}
+				if lines == 17 {
+					n.loss("FC")
+				}
+				n.loss("BL")
+				n.Redacted, n.Read = true, "limit"
 				break
 			}
-			for _, value := range piece[:n] {
+			for _, value := range piece[:count] {
+				length++
 				if used < len(frame) {
 					frame[used] = value
 					used++
 				} else {
-					result = observation{state: "malformed"}
+					n.loss("FL")
+					n.Redacted = true
 				}
-				if value == '\n' {
+				if value > 127 {
+					n.loss("U8")
+				} else if value != '\n' && value < 32 || value == 127 {
+					n.loss("CT")
+				}
+				if value != '\n' {
+					continue
+				}
+				if lines < 17 {
 					lines++
+				}
+				if lines > 16 {
+					n.loss("FC")
+					n.Redacted = true
+				} else if length <= len(frame) {
 					raw := string(frame[:used])
 					reason := strings.TrimSuffix(strings.TrimPrefix(raw, "managed_private_refusal:"), "\n")
-					if lines != 1 {
-						result = observation{state: "contradictory"}
-					} else if result.state == "absent" && raw == "managed_private_refusal:"+reason+"\n" && lifecyclePackagePrivateReason(reason) {
-						result = observation{reason: reason, state: "observed"}
-					} else if result.state == "absent" {
-						result = observation{state: "unallowlisted"}
+					if raw == "managed_private_refusal:"+reason+"\n" && lifecyclePackagePrivateReason(reason) {
+						result.privateCount++
+						if result.privateCount == 1 {
+							result.reason = reason
+						} else {
+							result.reason = ""
+							n.loss("CX")
+						}
+					} else if sentence := lifecyclePackageNativeSentence(frame[:used]); sentence != "" {
+						if sentence != lifecyclePackageInterpreterError {
+							n.Redacted = true
+						}
+						if !lifecycleOneOf(sentence, n.Messages...) {
+							if len(n.Messages) < 2 {
+								n.Messages = append(n.Messages, sentence)
+							} else {
+								n.loss("ML")
+								n.Redacted = true
+							}
+						}
+					} else {
+						printable := true
+						for _, b := range frame[:used-1] {
+							printable = printable && b >= 32 && b <= 126
+						}
+						if printable {
+							n.loss("UN")
+						}
 					}
-					used = 0
 				}
+				used, length = 0, 0
 			}
 			if readErr != nil {
-				if readErr != io.EOF {
-					result = observation{state: "unavailable"}
-				} else if used != 0 {
-					result = observation{state: "malformed"}
+				if readErr == io.EOF {
+					eof, n.Read = true, "eof"
+					if length != 0 {
+						n.loss("PE")
+					}
+				} else {
+					n.Read = "error"
+					if ctx.Err() != nil {
+						n.Read = "cancelled"
+					}
+					if length != 0 {
+						n.Redacted = true
+					}
+					n.loss("RE")
 				}
 				break
 			}
 		}
-		reader.Close() // Closure completes before the joined observation returns.
+		// Parsing quotas never close early. EOF/raw overflow/original deadline
+		// owns closure, which completes before the joined observation returns.
+		closeReader()
+		n.Close = "ok"
+		if readerCloseErr != nil {
+			n.Close = "error"
+			n.loss("CE")
+		}
 		observed <- result
 	}()
 	startErr := cmd.Start()
-	closeErr := writer.Close() // Relinquish the parent writer before waiting.
-	err = startErr
-	if startErr == nil {
-		err = cmd.Wait() // Actual owned child and stdout copies join here.
+	closeErr := writer.Close()
+	diagnostic.Process.WriterClose = "ok"
+	if closeErr != nil {
+		diagnostic.Process.WriterClose = "error"
 	}
-	result := <-observed // Reader is joined even on launch/deadline/overflow.
+	err = startErr
+	diagnostic.Process.Launch = "failed"
+	if startErr == nil {
+		diagnostic.Process.Launch, diagnostic.Process.Wait = "started", "pending"
+		err = cmd.Wait()
+		waitError := err != nil
+		diagnostic.Process.WaitError = &waitError
+		diagnostic.Process.Wait = "failed"
+	}
+	result := <-observed
+	diagnostic.Native = result.native
 	diagnostic.KillRequested = killRequested.Load()
+	diagnostic.Process.Kill = []string{"not_requested", "requested", "sent", "not_found", "failed"}[killState.Load()]
 	if state := cmd.ProcessState; state != nil {
-		diagnostic.Reaped = true
+		diagnostic.Reaped, diagnostic.Process.Wait = true, "reaped"
 		if status, ok := state.Sys().(syscall.WaitStatus); ok && (status.Exited() || status.Signaled()) {
 			code := status.ExitStatus()
 			if status.Signaled() {
@@ -3804,14 +4052,12 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 			diagnostic.HelperExit, diagnostic.ReapExit = &code, &code
 		}
 	}
-	if startErr != nil || closeErr != nil {
-		result = observation{state: "unavailable"}
-	} else if result.state == "observed" && (diagnostic.HelperExit == nil || *diagnostic.HelperExit != 78) {
-		result = observation{state: "contradictory"}
-	}
-	diagnostic.DiagnosticState = result.state
-	if result.state == "observed" {
-		diagnostic.Reason = &result.reason
+	if result.reason != "" {
+		if diagnostic.Reaped && diagnostic.HelperExit != nil && *diagnostic.HelperExit == 78 {
+			diagnostic.Reason = &result.reason
+		} else {
+			diagnostic.Native.loss("CX")
+		}
 	}
 	if err != nil || closeErr != nil || ctx.Err() != nil {
 		return diagnostic, ErrLifecycle
@@ -3819,18 +4065,44 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 	return diagnostic, nil
 }
 
-func lifecyclePackageChildRefusal(reason string, diagnostic lifecyclePackageChildDiagnostic) int {
-	if lifecycleOneOf(reason, "admission_child", "stopped_admission_child", "package_body") {
-		// ONE complete closed record carries the original call site separately
-		// from the validated private reason and actual nested process facts.
-		raw, err := json.Marshal(struct {
-			Reason string                          `json:"reason"`
-			Child  lifecyclePackageChildDiagnostic `json:"child"`
-		}{reason, diagnostic})
-		if err == nil {
-			_, _ = fmt.Fprintf(os.Stderr, "managed_package_child_refusal:%s\n", raw)
-		}
+func lifecyclePackageChildFrame(stage string, diagnostic lifecyclePackageChildDiagnostic, failed bool) {
+	if !lifecycleOneOf(stage, "admission_child", "stopped_admission_child", "package_body") {
+		return
 	}
+	prefix := "managed_package_child_observation:"
+	encode := func() ([]byte, error) {
+		if failed {
+			return json.Marshal(struct {
+				Version int                             `json:"version"`
+				Reason  string                          `json:"reason"`
+				Child   lifecyclePackageChildDiagnostic `json:"child"`
+			}{1, stage, diagnostic})
+		}
+		return json.Marshal(struct {
+			Version int                             `json:"version"`
+			Stage   string                          `json:"stage"`
+			Child   lifecyclePackageChildDiagnostic `json:"child"`
+		}{1, stage, diagnostic})
+	}
+	if failed {
+		prefix = "managed_package_child_refusal:"
+	}
+	raw, err := encode()
+	if err != nil {
+		diagnostic.Native.loss("JS")
+		diagnostic.finishNative()
+		raw, err = encode()
+	}
+	if err == nil && len(prefix)+len(raw)+1 <= 1024 {
+		// One write, no retry and no operation-result substitution on failure.
+		// Raw descriptor write avoids os.File's special stdout/stderr EPIPE
+		// termination path. Diagnostic loss must not replace the operation.
+		_, _ = unix.Write(2, append(append([]byte(prefix), raw...), '\n'))
+	}
+}
+
+func lifecyclePackageChildRefusal(reason string, diagnostic lifecyclePackageChildDiagnostic) int {
+	lifecyclePackageChildFrame(reason, diagnostic, true)
 	return 78
 }
 
@@ -3904,6 +4176,8 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	}
 	if diagnostic, err := lifecyclePackageChild(a, p, incoming, connector, executable, request, true, io.Discard); err != nil {
 		return lifecyclePackageChildRefusal("admission_child", diagnostic)
+	} else {
+		lifecyclePackageChildFrame("admission_child", diagnostic, false)
 	}
 	if !p.stopped() {
 		err = p.policyChange("stopped", p.Main.Policy.Enabled, lifecycleInhibitID(request.OperationID))
@@ -3940,12 +4214,16 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	}
 	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, true, io.Discard); err != nil {
 		return lifecyclePackageChildRefusal("stopped_admission_child", diagnostic)
+	} else {
+		lifecyclePackageChildFrame("stopped_admission_child", diagnostic, false)
 	}
 	if request.Operation == "package-uninstall" && p.policyChange("retired", false, request.OperationID) != nil {
 		return lifecyclePackageRefusal("retire_policy")
 	}
 	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, false, output); err != nil {
 		return lifecyclePackageChildRefusal("package_body", diagnostic)
+	} else {
+		lifecyclePackageChildFrame("package_body", diagnostic, false)
 	}
 	if p.Refresh() != nil {
 		return lifecyclePackageRefusal("final_refresh")
