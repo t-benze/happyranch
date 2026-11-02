@@ -552,6 +552,47 @@ def scenario_fields(result: dict, sanitize: Callable[[str], str]) -> dict:
     return detached
 
 
+class _EvidenceLedger:
+    """Nonrefundable logical work shared by evidence preparation and writers.
+
+    The later finite engine must use this owner, not add another allowance.
+    This bounds charged transformations, not Python object headers or syscalls.
+    """
+    def __init__(self) -> None:
+        self.work = self.reserved = self.facts = 0
+
+    def reserve(self, size: int, facts: int, check: Callable[[], None]) -> None:
+        check()
+        if (type(size) is not int or type(facts) is not int or min(size, facts) < 0
+                or self.work + self.reserved + size > 8388608 or self.facts + facts > 200000):
+            raise ValueError("evidence capacity refused")
+        self.reserved += size
+        self.facts += facts
+
+    def settle(self, reserved: int, actual: int) -> None:
+        if not 0 <= actual <= reserved <= self.reserved:
+            raise ValueError("invalid evidence reservation")
+        self.reserved -= reserved
+        self.work += actual  # Unused capacity releases; actual work never refunds.
+
+
+def _evidence_utf8_size(text: str, check: Callable[[], None]) -> int:
+    if type(text) is not str:
+        raise ValueError("evidence string unavailable")
+    size = 0
+    for index, char in enumerate(text):
+        if index % 4096 == 0:
+            check()
+        code = ord(char)
+        if 0xD800 <= code <= 0xDFFF:
+            raise ValueError("evidence surrogate refused")
+        size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+        if size > 8388608:
+            raise ValueError("evidence capacity refused")
+    check()
+    return size
+
+
 def redact(text: str, token: str, context: list[str]) -> str:
     """Use only the complete original literal redaction context."""
     if not token or not context or token not in context:
@@ -1273,7 +1314,8 @@ def main() -> int:
                 except FileNotFoundError:
                     pass  # No accepted ledger; cases remain UNKNOWN.
                 except (OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
-                    incomplete("collection", exc)
+                    claim = incomplete("collection", exc)
+                    observe_collection(claim)
             operations["owner"]["attempted"] = True
             try:
                 if owner is not None and args.exercise == "baseline":

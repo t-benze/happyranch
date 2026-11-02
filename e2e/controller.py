@@ -173,6 +173,12 @@ class Controller:
         self._failure_published: tuple | None = None
         self.observer_join: dict = dict(attempted=False, reason="nonterminal")
         self.redaction_ready = False
+        self._evidence_fatal: tuple | None = None
+        self._evidence_preparing = False
+        self._evidence_context: tuple | None = None
+        self._evidence_budget = None
+        self._evidence_root: tuple | None = None
+        self._evidence_replacements: list[dict] = []
         self.boots = []
         self.env = dict(os.environ, E2E_SCENARIO_DEADLINE=str(args.deadline))
         self.publish_end()
@@ -1218,30 +1224,185 @@ class Controller:
                 attempt['finished'] = time.monotonic()
                 self._final_attempt, self._final_attempt_cause = None, None
 
+    def _stop_evidence(self, error: BaseException) -> None:
+        self.redaction_ready = False
+        if self._evidence_fatal is None:
+            self._evidence_fatal = (error, error.__traceback__)
+
+    def _evidence_eligible(self, end: float, owner: int, root: Path, identity: tuple) -> None:
+        if self._evidence_fatal is not None:
+            error, tb = self._evidence_fatal
+            raise error.with_traceback(tb)
+        try:
+            require(threading.get_ident() == owner == self._failure_writer_owner
+                    and self.root == root, "evidence owner changed")
+            require(time.monotonic() < end and self.effective_end() == end,
+                    "original evidence end unavailable")
+            info = root.lstat()
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                    and (info.st_dev, info.st_ino) == identity, "evidence root changed")
+        except BaseException as exc:
+            self._stop_evidence(exc)
+            raise
+
+    def _check_evidence(self) -> None:
+        try:
+            require(self.redaction_ready and self._evidence_context is not None,
+                    "unsafe evidence withheld without full redaction context")
+            end, owner, root, identity, token, secrets, _ = self._evidence_context
+            self._evidence_eligible(end, owner, root, identity)
+            with self.secret_lock:
+                require(type(self.token) is str and self.token == token
+                        and type(self.secrets) is set and len(self.secrets) == len(secrets)
+                        and all(secret in self.secrets for secret in secrets), "evidence context changed")
+        except BaseException as exc:
+            self._stop_evidence(exc)
+            raise
+
     def prepare_redaction(self) -> None:
+        from run import _EvidenceLedger, _evidence_utf8_size
         self.redaction_ready = False
         try:
-            require(isinstance(self.token, str) and bool(self.token), "complete bearer redaction context")
+            if self._evidence_fatal is not None:
+                error, tb = self._evidence_fatal
+                raise error.with_traceback(tb)
+            require(not self._evidence_preparing, "reentrant evidence preparation")
+            self._evidence_preparing = True
+            end, owner, root = self.effective_end(), threading.get_ident(), self.root
+            info = root.lstat()
+            identity = (info.st_dev, info.st_ino)
+            if self._evidence_root is None:
+                self._evidence_root = identity
+            check = lambda: self._evidence_eligible(end, owner, root, self._evidence_root)
+            check()  # Original eligibility precedes the sole existing capture.
+            require(type(self.token) is str and bool(self.token), "complete bearer redaction context")
+            token = self.token
             if self.threads_active:
-                require(self.effective_end() > time.monotonic(), "full thread redaction context unavailable after expiry")
                 self.capture_thread_secrets()
+            check()
+            if self._evidence_budget is None:
+                self._evidence_budget = _EvidenceLedger()
+            with self.secret_lock:
+                require(self.token == token and type(self.secrets) is set
+                        and all(type(s) is str and s for s in self.secrets),
+                        "complete original evidence context")
+                require("[REDACTED]" not in token and token not in "[REDACTED]"
+                        and all("[REDACTED]" not in s and s not in "[REDACTED]"
+                                for s in self.secrets), "evidence marker overlaps context")
+                size = _evidence_utf8_size(self.token, check)
+                for secret in self.secrets:
+                    size += _evidence_utf8_size(secret, check)
+                # Reserve the retained originals and ordered view before either copy.
+                size *= 2
+                self._evidence_budget.reserve(size, 3 * (len(self.secrets) + 1), check)
+                self._evidence_budget.settle(size, size)
+                secrets = tuple(sorted(self.secrets))
+                ordered = tuple(sorted((self.token, *secrets), key=lambda s: (-len(s), s)))
+                self._evidence_context = (end, owner, root, identity, self.token, secrets, ordered)
             self.redaction_ready = True
+            self._check_evidence()
         except BaseException as exc:
-            self.record_error("redaction-context-unavailable", exc)
+            self._stop_evidence(exc)
+            tb = exc.__traceback__
+            try:
+                self.record_error("redaction-context-unavailable", exc)
+            finally:
+                raise exc.with_traceback(tb)
+        finally:
+            self._evidence_preparing = False
+
+    def _evidence_sanitize(self, text: str) -> str:
+        from run import _evidence_utf8_size
+        self._check_evidence()
+        size = _evidence_utf8_size(text, self._check_evidence)
+        self._evidence_budget.reserve(size, 1, self._check_evidence)
+        self._evidence_budget.settle(size, size)
+        for secret in self._evidence_context[-1]:
+            bound = 10 * size if secret in text else size
+            self._evidence_budget.reserve(bound, 1, self._check_evidence)
+            try:
+                text = text.replace(secret, "[REDACTED]")
+                size = _evidence_utf8_size(text, self._check_evidence)
+                self._evidence_budget.settle(bound, size)
+                self._check_evidence()
+            except BaseException as exc:
+                self._stop_evidence(exc)
+                raise
+        if any(secret in text for secret in self._evidence_context[-1]):
+            error = ValueError("unsafe evidence sanitation postcondition")
+            self._stop_evidence(error)
+            raise error
+        return text
+
+    def _replace_evidence(self, path: Path, text: str) -> None:
+        self._check_evidence()
+        try:
+            require(path == self.root / "scenario.json" or path.parent == self.root / "raw",
+                    "evidence destination outside original owner")
+            parent = path.parent.lstat()
+            require(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.geteuid(),
+                    "unsafe evidence destination")
+            def final_identity() -> tuple | None:
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    return None
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == os.geteuid(),
+                        "unsafe evidence final")
+                return info.st_dev, info.st_ino
+            previous = final_identity()
+            def check() -> None:
+                try:
+                    self._check_evidence()
+                    current = path.parent.lstat()
+                    require(stat.S_ISDIR(current.st_mode)
+                            and (current.st_dev, current.st_ino) == (parent.st_dev, parent.st_ino)
+                            and final_identity() == previous, "evidence destination changed")
+                except BaseException as exc:
+                    self._stop_evidence(exc)
+                    raise
+            check()
+        except BaseException as exc:
+            self._stop_evidence(exc)
+            raise
+        temporary = path.with_name(path.name + ".tmp")
+        self._evidence_budget.reserve(0, 4, check)
+        commit = dict(path=path, end=self._evidence_context[0], replaced=False)
+        self._evidence_replacements.append(commit)
+        try:
+            check()
+            with temporary.open("x", encoding="utf8") as stream:
+                check()
+                if stream.write(text) != len(text):
+                    raise OSError("short evidence write")
+            check()
+            temporary.replace(path)
+            commit["replaced"] = True  # Actual replacement survives every later failure.
+            self._check_evidence()
+        except BaseException as exc:
+            from run import _ordinary_evidence_error
+            if not _ordinary_evidence_error(exc):
+                self._stop_evidence(exc)
+            raise
 
     def _atomic_text(self, path: Path, text: str) -> None:
-        require(self.redaction_ready, "unsafe evidence withheld without full redaction context")
-        temporary = path.with_name(path.name + ".tmp")
-        temporary.write_text(self.sanitize(text))
-        temporary.replace(path)
+        self._replace_evidence(path, self._evidence_sanitize(text))
 
     def _atomic_json(self, path: Path, value: Any) -> None:
-        self._atomic_text(path, json.dumps(value, indent=2))
+        self._check_evidence()
+        # Legacy encoding only in this construction slice. Finite typed admission
+        # and compact pre-escape encoding remain required before compound release.
+        candidate = json.dumps(value, indent=2)
+        self._replace_evidence(path, self._evidence_sanitize(candidate))
 
     def stage_browser_trace(self) -> None:
+        if not self.redaction_ready:
+            return
         if self.browser:
             self._attempt("stage-main-browser-trace", lambda: self._atomic_json(
                 self.root / "raw/browser-events.json", list(self.browser.events)), blocking=False)
+        if not self.redaction_ready:
+            return
         if self.browser and hasattr(self.browser, "thread_events"):
             self._attempt("stage-thread-browser-trace", lambda: self._atomic_json(
                 self.root / "raw/e05-browser-events.json", list(self.browser.thread_events)), blocking=False)
@@ -1253,7 +1414,11 @@ class Controller:
                       dict(variants=self.results, scenario_phases=self.phases, failures=self.failures,
                            groups=self.groups, e07_admission=self.e07_admission, finalization=self.finalization,
                            evidence_state="partial/unvalidated")), blocking=False)
+        if not self.redaction_ready:
+            return
         self._attempt("stage-browser-trace", self.stage_browser_trace, blocking=False)
+        if not self.redaction_ready:
+            return
         if self.primary_error is not None:
             self._attempt("stage-primary-error", lambda: self._atomic_text(self.root / "raw/failure.txt",
                 "".join(traceback.format_exception(type(self.primary_error), self.primary_error, self.primary_traceback))),
@@ -1279,7 +1444,10 @@ class Controller:
         for name, transport in (("thread-proxy", self.browser_relay), ("late-transport", self.late_transport)):
             if transport:
                 self._attempt(name + "-release", transport.release.set, blocking=False)
-        self.prepare_redaction()
+        try:
+            self.prepare_redaction()
+        except BaseException:
+            pass  # Preparation recorded its real cause; teardown still owns release.
         self.stage_small_evidence()  # Before any screenshot/exit/bulky snapshot.
         self.observer_join = dict(attempted=False, reason="work exhausted", entered=time.monotonic())
         available = self.effective_end() - time.monotonic()
@@ -1423,9 +1591,10 @@ class Controller:
                 self.e07.update(partial_launches=launches, launch_record_failures=failures)
                 self._atomic_json(self.root / "raw/e07.json", self.e07)
             self._attempt("export-e07", e07_evidence, blocking=False)
+        self._check_evidence()
         rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
-                    thread_proxy=self.browser_relay.snapshot(self.sanitize) if self.browser_relay else [],
+                    thread_proxy=self.browser_relay.snapshot(self._evidence_sanitize) if self.browser_relay else [],
                     thread_originals=getattr(self.browser, 'thread_originals', []),
                     capture_inventory=dict(refusals=list(self.browser_relay.capture_refusals),
                         retained_bytes=self.browser_relay.capture_bytes, retained_facts=self.browser_relay.capture_facts,
@@ -1435,6 +1604,7 @@ class Controller:
         if witness.exists():
             def witness_evidence() -> None:
                 # Digest and parse exactly the same frozen genuine prefix.
+                self._check_evidence()
                 data = witness.read_bytes()
                 rows["witness_bytes"] = len(data)
                 rows["witness_sha256"] = hashlib.sha256(data).hexdigest()

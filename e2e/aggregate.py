@@ -162,6 +162,7 @@ def failure_result_controls() -> dict:
     import tempfile
     import time
     import shutil
+    import threading
     from typing import Iterator
     from contextlib import contextmanager
     from controller import Controller
@@ -184,6 +185,19 @@ def failure_result_controls() -> dict:
             controller = Controller.__new__(Controller)
             controller.root, controller.token, controller.secrets = root, token, {secret}
             controller.threads_active = False
+            controller.deadline = time.monotonic() + 30
+            controller.local_bounds, controller.inherited_alarm = threading.local(), float('inf')
+            controller.secret_lock = threading.RLock()
+            controller._evidence_fatal, controller._evidence_context, controller._evidence_budget = None, None, None
+            controller._evidence_preparing, controller._evidence_root = False, None
+            controller._evidence_replacements = []
+            controller._failure_writer_owner = threading.get_ident()
+            controller._failure_raw, controller._failure_slots = {}, {}
+            controller._diagnostic_snapshot, controller._diagnostic_recorder_active = {}, False
+            controller._diagnostic_outer_end = controller.deadline
+            controller._diagnostic_alarm_code = None
+            controller._final_attempt = None
+            controller.failures, controller.primary_error, controller.primary_traceback = [], None, None
             controller.prepare_redaction()  # Never manually assert readiness.
             controller.results = {'E05.compose-race':dict(status='FAIL',error=secret)}
             controller.phases, controller.failures = [], copy.deepcopy(expected['failures'])
@@ -223,6 +237,61 @@ def failure_result_controls() -> dict:
 
             yield (controller,root,output,state,staged,published,failed_members,failures,export_errors,
                    row,check,acquire,drain,commit)
+
+    # SAME F2/C3/C6/C7 table: actual save and the existing bare-controller venue.
+    # Legacy JSON bytes are intentional until the remaining compound engine lands.
+    from e07 import save as e07_save
+    for case in ('save', 'capture', 'missing-token', 'changed-context', 'changed-token',
+                 'marker-overlap', 'admission', 'pending'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root / 'raw/e07.json'
+            prior = b'{"previous":"complete"}'
+            path.write_bytes(prior)
+            writer.e07 = {'sample':'public'}
+            budget = writer._evidence_budget
+            spent = budget.work
+            prepared = writer._evidence_context
+            if case == 'capture':
+                # Actual capture -> remember -> context publication, no mocked capture.
+                writer.stores, writer.threads_active = {}, True
+                writer.secrets.add(writer.token)
+            elif case == 'missing-token': writer.token = ''
+            elif case == 'changed-context': writer.secrets.add('NEW_PRIVATE_SENTINEL')
+            elif case == 'changed-token': writer.token = 'CHANGED_TOKEN'
+            elif case == 'marker-overlap': writer.secrets.add('REDACTED')
+            elif case == 'admission': writer.e07 = {'unsupported':object()}
+            elif case == 'pending': path.with_name('e07.json.tmp').write_bytes(b'prior pending')
+            try:
+                if case in ('changed-context', 'changed-token'):
+                    # Same prepared opportunity: mutation cannot rescue its writer.
+                    writer._atomic_json(path, writer.e07)
+                else:
+                    e07_save(writer)
+            except (AssertionError, TypeError, FileExistsError) as exc:
+                assert case not in ('save', 'capture'), (case, type(exc).__name__)
+                assert path.read_bytes() == prior, case
+                pending = path.with_name('e07.json.tmp')
+                assert pending.read_bytes() == b'prior pending' if case == 'pending' else not pending.exists()
+                if case in ('missing-token', 'changed-context', 'changed-token', 'marker-overlap'):
+                    assert not writer.redaction_ready and writer._evidence_fatal is not None
+                    original = writer._evidence_fatal
+                    try: e07_save(writer)
+                    except BaseException: pass
+                    else: raise AssertionError('fatal finalizer wrote evidence')
+                    assert writer._evidence_fatal is original and path.read_bytes() == prior and not pending.exists()
+                if case in ('missing-token', 'marker-overlap', 'admission', 'pending'):
+                    assert writer.primary_error is exc and writer.primary_traceback is not None
+            else:
+                assert case in ('save', 'capture'), 'unsafe save admitted: '+case
+                assert path.read_bytes() == b'{\n  "sample": "public"\n}'
+                assert not path.with_name('e07.json.tmp').exists()
+                assert writer._evidence_replacements[-1]['path'] == path
+                assert writer._evidence_replacements[-1]['replaced'] is True
+                if case == 'capture':
+                    assert json.loads((root/'coord/redaction-context.json').read_text()) == sorted([writer.token,secret])
+            assert writer._evidence_budget is budget and budget.work >= spent
+            assert prepared[-2] == (secret,), 'later preparation mutated original snapshot'
+            results['F2-save-'+case] = 'actual save/prepared-writer whole bytes or refusal; prior bytes retained; native chronology NOT RUN'
 
     for case in ('R1a','R1b-missing','R1b-decode','R1c-txt','R1c-jsonl','R1c-malformed'):
         with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):

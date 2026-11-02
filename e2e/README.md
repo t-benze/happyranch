@@ -2315,8 +2315,31 @@ PASS from assertions but are not independent content proof. Aggregate shows
 UNKNOWN unless complete original results and ALL existing content gates pass.
 No raw body, log, exception text, token, arbitrary field or path is admitted;
 later secret discovery cannot expose an early raw stream through this channel.
-`prepare_redaction`, `_atomic_json`, small/final raw evidence and full-context
-withholding keep their original gates; closed observations do not relax them.
+`prepare_redaction` checks original owner/root/end and fatal state before its
+single capture, then freezes the complete original token/context under the secret
+lock. Evidence writers use that immutable ordering and refuse context drift;
+ordinary diagnostic `sanitize` and mutable producers retain their behavior.
+Preparation records and propagates its actual cause. A fatal refusal prevents
+later evidence preparation, capture and writes, while close still attempts teardown.
+
+E07's four existing save sites (command, held checkpoint, successful finish and
+inner finally) now use preparation once and the atomic JSON writer. Candidates
+are built before exclusive pending creation; precommit refusal preserves prior
+final bytes. The private replacement fact is set immediately after replace returns,
+before postcheck. An inner-finally save error remains secondary to an earlier body
+exception and its original traceback; a save error alone propagates. Root/end/context
+checks are cooperative observations, not kernel-I/O or crash-atomicity proof.
+
+This is an unfinished compound repair. The shared nonrenewing C=8388608/F=200000
+ledger is used by preparation and evidence text transformations, and persists across
+existing preparations. The finite scanner/registry, typed pre-escape admission,
+compact bounded encoding, full collector/projection/publication integration and
+prefix admission are still required on this same draft. Legacy JSON framing and
+collector raw-backslash refusal remain; this slice supplies no typed admission,
+preallocation/fit or native acceptance. Closed observations retain their own gates.
+The completed-ledger exception handler immediately offers its original incomplete
+collection claim to the existing observer: UNKNOWN window/operation/reason and U/U
+lengths, one charged <=512-byte opportunity, no later enrichment or retry.
 
 The ledger grammar rejects unknown/duplicate JSON keys, duplicates/conflicts,
 wrong source/tree/run/attempt/lane/exercise/variant/sequence/index, malformed

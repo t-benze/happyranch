@@ -35,8 +35,19 @@ def witnesses(c: Controller) -> tuple[bytes, list[dict]]:
 
 
 def save(c: Controller) -> None:
-    c.capture_thread_secrets()
-    (c.root / "raw/e07.json").write_text(c.sanitize(json.dumps(c.e07, indent=2)))
+    before = len(c.failures)
+    try:
+        c.prepare_redaction()  # Replaces this save's capture, exactly once.
+        c._atomic_json(c.root / "raw/e07.json", c.e07)
+    except BaseException as exc:
+        tb = exc.__traceback__
+        if c.groups['E07']['first_error_ref'] is None:
+            c.groups['E07']['first_error_ref'] = before
+        try:
+            if len(c.failures) == before:
+                c.record_error("controller-action", exc)
+        finally:
+            raise exc.with_traceback(tb)
 
 
 def frame(c: Controller, parent: str | None = None, child: str | None = None) -> tuple[dict, dict]:
@@ -945,15 +956,24 @@ def exercise(c: Controller) -> None:
             for variant in VARIANTS:
                 c.mark(variant,dict(e07_file="e07.json",source_sha=c.revision))
         except BaseException as exc:
+            outgoing, outgoing_tb = exc, exc.__traceback__
             if c.groups['E07']['first_error_ref'] is None:
                 c.groups['E07']['first_error_ref'] = len(c.failures)
-            c.record_error("controller-action", exc)
-            raise
+            try:
+                c.record_error("controller-action", exc)
+            finally:
+                raise outgoing.with_traceback(outgoing_tb)
         finally:
-            save(c)
+            try:
+                save(c)
+            except BaseException as exc:
+                if outgoing is None:
+                    outgoing, outgoing_tb = exc, exc.__traceback__
+                raise outgoing.with_traceback(outgoing_tb)
     except BaseException as exc:
-        # Reserve the combined body/final-save outgoing before recording or release.
-        outgoing, outgoing_tb = exc, exc.__traceback__
+        # Keep the original body/save winner through recording and release.
+        if outgoing is None:
+            outgoing, outgoing_tb = exc, exc.__traceback__
         try:
             if c.groups['E07']['first_error_ref'] is None:
                 c.groups['E07']['first_error_ref'] = len(c.failures)

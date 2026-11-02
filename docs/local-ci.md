@@ -607,6 +607,21 @@ same-snapshot sticky capacity state. The historical Request identity and positiv
 GET/I/O cancellation observations remain unavailable; native refusal stays strict.
 See the current README case/four-answer/keeper additions for actual control scope.
 
+The in-progress bounded evidence repair adds frozen preparation and E07 atomic
+save/unwind lifecycle on its compound draft. Preparation checks the original
+owner/root/end before one capture, freezes the complete context, and propagates
+failure. Evidence writers refuse later context changes; actual replacement is
+recorded before postcheck and a prior body exception keeps its traceback through
+inner-finally save. C8 observes the original incomplete collection claim immediately,
+with UNKNOWN/U annotations and its same one charged diagnostic opportunity.
+Preparation/text writers share one nonrenewing ledger. Finite typed admission,
+registry/scanner, compact encoding and full collector/projection/publication
+integration remain unfinished on that same draft; existing raw-backslash refusal
+remains. Existing controls supply file/preparation evidence only, with temporal,
+allocation and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
+changes no required checks, E2E trigger, acceptance or execution allowance.
+
+
 Only the existing aggregate --controls reader boundary is worker-authorized here.
 Native H NOT RUN, unsupported proof PROOF NOT RUN; integration INCLUDING actual
 CLI callback/lifespan/SessionTracker SKIPPED24342/211270-271; units RETIRED. Actual
