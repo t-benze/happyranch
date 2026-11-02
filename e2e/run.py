@@ -954,6 +954,10 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
             count = len(content)
         else:
             text, original_size = content
+            if not context:
+                # Closed result fields are already selected safe values. Even
+                # an unchanged alias owes its independent safe-string debit.
+                ledger.charge(original_size, 1, check)
             spans, safe_size, _, _ = _evidence_literal_plan(text, original_size, context, ledger, check)
             if kind == "key":
                 for previous, previous_size in keys[-1]:
@@ -1605,11 +1609,37 @@ def publish_evidence(output: Path, output_identity: tuple, staged: dict[str, byt
             check()
 
 
+def _result_json(row: dict, check: Callable[[], None], *, token: str = "",
+                 context: list[str] | None = None) -> bytearray:
+    """Encode the selected closed FAIL or original-context detailed envelope.
+
+    None denotes only the existing closed-field contract, never raw detail.
+    Explicit unavailable/invalid detailed context cannot select that contract.
+    """
+    ledger = _EvidenceLedger()  # This original result attempt, never collection work.
+    ledger.charge(32, 4, check)
+    ordered = ()
+    if context is not None:
+        if (type(token) is not str or not token or type(context) is not list or not context
+                or any(type(secret) is not str or not secret for secret in context)
+                or token not in context
+                or any("[REDACTED]" in secret or secret in "[REDACTED]" for secret in context)):
+            raise _EvidenceUnsafe("result original context unavailable")
+        size = sum(_evidence_utf8_size(secret, check) for secret in context)
+        # Original references, ordering keys/sort scratch and frozen view, before
+        # allocation. No context acquisition, transformed dictionary or reset.
+        ledger.charge(size * 2 + 40 * len(context), 4 * len(context), check)
+        ordered = tuple(sorted(context, key=lambda secret: (-len(secret), secret)))
+    return _evidence_json(row, ordered, ledger, check)
+
+
 def publish_failure(output: Path, output_identity: tuple, row: dict, check: Callable[[], None]) -> None:
     """The original nonfinal FAIL opportunity; no postcommit success inference."""
     _publication_destination(output, output_identity, "result.json", check)
+    candidate = _result_json(row, check)
     temporary = output / "result.tmp"
-    temporary.write_text(json.dumps(row, indent=2))
+    with temporary.open("wb") as stream:
+        stream.write(candidate)
     _publication_destination(output, output_identity, "result.json", check)
     temporary.replace(output / "result.json")
 
@@ -1972,9 +2002,6 @@ def main() -> int:
         collection_diagnostic: dict[str, tuple] = {}
         published_members: dict[str, bytes] = {}
         failed_members: set[str] = set()
-
-        def sanitize_evidence(text: str) -> str:
-            return redact(text, collection_state["token"], collection_state["context"])
 
         def reserve(name: str, cap: float, outer: float) -> dict:
             entered = time.monotonic()
@@ -2526,9 +2553,10 @@ def main() -> int:
                     receipt["cleanup"].setdefault("observed_groups", sorted(owner.groups.copy()))
 
         export = reserve("export", 120, hard_end)
+        final_encoding_refused = False
 
         def publish(row: dict, *, final: bool = False) -> None:
-            nonlocal final_result_committed
+            nonlocal final_result_committed, final_encoding_refused
             temporary = output / "result.tmp"
             destination = output / "result.json"
             if not final:
@@ -2538,7 +2566,15 @@ def main() -> int:
                 publish_failure(output, output_identity, row, failure_time)
                 return
             _publication_destination(output, output_identity, "result.json", export_time)
-            temporary.write_text(json.dumps(row, indent=2))
+            try:
+                candidate = _result_json(row, export_time, token=collection_state["token"],
+                                         context=collection_state["context"])
+            except BaseException:
+                final_encoding_refused = True
+                raise
+            with temporary.open("wb") as stream:
+                stream.write(candidate)
+            _publication_destination(output, output_identity, "result.json", export_time)
             # Finish all fallible preparation before the final admission check.
             # Retire SIGALRM process-wide, including any queued alarm. A thread
             # mask alone cannot cover an alarm delivered to a surviving watcher.
@@ -2646,11 +2682,13 @@ def main() -> int:
             receipt.update(failure_categories())
             receipt["completed_cases"] = completed_exported
             export_time()
-            detailed = json.loads(sanitize_evidence(json.dumps(receipt)))
-            detailed["completed_cases"] = completed_exported
+            # Only the collector's complete detached claims enter this envelope.
+            # Metadata shares the bounded typed original-context admission; no
+            # raw serialization/reparse or traceback fallback can rescue it.
+            receipt.update(collection_state["safe_scenario"])
             if ownership_evidence is not None:
-                detailed["ownership_evidence"] = ownership_evidence
-            publish(detailed, final=True)
+                receipt["ownership_evidence"] = ownership_evidence
+            publish(receipt, final=True)
         except BaseException as exc:
             if not final_result_committed:
                 receipt["status"] = "FAIL"
@@ -2665,7 +2703,11 @@ def main() -> int:
                 try:
                     signal.signal(signal.SIGALRM, interrupted)
                     arm_deadline(export["deadline"])
-                    publish(failure_row())
+                    # A refused new envelope cannot rewrite an ENTIRE earlier
+                    # FAIL. Retain the original closed fallback when initial
+                    # persistence was unavailable, and for other export errors.
+                    if not (initial_fail_published and final_encoding_refused):
+                        publish(failure_row())
                 except BaseException:
                     # A successful initial FAIL remains if replacement never commits.
                     # False means persistence was unavailable, never a claimed receipt.

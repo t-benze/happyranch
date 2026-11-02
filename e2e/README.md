@@ -2385,10 +2385,32 @@ JSONL record boundaries are indices in the SAME returned image, never line copie
 or a new allowance. Later malformed/unfinished records withhold the whole image;
 previous full commits survive. Scenario-only returned-slice annotations stay truthful.
 
+Initial closed FAIL and final detailed FAIL/PASS now use the same finite typed
+compact UTF8 encoder, including final metadata. Each original result attempt
+charges original PLUS safe strings, aliases, context/order scratch, keys, facts,
+plan and output under C8388608/F200000/depth64 and its original end. Complete
+encoded size has an independent C predicate; admitted scenario size does not
+promise room for metadata. One precharged candidate precedes pending open and
+transfers directly to the existing result.tmp/replace operation, without another
+full tree, serialization, sanitation or parse. Public quote/LF/Unicode retains
+decoded content. Unregistered decoded backslashes and unsupported types refuse.
+Detailed claims are the collector's complete safe_scenario plus existing launcher
+metadata/categories/completed/ownership. Metadata uses the bound original token
+and charged longest-first context; there is no raw receipt or traceback rescue.
+The existing closed FAIL selects fixed failure text and safe fields independently
+when detailed context is unavailable; explicit empty detailed context refuses.
+Its already selected safe strings still owe both original and safe work.
+Initial publication truth follows actual replacement. A final encoding refusal
+preserves an earlier ENTIRE committed FAIL; the original closed fallback remains
+available if initial persistence failed or another export operation failed.
+Final write/destination checks precede alarm retirement and the same original
+E-1 admission; only successful os.replace marks final_result_committed, with no
+postcommit reclassification. This is source/file evidence, not kernel-I/O,
+crash/signal/cleanup or whole-main chronology certification.
+
 Closed producer/copy registry, nested source/hex/browser/direct/pair/human-display
-joins, compact bounded main final/initial result encoding/publication, E07 prefix
-and Controller witness tree-parse reuse remain required on this same draft.
-Legacy result publication and plain/unregistered R1 whole-backslash refusal remain.
+joins, E07 prefix and Controller witness tree-parse reuse remain required on
+this same draft. Plain/unregistered R1 whole-backslash refusal remains.
 No nested encoding permission, complete finite publication, fit or native acceptance
 follows. Closed observations retain their own gates.
 The completed-ledger exception handler immediately offers its original incomplete

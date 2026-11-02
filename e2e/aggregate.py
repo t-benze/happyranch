@@ -201,7 +201,7 @@ def failure_result_controls() -> dict:
     from contextlib import contextmanager
     from controller import Controller
     from run import (collect_evidence, publish_evidence, failure_receipt, publish_failure,
-                     _collection_line, _ordinary_evidence_error, _failure_error)
+                     _result_json, _collection_line, _ordinary_evidence_error, _failure_error)
 
     @contextmanager
     def fixture() -> Iterator[tuple]:
@@ -271,6 +271,114 @@ def failure_result_controls() -> dict:
 
             yield (controller,root,output,state,staged,published,failed_members,failures,export_errors,
                    row,check,acquire,drain,commit)
+
+    # C1-C3/C6-C7: result shipping, separate from scenario/input predicates.
+    # Entire ordered envelope/bytes below are independent literal expectations.
+    for status in ('FAIL','PASS'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            acquire(); drain(); commit()
+            prior_tree = copy.deepcopy(state['safe_scenario'])
+            prior_member = (output/'failure.txt').read_bytes()
+            source_bytes = (root/'scenario.json').read_bytes()
+            repeated = {'b':2,'a':1}
+            envelope = {'schema':1,'status':status,'variants':{'one':{'status':'FAIL'}},
+                        'first':[True,False,None,7,1.5], 'sample':'public\nline','quote':'"','unicode':'中',
+                        'copies':[repeated,repeated], 'completed_cases':None,
+                        'failure_categories':{'schema':1,'controller':{'availability':'unavailable','snapshot':None}},
+                        'ownership_evidence':{'availability':'unavailable','reason':'not_frozen','data':None},
+                        'timing':{'export':{'ok':False}},'total_seconds':2.5,'target_exceeded':False}
+            wanted = {'schema':1,'status':status,'variants':{'one':{'status':'FAIL'}},
+                      'first':[True,False,None,7,1.5],'sample':'public\nline','quote':'"','unicode':'中',
+                      'copies':[{'b':2,'a':1},{'b':2,'a':1}], 'completed_cases':None,
+                      'failure_categories':{'schema':1,'controller':{'availability':'unavailable','snapshot':None}},
+                      'ownership_evidence':{'availability':'unavailable','reason':'not_frozen','data':None},
+                      'timing':{'export':{'ok':False}},'total_seconds':2.5,'target_exceeded':False}
+            literal_bytes = (b'{"schema":1,"status":"'+(b'FAIL' if status == 'FAIL' else b'PASS')+
+                b'","variants":{"one":{"status":"FAIL"}},"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad","copies":[{"b":2,"a":1},{"b":2,"a":1}],"completed_cases":null,"failure_categories":{"schema":1,"controller":{"availability":"unavailable","snapshot":null}},"ownership_evidence":{"availability":"unavailable","reason":"not_frozen","data":null},"timing":{"export":{"ok":false}},"total_seconds":2.5,"target_exceeded":false}')
+            publish_failure(output,(output.stat().st_dev,output.stat().st_ino),envelope,check)
+            assert (output/'result.json').read_bytes() == literal_bytes, status
+            detailed = _result_json(envelope,check,token=state['token'],context=state['context'])
+            assert type(detailed) is bytearray and detailed == literal_bytes, status
+            exact(json.loads((output/'result.json').read_bytes()),wanted)
+            exact(envelope,wanted); exact(state['safe_scenario'],prior_tree)
+            assert (output/'failure.txt').read_bytes() == prior_member and (root/'scenario.json').read_bytes() == source_bytes
+            assert not (output/'result.tmp').exists()
+            results['C3-result-compact-'+status] = 'whole literal file and shared final encoder buffer; every type/order/metadata/repetition exact; whole-main NOT RUN'
+
+    class ResultString(str): pass
+    class ResultDict(dict): pass
+    cycle = []; cycle.append(cycle)
+    depth = None
+    for _ in range(65): depth = [depth]
+    result_refusals = {
+        'unsupported': (object(),'evidence value unavailable'),
+        'subclass-string': (ResultString('public'),'evidence value unavailable'),
+        'subclass-dict': (ResultDict(x=1),'evidence value unavailable'),
+        'nonfinite': (float('inf'),'evidence number refused'),
+        'nan': (float('nan'),'evidence number refused'),
+        'nonstring-key': ({1:'public'},'evidence key unavailable'),
+        'cycle': (cycle,'evidence cycle refused'),
+        'surrogate': ('\ud800','evidence surrogate refused'),
+        'backslash': ('public\\path','evidence representation withheld'),
+        'nested-json': ('{"script":"public\\nline"}','evidence representation withheld'),
+        'encoded-metadata': ('\0'*1500000,'evidence encoded capacity refused'),
+        'aggregate-metadata': ('a'*2800000,'evidence capacity refused'),
+        'facts': ([None]*18000,'evidence capacity refused'),
+        'depth': (depth,'evidence depth capacity refused'),
+    }
+    for case,(metadata,message) in result_refusals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            acquire(); drain(); commit()
+            earlier = {path.name:path.read_bytes() for path in output.iterdir()}
+            prior_tree = copy.deepcopy(state['safe_scenario'])
+            source_bytes = (root/'scenario.json').read_bytes()
+            # Scenario is small and already admitted; only final metadata changes.
+            envelope = {'variants':state['safe_scenario']['variants'],'metadata':metadata}
+            try: publish_failure(output,(output.stat().st_dev,output.stat().st_ino),envelope,check)
+            except ValueError as exc: assert str(exc) == message, (case,str(exc))
+            else: raise AssertionError('new result accepted: '+case)
+            assert {path.name:path.read_bytes() for path in output.iterdir()} == earlier, case
+            assert not (output/'result.tmp').exists()
+            exact(state['safe_scenario'],prior_tree)
+            assert (root/'scenario.json').read_bytes() == source_bytes
+            results['C1-C2-C6-C7-result-'+case] = 'actual result refusal before pending; entire prior files/FAIL/tree/source exact; named guard distinct from scenario/input'
+
+    for case in ('empty-context','missing-token','marker-context','key-collision','authenticated-secret','longest-first','literal-secret','closed-unavailable'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            acquire(); drain(); commit()
+            earlier = {path.name:path.read_bytes() for path in output.iterdir()}
+            prior_tree = copy.deepcopy(state['safe_scenario'])
+            context,token = state['context'],state['token']
+            envelope = {'sample':'public'}
+            if case == 'empty-context': context = []
+            elif case == 'missing-token': token = 'OTHER_TOKEN'
+            elif case == 'marker-context': context = [token,'REDACTED']
+            elif case == 'key-collision': envelope = {secret:1,'[REDACTED]':2}
+            elif case == 'authenticated-secret': envelope = {'sample':secret,'byte_length':7}
+            elif case == 'longest-first': context = [token,'cat','xcat']; envelope = {'sample':'xcat'}
+            elif case == 'literal-secret': envelope = {'sample':secret}
+            if case == 'closed-unavailable':
+                # Real closed selection excludes raw failure/traceback/error.
+                row.update(failure=secret,traceback=secret)
+                row['cleanup']['error'] = secret
+                state.update(token='',context=[])
+                value = commit()
+                assert value['failure'] == 'incomplete detailed evidence' and 'traceback' not in value
+                assert 'error' not in value['cleanup'] and b'PRIVATE_SENTINEL' not in (output/'result.json').read_bytes()
+            else:
+                try: candidate = _result_json(envelope,check,token=token,context=context)
+                except ValueError as exc:
+                    assert case not in ('longest-first','literal-secret')
+                    assert str(exc) == ('evidence redacted key collision' if case == 'key-collision' else
+                                        'authenticated evidence requires original bytes' if case == 'authenticated-secret' else
+                                        'result original context unavailable'), (case,str(exc))
+                else:
+                    assert case in ('longest-first','literal-secret'), case
+                    assert candidate == b'{"sample":"[REDACTED]"}'
+                assert {path.name:path.read_bytes() for path in output.iterdir()} == earlier
+            exact(state['safe_scenario'],prior_tree)
+            assert not (output/'result.tmp').exists()
+            results['C3-C6-C7-result-'+case] = 'shared detailed original-context admission or real closed FAIL selection; no raw rescue; final-main chronology NOT RUN'
 
     # Strict ORIGINAL scenario JSON through actual file/collector/detachment.
     json_cases = {
@@ -786,11 +894,12 @@ def failure_result_controls() -> dict:
         # Genuine later serialization refusal leaves the initial actual result.
         try:
             publish_failure(output,(output.stat().st_dev,output.stat().st_ino),dict(bad=object()),check)
-        except TypeError:
-            pass
+        except ValueError as exc:
+            assert str(exc) == 'evidence value unavailable'  # Typed encoder taxonomy.
         else:
             raise AssertionError('unserializable later result accepted')
         assert (output / 'result.json').read_bytes() == earlier
+        assert not (output/'result.tmp').exists()
         results['B09-B12-R1d'] = 'old commit/snapshot exact; new safe sibling drained after later refusal; earlier FAIL exact'
 
     # Complete-safe presence positive and empty-required negatives are distinct

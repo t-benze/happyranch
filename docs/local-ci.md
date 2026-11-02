@@ -635,9 +635,25 @@ every pass, candidate and bounded scratch share the persistent preparation owner
 spent work never refunds. No hard RSS or syscall-time guarantee follows.
 The action convenience scenario read is removed; ordinary refusal preserves prior
 complete bytes/snapshots and spent work, without retrying failed sources. Complete
-producer/copy registry, nested/browser/direct/pair/human-display joins, main's
-compact initial/final result encoding/publication and E07 prefix/Controller witness
-tree-parse reuse remain unfinished. At the existing single raw read, the same
+producer/copy registry, nested/browser/direct/pair/human-display joins and E07
+prefix/Controller witness tree-parse reuse remain unfinished. Initial closed FAIL
+and final detailed FAIL/PASS now use the finite typed compact UTF8 encoder over
+their complete selected envelope INCLUDING metadata. Original+safe strings,
+aliases, context/order scratch, keys/facts/plan/output retain C8388608/F200000/
+depth64 and original ends, with an independent complete encoded-size C predicate.
+Scenario fit does not imply final-envelope fit. One precharged candidate precedes
+result.tmp and transfers directly to existing replacement, without a second full
+tree, serializer, sanitation or parse. Detailed claims come from complete
+safe_scenario and existing metadata/categories/completed/ownership, under the
+original token/longest-first context. No raw receipt or traceback rescue exists.
+Closed FAIL keeps its selected safe-field contract independently of unavailable
+detail; explicit empty detailed context refuses. Later encoding refusal preserves
+the ENTIRE earlier committed FAIL. Original fallback remains for unavailable
+initial persistence and other export errors. Final preparation/write/destination
+checks precede alarm retirement and the SAME E-1 admission; only successful
+os.replace records commit, with no postcommit reclassification. Source/file
+controls do not certify whole-main, kernel-I/O, crash, signal or cleanup behavior.
+At the existing single raw read, the same
 indexed strict grammar now scans registered observations.json/e07.json/e07-prefix.json
 objects, browser-events.json/e05-browser-events.json arrays and nonempty
 launch-witnesses.jsonl complete LF-terminated object records without a raw tree,
@@ -651,8 +667,8 @@ repetitions, unchanged safe passes, active keys and the exact original candidate
 remain charged before allocation; no per-line/member reset. A late incomplete
 record withholds the entire new image, preserving prior commits. The one admitted
 literal UTF8 candidate retains ALL original bytes and transfers directly into
-staging/publication. No suffix/key-name or nested encoding grant follows. Legacy
-result publication and plain/unregistered R1 whole-backslash refusal remain.
+staging/publication. No suffix/key-name or nested encoding grant follows.
+Plain/unregistered R1 whole-backslash refusal remains.
 Existing controls supply file/preparation evidence only, with temporal, allocation
 and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.
