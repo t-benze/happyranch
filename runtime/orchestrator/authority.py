@@ -5254,8 +5254,11 @@ def enqueue_task_generation_aware(
         return ENQUEUE_DISPATCH_ORDINARY
     try:
         classification = classifier(task_id)
-    except Exception:
-        logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+    except Exception as primary:
+        try:
+            logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+        except BaseException:
+            raise primary
         return ENQUEUE_DISPATCH_REFUSED
     kind = getattr(classification, "kind", None)
     if kind == "pending":

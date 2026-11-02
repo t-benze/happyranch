@@ -2956,6 +2956,10 @@ uncertainty; neither an attempted recorder nor an uncertainty note certifies a
 durable obligation, successful cleanup or COMMIT. Consumed-proof reads
 preserve that first cause through failed rollback on the same connection; a
 successful read returns V only after successful cleanup.
+Nested terminal decoder/binding/obligation handlers retain their caught primary
+through failed rollback; successful cleanup still returns the original bounded
+identity refusal. Startup receives that original writer error and the actual
+cleanup failures.
 The six pre-final stage writers and the continuation, settlement, publication,
 admission, spend, dispatch and result-present fingerprint transactions retain
 their existing ordinary-error catches. Secondary rollback or refusal-recorder
@@ -2963,10 +2967,19 @@ failure rethrows the same primary on the captured original connection; clean
 rollback retains each owner's existing rethrow or bounded-pending handling.
 Opaque primary errors keep their existing propagation, without broadening
 those primary catches. Failure of a diagnostic note cannot replace the primary.
-An authenticated stage refusal forgets its failed live token even if recording
-the obligation fails; this supplies no durable obligation or cleanup proof.
+An ordinary failure at any of the six pre-final stages or the final continuation
+marks the already authenticated owner for refusal-only housekeeping and revokes
+its live token before rollback or obligation persistence. Authentication requires
+live registration plus the matching durable owner/boot; caller transactions,
+foreign contenders and intentional duplicate refusals cannot poison the winner.
+Later restoration of autocommit on the same connection cannot restore that
+continuation capability. These local markers supply no durable obligation,
+successful rollback or COMMIT proof; opaque primaries keep their existing catches.
 Hook error-handling and consumer refusal tails likewise preserve their active
-primary if a secondary observation, audit, refusal or logger fails. Startup
+primary if a secondary observation, audit, refusal or logger fails. This includes
+the publication request, enqueue classifier and dispatch gate before the protected
+admitted body. Successful logging retains their original skip/refused/best-effort
+handling. Startup
 retains the original error in its existing unsafe wrapper's causes when a
 later check detects unsafe custody. Ordinary startup fallback remains ordinary
 fallback after successful checks. Native inner/outer cleanup is still attempted,

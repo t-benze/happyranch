@@ -1193,6 +1193,10 @@ class AuthorityV2ContinuationMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Revoke continuation before any fallible cleanup/persistence.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -1202,11 +1206,6 @@ class AuthorityV2ContinuationMixin:
                     pass
                 raise primary
             try:
-                if authentic_owner:
-                    # Safe same-process fallback: the process-local marker keeps
-                    # safely attributable refusal housekeeping possible even when
-                    # the durable obligation diagnostic cannot be written.
-                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
                 self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="final_commit_failed",

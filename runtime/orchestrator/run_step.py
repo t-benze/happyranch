@@ -1186,10 +1186,13 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
         classification = db.classify_authority_policy_v2_root_dispatch_for_enqueue(
             task_id
         )
-    except Exception:
-        logger.exception(
-            "run_step %s: v2 dispatch classification failed", task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "run_step %s: v2 dispatch classification failed", task_id,
+            )
+        except BaseException:
+            raise primary
         return
     if getattr(classification, "kind", None) != "pending":
         return
@@ -1200,12 +1203,15 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
         publish_authority_policy_v2_notifications(
             orch, queue, root_task_id=task_id,
         )
-    except Exception:
-        # Liveness is best-effort: a publication-request failure must never
-        # turn a correct fail-closed refusal into an admission or a crash.
-        logger.exception(
-            "run_step %s: pending v2 publication request failed", task_id,
-        )
+    except Exception as primary:
+        # Liveness is best-effort when the diagnostic succeeds. If logging
+        # also fails, preserve the publication error without admitting work.
+        try:
+            logger.exception(
+                "run_step %s: pending v2 publication request failed", task_id,
+            )
+        except BaseException:
+            raise primary
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -2699,8 +2705,11 @@ def _v2_decision_dispatch_gate(
         context = db.authority_policy_v2_completion_dispatch_context(
             root_task_id=task_id, result_row_id=result_row_id,
         )
-    except Exception:
-        logger.exception("run_step %s: v2 completion classification failed", task_id)
+    except Exception as primary:
+        try:
+            logger.exception("run_step %s: v2 completion classification failed", task_id)
+        except BaseException:
+            raise primary
         return skip
     kind = getattr(context, "kind", None)
     if kind == "no_v2":
@@ -2789,8 +2798,11 @@ def _v2_decision_dispatch_gate(
                         "run_step %s: v2 decision refusal pending (%s)",
                         task_id, getattr(refusal, "reason", None),
                     )
-            except Exception:
-                logger.exception("run_step %s: v2 decision refusal failed", task_id)
+            except Exception as primary:
+                try:
+                    logger.exception("run_step %s: v2 decision refusal failed", task_id)
+                except BaseException:
+                    raise primary
             return skip
         # ``applied``/``refused`` are terminal: read-only, never a second consumer.
         return skip

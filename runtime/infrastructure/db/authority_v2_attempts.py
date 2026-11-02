@@ -1928,6 +1928,10 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED, poison=False,
             )
         now = _now().isoformat()
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -1948,6 +1952,11 @@ class AuthorityV2AttemptsMixin:
                 schema_observation=observation,
             )
             if outcome.status == "refused":
+                # A duplicate remains nonpoisoning even if its cleanup fails.
+                if outcome.refusal_code in {
+                    "already_claimed", "already_audited",
+                }:
+                    authentic_owner = False
                 conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
@@ -1961,6 +1970,10 @@ class AuthorityV2AttemptsMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Reentry stays refusal-only even if rollback cannot finish.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -1973,6 +1986,7 @@ class AuthorityV2AttemptsMixin:
                 self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="claim_failed", origin_boot_id=origin_boot_id,
+                    poison=authentic_owner,
                 )
             except BaseException:
                 try:
@@ -2695,6 +2709,10 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED, poison=False,
             )
         now = _now().isoformat()
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -2705,6 +2723,11 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
+                # A duplicate remains nonpoisoning even if its cleanup fails.
+                if outcome.refusal_code in {
+                    "already_audited", "already_claimed",
+                }:
+                    authentic_owner = False
                 conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
@@ -2719,6 +2742,10 @@ class AuthorityV2AttemptsMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Reentry stays refusal-only even if rollback cannot finish.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -2732,7 +2759,7 @@ class AuthorityV2AttemptsMixin:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="claim_audit_missing",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
-                    origin_boot_id=origin_boot_id,
+                    origin_boot_id=origin_boot_id, poison=authentic_owner,
                 )
             except BaseException:
                 try:
@@ -2940,6 +2967,10 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED, poison=False,
             )
         now = _now().isoformat()
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -2950,6 +2981,11 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
+                # A duplicate remains nonpoisoning even if its cleanup fails.
+                if outcome.refusal_code in {
+                    "already_evaluated", "already_consumed",
+                }:
+                    authentic_owner = False
                 conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
@@ -2964,6 +3000,10 @@ class AuthorityV2AttemptsMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Reentry stays refusal-only even if rollback cannot finish.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -2977,7 +3017,7 @@ class AuthorityV2AttemptsMixin:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="evaluation_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
-                    origin_boot_id=origin_boot_id,
+                    origin_boot_id=origin_boot_id, poison=authentic_owner,
                 )
             except BaseException:
                 try:
@@ -3111,6 +3151,10 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED, poison=False,
             )
         now = _now().isoformat()
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -3121,6 +3165,11 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
+                # A duplicate remains nonpoisoning even if its cleanup fails.
+                if outcome.refusal_code in {
+                    "already_audited", "already_consumed",
+                }:
+                    authentic_owner = False
                 conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
@@ -3135,6 +3184,10 @@ class AuthorityV2AttemptsMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Reentry stays refusal-only even if rollback cannot finish.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -3148,7 +3201,7 @@ class AuthorityV2AttemptsMixin:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="evaluation_audit_missing",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
-                    origin_boot_id=origin_boot_id,
+                    origin_boot_id=origin_boot_id, poison=authentic_owner,
                 )
             except BaseException:
                 try:
@@ -3256,6 +3309,10 @@ class AuthorityV2AttemptsMixin:
                 code="transaction_owned",
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED, poison=False,
             )
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -3266,6 +3323,11 @@ class AuthorityV2AttemptsMixin:
                 max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
+                # A duplicate remains nonpoisoning even if its cleanup fails.
+                if outcome.refusal_code in {
+                    "already_consumed",
+                }:
+                    authentic_owner = False
                 conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
@@ -3280,6 +3342,10 @@ class AuthorityV2AttemptsMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Reentry stays refusal-only even if rollback cannot finish.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -3293,7 +3359,7 @@ class AuthorityV2AttemptsMixin:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="consume_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
-                    origin_boot_id=origin_boot_id,
+                    origin_boot_id=origin_boot_id, poison=authentic_owner,
                 )
             except BaseException:
                 try:
@@ -3431,6 +3497,10 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED, poison=False,
             )
         now = _now().isoformat()
+        authentic_owner = self._v2_contender_is_authentic_owner(
+            attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -3441,6 +3511,11 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
+                # A duplicate remains nonpoisoning even if its cleanup fails.
+                if outcome.refusal_code in {
+                    "already_audited", "already_consumed",
+                }:
+                    authentic_owner = False
                 conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
@@ -3455,6 +3530,10 @@ class AuthorityV2AttemptsMixin:
             conn.commit()
             return outcome
         except Exception as primary:
+            if authentic_owner:
+                # Reentry stays refusal-only even if rollback cannot finish.
+                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
             try:
                 conn.rollback()
             except BaseException:
@@ -3468,7 +3547,7 @@ class AuthorityV2AttemptsMixin:
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="consume_failed",
                     stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
-                    origin_boot_id=origin_boot_id,
+                    origin_boot_id=origin_boot_id, poison=authentic_owner,
                 )
             except BaseException:
                 try:
@@ -3989,8 +4068,15 @@ class AuthorityV2AttemptsMixin:
                 return _pending("identity_mismatch")
             try:
                 attempt = self._authority_policy_v2_attempt_from_row(row)
-            except ValueError:
-                _rollback()
+            except ValueError as primary:
+                try:
+                    _rollback()
+                except BaseException:
+                    try:
+                        primary.add_note("authority refusal rollback also failed; custody remains uncertain")
+                    except BaseException:
+                        pass
+                    raise primary
                 return _pending("identity_mismatch")
             attempt_row = dict(row)
             if attempt_id != attempt.attempt_id:
@@ -4015,8 +4101,15 @@ class AuthorityV2AttemptsMixin:
             if candidate_row is not None:
                 try:
                     candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
-                except ValueError:
-                    _rollback()
+                except ValueError as primary:
+                    try:
+                        _rollback()
+                    except BaseException:
+                        try:
+                            primary.add_note("authority refusal rollback also failed; custody remains uncertain")
+                        except BaseException:
+                            pass
+                        raise primary
                     return _pending("identity_mismatch")
                 if (
                     candidate.attempt_id != attempt.attempt_id
@@ -4062,8 +4155,15 @@ class AuthorityV2AttemptsMixin:
                 return _pending("identity_mismatch")
             try:
                 self._authenticate_v2_session_binding_uncommitted(binding)
-            except Exception:
-                _rollback()
+            except Exception as primary:
+                try:
+                    _rollback()
+                except BaseException:
+                    try:
+                        primary.add_note("authority refusal rollback also failed; custody remains uncertain")
+                    except BaseException:
+                        pass
+                    raise primary
                 return _pending("identity_mismatch")
 
             # Optional exact Q: match only this attempt's exact recovery-session
@@ -4285,8 +4385,15 @@ class AuthorityV2AttemptsMixin:
             ):
                 try:
                     payload = self._v2_retained_json(obligation_row["payload"])
-                except Exception:
-                    _rollback()
+                except Exception as primary:
+                    try:
+                        _rollback()
+                    except BaseException:
+                        try:
+                            primary.add_note("authority refusal rollback also failed; custody remains uncertain")
+                        except BaseException:
+                            pass
+                        raise primary
                     return _pending("identity_mismatch")
                 if not isinstance(payload, dict) or "attempt_id" not in payload:
                     _rollback()
