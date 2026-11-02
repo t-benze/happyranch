@@ -14,6 +14,34 @@ Status: historical implementation contract for THR-229 / GitHub issue #918.
 The v2 schema-gate portion was superseded by founder THR-229 seq351; the
 recovery and idempotency portions remain current.
 
+## Current terminal-selection correction (THR-328)
+
+The later [current orchestrator contract](../../agent-guides/orchestrator-contracts.md)
+selects from authenticated consumed stored V: continuation only for
+continue_applies; authentic no-grants close J/task/exact-Q atomically through
+the existing refusal owner as policy_no_continue. Earlier genuine failure and
+cancelled/replaced winners retain precedence. Full consumed immutable evidence
+is required for policy replay/zombie proof; historical machinery refusals retain
+their original incomplete-failed-evidence meaning. Startup uses current context
+and the writer's actual code, without recreating old-boot continuation.
+
+Only the fresh committed writer surfaces the original human reason. A selected
+policy terminal that is housekeeping_pending remains structured v2_refused and
+cannot use the bare machinery v2_pending ordinary-escalation fallback described
+historically below. Common completion and accepted recovery independently guard
+the original connection BEFORE classifiers/audits/effects; a private lost_owner
+held marker propagates without fallback/success/requeue tails. Lower hooks and
+terminal owner retain separate guards. No whole-runner/sweep sentinel guarantee,
+new connection or settlement/cleanup authority is implied.
+
+Retained job IDs require complete original job/submission/SID, all-attempt
+producer, strict Pause/control and native custody proof. Preflight terminal and
+Pause removal before original native finish deny; genuine settled no-launch can
+qualify. Absence/malformed/foreign evidence and UNKNOWN never grant clearance.
+New readers preserve old histories; old typed binaries reject policy_no_continue,
+so rollback is compatible-code-only. C1–C9 behavior NOT RUN, native/sentinel/
+causal/rollback PROOF NOT RUN; historical proof below is not new execution.
+
 ## Problem
 
 Historical org databases may retain `agent_enrollments`. The former v2
@@ -45,9 +73,10 @@ only the writer's newly committed `refused` outcome, after that transaction
 returns. An authenticated `already_refused` replay, `owner_lost` disposition or
 pending outcome emits no notification or thread follow-up; the fenced-root skip
 for accepted recovery, pid failure and Pending enqueue is unchanged. If refusal
-remains pending in the ordinary completion consumer, its escalation CAS supplies
-the terminal root transition and surfacing instead. Neither branch may leave
-the root indefinitely `in_progress`.
+remains bare machinery v2_pending in the ordinary completion consumer, its
+escalation CAS supplies the terminal root transition and surfacing instead.
+Selected policy-terminal structured pending is excluded: it retains the atomic
+owner and original custody until genuine terminal settlement.
 
 Every completion-consumer entry checks the persisted orchestration-step audit
 before appending a decision audit. Startup, zombie, accepted-recovery and
