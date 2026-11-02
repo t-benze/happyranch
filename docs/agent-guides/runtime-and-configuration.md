@@ -1,5 +1,38 @@
 # Runtime And Configuration
 
+## Authority terminal recovery and connection custody (THR-328)
+
+Startup's existing refusal owner may classify a fully consumed authenticated
+no-grant as `policy_no_continue` using current mechanical/parser context. It
+retains first failure obligations and uses the actual writer-returned code;
+old-boot continue remains refusal-only. Fresh committed writer alone surfaces
+the original reason/summary. Exact replay/zombie proof authenticates consumed
+J/R/K/P/V/a0–a3 without recreating tokens; old machinery refusals keep their
+original missing-failed-evidence reading. Policy pending retains J/task/exact-Q
+and never ordinary-escalates or reconciles Pending as success.
+
+The common consumer and accepted-recovery entry check the original connection
+before classifiers/audits/effects. Ambient ownership returns a private lost_owner
+held marker (housekeeping_pending/null disposition), propagated through callers
+without success/requeue/fallback/worktree tails. Public/direct-v2 hooks and the
+terminal writer guard their separate lower entries. No connection repair,
+replacement, BEGIN/COMMIT/ROLLBACK or diagnostic writer is allowed at these held
+entries. Opaque errors retain their cause. This is an entry precondition, not
+whole-runner/sweep isolation; original native finally/outer owners remain.
+Their cleanup attempts retain an escaping consumer's primary error; secondary
+failure does not certify settlement. Startup keeps its existing unsafe wrapper
+and retains original plus secondary causes. See the current orchestrator
+contract for the named stage/transaction/diagnostic boundaries and intentionally
+unchanged ordinary handling.
+
+Retained job IDs require complete original producer ALL-attempt/Pause/native
+custody and submission/SID joins; terminal preflight/Pause removal before native
+finish is insufficient. Missing evidence or layout never proves clearance.
+New readers preserve old histories; old typed binaries reject policy_no_continue.
+Rollback requires compatible code/drained old consumers. No schema, activation,
+live historical cleanup, loading, deployment or restart follows from publication.
+Behavior C1–C9 NOT RUN; causal/native/sentinel/rollback PROOF NOT RUN. Python units
+RETIRED, integration SKIPPED THR211seq270/271 + THR243seq42; static evidence only.
 ## Built-in coding availability — ROOT13509 / THR320seq304
 
 The fixed coding v1 definition is registered automatically by the normal org
