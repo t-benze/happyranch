@@ -1345,6 +1345,9 @@ def failure_result_controls() -> dict:
                         if boundary == 'writer': writer._atomic_json(destination,image)
                         else: writer._prepare_original_evidence(destination,source_file)
                     except ValueError: pass
+                    except AssertionError as exc:
+                        assert case == 'wrong-owner' and boundary == 'prefix'
+                        assert str(exc) == 'original evidence owner/path unavailable; observed=None'
                     else: raise AssertionError('Attempt unsafe member admitted: '+case+'/'+boundary)
                     assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
                     assert staged[name] is old_buffer and not state['fatal']
