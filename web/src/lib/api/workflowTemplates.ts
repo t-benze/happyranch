@@ -10,6 +10,12 @@ export interface WorkflowTemplatePublisher {
   session_id?: string;
 }
 
+export interface WorkflowTemplateSystemPublisher {
+  kind: 'system';
+  component: 'coding-builtin';
+  provenance_format: 'workflow-coding-builtin-registration@1';
+}
+
 export interface WorkflowTemplateVersion {
   identity_id: string;
   version_id: string;
@@ -22,7 +28,7 @@ export interface WorkflowTemplateVersion {
   compiler_pin: string;
   validator_pin: string;
   source_pin: string;
-  publisher: WorkflowTemplatePublisher;
+  publisher: WorkflowTemplatePublisher | WorkflowTemplateSystemPublisher;
   published_at: string;
 }
 

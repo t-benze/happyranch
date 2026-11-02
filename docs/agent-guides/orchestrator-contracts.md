@@ -1,5 +1,33 @@
 # Orchestrator Contracts
 
+## Built-in coding registration — ROOT13509 / THR320seq304
+
+Definition availability is system registration, not human publication or admission.
+Normal recovery alone appends four exact template rows with closed
+`workflow-coding-builtin-registration@1` provenance, after actual safety/authority
+recovery and outside early serving. Real native writer/publisher/DB/transaction
+ownership, complete target validation and positive-COMMIT watermark apply.
+ONE native census allowance 8192 rows/16MiB/2097152 visits spans all suffixes,
+state/live loops and probes; release/source/target retain separate original
+8192/16MiB/16384, with native cells capped 16384. Only local pure refusal or direct
+healthy `team_move_native_held` can defer. The latter requires canonical producer
+operation identity, no cause/context/notes and the unchanged mounted owner;
+wrapped move schema/history/bounds/SQL failures and uncertain origins propagate
+unchanged. Deferral requires explicit cursor close, original rollback and both
+outer exits on the same usable connection/no notes. Post-reservation validation
+marking occurs inside native_writer after cleanup; warning requires actual
+settlement and exit.
+SQL/full-history, entry/cleanup, COMMIT/publication uncertainty propagate;
+unknown owners are retained, never adopted. No schema/reference/read initializer
+or retry route exists. Independent saved release and queued/native closure accepts
+authentic bootstrap activations/bindings for both system and retained human origin;
+orphan rows refuse. Human imports keep their six original rows and receipts.
+Fresh package capability gates new options/mapping/settings/start only; replay,
+unchanged Disabled-retain and admitted stages/return/cancellation use saved pins.
+Availability starts nothing and grants no authority. Full contract: [coding workflow contracts](contracts/coding-workflow.md),
+“Current built-in coding definition”. Loaded identity and scratch remain unproved.
+
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -7,7 +35,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete valid J/import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -2928,6 +2956,23 @@ uncertainty; neither an attempted recorder nor an uncertainty note certifies a
 durable obligation, successful cleanup or COMMIT. Consumed-proof reads
 preserve that first cause through failed rollback on the same connection; a
 successful read returns V only after successful cleanup.
+The six pre-final stage writers and the continuation, settlement, publication,
+admission, spend, dispatch and result-present fingerprint transactions retain
+their existing ordinary-error catches. Secondary rollback or refusal-recorder
+failure rethrows the same primary on the captured original connection; clean
+rollback retains each owner's existing rethrow or bounded-pending handling.
+Opaque primary errors keep their existing propagation, without broadening
+those primary catches. Failure of a diagnostic note cannot replace the primary.
+An authenticated stage refusal forgets its failed live token even if recording
+the obligation fails; this supplies no durable obligation or cleanup proof.
+Hook error-handling and consumer refusal tails likewise preserve their active
+primary if a secondary observation, audit, refusal or logger fails. Startup
+retains the original error in its existing unsafe wrapper's causes when a
+later check detects unsafe custody. Ordinary startup fallback remains ordinary
+fallback after successful checks. Native inner/outer cleanup is still attempted,
+but cannot replace an escaping consumer failure; cleanup without a primary
+retains its existing failure behavior. Intentional handled control outcomes
+remain distinct from an escaping primary, and no whole-runner isolation follows.
 Startup can classify a fully consumed no-grant with authentic current context,
 but old-boot continue never gains live capability. Startup matches the writer's
 actual returned code.

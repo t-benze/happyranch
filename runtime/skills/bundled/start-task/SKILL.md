@@ -184,7 +184,7 @@ Only the configured current executable agent manager composes start@2 for its
 OWN genuine callback. `workflows coding run-start --from-file ABS --emit-decision`
 validates and prints only; keep the original file/key. New callbacks/start actions
 require current canonical Explicit settings and matching release/mapping/settings
-pins, complete coding/shared storage and import, and actual mounted native
+pins, complete coding/shared storage and registered release, and actual mounted native
 queue/host/authority. Normal org startup initializes inert coding storage without upgrading document
 layouts or changing settings; this is separate from loaded/admitted acceptance.
 Missing, malformed and Disabled settings refuse before writes/spend/allocation. Default

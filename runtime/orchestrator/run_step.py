@@ -1227,6 +1227,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         tail_failed = True
         raise
     finally:
+        primary = sys.exc_info()[1]
         tail_failed |= delivery['teardown_incomplete']
         try:
             disposition = (
@@ -1240,8 +1241,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                     task_id, disposition.reason, disposition.processes)
         except BaseException:
             tail_failed = True
+            if primary is not None:
+                raise primary
             raise
         finally:
+            tail_primary = sys.exc_info()[1]
             _task_tail.reset(tail_token)
             from runtime.orchestrator.task_pause import settle_live
             settlement_errors = []
@@ -1251,6 +1255,12 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 except BaseException as exc:
                     settlement_errors.append(exc)
             if settlement_errors:
+                if tail_primary is not None:
+                    try:
+                        tail_primary.add_note("task Pause tail settlement also failed; custody remains uncertain")
+                    except BaseException:
+                        pass
+                    raise tail_primary
                 raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
 
 
@@ -1365,22 +1375,29 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             invocation.phase("retry_deferred", started_at=None, captured_generation=None)
     except BaseException as exc:
         root_delivery['teardown_incomplete'] = True
-        if isinstance(exc, Exception) and not invocation.launch_observed:
-            from runtime.orchestrator.launch_refusals import settle_refusal
-            if settle_refusal(invocation, exc, prepared=True):
-                return
-        if invocation.admitted:
-            invocation.phase("unknown")
+        try:
+            if isinstance(exc, Exception) and not invocation.launch_observed:
+                from runtime.orchestrator.launch_refusals import settle_refusal
+                if settle_refusal(invocation, exc, prepared=True):
+                    return
+            if invocation.admitted:
+                invocation.phase("unknown")
+        except BaseException:
+            raise exc
         raise
     finally:
-        root_delivery['teardown_incomplete'] |= sys.exc_info()[0] is not None
+        primary = sys.exc_info()[1]
+        root_delivery['teardown_incomplete'] |= primary is not None
         from runtime.orchestrator.task_pause import release_live
         try:
             release_live(invocation, failed=root_delivery['teardown_incomplete'])
         except BaseException:
             root_delivery['teardown_incomplete'] = True
+            if primary is not None:
+                raise primary
             raise
         finally:
+            cleanup_primary = sys.exc_info()[1]
             _invocation.reset(token)
             root_delivery['active'] = False
             _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
@@ -1390,8 +1407,13 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                     outer_delivery['consumption_pending'] = True
                     outer_delivery['teardown_incomplete'] = True
             else:
-                _root_worktree_batch(orch, root_delivery['events'],
-                    teardown_incomplete=root_delivery['teardown_incomplete'])
+                try:
+                    _root_worktree_batch(orch, root_delivery['events'],
+                        teardown_incomplete=root_delivery['teardown_incomplete'])
+                except BaseException:
+                    if cleanup_primary is not None:
+                        raise cleanup_primary
+                    raise
 
 
 def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> _HumanFailedRecoveryOperation | str | None:
@@ -2260,10 +2282,13 @@ def _consume_accepted_completion_recovery(
             root_task_id=task_id, result_row_id=_resolved_recovery_row,
         )
         _recovery_kind = getattr(_recovery_context, "kind", None)
-    except Exception:
-        logger.exception(
-            "run_step %s: v2 recovery classification failed", task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "run_step %s: v2 recovery classification failed", task_id,
+            )
+        except BaseException:
+            raise primary
         _recovery_kind = "foreign"
     if _recovery_kind == "causal":
         # THR-229 C3d4b: the causal result R of a FINALIZED v2 continuation is
@@ -2855,7 +2880,7 @@ def _consume_completion_report(
             recovery_result_id=recovery_result_id,
             **reclaim_kwargs,
         )
-    except BaseException:
+    except BaseException as primary:
         # On exception, attempt the prescribed refusal with that SAME causal
         # identity; already committed effects are preserved.
         try:
@@ -2868,8 +2893,14 @@ def _consume_completion_report(
                     "run_step %s: v2 decision refusal not settled (%s)",
                     task_id, getattr(refusal, "reason", None),
                 )
-        except Exception:  # pragma: no cover - fail-closed defensive
-            logger.exception("run_step %s: v2 decision refusal failed", task_id)
+        except BaseException as secondary:
+            if isinstance(secondary, Exception):
+                try:
+                    logger.exception("run_step %s: v2 decision refusal failed", task_id)
+                except BaseException:
+                    raise primary
+            else:
+                raise primary
         raise
     if _completion_consumption_pending(consumption):
         return consumption
@@ -2885,8 +2916,11 @@ def _consume_completion_report(
                 "run_step %s: v2 decision acknowledgement not settled (%s)",
                 task_id, getattr(ack, "reason", None),
             )
-    except Exception:  # pragma: no cover - fail-closed defensive
-        logger.exception("run_step %s: v2 decision acknowledgement failed", task_id)
+    except Exception as primary:
+        try:
+            logger.exception("run_step %s: v2 decision acknowledgement failed", task_id)
+        except BaseException:
+            raise primary
 
 
 def _consume_completion_report_body(

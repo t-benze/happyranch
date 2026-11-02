@@ -1093,11 +1093,15 @@ class AuthorityV2AttemptsMixin:
             # refusal housekeeping after the winner is poisoned.  Best-effort:
             # a storage failure here must never mask the primary refusal, and an
             # exhausted/unwritable store promises no new durable diagnostic.
-            self._record_v2_failed_stage_obligation(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code=code,
-            )
-            self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+            try:
+                self._record_v2_failed_stage_obligation(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=code,
+                )
+            finally:
+                # Failed diagnostic persistence cannot retain a continuation
+                # capability for the already authenticated failed owner.
+                self._forget_v2_live_owner(attempt_id, owner_attempt_id)
         return AuthorityPolicyV2StageOutcome(
             status="refused", refusal_code=code, attempt_id=attempt_id,
             candidate_id=candidate_id, claim_key=claim_key, stage=stage,
@@ -1924,11 +1928,12 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED, poison=False,
             )
         now = _now().isoformat()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             observation = capture_authority_policy_v2_schema_observation(self)
             if observation is None:
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="claim_failed",
@@ -1943,7 +1948,7 @@ class AuthorityV2AttemptsMixin:
                 schema_observation=observation,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_failed",
@@ -1953,14 +1958,28 @@ class AuthorityV2AttemptsMixin:
                         "already_claimed", "already_audited",
                     } else None,
                 )
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="claim_failed", origin_boot_id=origin_boot_id,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="claim_failed", origin_boot_id=origin_boot_id,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     def _authenticate_v2_candidate_pin_joins_uncommitted(
@@ -2522,7 +2541,10 @@ class AuthorityV2AttemptsMixin:
             try:
                 conn.rollback()
             except BaseException:
-                primary.add_note("authority consumed-proof rollback also failed; custody remains uncertain")
+                try:
+                    primary.add_note("authority consumed-proof rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
                 raise primary
             raise
         # A successful read is not an authenticated selection until cleanup
@@ -2673,8 +2695,9 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED, poison=False,
             )
         now = _now().isoformat()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_authority_policy_v2_candidate_claim_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -2682,7 +2705,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "claim_audit_missing",
@@ -2693,16 +2716,30 @@ class AuthorityV2AttemptsMixin:
                         "already_audited", "already_claimed",
                     } else None,
                 )
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="claim_audit_missing",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
-                origin_boot_id=origin_boot_id,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="claim_audit_missing",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     # -- THR-229 checkpoint C3c: the four pre-final evaluation and single
@@ -2903,8 +2940,9 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED, poison=False,
             )
         now = _now().isoformat()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._evaluate_authority_policy_v2_candidate_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -2912,7 +2950,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "evaluation_failed",
@@ -2923,16 +2961,30 @@ class AuthorityV2AttemptsMixin:
                         "already_evaluated", "already_consumed",
                     } else None,
                 )
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="evaluation_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
-                origin_boot_id=origin_boot_id,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="evaluation_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     def _audit_evaluation_uncommitted(
@@ -3059,8 +3111,9 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED, poison=False,
             )
         now = _now().isoformat()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_evaluation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3068,7 +3121,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "evaluation_audit_missing",
@@ -3079,16 +3132,30 @@ class AuthorityV2AttemptsMixin:
                         "already_audited", "already_consumed",
                     } else None,
                 )
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="evaluation_audit_missing",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
-                origin_boot_id=origin_boot_id,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="evaluation_audit_missing",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     def _consume_authority_policy_v2_candidate_uncommitted(
@@ -3189,8 +3256,9 @@ class AuthorityV2AttemptsMixin:
                 code="transaction_owned",
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED, poison=False,
             )
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._consume_authority_policy_v2_candidate_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3198,7 +3266,7 @@ class AuthorityV2AttemptsMixin:
                 max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "consume_failed",
@@ -3209,16 +3277,30 @@ class AuthorityV2AttemptsMixin:
                         "already_consumed",
                     } else None,
                 )
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="consume_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
-                origin_boot_id=origin_boot_id,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="consume_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     def _audit_consumption_uncommitted(
@@ -3349,8 +3431,9 @@ class AuthorityV2AttemptsMixin:
                 stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED, poison=False,
             )
         now = _now().isoformat()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._audit_consumption_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3358,7 +3441,7 @@ class AuthorityV2AttemptsMixin:
                 now=now, max_revise_rounds=max_revise_rounds,
             )
             if outcome.status == "refused":
-                self._conn.rollback()
+                conn.rollback()
                 return self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code=outcome.refusal_code or "consume_failed",
@@ -3369,16 +3452,30 @@ class AuthorityV2AttemptsMixin:
                         "already_audited", "already_consumed",
                     } else None,
                 )
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="consume_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
-                origin_boot_id=origin_boot_id,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="consume_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED,
+                    origin_boot_id=origin_boot_id,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     @_synchronized
@@ -4402,7 +4499,10 @@ class AuthorityV2AttemptsMixin:
             except BaseException:
                 # Startup separately retains every cleanup error in its phase
                 # owner. An opaque primary must never be replaced by rollback.
-                primary.add_note("authority refusal rollback also failed; custody remains uncertain")
+                try:
+                    primary.add_note("authority refusal rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
                 raise primary
             if authentic_owner and attempt is not None and owner_attempt_id is not None:
                 try:
@@ -4411,7 +4511,10 @@ class AuthorityV2AttemptsMixin:
                         code="final_commit_failed" if refusal_code == "policy_no_continue" else refusal_code,
                     )
                 except BaseException:
-                    primary.add_note("authority refusal obligation recording also failed; persistence and custody remain uncertain")
+                    try:
+                        primary.add_note("authority refusal obligation recording also failed; persistence and custody remain uncertain")
+                    except BaseException:
+                        pass
                     raise primary
             raise
 

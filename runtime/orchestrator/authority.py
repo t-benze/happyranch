@@ -1934,47 +1934,50 @@ COMMIT;
 """
 
 
-_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool, bool, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
     generic migrations, then the requested complete workflow installer before
     hashing every SQL object. No candidate schema is used as an input. No
     persistent generic or runtime-audit database is changed. Cache identity
-    includes layout, source history, naming version, pause layout and inert team-move layout;
+    includes layout, source history, naming version, pause layout, inert team-move
+    layout, coding extension, complete owner-index and task-mark variants;
     unavailable construction fails closed.
     """
     # Legacy admission must reject workflow-only histories BEFORE shared cache.
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool or type(owner_marked) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
 
 
-def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
+def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Whole workflow references; legacy authority retains its four histories."""
     if history in _RELEASE_REFERENCE_HISTORIES:
         return _release_schema_digest(layout, history, naming_version,
-            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _WORKFLOW_RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool or type(owner_marked) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
 
 
-def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool) -> str:
+def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Shared disposable lifetime, entered only after family-specific admission."""
     global _release_schema_digest_cache
+    if type(owner_indexed) is not bool or type(owner_marked) is not bool:
+        return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension)
+    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension, owner_indexed, owner_marked)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
@@ -2016,19 +2019,32 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                     # Real migrate_coding_schema would recurse through references.
                     from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I")
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I", owner_indexed=False)
                     with fresh.workflow_schema_transaction() as conn:
                         _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
                         if validate_workflow_schema(conn, expected_org_slug="release-reference") != "J":
                             raise ValueError("workflow_release_reference_requires_j")
                 else:
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout, owner_indexed=False)
                 if coding_extension and layout != "J":
                     from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
                     with fresh.workflow_schema_transaction() as conn:
                         _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
                         validate_workflow_schema(conn, expected_org_slug="release-reference")
+                # Finish the unindexed composition before adding indexes: I
+                # plus coding is J, including its coding-attempt owner index.
+                from runtime.infrastructure.workflow_schema import _install_owner_indexes, validate_workflow_schema
+                final_layout = "J" if layout == "I" and coding_extension else layout
+                with fresh.workflow_schema_transaction() as conn:
+                    if owner_indexed:
+                        _install_owner_indexes(conn, final_layout, coding_extension=coding_extension)
+                    if owner_marked:
+                        from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+                        conn.execute(OWNERSHIP_DDL)
+                        conn.execute(binding_view_ddl(final_layout, coding_extension=coding_extension))
+                    if validate_workflow_schema(conn, expected_org_slug="release-reference") != final_layout:
+                        raise ValueError("workflow_release_reference_layout_mismatch")
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
                     install_pause_schema(fresh, org_slug="release-reference")
@@ -3247,8 +3263,11 @@ def _record_hook_outcome(
             task_id=task_id, agent=agent,
             action=AUDIT_ACTION_HOOK_OUTCOME, payload=payload,
         )
-    except Exception as exc:  # pragma: no cover - audit failure path
-        logger.warning("authority hook outcome row failed for %s: %s", task_id, exc)
+    except Exception as exc:
+        try:
+            logger.warning("authority hook outcome row failed for %s: %s", task_id, exc)
+        except BaseException:
+            raise exc
         return None
 
 
@@ -3443,7 +3462,7 @@ def _server_evidence(
     )
     live_schema_digest = "unavailable"
     try:
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema, _owner_indexes_present
         with db.coherent_read_view() as conn:
             live_schema_digest = _live_schema_digest(db)
             layout, coding = _read_workflow_schema(conn, expected_org_slug=orch._slug)
@@ -3453,7 +3472,10 @@ def _server_evidence(
             names = validate_names(conn, org_slug=orch._slug)
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             team_move_layout = validate_team_move_schema(conn, org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None) for history in _RELEASE_REFERENCE_HISTORIES)
+            owner_indexed = bool(_owner_indexes_present(conn))
+            from runtime.infrastructure.workflow_task_ownership import ownership_storage_present
+            owner_marked = ownership_storage_present(conn)
+        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None, owner_indexed=owner_indexed, owner_marked=owner_marked) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"
@@ -3615,11 +3637,18 @@ def refuse_authority_policy_v2_pre_final_on_startup(
             targets = reads.discover()
         except _V2StartupConnectionUnsafe:
             raise
-        except Exception:
-            reads.check()
-            _v2_startup_failure_log("discovery_unavailable")
-            reads.check()
-            return None
+        except Exception as primary:
+            try:
+                reads.check()
+                _v2_startup_failure_log("discovery_unavailable")
+                reads.check()
+                return None
+            except _V2StartupConnectionUnsafe as unsafe:
+                if all(cause is not primary for cause in unsafe.causes):
+                    unsafe.causes = (primary, *unsafe.causes)
+                raise
+            except BaseException:
+                raise primary
         fenced_roots: set[str] = set()
         failed_roots: set[str] = set()
         for discovered, anchor in targets:
@@ -3676,12 +3705,17 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         )
                     except _V2StartupConnectionUnsafe:
                         raise
-                    except Exception:
-                        # Missing/unreadable causal evidence fails closed through
-                        # the existing refusal path below.
-                        reads.invalidate()
-                        reads.check()
-                        non_escalate = False
+                    except Exception as primary:
+                        try:
+                            reads.invalidate()
+                            reads.check()
+                            non_escalate = False
+                        except _V2StartupConnectionUnsafe as unsafe:
+                            if all(cause is not primary for cause in unsafe.causes):
+                                unsafe.causes = (primary, *unsafe.causes)
+                            raise
+                        except BaseException:
+                            raise primary
                     if non_escalate:
                         # D2-B': the admission is inert residue.  Do not touch J,
                         # Q, audits, or the task, and do not fence later branches.
@@ -3811,21 +3845,28 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     failed_roots.add(discovered.root_task_id)
                 raise
             except BaseException as exc:
-                reads.invalidate()
-                if anchor is not None:
-                    fenced_roots.add(discovered.root_task_id)
-                    failed_roots.add(discovered.root_task_id)
-                if tail_started:
-                    # A tail can contain self-committing writers. Its escaping
-                    # failure supplies no affirmative cleanup/COMMIT disposition.
-                    reads._abort("postcommit_tail", exc)
-                reads.check()
-                if not isinstance(exc, Exception):
+                try:
+                    reads.invalidate()
+                    if anchor is not None:
+                        fenced_roots.add(discovered.root_task_id)
+                        failed_roots.add(discovered.root_task_id)
+                    if tail_started:
+                        # A tail can contain self-committing writers. Its escaping
+                        # failure supplies no affirmative cleanup/COMMIT disposition.
+                        reads._abort("postcommit_tail", exc)
+                    reads.check()
+                    if not isinstance(exc, Exception):
+                        raise
+                    _v2_startup_failure_log("exact_or_refusal_unavailable")
+                    reads.check()
+                    if anchor is None:
+                        return None
+                except _V2StartupConnectionUnsafe as unsafe:
+                    if all(cause is not exc for cause in unsafe.causes):
+                        unsafe.causes = (exc, *unsafe.causes)
                     raise
-                _v2_startup_failure_log("exact_or_refusal_unavailable")
-                reads.check()
-                if anchor is None:
-                    return None
+                except BaseException:
+                    raise exc
         return fenced_roots
 
 
@@ -3864,13 +3905,16 @@ def _v2_request_refusal(
             max_revise_rounds=int(authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)),
         )
     except Exception as exc:
-        if policy_terminal or _authority_hook_caller_transaction_owned(db):
-            return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            error=f"v2 refusal housekeeping failed: {exc}",
-        )
-        return HOOK_V2_PENDING
+        try:
+            if policy_terminal or _authority_hook_caller_transaction_owned(db):
+                return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 refusal housekeeping failed: {exc}",
+            )
+            return HOOK_V2_PENDING
+        except BaseException:
+            raise exc
     status = getattr(outcome, "status", None)
     if status in ("refused", "owner_lost", "already_refused"):
         return AuthorityHookV2RefusalOutcome(
@@ -3940,8 +3984,11 @@ def _run_authority_hook_v2(
         # never a stage replay or a second mint.
         try:
             reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-        except Exception:
-            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        except Exception as primary:
+            try:
+                logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+            except BaseException:
+                raise primary
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
         )
@@ -3980,19 +4027,19 @@ def _run_authority_hook_v2(
             except Exception as exc:
                 try:
                     transaction_owned = _authority_hook_caller_transaction_owned(db)
+                    if transaction_owned:
+                        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+                    _record_hook_outcome(
+                        db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                        error=f"v2 stage {stage_name} raised: {exc}",
+                    )
+                    return _v2_request_refusal(
+                        orch, task, agent, result_row_id=result_row_id,
+                        owner_attempt_id=attempt.owner_attempt_id,
+                        code="interrupted_pre_final",
+                    )
                 except BaseException:
                     raise exc
-                if transaction_owned:
-                    return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
-                _record_hook_outcome(
-                    db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                    error=f"v2 stage {stage_name} raised: {exc}",
-                )
-                return _v2_request_refusal(
-                    orch, task, agent, result_row_id=result_row_id,
-                    owner_attempt_id=attempt.owner_attempt_id,
-                    code="interrupted_pre_final",
-                )
             status = getattr(outcome, "status", None)
             if status == "refused":
                 code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
@@ -4034,19 +4081,19 @@ def _run_authority_hook_v2(
     except Exception as exc:
         try:
             transaction_owned = _authority_hook_caller_transaction_owned(db)
+            if transaction_owned:
+                return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 final continuation raised: {exc}",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id,
+                code="final_commit_failed",
+            )
         except BaseException:
             raise exc
-        if transaction_owned:
-            return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            error=f"v2 final continuation raised: {exc}",
-        )
-        return _v2_request_refusal(
-            orch, task, agent, result_row_id=result_row_id,
-            owner_attempt_id=attempt.owner_attempt_id,
-            code="final_commit_failed",
-        )
     final_status = getattr(final, "status", None)
     if final_status not in ("continued", "already_continued"):
         final_reason = getattr(final, "reason", None)
@@ -4067,8 +4114,11 @@ def _run_authority_hook_v2(
     # post-final seam owns exact settlement and authenticated publication.
     try:
         reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-    except Exception:
-        logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+    except Exception as primary:
+        try:
+            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        except BaseException:
+            raise primary
     _record_hook_outcome(
         db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
     )
@@ -4120,11 +4170,14 @@ def run_authority_hook(
             agent_name=agent,
         )
     except Exception as exc:
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            policy=policy, error=f"policy family resolution failed: {exc}",
-        )
-        return HOOK_ESCALATE
+        try:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                policy=policy, error=f"policy family resolution failed: {exc}",
+            )
+            return HOOK_ESCALATE
+        except BaseException:
+            raise exc
     binding_mode = (
         session_binding.get("mode") if isinstance(session_binding, dict) else None
     )
@@ -4867,6 +4920,10 @@ def publish_authority_policy_v2_notifications(
                 # ``publishing`` lease safely reclaimable and must not abort
                 # the pass; the original queue error stays authoritative.
                 reason = type(record_exc).__name__
+            except BaseException:
+                # The queue failure remains primary if its secondary
+                # publication-failure bookkeeping raises an opaque error.
+                raise exc
             receipts.append({
                 "status": "publish_failed",
                 "reason": reason,
@@ -4966,10 +5023,13 @@ def reconcile_authority_policy_v2_post_final(
         envelope = db.get_authority_policy_v2_continue_envelope_for_root(
             root_task_id
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: continuation envelope read failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: continuation envelope read failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return POST_FINAL_SETTLEMENT_REFUSED
     if envelope is None:
         return POST_FINAL_NOT_FINALIZED
@@ -4979,10 +5039,13 @@ def reconcile_authority_policy_v2_post_final(
             manager_session_id=envelope.manager_session_id,
             result_id=envelope.result_id,
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: settlement receipt identity read failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: settlement receipt identity read failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return POST_FINAL_SETTLEMENT_REFUSED
     settled = False
     committed_receipt = bool(identity) and not identity.get("conflict") and (
@@ -5019,10 +5082,13 @@ def reconcile_authority_policy_v2_post_final(
         settled = getattr(outcome, "status", None) in (
             "settled", "already_settled_exact",
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: continuation receipt settlement failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: continuation receipt settlement failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
     if not settled:
         # The transition-only settlement reader above requires N ``needed``; a
         # generation already ADMITTED (or admitted + settled) by a real consumer
@@ -5072,8 +5138,11 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
     """
     try:
         dispatch = db.get_authority_policy_v2_root_dispatch(root_task_id)
-    except Exception:
-        logger.exception("post-final %s: root dispatch read failed", root_task_id)
+    except Exception as primary:
+        try:
+            logger.exception("post-final %s: root dispatch read failed", root_task_id)
+        except BaseException:
+            raise primary
         return False
     if dispatch is None or getattr(dispatch, "state", None) != "admitted":
         return False
@@ -5084,10 +5153,13 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
         notification = db.get_authority_policy_v2_recovery_notification(
             generation_id
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: admitted generation read failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: admitted generation read failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return False
     if (
         notification is None
@@ -5107,10 +5179,13 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
             generation_id=generation_id,
             next_session_id=next_session_id,
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: admitted generation settlement failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: admitted generation settlement failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return False
     return getattr(settlement, "status", None) in (
         "settled", "already_settled_exact",

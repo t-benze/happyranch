@@ -1923,7 +1923,7 @@ class Database(
             drafts = getattr(self, "_workflow_drafts", None)
             from runtime.workflows.coding_authority_history import _Budget
             coding_budget = _Budget()
-            ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None,
+            ownership = classify_task(self, task_id, org_slug=getattr(self, "_task_ownership_org", None),
                                       budget=coding_budget)
             if ownership.kind == 'coding_attempt':
                 coding = getattr(self, '_workflow_coding_dispatch', None)
@@ -2636,6 +2636,7 @@ class Database(
                     task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
                 ),
             )
+            self._insert_task_owner_uncommitted(task.id)
             self._conn.commit()
             return thread_id
         except Exception:

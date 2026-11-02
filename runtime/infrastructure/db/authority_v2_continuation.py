@@ -1178,8 +1178,9 @@ class AuthorityV2ContinuationMixin:
             origin_boot_id=origin_boot_id,
         )
         now = _now().isoformat()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._finalize_v2_continuation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -1187,24 +1188,38 @@ class AuthorityV2ContinuationMixin:
                 max_revise_rounds=max_revise_rounds, now=now,
             )
             if outcome.status == "finalization_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
-            if authentic_owner:
-                # Safe same-process fallback: the process-local marker keeps
-                # safely attributable refusal housekeeping possible even when
-                # the durable obligation diagnostic cannot be written.
-                self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
-            self._refuse_v2_stage(
-                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-                code="final_commit_failed",
-                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
-                origin_boot_id=origin_boot_id if not authentic_owner else None,
-                poison=authentic_owner,
-            )
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
+            try:
+                if authentic_owner:
+                    # Safe same-process fallback: the process-local marker keeps
+                    # safely attributable refusal housekeeping possible even when
+                    # the durable obligation diagnostic cannot be written.
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="final_commit_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
+                    origin_boot_id=origin_boot_id if not authentic_owner else None,
+                    poison=authentic_owner,
+                )
+            except BaseException:
+                try:
+                    primary.add_note("authority failure diagnostic also failed; persistence and custody remain uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     # -- THR-229 checkpoint C3d2: the separate exact post-final receipt
@@ -1579,14 +1594,15 @@ class AuthorityV2ContinuationMixin:
             return _pending("transaction_owned")
         if recovery_session_id is not None and recovery_session_id != manager_session_id:
             return _pending("identity_mismatch")
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             code, ctx = self._authenticate_v2_settlement_final_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
             )
             if code is not None:
-                self._conn.rollback()
+                conn.rollback()
                 return _pending(code)
             assert ctx is not None
             attempt = ctx["attempt"]
@@ -1602,7 +1618,7 @@ class AuthorityV2ContinuationMixin:
                 "notification_id": notification_id,
                 "generation_id": generation_id,
             }
-            receipts = self._conn.execute(
+            receipts = conn.execute(
                 "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
                 (root_task_id, manager_agent),
             ).fetchall()
@@ -1613,7 +1629,7 @@ class AuthorityV2ContinuationMixin:
                     if receipt["recovery_session_id"] == manager_session_id
                 ]
                 if len(exact) != 1:
-                    self._conn.rollback()
+                    conn.rollback()
                     return _pending(
                         "receipt_missing" if not exact else "identity_mismatch", **base,
                     )
@@ -1624,7 +1640,7 @@ class AuthorityV2ContinuationMixin:
                     or receipt["accepted_result_id"] != result_id
                     or receipt["accepted_result_session_id"] != manager_session_id
                 ):
-                    self._conn.rollback()
+                    conn.rollback()
                     return _pending("identity_mismatch", **base)
                 if receipt["state"] == "callback_accepted":
                     # Initial settlement may only write when NO settlement-owned
@@ -1638,10 +1654,10 @@ class AuthorityV2ContinuationMixin:
                         attempt=attempt, candidate=candidate, envelope=envelope,
                         notification=notification,
                     ):
-                        self._conn.rollback()
+                        conn.rollback()
                         return _pending("identity_mismatch", **base)
                     now = _now().isoformat()
-                    cursor = self._conn.execute(
+                    cursor = conn.execute(
                         """UPDATE task_completion_recoveries
                               SET state='callback_consumed',
                                   accepted_result_session_id=?, settled_at=?
@@ -1656,7 +1672,7 @@ class AuthorityV2ContinuationMixin:
                         ),
                     )
                     if cursor.rowcount != 1:
-                        self._conn.rollback()
+                        conn.rollback()
                         return _pending("identity_mismatch", **base)
                     self.insert_audit_log_uncommitted(
                         root_task_id, manager_agent, "completion_report",
@@ -1674,7 +1690,7 @@ class AuthorityV2ContinuationMixin:
                             envelope=envelope, notification=notification,
                         ),
                     )
-                    self._conn.commit()
+                    conn.commit()
                     return AuthorityPolicyV2SettlementOutcome(
                         status="settled", attempt_id=attempt.attempt_id,
                         recovery=True, receipt_settled=True, **base,
@@ -1687,7 +1703,7 @@ class AuthorityV2ContinuationMixin:
                         candidate=candidate, envelope=envelope,
                         notification=notification,
                     )
-                    self._conn.rollback()
+                    conn.rollback()
                     if ok:
                         return AuthorityPolicyV2SettlementOutcome(
                             status="already_settled_exact",
@@ -1695,7 +1711,7 @@ class AuthorityV2ContinuationMixin:
                             receipt_settled=True, **base,
                         )
                     return _pending("identity_mismatch", **base)
-                self._conn.rollback()
+                conn.rollback()
                 return _pending("identity_mismatch", **base)
 
             # Ordinary absence: no recovery assertion.  An unrelated
@@ -1710,21 +1726,28 @@ class AuthorityV2ContinuationMixin:
                 )
                 for receipt in receipts
             ):
-                self._conn.rollback()
+                conn.rollback()
                 return _pending("identity_mismatch", **base)
             if not self._authenticate_v2_ordinary_completion_evidence_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_row=result_row,
             ):
-                self._conn.rollback()
+                conn.rollback()
                 return _pending("completion_evidence_missing", **base)
-            self._conn.rollback()
+            conn.rollback()
             return AuthorityPolicyV2SettlementOutcome(
                 status="settled", attempt_id=attempt.attempt_id,
                 recovery=False, receipt_settled=False, **base,
             )
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     # -- THR-229 checkpoint C3d4b: read-only recovery-receipt identity discovery
@@ -2433,20 +2456,28 @@ class AuthorityV2ContinuationMixin:
                 status="publication_pending", reason="boot_unbound",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._claim_v2_notification_publication_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 publisher_boot_id=publisher_boot_id, now_dt=now_dt,
             )
             if outcome.status == "publication_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2PublicationClaimOutcome(
                 status="publication_pending", reason="publication_failed",
             )
@@ -2722,8 +2753,9 @@ class AuthorityV2ContinuationMixin:
                 status="ack_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._ack_v2_notification_publication_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -2731,12 +2763,19 @@ class AuthorityV2ContinuationMixin:
                 publisher_boot_id=publisher_boot_id, now_dt=now_dt,
             )
             if outcome.status == "ack_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2PublicationAckOutcome(
                 status="ack_pending", reason="ack_failed",
             )
@@ -2875,8 +2914,9 @@ class AuthorityV2ContinuationMixin:
                 status="failure_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._record_v2_notification_publication_failure_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -2884,12 +2924,19 @@ class AuthorityV2ContinuationMixin:
                 publisher_boot_id=publisher_boot_id, now_dt=now_dt,
             )
             if outcome.status == "failure_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2PublicationFailureOutcome(
                 status="failure_pending", reason="failure_failed",
             )
@@ -3045,20 +3092,28 @@ class AuthorityV2ContinuationMixin:
                 status="invalidation_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._invalidate_v2_notification_generation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 now_dt=now_dt,
             )
             if outcome.status == "invalidation_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2InvalidationOutcome(
                 status="invalidation_pending", reason="invalidation_failed",
             )
@@ -3447,8 +3502,9 @@ class AuthorityV2ContinuationMixin:
                 status="generation_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._try_claim_v2_continuation_generation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3456,12 +3512,19 @@ class AuthorityV2ContinuationMixin:
                 now_dt=now_dt,
             )
             if outcome.status == "generation_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2GenerationClaimOutcome(
                 status="generation_pending", reason="generation_failed",
             )
@@ -3627,8 +3690,9 @@ class AuthorityV2ContinuationMixin:
                 status="settlement_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._settle_v2_continuation_generation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3636,12 +3700,19 @@ class AuthorityV2ContinuationMixin:
                 now_dt=now_dt,
             )
             if outcome.status == "settlement_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2AdmissionSettlementOutcome(
                 status="settlement_pending", reason="settlement_failed",
             )
@@ -4180,8 +4251,9 @@ class AuthorityV2ContinuationMixin:
                 status="spend_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._spend_v2_continuation_envelope_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -4189,12 +4261,19 @@ class AuthorityV2ContinuationMixin:
                 spending_result_id=spending_result_id, now_dt=now_dt,
             )
             if outcome.status == "spend_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2SpendOutcome(
                 status="spend_pending", reason="spend_failed",
             )
@@ -4619,19 +4698,27 @@ class AuthorityV2ContinuationMixin:
             return AuthorityPolicyV2DecisionClaimOutcome(
                 status="decision_pending", reason="transaction_owned",
             )
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._claim_v2_decision_dispatch_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_id=result_id,
             )
             if outcome.status == "decision_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2DecisionClaimOutcome(
                 status="decision_pending", reason="claim_failed",
             )
@@ -4729,19 +4816,27 @@ class AuthorityV2ContinuationMixin:
             return AuthorityPolicyV2DecisionAckOutcome(
                 status="ack_pending", reason="transaction_owned",
             )
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._acknowledge_v2_decision_dispatch_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_id=result_id,
             )
             if outcome.status == "ack_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2DecisionAckOutcome(
                 status="ack_pending", reason="ack_failed",
             )
@@ -4875,19 +4970,27 @@ class AuthorityV2ContinuationMixin:
                 status="refusal_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._refuse_v2_decision_dispatch_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_id=result_id, now_dt=now_dt,
             )
             if outcome.status == "refusal_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2DecisionRefusalOutcome(
                 status="refusal_pending", reason="refusal_failed",
             )
@@ -5755,12 +5858,13 @@ class AuthorityV2ContinuationMixin:
             or self._conn.in_transaction
         ):
             return False
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            task = self._conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            task = conn.execute(
                 "SELECT * FROM tasks WHERE id=?", (task_id,),
             ).fetchone()
-            result = self._conn.execute(
+            result = conn.execute(
                 "SELECT * FROM task_results WHERE id=?", (result_id,),
             ).fetchone()
             if (
@@ -5782,9 +5886,9 @@ class AuthorityV2ContinuationMixin:
                     task_row=task,
                 )
             ):
-                self._conn.rollback()
+                conn.rollback()
                 return False
-            cursor = self._conn.execute(
+            cursor = conn.execute(
                 """UPDATE tasks SET zombie_flagged_at=NULL, updated_at=?
                    WHERE id=? AND assigned_agent=? AND current_session_id=?
                      AND cancelled_at IS NULL AND zombie_flagged_at=?""",
@@ -5792,16 +5896,23 @@ class AuthorityV2ContinuationMixin:
                  expected_session_id, marker),
             )
             if cursor.rowcount != 1:
-                self._conn.rollback()
+                conn.rollback()
                 return False
             self.insert_audit_log_uncommitted(
                 task_id, expected_agent, "zombie_cleared",
                 {"reason": "zombie recovered — flag cleared"},
             )
-            self._conn.commit()
+            conn.commit()
             return True
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             raise
 
     @_synchronized

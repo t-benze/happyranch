@@ -306,10 +306,7 @@ def read_release_import(conn: sqlite3.Connection, *, expected_org_slug: str | No
                 where, args = 'id=?', (expected['id'],)
             rows = _fetch(conn, table, expected, where, args, budget)
             _check(len(rows) == 1 and history.matches(table, rows[0]))
-        # Unsupported activations/bindings cannot use import as execution authority.
-        for table, column in (('workflow_activations', 'template_version_id'),
-                              ('workflow_binding_snapshots', 'template_version_id')):
-            _absent(conn, table, column, history.version_id, budget)
+        # Complete queued/native inventory closes downstream rows for both origins.
         return history
     except (ValueError, TypeError, KeyError, IndexError, UnicodeError, RecursionError, OverflowError, sqlite3.Error):
         raise ValueError('coding_release_import_history_invalid') from None
