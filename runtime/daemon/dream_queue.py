@@ -51,7 +51,7 @@ async def dream_worker_loop(state, settings: Settings) -> None:
     from runtime.daemon.dream_runner import run_dream
 
     while True:
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             if org.dream_queue.size == 0:
                 continue
             try:

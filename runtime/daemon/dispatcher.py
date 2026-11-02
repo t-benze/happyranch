@@ -15,10 +15,9 @@ logger = logging.getLogger("happyranch.daemon.dispatcher")
 class Dispatcher:
     """Resolves ``(slug, task_id)`` to ``OrgState.orchestrator.run_step``.
 
-    Built once per daemon lifetime; not thread-safe except for what
-    DaemonState.orgs guarantees (the dict isn't modified concurrently with
-    reads under normal operation; ``add_org`` / ``remove_org`` hold the
-    orgs_lock).
+    Built once per daemon lifetime. DaemonState captures map membership under
+    its short native fence; queue submission retains the actual OrgState and
+    its existing native-user admission through final worker retirement.
     """
 
     def __init__(self, state: DaemonState) -> None:

@@ -443,14 +443,31 @@ Cancellation joins the complete publication; uncertain submission/bridge return
 retains queue reservation and service/DB-close ownership. Discovery grants no
 admission and pending/admitted/malformed/unreadable never gain ordinary fallback.
 
-This source is still partial: `DaemonState.add_org` reattachment retains native
-work on-loop. Its coherent native map insertion needs every shared-map reader
-and close fence to remain safe; a live-map DB reader outside this owner prevents
-that conclusion. Holding a native lease across an await is not an alternative.
-Existing startup/scheduler entries retain their original behavior. Whole-service
-completion/responsiveness and behavioral acceptance are not established. Native
-validation, the 45-second native-await semantics and CLI deadlines remain; there
-is no hard filesystem completion bound or demonstrated dominant slow stage.
+Dynamic attachment completes the source execution boundary through the original
+`OrgState.load` and selector/profile owners. A state-owned child and pre-submission
+native ticket retain actual unpublished/loaded DB handles. Loop wiring precedes
+native profile validation and insertion into the original shared map within the
+same profile interval; leases never leave their native thread or cross an await.
+A contended profile lease gives loop callers the existing
+`profile_coordinator_busy` refusal immediately; native callers retain their
+original bounded wait. The loop never sleeps behind the attachment worker.
+Short synchronized membership captures replace live-map iteration. Profile and
+metrics readers retain their actual OrgStates/DBs; request dependencies retain
+the selected attachment. Native publication, shutdown admission and close-capture
+fences share the state mutex, which contains no I/O, DB/profile acquisition, worker
+join or await. Removal/swap/close refuse active readers or uncertain native owners.
+Swap closes read admission before registry effects and rebinds the profile capture
+to the actual serving state, preserving map identity pins.
+Returned-coding rediscovery reuses the existing recovery/notification owner with
+actual task queue puts on the original loop before native exact ack/failure, and
+joined original thread puts. Post-publication errors preserve the map/DB owner;
+unpublished close failures retain the original handle and primary error. Fresh-org
+rollback cannot remove a published or uncertain attachment. Shutdown joins actual
+attachment children before host/DB close. Existing startup/scheduler business
+rules and final native admission remain. Source/static evidence establishes no
+whole-service responsiveness or behavioral acceptance. Native validation, the
+45-second native-await semantics and CLI deadlines remain; there is no hard
+filesystem bound or demonstrated dominant slow stage.
 
 Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligible request; stale/wrong target/third member/concurrent writers; session-only worker refusal; causal pending work; captured threads/pending followups; task/thread/schedule races/retry/fallback; due schedules; file/reset/context/publication failures/timeouts; separately authorized process-loss restart; identical/changed-key replay; permission/skill differences; historical/natural postmove work; unrelated execution/draft staleness. Store/state handoff carries four answers for each applicable case (real seam, expected observation, actual static evidence, missing behavior). It adds no test cases/fixtures/campaign.
 

@@ -64,7 +64,7 @@ async def thread_worker_loop(state, settings: Settings) -> None:
     from runtime.orchestrator.team_move import DeferredTeamMove
 
     while True:
-        all_orgs = list(state.orgs.values())
+        all_orgs = list(state.orgs_snapshot().values())
         if not all_orgs:
             await asyncio.sleep(0.5)
             continue

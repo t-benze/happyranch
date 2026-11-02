@@ -387,7 +387,7 @@ async def zombie_reaper_loop(
         now = datetime.now(timezone.utc)
         uptime = t0 - boot_time
 
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             try:
                 await org.workflow_submissions.discover_completed_handoffs(state.queue)
                 from runtime.orchestrator.task_pause import discover_pause_work

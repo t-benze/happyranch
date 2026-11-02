@@ -56,7 +56,7 @@ class TeamMoveService:
         # Diagnostic-only orgs have no attached token; the service owner fences
         # runtime swap/removal and retains any restricted handle instead.
         self.require_runtime(slug)
-        org = self.state.orgs.get(slug)
+        org = self.state.orgs_snapshot().get(slug)
         token = object()
         # An admitted request transfers its ORIGINAL native lifetime to its
         # runner. Shutdown may have fenced new OrgState tokens in the meantime.
@@ -200,7 +200,7 @@ class TeamMoveService:
             raise TeamMoveError("unknown_org")
         if self.state.profile_coordinator is None:
             raise TeamMoveError("team_move_native_profiles_unavailable")
-        return self.state.orgs[slug]
+        return self.state.get_org(slug)
 
     def diagnostic_root(self, slug):
         self.require_runtime(slug)
@@ -213,7 +213,7 @@ class TeamMoveService:
         """Show uses only the native strict DB owner, even for a partial roster."""
         self.require_runtime(slug)
         if slug in self.state.orgs:
-            yield TeamMoveStore(self.state.orgs[slug].db, slug)
+            yield TeamMoveStore(self.state.get_org(slug).db, slug)
             return
         root = self.diagnostic_root(slug)
         db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug, require_active=False)
@@ -260,7 +260,7 @@ class TeamMoveService:
             reasons.append("team_move_native_host_unavailable")
         elif host._admission.is_shutdown():
             reasons.append("daemon_owner_stopping")
-        org = self.state.orgs.get(slug)
+        org = self.state.orgs_snapshot().get(slug)
         if org is not None:
             move = getattr(org.db, "_team_move_coordinator", None)
             if (move is None or move.store.db is not org.db or move.store.org_slug != slug
@@ -344,7 +344,7 @@ class TeamMoveService:
             "census_available": False, "publication_available": False, "blockers": None,
             "owner_settlement": "not_observed", "unavailable_code": None}
         try:
-            org = self.state.orgs.get(slug)
+            org = self.state.orgs_snapshot().get(slug)
             if org is None:
                 from runtime.orchestrator.team_move_recovery import open_recovery_context
                 with self._observations:
@@ -529,7 +529,7 @@ class TeamMoveService:
             # Deadline bounds native awaits (including the <=30s thread drain),
             # never grants TTL takeover, rollback, or a completion-time promise.
             async with asyncio.timeout(45):
-                org = self.state.orgs.get(slug)
+                org = self.state.orgs_snapshot().get(slug)
                 if org is None:
                     if row["active_slot"] is None:
                         try:

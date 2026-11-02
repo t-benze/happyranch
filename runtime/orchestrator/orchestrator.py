@@ -262,7 +262,7 @@ class Orchestrator:
         """Wire a notifier (mirrors attach_queue / attach_sessions)."""
         self._notifier = notifier
 
-    def attach_thread_queue(self, thread_queue, main_loop) -> None:
+    def attach_thread_queue(self, thread_queue, main_loop, *, rediscover: bool = True) -> None:
         """Wire the per-org ThreadQueue and the daemon's main event loop.
 
         ``run_step`` runs on a thread-pool worker with no event loop of its
@@ -273,13 +273,18 @@ class Orchestrator:
         """
         self._thread_queue = thread_queue
         self._main_loop = main_loop
+        if rediscover:
+            self._rediscover_returned()
+
+    def _rediscover_returned(self, *, queue=None) -> None:
+        """Original notification owner; dynamic attachment calls it natively."""
         coding = getattr(self, '_workflow_coding_dispatch', None)
         if coding is not None:
             # A terminal source is outside the ordinary nonterminal startup
             # sweep. Reuse only its independently admitted postcommit return.
             from runtime.workflows.recovery import rediscover_returned
             try:
-                rediscover_returned(coding)
+                rediscover_returned(coding, queue=queue)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception('coding caller notification rediscovery unavailable')
 

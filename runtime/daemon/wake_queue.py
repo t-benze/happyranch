@@ -57,7 +57,7 @@ async def wake_worker_loop(state, settings: Settings) -> None:
     from runtime.daemon.wake_runner import run_wake
 
     while True:
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             if org.wake_queue.size == 0:
                 continue
             try:

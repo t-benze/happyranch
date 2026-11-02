@@ -56,7 +56,7 @@ async def schedule_worker_loop(state, settings: Settings) -> None:
     from runtime.daemon.schedule_runner import run_schedule
 
     while True:
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             if org.schedule_queue.size == 0:
                 continue
             try:

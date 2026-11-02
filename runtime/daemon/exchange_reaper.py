@@ -31,7 +31,7 @@ async def exchange_reaper_loop(
     runtime/daemon/app.py ``_lifespan`` alongside zombie_reaper_loop."""
     while True:
         t0 = _monotonic()
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             try:
                 arrivals = org.db.reaper_sweep_reply_exchanges()
                 for a in arrivals:

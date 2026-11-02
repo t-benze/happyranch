@@ -82,12 +82,27 @@ Deferred notification removal follows actual pending publication and compares th
 original metadata identity. Unknown native submission/retirement retains the
 reservation and DB-close owner. Synchronous callers retain the same publisher,
 metadata, refusal and error behavior; discovery never grants launch permission.
-The source correction is still partial: dynamic `DaemonState.add_org`
-reattachment retains native work on-loop. Moving its coherent shared-map insertion
-to a worker requires resolving live-map readers outside the attachment owner;
-profile leases alone do not protect every reader. No lease crosses an await.
-Existing startup/scheduler entries retain their original behavior.
-No responsiveness/behavioral acceptance or filesystem deadline is established.
+Dynamic `DaemonState.add_org` owns a strong attachment child before submission.
+`OrgState.load`, selector initialization, dependency capture/validation and profile
+publication run natively. The loop wires queue/session/host/thread references before
+the native profile interval inserts the org into the original shared map. Profile
+leases acquire/use/release on that same thread; no lease crosses an await.
+A contended profile lease gives loop callers the existing
+`profile_coordinator_busy` refusal immediately; native callers retain their
+original bounded wait. The loop never sleeps behind the attachment worker.
+A short state mutex protects membership capture/publication only, with no I/O,
+DB/profile acquisition, worker join or await inside it. Profile and metrics reads
+retain actual captured OrgStates; request dependencies retain their selected org.
+Detach/swap/close refuse retained readers and atomically fence new captures before
+DB close. Shutdown fences insertion, joins attachment children and retains unknown
+workers/loaded DBs/failed closes. Failed post-publication work never closes or
+removes the published owner; fresh-org rollback preserves its skeleton.
+Returned-coding rediscovery reuses its existing native owner: real task puts run
+on the original loop before native exact acknowledgement/failure; original thread
+notifications are joined through their actual loop puts. Diagnostic clearing
+follows successful attachment and notification completion. Startup/scheduler
+business rules and final native execution admission stay unchanged. Source/static
+evidence establishes no responsiveness/behavioral acceptance or filesystem bound.
 Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
 `can_drain_threads` identifies candidate turns, not clearance of hard blockers.

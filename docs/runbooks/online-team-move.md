@@ -65,10 +65,12 @@ Generation-aware task redelivery joins native claim, real loop queue insertion
 and native exact acknowledgement/failure under the original service/org owner.
 Cancellation waits for publication retirement; uncertain submission retains the
 queue reservation and close barrier. Native final admission remains authoritative.
-The correction remains draft/partial: dynamic `add_org` reattachment still runs
-native work on-loop. A worker-side shared-map insertion cannot be declared safe
-while other readers iterate the live map during native DB work. The attachment
-split remains required before whole-service completion.
+Dynamic `add_org` retains its original child/worker/loaded-DB ownership through
+native load, selector/profile validation, coherent map publication and returned
+notification handoff. Loop wiring precedes publication. Finite map captures and
+actual reader lifetimes fence detach/swap/close; shutdown joins attachment work,
+and uncertainty preserves the original owner. Profile leases remain on their
+native thread and no map mutex encloses I/O, DB work, worker join or await.
 Source and static evidence establish no complete responsiveness, behavioral
 readiness, filesystem deadline or dominant slow planning stage. Keep the existing
 client deadline and same-key custody after timeout. No extra preview/apply/recover
@@ -363,7 +365,17 @@ database; it does not bootstrap, migrate or attach. Recover uses D's restricted
 context with actual daemon host/tracker ownership and exact images. It closes
 that context before ordinary `add_org`. Positive discovery occurs outside leases;
 the native short attachment segment revalidates the opened owner/history/hold;
-only successful synchronization/shared-map insertion clears diagnostics.
+only successful synchronization/shared-map insertion and the joined returned
+notification handoff clear diagnostics. Load/selector/profile work runs natively;
+queue/session/host/thread references are wired on the loop before native map
+publication under the original profile leases. A short state fence captures map
+membership, while native profile/metrics and request readers retain the actual
+DB attachment. Removal/swap/close refuse active readers; shutdown fences insertion
+and joins original attachment children before DB/host close. Uncertain workers,
+unpublished load/close failures and actual handles remain owned. A published org
+is never speculatively removed/closed after a later wiring/notification error, and
+fresh-org rollback preserves its skeleton. This source/static correction is not
+behavioral acceptance or permission for a live operation.
 Failures retain diagnostic roots. After successful attachment/release, real
 deduplicating task/thread/producer owners redeliver; schedules retain ordinary
 due/missed rules. A saved terminal receipt stays readable even if attachment

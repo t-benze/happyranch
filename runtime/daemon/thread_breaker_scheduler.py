@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0) -> None:
     while True:
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             try:
                 move = getattr(org.db, "_team_move_coordinator", None)
                 if move is not None:

@@ -284,10 +284,24 @@ generation claim, real loop queue put and native exact acknowledgement/failure.
 Its parent joins it across repeated cancellation before returning or closing;
 uncertain native return retains both queue reservation and service close barrier.
 Synchronous generation publishers keep their original entry and error behavior.
-This boundary correction remains partial while dynamic reattachment retains
-native work on-loop: coherent worker map publication also needs safe live-map
-readers outside the attachment owner. No native lease crosses an await. Source
-and static evidence establish no behavioral readiness or hard completion bound.
+Dynamic attachment registers its strong child and native submission ticket before
+cancellable work, captures the actual loaded/unpublished DB and native close
+outcome, and joins each native interval through repeated cancellation. Loop queue,
+session, host and thread references are wired before native profile validation
+publishes into the original map within the original profile lease interval.
+Returned notification rediscovery keeps its existing owner and waits for actual
+loop queue puts before retirement. Published attachments survive later errors;
+unknown submission/return/constructor close retains its original handle and blocks
+shutdown/removal/swap, without a second speculative close.
+All shared-map iterations use finite captures. The state mutex covers only map
+membership and in-memory reader bookkeeping, never I/O/DB/profile acquisition,
+worker join or await. Native profile/metrics readers and selected request
+attachments retain DB lifetime independently of runner admission. Detach/close
+atomically refuse active readers and fence new captures; runtime swap closes
+capture admission at its final preflight before registry effects, then renews the
+original map/profile identity on replacement. Shutdown fences native insertion and
+joins attachment children before host/DB close. Source/static evidence establishes
+no behavioral readiness, hard completion bound or new launch permission.
 
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active

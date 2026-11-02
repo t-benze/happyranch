@@ -10,13 +10,14 @@ forwarded unchanged to ``run_step`` and defaults to ``None`` when omitted.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import partial
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 if TYPE_CHECKING:
     from runtime.daemon.metrics import MetricsRegistry
@@ -85,6 +86,79 @@ class _TrackedAsyncQueue(asyncio.Queue[_QueueItem]):
             item = super()._get()
             self._on_remove(item)
             return item
+
+
+class _AttachmentNotificationQueue:
+    """Per-attachment adapter: native publisher, actual raw put on its loop.
+
+    The native caller waits for the SAME synchronous put result before its
+    acknowledgement/failure bookkeeping. No DB/profile work runs in the loop
+    callback and no queue/map mutex is held while waiting. A lost loop never
+    supplies retirement: the attachment's native worker remains owned.
+    """
+
+    def __init__(self, queue: TaskQueue, loop: asyncio.AbstractEventLoop, thread_queue: Any) -> None:
+        self._queue = queue
+        self._loop = loop
+        self.thread_queue = _AttachmentThreadQueue(thread_queue)
+
+    def enqueue(self, *args: object, **kwargs: object) -> None:
+        result: Future = Future()
+        def put() -> None:
+            try:
+                self._queue.enqueue(*args, **kwargs)
+            except BaseException as exc:
+                result.set_exception(exc)
+            else:
+                result.set_result(None)
+        self._loop.call_soon_threadsafe(put)
+        result.result()
+
+    def put_nowait(self, *args: object, **kwargs: object) -> None:
+        self.enqueue(*args, **kwargs)
+
+    def enqueue_if_absent(self, slug: str, task_id: str, *, metadata: dict | None = None, publisher: Callable | None = None) -> bool:
+        # Original reservation and generation publisher run natively. Their
+        # supplied publisher reaches this adapter only for the real raw put.
+        return self._queue.enqueue_if_absent(slug, task_id, metadata=metadata,
+            publisher=publisher or (lambda: self.enqueue(slug, task_id, metadata=metadata)))
+
+    def has_unretired_puts(self) -> bool:
+        return any(not done.done() or done.cancelled() for done in self.thread_queue.puts)
+
+    async def join_thread_puts(self) -> None:
+        cancellation = None
+        for done in self.thread_queue.puts:
+            bridge = asyncio.wrap_future(done)
+            while not bridge.done():
+                try:
+                    await asyncio.shield(bridge)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+            bridge.result()
+        if cancellation is not None:
+            raise cancellation
+
+
+class _AttachmentThreadQueue:
+    """Retain the original notification's actual loop put until it returns."""
+
+    def __init__(self, queue: Any) -> None:
+        self._queue = queue
+        self.puts: list[Future] = []
+
+    def put(self, job: Any) -> Awaitable[None]:
+        done: Future = Future()
+        self.puts.append(done)  # before the original thread-safe submission
+        async def publish() -> None:
+            try:
+                await self._queue.put(job)
+            except BaseException as exc:
+                done.set_exception(exc)
+                raise
+            else:
+                done.set_result(None)
+        return publish()
 
 
 class TaskQueue:
