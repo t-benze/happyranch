@@ -4116,7 +4116,8 @@ func lifecyclePackageRefusal(reason string) int {
 		"inhibit_policy", "inhibit_deadline", "manager_stop", "reacquire_pair",
 		"stopped_admission_deadline", "stopped_current", "stopped_admission_child",
 		"retire_policy", "package_body", "final_refresh", "final_current":
-		_, _ = io.WriteString(os.Stderr, "managed_package_refusal:"+reason+"\n")
+		// One raw write avoids os.File's EPIPE termination path; no retry.
+		_, _ = unix.Write(2, []byte("managed_package_refusal:"+reason+"\n"))
 	}
 	return 78
 }
