@@ -54,6 +54,15 @@ loaded daemon SHA; report loaded identity UNKNOWN without actual attestation.
 
 ## Capability and supported commands
 
+Preview's native planning and response encoding run off the serving loop under
+the original org's lifetime. A disconnected or cancelled request does not retire
+that worker; detach refuses it and shutdown joins actual return before DB close.
+This does not bound filesystem completion or identify the slow planning stage.
+Apply/recover retain synchronous loop work pending their full boundary correction;
+preview offloading alone supplies no whole-service responsiveness acceptance.
+Keep the existing client deadline and same-key custody after a timeout. No extra
+preview/apply/recover allocation follows from source correction.
+
 The following command forms are source-supported; none were run against the live
 feature here. Local argument validation precedes connecting. Outputs are JSON,
 with actual `http_status` and the unflattened service result/error envelope.

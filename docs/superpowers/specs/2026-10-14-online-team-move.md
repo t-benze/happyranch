@@ -412,6 +412,21 @@ Unknown scope422; stale input/target/source/skill/charter/census or competing mo
 
 ## Approved acceptance and delivery limits
 
+Preview execution after bounded body decoding uses one joined native worker for
+planning, capability readback, error projection and JSON response construction.
+Its service task and original attached OrgState native-user token are admitted
+on the serving loop before a cancellable await. ContextVars cross into the worker;
+canonical/profile/move/DB lock intervals remain synchronous on their acquiring
+thread. Request cancellation/disconnect cannot cancel the worker. Retirement
+requires both actual native return and its task result; uncertain retirement
+retains the DB-close barrier. Service shutdown fences admission and owns a shared
+join across repeated cancellation, while unload/swap refuse active previews.
+This is preview-only source correction: apply/recover admission, runner native
+segments, profile batch entry, captured-thread drain and redelivery still require
+their complete boundary correction. It is no whole-service responsiveness or
+behavioral acceptance, hard filesystem deadline or reduction of native validation.
+The 45-second native-await contract and existing CLI deadlines remain unchanged.
+
 Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligible request; stale/wrong target/third member/concurrent writers; session-only worker refusal; causal pending work; captured threads/pending followups; task/thread/schedule races/retry/fallback; due schedules; file/reset/context/publication failures/timeouts; separately authorized process-loss restart; identical/changed-key replay; permission/skill differences; historical/natural postmove work; unrelated execution/draft staleness. Store/state handoff carries four answers for each applicable case (real seam, expected observation, actual static evidence, missing behavior). It adds no test cases/fixtures/campaign.
 
 NO new unit/integration cases/parameters/fixtures, retired Python run/import/collection/restoration, ad hoc Product E2E, protected mutation/process-kill/replay/restoration experiments, Jenkins, live synthetic task/DB operation/provider reset/roster move or reinstated four-control premerge gate. General integration SKIPPED THR243seq42. All unobserved behavior/migration/recovery scenarios remain UNEXECUTED. Source/static QA PASS is not behavioral PASS. Independent full final-head reviewer, honest scoped QA, normal hooks/nonforce publication and manager guarded merge remain; each push renews required gates. PR/main automation remains ONLY Source Boundary Lint and Web Lint(Node24), with standalone source-only dependency lint preserved.

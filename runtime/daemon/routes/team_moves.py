@@ -1,6 +1,7 @@
 """Founder service: pure preview, gated apply, saved show and explicit recovery."""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
@@ -116,7 +117,15 @@ def capability(slug: str, request: Request):
 async def preview(slug: str, request: Request):
     body = await command_body(request, MoveSelection)
     owner = service(request)
-    return invoke(owner, slug, lambda: owner.preview(slug, body))
+    try:
+        task = owner.start_preview(slug, lambda: invoke(owner, slug, lambda: owner.preview(slug, body)))
+    except Exception as exc:
+        # Admission failed before a worker existed; preview has no operation
+        # key to observe. Preserve the existing closed error envelope.
+        def refused():
+            raise exc
+        return invoke(owner, slug, refused)
+    return await asyncio.shield(task)
 
 
 @router.post("/team-moves", openapi_extra=body_schema(ApplyMove), responses={202: {"description": "Accepted/in-flight; not success"}})

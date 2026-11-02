@@ -7,8 +7,11 @@ never task-map absence or a timeout, govern forward recovery.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import threading
 from contextlib import contextmanager
+from typing import Any, Callable
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.team_move_store import (
@@ -30,6 +33,86 @@ class TeamMoveService:
         self.errors = {}
         self.diagnostic_sessions = {}
         self.closing = False
+        # Only short process-local observations/publications use this lock.
+        # Never hold it across native DB/profile/roster work or an await.
+        self._observations = threading.RLock()
+        self._previews = {}
+        self._preview_workers = {}
+        self._close_task = None
+
+    def start_preview(self, slug: str, callback: Callable[[], Any]) -> asyncio.Task:
+        """Loop-only admission, before the request's first cancellable await.
+
+        The callback includes native error observation and response encoding.
+        Its thread owns every native lease from acquisition through release.
+        """
+        with self._observations:
+            if self.closing:
+                raise TeamMoveError("team_move_service_owner_busy")
+        org = self.attached(slug)
+        token = object()
+        if not org._acquire_native_task(token):
+            raise TeamMoveError("team_move_service_owner_busy")
+        try:
+            task = asyncio.create_task(self._finish_preview(token, org, callback),
+                name="team-move-preview:" + slug)
+        except BaseException:
+            org._release_native_task(token)  # No worker was submitted.
+            raise
+        with self._observations:
+            self._previews[token] = (slug, task)
+        task.add_done_callback(self._preview_finished)
+        return task
+
+    @staticmethod
+    def _preview_finished(task: asyncio.Task) -> None:
+        # Also observe failures after the HTTP caller has disconnected. Log
+        # only the existing safe native code, never the exception/private body.
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logging.getLogger(__name__).warning("Team move preview failed: %s",
+                TeamMoveOperation._diagnostic(error).code)
+
+    async def _finish_preview(self, token: object, org: Any, callback: Callable[[], Any]) -> Any:
+        returned = threading.Event()
+
+        def run() -> Any:
+            try:
+                return callback()
+            finally:
+                returned.set()
+
+        # to_thread preserves ContextVar provenance. The worker task is private
+        # and is never cancelled by request disconnect or service shutdown.
+        worker = asyncio.create_task(asyncio.to_thread(run))
+        with self._observations:
+            self._preview_workers[token] = worker
+        cancellation = None
+        try:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                except BaseException:
+                    break  # Retrieve the original worker error below.
+            try:
+                result = worker.result()
+            except BaseException as error:
+                if cancellation is not None:
+                    raise cancellation from error
+                raise
+            if cancellation is not None:
+                raise cancellation
+            return result
+        finally:
+            # A cancelled Future/task is not proof that its native body ended.
+            # Uncertain submission/return retains both the strong reference and
+            # the OrgState DB-close barrier; close must then refuse.
+            if worker.done() and returned.is_set():
+                org._release_native_task(token)
+                with self._observations:
+                    self._preview_workers.pop(token, None)
+                    self._previews.pop(token, None)
 
     def require_runtime(self, slug):
         if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", slug) is None:
@@ -92,7 +175,9 @@ class TeamMoveService:
             reasons.append("team_move_apply_disabled")
         if not installed:
             reasons.append("team_move_schema_absent")
-        if self.closing:
+        with self._observations:
+            closing = self.closing
+        if closing:
             reasons.append("daemon_owner_stopping")
         profiles, host = self.state.profile_coordinator, self.state.host_supervisor
         if profiles is None or profiles.orgs is not self.state.orgs:
@@ -131,7 +216,9 @@ class TeamMoveService:
                 authority_code = None
         if row is not None:
             reasons.append("team_move_operation_held")
-        if any(s == slug for s, _ in self.tasks):
+        with self._observations:
+            busy = any(s == slug for s, _ in self.tasks)
+        if busy:
             reasons.append("team_move_service_owner_busy")
         reasons = list(dict.fromkeys(reasons))
         return {"version": team_move.CAPABILITY_VERSION, "apply_available": not reasons,
@@ -158,15 +245,19 @@ class TeamMoveService:
     def running(self, slug, key):
         # Include finished-but-not-yet-reaped tasks: their callback must publish
         # any redelivery/attachment error before a reader can report success.
-        return (slug, key) in self.tasks
+        with self._observations:
+            return (slug, key) in self.tasks
 
     def show(self, slug, *, operation_id=None, operation_key=None):
         with self.store(slug) as store:
             row = store.read(operation_id=operation_id, operation_key=operation_key)
         if row is None:
             raise TeamMoveError("team_move_unknown_operation")
-        return operation_view(row, running=self.running(slug, row["operation_key"]),
-            error=self.errors.get((slug, row["operation_key"])), current_observation=self.observe(slug, row))
+        with self._observations:
+            key = (slug, row["operation_key"])
+            running, error = key in self.tasks, self.errors.get(key)
+        return operation_view(row, running=running,
+            error=error, current_observation=self.observe(slug, row))
 
     def observe(self, slug, row):
         """Read native diagnostics without attachment, preview or recovery writes.
@@ -182,9 +273,11 @@ class TeamMoveService:
             org = self.state.orgs.get(slug)
             if org is None:
                 from runtime.orchestrator.team_move_recovery import open_recovery_context
+                with self._observations:
+                    sessions = self.diagnostic_sessions.get(slug)
                 restricted, operation = open_recovery_context(root=self.diagnostic_root(slug), slug=slug,
                     settings=self.state.settings, profiles=self.state.profile_coordinator,
-                    host_supervisor=self.state.host_supervisor, sessions=self.diagnostic_sessions.get(slug),
+                    host_supervisor=self.state.host_supervisor, sessions=sessions,
                     diagnostic_only=True, operation_key=row["operation_key"])
             else:
                 operation = TeamMoveOperation(org, self.state.profile_coordinator)
@@ -289,25 +382,30 @@ class TeamMoveService:
 
     def start(self, slug, row, *, recover):
         """Only called after admitted, validated, enabled public operations."""
-        if self.closing or any(s == slug for s, _ in self.tasks):
-            raise TeamMoveError("team_move_service_owner_busy")
-        key = (slug, row["operation_key"])
-        self.errors.pop(key, None)
-        task = asyncio.create_task(self.execute(slug, row, recover=recover),
-            name="team-move:" + row["operation_id"])
-        self.tasks[key] = task
-        task.add_done_callback(lambda finished: self.finished(key, finished))
+        with self._observations:
+            if self.closing:
+                raise TeamMoveError("team_move_service_owner_busy")
+            self.assert_no_owner(slug)
+            key = (slug, row["operation_key"])
+            self.errors.pop(key, None)
+            task = asyncio.create_task(self.execute(slug, row, recover=recover),
+                name="team-move:" + row["operation_id"])
+            self.tasks[key] = task
+            task.add_done_callback(lambda finished: self.finished(key, finished))
 
     def finished(self, key, task):
         # Reap every exception; never log bodies, private definitions or tokens.
+        error = None
         if not task.cancelled():
             error = task.exception()
-            if error is not None:
-                self.errors[key] = error_view(error)
-        else:
-            self.errors.setdefault(key, error_view(TeamMoveError("team_move_owner_interrupted")))
-        if self.tasks.get(key) is task:
-            self.tasks.pop(key, None)
+        view = error_view(error) if error is not None else None
+        with self._observations:
+            if view is not None:
+                self.errors[key] = view
+            elif task.cancelled():
+                self.errors.setdefault(key, error_view(TeamMoveError("team_move_owner_interrupted")))
+            if self.tasks.get(key) is task:
+                self.tasks.pop(key, None)
 
     async def execute(self, slug, row, *, recover):
         restricted = None
@@ -330,7 +428,8 @@ class TeamMoveService:
                     from runtime.daemon.sessions import SessionTracker
                     from runtime.orchestrator.team_move_recovery import open_recovery_context
                     root = self.diagnostic_root(slug)
-                    sessions = self.diagnostic_sessions.setdefault(slug, SessionTracker())
+                    with self._observations:
+                        sessions = self.diagnostic_sessions.setdefault(slug, SessionTracker())
                     restricted, operation = open_recovery_context(root=root, slug=slug,
                         settings=self.state.settings, profiles=self.state.profile_coordinator,
                         host_supervisor=self.state.host_supervisor, sessions=sessions)
@@ -385,16 +484,39 @@ class TeamMoveService:
             if primary is not None:
                 # Task.cancelled() hides its exception from the done callback;
                 # retain its safe primary/secondary facts before reaping.
-                self.errors[(slug, row["operation_key"])] = error_view(primary)
+                view = error_view(primary)
+                with self._observations:
+                    self.errors[(slug, row["operation_key"])] = view
 
     def assert_no_owner(self, slug=None):
-        if any(slug is None or s == slug for s, _ in self.tasks):
-            raise TeamMoveError("team_move_service_owner_busy")
+        with self._observations:
+            if (any(slug is None or s == slug for s, _ in self.tasks)
+                    or any(slug is None or s == slug for s, _ in self._previews.values())):
+                raise TeamMoveError("team_move_service_owner_busy")
 
     async def close(self):
-        self.closing = True
-        tasks = tuple(self.tasks.values())
+        with self._observations:
+            self.closing = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close(), name="team-move-close")
+        cancellation = None
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        self._close_task.result()
+        if cancellation is not None:
+            raise cancellation
+
+    async def _close(self) -> None:
+        with self._observations:
+            tasks = tuple(self.tasks.values())
+            previews = tuple(task for _, task in self._previews.values())
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if tasks or previews:
+            await asyncio.gather(*tasks, *previews, return_exceptions=True)
+        with self._observations:
+            if self._previews or self._preview_workers:
+                raise TeamMoveError("team_move_service_owner_busy")
