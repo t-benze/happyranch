@@ -271,6 +271,57 @@ deployment/restart, historical clearance, retry allocation or E2E acceptance.
 Behavioral/native/proof results are NOT RUN unless separately attributed; Python
 units remain RETIRED and general integration INCLUDING callback SKIPPED24342.
 
+Team-move GET/POST requests register their service task and original attached
+org native-user lifetime before native submission. An admitted apply/recover
+handoff shares that original lease with its loop-owned runner, including after
+shutdown fences fresh org admission. Request disconnect, repeated cancellation
+or a cancelled bridge never establishes native return. Service close owns one
+shielded join: fence new requests, join admitted request handoffs, then snapshot,
+cancel and join operation runners. Uncertain submission/return or restricted
+context close retains strong owners/handles and refuses remove/swap/DB close.
+Restricted DB acquisition and both inner inspection connections register their
+actual handles to the SAME service/native task before fallible validation, even
+when no context is returned. Each original helper attempts close once; affine
+inspection connections close on their acquiring thread. Positive original close
+alone removes that handle. Failed cleanup retains the owner and safe close code
+beside the primary failure in diagnostic readback; native return, a saved terminal
+receipt and a later successful observation never establish handle retirement.
+A service-owned redelivery child shares the original org lifetime through native
+generation claim, real loop queue put and native exact acknowledgement/failure.
+Its parent joins it across repeated cancellation before returning or closing;
+uncertain native return retains both queue reservation and service close barrier.
+Synchronous generation publishers keep their original entry and error behavior.
+Dynamic attachment registers its strong child and native submission ticket before
+cancellable work, captures the actual loaded/unpublished DB and native close
+outcome, and joins each native interval through repeated cancellation. Loop queue,
+session, host and thread references are wired before native profile validation
+publishes into the original map within the original profile lease interval.
+Returned notification rediscovery keeps its existing owner and waits for actual
+loop task/thread queue puts before retirement. Their actual outcomes are retained
+before submission. An uncertain task put keeps the original attachment owner and
+bounded reservation even after native return or caught publication error; a known
+callback failure retires that put with its original error. Cancelled bridges and
+map absence prove no retirement, and no automatic uncertainty clearance is added.
+Published attachments survive later errors;
+unknown submission/return/constructor close retains its original handle and blocks
+shutdown/removal/swap, without a second speculative close.
+All shared-map iterations use finite captures. The state mutex covers only map
+membership and in-memory reader bookkeeping, never I/O/DB/profile acquisition,
+worker join or await. Native profile/metrics readers and ordinary request
+attachments retain DB lifetime independently of runner admission. The selected
+thread/task/job event responses end their endpoint reader before transport and
+capture their original attachment for each lazy DB replay or job poll. EventBus
+registration/replay/cleanup stay on the original bus, without a DB reader during
+idle waits or sends. A detached/replaced attachment refuses later DB reads rather
+than resolving its slug again. Fully materialized task attachments and audit
+bodies need no transport reader; audit retains its original budget/identity fence
+without later SQL. Detach/close
+atomically refuse active readers and fence new captures; runtime swap closes
+capture admission at its final preflight before registry effects, then renews the
+original map/profile identity on replacement. Shutdown fences native insertion and
+joins attachment children before host/DB close. Source/static evidence establishes
+no behavioral readiness, hard completion bound or new launch permission.
+
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active
 runners and fences detached instances against late starts. Runtime registration

@@ -389,13 +389,17 @@ class OrgState:
         return ts.isoformat()
 
     @classmethod
-    def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
+    def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
         paths = OrgPaths(root=root)
         from runtime.orchestrator.team_move_startup import before_org_attachment
         before_org_attachment(root, slug)
         from runtime.identities.schema import preflight
         naming_preflight = preflight(paths.db_path, org_slug=slug)
+        if attachment_owner is not None:
+            attachment_owner["db_construction_started"] = True
         db = Database(paths.db_path)
+        if attachment_owner is not None:
+            attachment_owner["load_db"] = db
         try:
             install_or_recover(db, expected_org_slug=slug)
             with db._lock:
@@ -496,7 +500,11 @@ class OrgState:
             # Unpublished construction has no queue/runner admission yet.
             try:
                 db.close()
+                if attachment_owner is not None:
+                    attachment_owner["load_db_closed"] = True
             except BaseException as cleanup:
+                if attachment_owner is not None:
+                    attachment_owner["load_close_error"] = cleanup
                 primary.add_note("unpublished org close failed: " + type(cleanup).__name__)
             raise
 

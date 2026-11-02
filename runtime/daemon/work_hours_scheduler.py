@@ -365,7 +365,7 @@ async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> Non
     while True:
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             try:
                 schedule_due_wakes(org=org, now=now, startup=startup)
             except OrgConfigError:

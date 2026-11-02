@@ -926,7 +926,7 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=started_at, deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
                   process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
-                  unreached_orgs=[str(org.root) for _, org in sorted(state.orgs.items())],
+                  unreached_orgs=[str(org.root) for _, org in sorted(state.orgs_snapshot().items())],
                   scheduled_admission=admission)
     if admission['state'] == 'suspended':
         report.update(outcome='suspended', finished_at=datetime.now().astimezone().isoformat())
@@ -942,7 +942,7 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     # does not. Retain active evidence on process loss; D reads the same history.
     with ExitStack() as stack:
         roots, writers, dispositions, deferred = [], {}, {}, {}
-        for slug, org in sorted(state.orgs.items()):
+        for slug, org in sorted(state.orgs_snapshot().items()):
             check(deadline)
             try:
                 disposition = stack.enter_context(native_writer(org.db, publisher='disk_sweep'))
@@ -1045,7 +1045,7 @@ async def disk_sweeper_loop(state) -> None:
             # Existing audit interface and row shape, one summary per swept org.
             # No notification interface suitable for a disk alert exists here;
             # below-20% context is carried in this audit/JSON, as approved.
-            for slug, org in sorted(state.orgs.items()):
+            for slug, org in sorted(state.orgs_snapshot().items()):
                 item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
                 await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
             if cancelled is not None:

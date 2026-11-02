@@ -62,6 +62,66 @@ only D's pure native planner and returns exact founder-only diff/digests,
 context/permission/skill deltas, complete blockers/owners, drain candidates and
 org-wide publication impact. It reserves nothing. Internal canonical images
 stay private; never copy these admitted diffs to shared artifacts/logs.
+After request decoding, service-owned requests cover preview, capability and
+both show readers, including diagnostic-only orgs, before native submission.
+Planning/readback/error projection/encoding run off-loop. Apply/recover use native
+readiness, replay, fresh preview/blockers and reservation, then loop-owned
+once-only runner publication. The admitted original OrgState lifetime transfers
+to that runner without a new admission gap during shutdown. HTTP cancellation
+cannot cancel the service request. Actual native return and bridge retirement,
+not cancellation or task-map absence, permit release; uncertain submissions and
+failed restricted closes remain held. Close fences new requests, joins admitted
+request handoffs, then cancels/joins runners across repeated waiter cancellation.
+Restricted acquisition retains each actual DB and both nested read-only inspection
+connections under that same original service/native owner before validation. Only
+positive original close releases a handle; inspection cleanup stays on its acquiring
+thread. Constructor failure retains the primary and safe secondary close code,
+including in diagnostic readback. Later successful reads or saved terminal receipts
+cannot clear a failed close, retire its owner or admit a new runner.
+Profile preparation, drain census and operation mutation are native intervals;
+async profile locks, deadlines/sleeps and thread/producer queues stay loop-owned.
+Task redelivery uses the same generation classifier and authenticated publisher:
+native discovery/claim, actual loop queue put, then native exact ack/failure.
+One service-owned child retains the original org and queue reservation through
+that entire sequence, joining through cancellation before its parent returns.
+Deferred notification removal follows actual pending publication and compares the
+original metadata identity. Unknown native submission/retirement retains the
+reservation and DB-close owner. Synchronous callers retain the same publisher,
+metadata, refusal and error behavior; discovery never grants launch permission.
+Dynamic `DaemonState.add_org` owns a strong attachment child before submission.
+`OrgState.load`, selector initialization, dependency capture/validation and profile
+publication run natively. The loop wires queue/session/host/thread references before
+the native profile interval inserts the org into the original shared map. Profile
+leases acquire/use/release on that same thread; no lease crosses an await.
+A contended profile lease gives loop callers the existing
+`profile_coordinator_busy` refusal immediately; native callers retain their
+original bounded wait. The loop never sleeps behind the attachment worker.
+A short state mutex protects membership capture/publication only, with no I/O,
+DB/profile acquisition, worker join or await inside it. Profile and metrics reads
+retain actual captured OrgStates. Ordinary request dependencies retain their
+selected org. Thread/task/job event responses instead release the endpoint reader
+before transport, retaining the original attachment only during synchronous DB
+replay or job polling. EventBus registration, replay order, terminal handling and
+cleanup use the original bus; idle bus waits and sends hold no DB reader. Later
+reads atomically refuse a detached/replaced OrgState, including same-slug reuse.
+Task attachment bytes and audit bodies are materialized before endpoint return;
+the audit transport keeps its original deadline/identity fence without later SQL.
+Detach/swap/close refuse retained readers and atomically fence new captures before
+DB close. Shutdown fences insertion, joins attachment children and retains unknown
+workers/loaded DBs/failed closes. Failed post-publication work never closes or
+removes the published owner; fresh-org rollback preserves its skeleton.
+Returned-coding rediscovery reuses its existing native owner: real task puts run
+on the original loop before native exact acknowledgement/failure; original thread
+notifications are joined through their actual loop puts. Both task and thread
+put outcomes are registered before submission and checked before attachment
+retirement. An uncertain task submission retains its SAME bounded reservation,
+even if the generation publisher records/catches the submission error. A known
+callback error is a retired put and retains its original failure meaning. Native
+return or a cancelled bridge alone never retires a put; no automatic retry or
+uncertainty clearance is added. Diagnostic clearing
+follows successful attachment and notification completion. Startup/scheduler
+business rules and final native execution admission stay unchanged. Source/static
+evidence establishes no responsiveness/behavioral acceptance or filesystem bound.
 Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
 `can_drain_threads` identifies candidate turns, not clearance of hard blockers.

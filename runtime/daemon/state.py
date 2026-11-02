@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from contextlib import contextmanager
+from contextvars import copy_context
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.daemon.team_move_service import TeamMoveService
@@ -73,27 +77,124 @@ class DaemonState:
 
     _thread_release_service: _ThreadDeliveryReleaseService | None = field(init=False, default=None, repr=False)
 
+    # Only attachment membership and in-memory reader/worker bookkeeping use
+    # this mutex. Never acquire DB/profile locks, await or close under it.
+    _org_map_lock: threading.RLock = field(init=False, default_factory=threading.RLock, repr=False)
+    _attachment_swap_pending: bool = field(init=False, default=False, repr=False)
+    _org_readers: dict[int, int] = field(init=False, default_factory=dict, repr=False)
+    _retiring_orgs: set[int] = field(init=False, default_factory=set, repr=False)
+    _attachment_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
+    _attachment_workers: dict[object, dict] = field(init=False, default_factory=dict, repr=False)
+    _attachment_owners: dict[object, dict] = field(init=False, default_factory=dict, repr=False)
+
+    def orgs_snapshot(self) -> dict[str, OrgState]:
+        """Membership only; existing runner admission still owns execution."""
+        with self._org_map_lock:
+            return dict(self.orgs)
+
+    @contextmanager
+    def capture_orgs(self, slugs: tuple[str, ...] | None = None, *, original: OrgState | None = None) -> Iterator[dict[str, OrgState]]:
+        """Retain the actual DB attachments for a native read interval."""
+        with self._org_map_lock:
+            orgs = dict(self.orgs) if slugs is None else {slug: self.orgs[slug] for slug in slugs if slug in self.orgs}
+            if original is not None and orgs.get(original.slug) is not original:
+                raise _OrgBusyError("attachment_changed_during_read")
+            if self._attachment_swap_pending or any(id(org) in self._retiring_orgs for org in orgs.values()):
+                raise _OrgBusyError("attachment_retiring")
+            for org in orgs.values():
+                self._org_readers[id(org)] = self._org_readers.get(id(org), 0) + 1
+        try:
+            yield orgs
+        finally:
+            with self._org_map_lock:
+                for org in orgs.values():
+                    remaining = self._org_readers[id(org)] - 1
+                    if remaining:
+                        self._org_readers[id(org)] = remaining
+                    else:
+                        del self._org_readers[id(org)]
+
+    def _assert_attachment_readers_idle(self, orgs: tuple[OrgState, ...]) -> None:
+        with self._org_map_lock:
+            if any(self._org_readers.get(id(org), 0) for org in orgs):
+                raise _OrgBusyError("attachment_readers_in_flight")
+
+    def _begin_attachment_close(self, orgs: tuple[OrgState, ...]) -> None:
+        # Admission and the idle observation are atomic, but close is outside
+        # this mutex. A failed close remains fenced, with its actual owner.
+        with self._org_map_lock:
+            self._assert_attachment_readers_idle(orgs)
+            self._retiring_orgs.update(id(org) for org in orgs)
+        for org in orgs:
+            org._runner_admission_closed = True
+
+    def _assert_attachment_loads_idle(self) -> None:
+        with self._org_map_lock:
+            if self._attachment_tasks or self._attachment_workers or self._attachment_owners:
+                raise _OrgBusyError("attachment_native_in_flight_or_unsafe")
+
+    def _begin_attachment_swap(self) -> None:
+        # Called at the final loop preflight, before registry/activation effects.
+        # Prevent a new native reader from opening the close race afterward.
+        with self._org_map_lock:
+            self._assert_attachment_readers_idle(tuple(self.orgs.values()))
+            self._attachment_swap_pending = True
+
+    def _finish_attachment_swap(self) -> None:
+        with self._org_map_lock:
+            self._attachment_swap_pending = False
+
+    def _assert_attachment_unpublished_idle(self, slug: str) -> None:
+        """Fresh-org rollback cannot delete a published or uncertain owner."""
+        with self._org_map_lock:
+            if slug in self.orgs or any(o["slug"] == slug for o in self._attachment_owners.values()):
+                raise _OrgBusyError("attachment_published_or_unsafe")
+
+    async def _drain_attachments(self) -> None:
+        # Strong children survive caller cancellation. Join the original tasks,
+        # including repeated shutdown cancellation, before any DB/host close.
+        tasks = tuple(self._attachment_tasks)
+        joined = asyncio.gather(*tasks, return_exceptions=True)
+        cancellation = None
+        while not joined.done():
+            try:
+                await asyncio.shield(joined)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        joined.result()
+        self._assert_attachment_loads_idle()
+        if cancellation is not None:
+            raise cancellation
+
     def _revoke_thread_releases(self, org=None) -> None:
         if self._thread_release_service is not None:
             self._thread_release_service.revoke(org)
         else:
-            for current in self.orgs.values() if org is None else (org,):
+            for current in self.orgs_snapshot().values() if org is None else (org,):
                 current._revoke_thread_releases()
 
     async def _drain_thread_releases(self, org=None) -> None:
         if self._thread_release_service is not None:
             await self._thread_release_service.drain(org)
-        for current in self.orgs.values() if org is None else (org,):
+        for current in self.orgs_snapshot().values() if org is None else (org,):
             current._assert_thread_releases_idle()
 
     def _capture_attachments(self) -> tuple:
+        with self._org_map_lock:
+            return self._capture_attachments_locked()
+
+    def _capture_attachments_locked(self) -> tuple:
         # Private two-phase detach identity, captured under orgs_lock. Paths
         # accompany object identity so in-place root/DB changes also refuse.
         return (self.orgs, self.runtime, self.runtime.root if self.runtime else None,
                 self.host_supervisor, self._thread_release_service, tuple((slug, org, org.root, org.db, org.db.db_path, org.sessions, org._thread_release_attachment)
-                                            for slug, org in self.orgs.items()))
+                                            for slug, org in self.orgs_snapshot().items()))
 
     def _assert_attachments_unchanged(self, captured: tuple) -> None:
+        with self._org_map_lock:
+            self._assert_attachments_unchanged_locked(captured)
+
+    def _assert_attachments_unchanged_locked(self, captured: tuple) -> None:
         org_map, runtime, root, supervisor, release_service, orgs = captured
         if (self.orgs is not org_map or self.runtime is not runtime
                 or (self.runtime.root if self.runtime else None) != root
@@ -108,20 +209,22 @@ class DaemonState:
     def _revoke_cleanup_diagnostics(self) -> None:
         if self._cleanup_diagnostics is not None:
             self._cleanup_diagnostics.revoke()
-        for org in self.orgs.values():
+        for org in self.orgs_snapshot().values():
             org._revoke_cleanup_diagnostics()
 
     async def _drain_cleanup_diagnostics(self, org: OrgState | None = None) -> None:
         if self._cleanup_diagnostics is not None:
             await self._cleanup_diagnostics.drain(org)
-        for current in self.orgs.values() if org is None else (org,):
+        for current in self.orgs_snapshot().values() if org is None else (org,):
             current._assert_cleanup_diagnostics_idle()
 
     def _stop_runner_admission(self) -> None:
         # No await: fence both existing OrgState references and later add_org.
-        self._runner_shutdown = True
+        with self._org_map_lock:
+            self._runner_shutdown = True
+            orgs = tuple(self.orgs.values())
         self.queue.close_admission()
-        for org in self.orgs.values():
+        for org in orgs:
             org._runner_admission_closed = True
         # Finite C revoke; incomplete acquisition raises BEFORE host shutdown.
         self._revoke_thread_releases()
@@ -198,6 +301,7 @@ class DaemonState:
         state.profile_coordinator = ProfileCoordinator(
             daemon_home=daemon_home(),
             orgs=state.orgs,
+            capture_orgs=state.capture_orgs,
         )
 
         # Load runtime-level executor profiles into the process-wide registry
@@ -297,109 +401,192 @@ class DaemonState:
         return self.runtime is None
 
     def get_org(self, slug: str) -> OrgState:
-        try:
-            return self.orgs[slug]
-        except KeyError as exc:
-            raise KeyError(slug) from exc
+        with self._org_map_lock:
+            try:
+                return self.orgs[slug]
+            except KeyError as exc:
+                raise KeyError(slug) from exc
 
     async def add_org(self, slug: str) -> OrgState:
-        """Lazy-load an org's OrgState. Idempotent — returns the existing
-        instance if the slug is already loaded.
+        """Own the entire native/loop attachment before the first await."""
+        if self._runner_shutdown:
+            raise _OrgBusyError("daemon_shutting_down")
+        task = asyncio.create_task(self._add_org(slug), name="org-attachment:" + slug)
+        self._attachment_tasks.add(task)
+        def retired(done: asyncio.Task) -> None:
+            self._attachment_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()  # consume late errors even after disconnect
+        task.add_done_callback(retired)
+        cancellation = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        result = task.result()
+        if cancellation is not None:
+            raise cancellation
+        return result
 
-        The orchestrator's queue and per-org session tracker are attached
-        here so a freshly-added org is immediately runnable (the lifespan
-        ``_attach_org_runtime_wiring`` only runs over orgs present at boot).
-        """
+    async def _attachment_native(self, owner: dict, callback: Callable[[], Any]) -> Any:
+        """One joined native interval; retain uncertain submission/retirement."""
+        ticket = object()
+        work = {"owner": owner, "callback": callback, "returned": threading.Event()}
+        context = copy_context()
+        def run() -> None:
+            try:
+                work["result"] = context.run(callback)
+            except BaseException as exc:
+                work["error"] = exc
+            finally:
+                work["returned"].set()
+        with self._org_map_lock:
+            self._attachment_workers[ticket] = work
+        # No cancellation or submission error can discard this original ticket.
+        worker = asyncio.get_running_loop().run_in_executor(None, run)
+        work["worker"] = worker
+        cancellation = None
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        worker.result()
+        if not work["returned"].is_set():
+            raise _OrgBusyError("attachment_native_return_unknown")
+        with self._org_map_lock:
+            del self._attachment_workers[ticket]
+        if "error" in work:
+            raise work["error"]
+        if cancellation is not None:
+            raise cancellation
+        return work.get("result")
+
+    async def _add_org(self, slug: str) -> OrgState:
         async with self.orgs_lock:
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
-            if slug in self.orgs:
-                return self.orgs[slug]
+            current = self.orgs_snapshot().get(slug)
+            if current is not None:
+                return current
             assert self.runtime is not None
-            root = self.runtime.orgs_dir / slug
-            # OrgConsistencyError propagates — add_org is an explicit
-            # action (init / unload+reload) and must fail loudly so the
-            # founder sees the reason at the HTTP layer.
+            owner = {"slug": slug, "runtime": self.runtime, "org_map": self.orgs,
+                     "root": self.runtime.orgs_dir / slug,
+                     "profiles": self.profile_coordinator, "org": None, "published": False,
+                     "task": asyncio.current_task(), "native_token": None}
+            token = object()
+            with self._org_map_lock:
+                self._attachment_owners[token] = owner
+            primary = None
             try:
-                if "team_move_" in self.broken_orgs.get(slug, ""):
-                    from runtime.infrastructure.team_move_store import inspect_team_move_org
-                    inspect_team_move_org(root, org_slug=slug, require_database=True)
-                org = OrgState.load(slug=slug, root=root, settings=self.settings)
-            except ValueError as exc:
-                if "team_move_" in str(exc):
-                    self.broken_orgs[slug] = str(exc)
-                    if self.profile_coordinator is not None:
-                        diagnostics = getattr(self.profile_coordinator, "_move_diagnostic_orgs", {})
-                        diagnostics[slug] = root
-                        self.profile_coordinator._move_diagnostic_orgs = diagnostics
-                raise
-            # U2A: a dynamically attached org must cross the same coordinated
-            # selector-initialization boundary as daemon startup before it is
-            # wired or made runnable. Every launch reader is deliberately
-            # read-only and fails closed if this boundary did not complete.
-            from runtime.orchestrator.active_authority_policy import (
-                is_eligible_policy_manager,
-            )
-            try:
-                for team in org.teams.teams():
-                    manager = org.teams.executable_manager_for_team(team)
-                    if manager is not None and is_eligible_policy_manager(
-                        root=org.root,
-                        agent_name=manager,
-                        team=team,
-                        teams=org.teams,
-                    ):
-                        org.workflow_authority.ensure_authority_selector(
-                            team=team,
-                            publisher="daemon-dynamic-add:selector-initialization",
-                        )
-            except Exception:
-                org.close()
-                raise
-            try:
+                await self._attachment_native(owner, lambda: self._load_attachment(owner))
+                org = owner["org"]
+                native_token = object()
+                if not org._acquire_native_task(native_token):
+                    raise _OrgBusyError("daemon_shutting_down")
+                owner["native_token"] = native_token
+                # Actual asyncio references/publication stay on their loop.
                 org.orchestrator.attach_queue(self.queue)
                 org.orchestrator.attach_sessions(org.sessions)
                 org.orchestrator.attach_host_supervisor(self.host_supervisor)
-                if self.profile_coordinator is not None:
-                    org._profile_coordinator = self.profile_coordinator
-                    # Hold every referenced profile lease while synchronizing
-                    # and publishing this org, then insert it into the shared
-                    # map before releasing those leases. A concurrent writer
-                    # therefore completes first or captures the new org; there
-                    # is no visible stale-ready attachment window.
-                    with self.profile_coordinator.dynamic_org_attachment(org):
-                        self.orgs[slug] = org
-                else:
-                    self.orgs[slug] = org
-            except Exception:
-                self.orgs.pop(slug, None)
-                org.close()
-                raise
-            # New/dynamic attachments never inherit a boot diagnostic pass.
-            org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
-            self.broken_orgs.pop(slug, None)
-            if self.profile_coordinator is not None:
-                # The outside-lease load positively inspected this existing DB;
-                # dynamic attachment revalidated its actual native move owner
-                # under profile leases before synchronization/map insertion.
-                # Failed attachment never reaches this diagnostic clearing.
-                getattr(self.profile_coordinator, "_move_diagnostic_orgs", {}).pop(slug, None)
-            # Wire the thread queue + main loop so run_step workers can
-            # cross the async boundary via run_coroutine_threadsafe when
-            # posting task-followup invocations.
-            try:
+                org._profile_coordinator = owner["profiles"]
+                org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
                 loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                org.orchestrator.attach_thread_queue(org.thread_queue, loop)
-            return org
+                org.orchestrator.attach_thread_queue(org.thread_queue, loop, rediscover=False)
+                await self._attachment_native(owner, lambda: self._publish_attachment(owner))
+                # Reuse the original returned-notification owner, with its actual
+                # raw queue handoff on this loop, before releasing native lifetime.
+                from runtime.daemon.queue import _AttachmentNotificationQueue
+                queue = _AttachmentNotificationQueue(self.queue, loop, org.thread_queue)
+                owner["notifications"] = queue
+                await self._attachment_native(owner, lambda: org.orchestrator._rediscover_returned(queue=queue))
+                await queue.join_puts()
+                self.broken_orgs.pop(slug, None)
+                if owner["profiles"] is not None:
+                    getattr(owner["profiles"], "_move_diagnostic_orgs", {}).pop(slug, None)
+                return org
+            except BaseException as exc:
+                primary = exc
+                owner["primary"] = exc
+                if isinstance(exc, ValueError) and "team_move_" in str(exc):
+                    self.broken_orgs[slug] = str(exc)
+                    if owner["profiles"] is not None:
+                        diagnostics = getattr(owner["profiles"], "_move_diagnostic_orgs", {})
+                        diagnostics[slug] = owner["root"]
+                        owner["profiles"]._move_diagnostic_orgs = diagnostics
+                raise
+            finally:
+                # A successful Future is insufficient if native retirement is
+                # unknown. The ticket and actual loaded handle stay reachable.
+                with self._org_map_lock:
+                    uncertain = any(w["owner"] is owner for w in self._attachment_workers.values())
+                notifications = owner.get("notifications")
+                if notifications is not None and notifications.has_unretired_puts():
+                    uncertain = True
+                if owner["org"] is None and owner.get("db_construction_started") and not owner.get("load_db_closed"):
+                    uncertain = True
+                if not uncertain:
+                    org = owner["org"]
+                    if owner["native_token"] is not None:
+                        org._release_native_task(owner["native_token"])
+                        owner["native_token"] = None
+                    safe = True
+                    if org is not None and not owner["published"]:
+                        try:
+                            await self._attachment_native(owner, org.close)
+                        except BaseException as cleanup:
+                            safe = False
+                            owner["close_error"] = cleanup
+                            if primary is None:
+                                raise
+                            primary.add_note("unpublished attachment close failed: " + type(cleanup).__name__)
+                    if safe:
+                        with self._org_map_lock:
+                            del self._attachment_owners[token]
+
+    def _load_attachment(self, owner: dict) -> None:
+        slug, root = owner["slug"], owner["root"]
+        if "team_move_" in self.broken_orgs.get(slug, ""):
+            from runtime.infrastructure.team_move_store import inspect_team_move_org
+            inspect_team_move_org(root, org_slug=slug, require_database=True)
+        org = OrgState.load(slug=slug, root=root, settings=self.settings, attachment_owner=owner)
+        owner["org"] = org  # strong handle before selector validation can fail
+        from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
+        for team in org.teams.teams():
+            manager = org.teams.executable_manager_for_team(team)
+            if manager is not None and is_eligible_policy_manager(
+                root=org.root, agent_name=manager, team=team, teams=org.teams,
+            ):
+                org.workflow_authority.ensure_authority_selector(
+                    team=team, publisher="daemon-dynamic-add:selector-initialization",
+                )
+
+    def _publish_attachment(self, owner: dict) -> None:
+        org, profiles = owner["org"], owner["profiles"]
+        def insert() -> None:
+            with self._org_map_lock:
+                if (self._runner_shutdown or self.runtime is not owner["runtime"]
+                        or self.orgs is not owner["org_map"]
+                        or self.profile_coordinator is not profiles
+                        or (profiles is not None and profiles.orgs is not self.orgs)
+                        or org.slug in self.orgs):
+                    raise _OrgBusyError("attachment_changed_during_preparation")
+                self.orgs[org.slug] = org
+                owner["published"] = True
+        if profiles is None:
+            insert()
+        else:
+            # Acquire/use/release every native profile/publication lease on
+            # THIS worker, including publication before the leases are released.
+            with profiles.dynamic_org_attachment(org):
+                insert()
 
     def _assert_can_remove_org(self, slug: str) -> OrgState | None:
         if self._runner_shutdown:
             raise _OrgBusyError("daemon_shutting_down")
         self.team_move_service.assert_no_owner(slug)
-        current = self.orgs.get(slug)
+        current = self.orgs_snapshot().get(slug)
         if current is not None:
             current._assert_runners_idle()
             if current.db._team_move_coordinator.store.read() is not None:
@@ -417,7 +604,7 @@ class DaemonState:
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
             self.team_move_service.assert_no_owner(slug)
-            current = self.orgs.get(slug)
+            current = self.orgs_snapshot().get(slug)
             if current is not None:
                 current._assert_runners_idle(thread_releases=False)
             captured = self._capture_attachments()
@@ -432,11 +619,15 @@ class DaemonState:
             self._assert_attachments_unchanged(captured)
             current = self._assert_can_remove_org(slug)
             if current is not None:
+                self._begin_attachment_close((current,))
                 current.close()
-                self.orgs.pop(slug)
+                with self._org_map_lock:
+                    self.orgs.pop(slug)
+                    self._retiring_orgs.discard(id(current))
 
     async def close_all(self) -> None:
         self._stop_runner_admission()
+        await self._drain_attachments()
         captured = self._capture_attachments()
         await self._drain_thread_releases()
         self._assert_attachments_unchanged(captured)
@@ -445,7 +636,7 @@ class DaemonState:
         # Refuse native users before any service/org closure. The final
         # all-org preflight below renews this after the service/lock awaits.
         self.queue.assert_native_idle()
-        for org in self.orgs.values():
+        for org in self.orgs_snapshot().values():
             org._assert_runners_idle()
         await self.team_move_service.close()
         async with self.orgs_lock:
@@ -453,12 +644,16 @@ class DaemonState:
             # Fail before any close if an unexpected caller still owns an org.
             # Lifespan joins the actual runners; cancellation is not that proof.
             self.queue.assert_native_idle()
-            for org in self.orgs.values():
+            for org in self.orgs_snapshot().values():
                 org._assert_runners_idle()
                 org._assert_cleanup_diagnostics_idle()
-            for org in self.orgs.values():
+            orgs = tuple(self.orgs_snapshot().values())
+            self._begin_attachment_close(orgs)
+            for org in orgs:
                 org.close()
-            self.orgs.clear()
+            with self._org_map_lock:
+                self.orgs.clear()
+                self._retiring_orgs.difference_update(id(org) for org in orgs)
         if self.direct_connect_authority_store is not None:
             self.direct_connect_authority_store.close()
         self._shutdown_complete = True

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from runtime.daemon.auth import require_token
 from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.routes._doctrine import SELF_DISPATCH_HINT
-from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events, _stream_org_reader
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.thread_queue import ThreadJob
@@ -1375,12 +1375,12 @@ async def list_threads_endpoint(
 @router.get("/threads/events")
 async def threads_inbox_events_endpoint(
     slug: str,
-    org: OrgDep,
+    org: OrgStreamDep,
     request: Request,
 ) -> StreamingResponse:
     async def gen():
         from runtime.daemon.event_bus import thread_inbox_topic
-        async for event in org.event_bus.subscribe(thread_inbox_topic(slug)):
+        async for event in _stream_org_events(request, org, thread_inbox_topic(slug)):
             yield f"data: {_json.dumps(event)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -1390,7 +1390,7 @@ async def threads_inbox_events_endpoint(
 async def tail_thread_endpoint(
     slug: str,
     thread_id: str,
-    org: OrgDep,
+    org: OrgStreamDep,
     request: Request,
     since_seq: int = 0,
 ) -> StreamingResponse:
@@ -1400,11 +1400,13 @@ async def tail_thread_endpoint(
 
     async def gen():
         # Replay missed messages first (not via the bus — directly from DB).
-        for m in org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=1000):
+        with _stream_org_reader(request, org):
+            messages = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=1000)
+        for m in messages:
             yield f"data: {_json.dumps(_msg_to_dict(m))}\n\n"
         # Live updates via the event bus.
         from runtime.daemon.event_bus import thread_topic
-        async for event in org.event_bus.subscribe(thread_topic(thread_id)):
+        async for event in _stream_org_events(request, org, thread_topic(thread_id)):
             yield f"data: {_json.dumps(event)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")

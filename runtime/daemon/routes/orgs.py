@@ -78,7 +78,7 @@ async def list_orgs(request: Request) -> dict:
     return {
         "orgs": [
             {"slug": slug, "root": str(org.root)}
-            for slug, org in sorted(state.orgs.items())
+            for slug, org in sorted(state.orgs_snapshot().items())
         ],
         "broken": [
             {"slug": slug, "error": error}
@@ -209,12 +209,17 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
         finally:
             database.close()
         org = await state.add_org(body.slug)
-    except Exception:
+    except Exception as primary:
         # add_org failed AFTER we seeded the skeleton. Roll back the skeleton
         # (it was fresh — we 409'd on org_root.exists() above and mkdir uses
         # exist_ok=False, so we are only removing what THIS call created).
-        if org_root.exists():
-            shutil.rmtree(org_root)
+        try:
+            state._assert_attachment_unpublished_idle(body.slug)
+        except _OrgBusyError:
+            primary.add_note("org skeleton retained: attachment published or native owner uncertain")
+        else:
+            if org_root.exists():
+                shutil.rmtree(org_root)
         raise
     return {"slug": org.slug, "root": str(org.root)}
 

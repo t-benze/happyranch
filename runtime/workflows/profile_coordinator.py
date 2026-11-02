@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from runtime.orchestrator.producer_move import native_writer
 
+import asyncio
 import fcntl
 import hashlib
 import json
@@ -201,10 +202,21 @@ class ProfileCoordinator:
         daemon_home: Path,
         orgs: dict[str, OrgState],
         lock_wait_seconds: float = _LOCK_WAIT_SECONDS,
+        capture_orgs: Callable | None = None,
     ) -> None:
         self._daemon_home = Path(daemon_home)
         self.orgs = orgs
+        self._attachment_capture = capture_orgs
         self._lock_wait_seconds = lock_wait_seconds
+
+    @contextmanager
+    def _capture_orgs(self) -> Iterator[dict[str, OrgState]]:
+        if self._attachment_capture is None:
+            # Standalone coordinators retain their original caller-owned map.
+            yield dict(self.orgs)
+        else:
+            with self._attachment_capture() as orgs:
+                yield orgs
 
     @property
     def _lock_dir(self) -> Path:
@@ -241,7 +253,16 @@ class ProfileCoordinator:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError as exc:
-                    if not wait or time.monotonic() >= deadline:
+                    # A native attachment can own this lease while its loop
+                    # remains serving. A synchronous loop caller must use the
+                    # existing busy refusal, never sleep behind that worker.
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        on_loop = False
+                    else:
+                        on_loop = True
+                    if on_loop or not wait or time.monotonic() >= deadline:
                         raise ProfileCoordinatorError(
                             "profile_coordinator_busy"
                         ) from exc
@@ -396,31 +417,33 @@ class ProfileCoordinator:
                     raise
 
     def _max_generation(self, profile_name: str) -> int:
-        generation = 0
-        for org in self.orgs.values():
-            with org.db._lock:
-                row = org.db._conn.execute(
-                    "SELECT generation FROM workflow_profile_store "
-                    "WHERE profile_name=?",
-                    (profile_name,),
-                ).fetchone()
-            if row is not None:
-                generation = max(generation, int(row["generation"]))
-        return generation
+        with self._capture_orgs() as orgs:
+            generation = 0
+            for org in orgs.values():
+                with org.db._lock:
+                    row = org.db._conn.execute(
+                        "SELECT generation FROM workflow_profile_store "
+                        "WHERE profile_name=?",
+                        (profile_name,),
+                    ).fetchone()
+                if row is not None:
+                    generation = max(generation, int(row["generation"]))
+            return generation
 
     def _required_members(self, profile_name: str) -> tuple[str, ...]:
-        members: list[str] = []
-        for slug, org in sorted(self.orgs.items()):
-            with org.db._lock:
-                row = org.db._conn.execute(
-                    "SELECT 1 FROM workflow_profile_dependencies "
-                    "WHERE org_namespace=? AND profile_name=? "
-                    "AND state IN ('active','unbound') LIMIT 1",
-                    (org.workflow_authority.namespace, profile_name),
-                ).fetchone()
-            if row is not None:
-                members.append(slug)
-        return tuple(members)
+        with self._capture_orgs() as orgs:
+            members: list[str] = []
+            for slug, org in sorted(orgs.items()):
+                with org.db._lock:
+                    row = org.db._conn.execute(
+                        "SELECT 1 FROM workflow_profile_dependencies "
+                        "WHERE org_namespace=? AND profile_name=? "
+                        "AND state IN ('active','unbound') LIMIT 1",
+                        (org.workflow_authority.namespace, profile_name),
+                    ).fetchone()
+                if row is not None:
+                    members.append(slug)
+            return tuple(members)
 
     def _assert_no_active_operation(
         self, profile_name: str | None, *, move_org=None, attaching_org=None,
@@ -432,36 +455,37 @@ class ProfileCoordinator:
         only add_org removes the diagnostic after joining the shared org map.
         A None profile still checks diagnostics for EMPTY dependency sets.
         """
-        diagnostics = getattr(self, "_move_diagnostic_orgs", {})
-        admitted = _move_batch_owner.get()
-        for slug, root in tuple(diagnostics.items()):
-            owner = move_org if move_org is not None else attaching_org
-            if owner is None or slug != owner.slug or root != owner.root:
-                raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-            # Discovery/strict path resolution/open/close already belong to the
-            # outside-lease startup/attachment owner. Never reacquire a DB or
-            # erase a diagnostic based on absence observed by a profile writer.
-            with owner.db._lock:
-                row = owner.db._team_move_coordinator.active_uncommitted()
-            if move_org is not None:
-                if row is None or admitted != (slug, row["operation_id"]):
+        with self._capture_orgs() as orgs:
+            diagnostics = getattr(self, "_move_diagnostic_orgs", {})
+            admitted = _move_batch_owner.get()
+            for slug, root in tuple(diagnostics.items()):
+                owner = move_org if move_org is not None else attaching_org
+                if owner is None or slug != owner.slug or root != owner.root:
                     raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-            elif row is not None:
-                raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
-        if profile_name is None:
-            return
-        for org in self.orgs.values():
-            with org.db._lock:
-                row = org.db._conn.execute(
-                    "SELECT state FROM workflow_profile_operations "
-                    "WHERE profile_name=? AND state NOT IN ('published','aborted') "
-                    "ORDER BY rowid DESC LIMIT 1",
-                    (profile_name,),
-                ).fetchone()
-            if row is not None:
-                raise ProfileCoordinatorError(
-                    f"profile_operation_in_progress:{row['state']}"
-                )
+                # Discovery/strict path resolution/open/close already belong to the
+                # outside-lease startup/attachment owner. Never reacquire a DB or
+                # erase a diagnostic based on absence observed by a profile writer.
+                with owner.db._lock:
+                    row = owner.db._team_move_coordinator.active_uncommitted()
+                if move_org is not None:
+                    if row is None or admitted != (slug, row["operation_id"]):
+                        raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+                elif row is not None:
+                    raise ProfileCoordinatorError("profile_team_move_diagnostic_org_held")
+            if profile_name is None:
+                return
+            for org in orgs.values():
+                with org.db._lock:
+                    row = org.db._conn.execute(
+                        "SELECT state FROM workflow_profile_operations "
+                        "WHERE profile_name=? AND state NOT IN ('published','aborted') "
+                        "ORDER BY rowid DESC LIMIT 1",
+                        (profile_name,),
+                    ).fetchone()
+                if row is not None:
+                    raise ProfileCoordinatorError(
+                        f"profile_operation_in_progress:{row['state']}"
+                    )
 
     def _insert_operation_rows(
         self,
@@ -469,37 +493,38 @@ class ProfileCoordinator:
         *,
         coordinator_invocation: str,
     ) -> None:
-        members_json = _canonical_bytes(list(operation.members)).decode("utf-8")
-        created_at = datetime.now(timezone.utc).isoformat()
-        for slug in operation.members:
-            org = self.orgs[slug]
-            with self._transaction(org) as conn:
-                conn.execute(
-                    "INSERT OR IGNORE INTO workflow_profile_operations("
-                    "id,profile_name,operation_kind,captured_members,"
-                    "target_generation,state,profile_digest,"
-                    "coordinator_invocation,compensation_generation,created_at"
-                    ") VALUES (?,?,?,?,?,'captured',?,?,0,?)",
-                    (
-                        operation.operation_id,
-                        operation.profile_name,
-                        operation.operation_kind,
-                        members_json,
-                        operation.target_generation,
-                        operation.prior.digest,
-                        coordinator_invocation,
-                        created_at,
-                    ),
-                )
-                # The kernel flock is the authoritative live-owner test.  A
-                # surviving diagnostic PID can have been recycled after a
-                # crash, so it must not override the already-acquired flock.
-                conn.execute(
-                    "INSERT INTO workflow_profile_leases(profile_name,owner_token,owner_pid) "
-                    "VALUES (?,?,?) ON CONFLICT(profile_name) DO UPDATE SET "
-                    "owner_token=excluded.owner_token,owner_pid=excluded.owner_pid",
-                    (operation.profile_name, coordinator_invocation, os.getpid()),
-                )
+        with self._capture_orgs() as orgs:
+            members_json = _canonical_bytes(list(operation.members)).decode("utf-8")
+            created_at = datetime.now(timezone.utc).isoformat()
+            for slug in operation.members:
+                org = orgs[slug]
+                with self._transaction(org) as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO workflow_profile_operations("
+                        "id,profile_name,operation_kind,captured_members,"
+                        "target_generation,state,profile_digest,"
+                        "coordinator_invocation,compensation_generation,created_at"
+                        ") VALUES (?,?,?,?,?,'captured',?,?,0,?)",
+                        (
+                            operation.operation_id,
+                            operation.profile_name,
+                            operation.operation_kind,
+                            members_json,
+                            operation.target_generation,
+                            operation.prior.digest,
+                            coordinator_invocation,
+                            created_at,
+                        ),
+                    )
+                    # The kernel flock is the authoritative live-owner test.  A
+                    # surviving diagnostic PID can have been recycled after a
+                    # crash, so it must not override the already-acquired flock.
+                    conn.execute(
+                        "INSERT INTO workflow_profile_leases(profile_name,owner_token,owner_pid) "
+                        "VALUES (?,?,?) ON CONFLICT(profile_name) DO UPDATE SET "
+                        "owner_token=excluded.owner_token,owner_pid=excluded.owner_pid",
+                        (operation.profile_name, coordinator_invocation, os.getpid()),
+                    )
 
     def _set_operation_state(
         self,
@@ -508,20 +533,21 @@ class ProfileCoordinator:
         *,
         profile_digest: str | None = None,
     ) -> None:
-        for slug in operation.members:
-            org = self.orgs[slug]
-            with self._transaction(org) as conn:
-                if profile_digest is None:
-                    conn.execute(
-                        "UPDATE workflow_profile_operations SET state=? WHERE id=?",
-                        (state, operation.operation_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE workflow_profile_operations "
-                        "SET state=?,profile_digest=? WHERE id=?",
-                        (state, profile_digest, operation.operation_id),
-                    )
+        with self._capture_orgs() as orgs:
+            for slug in operation.members:
+                org = orgs[slug]
+                with self._transaction(org) as conn:
+                    if profile_digest is None:
+                        conn.execute(
+                            "UPDATE workflow_profile_operations SET state=? WHERE id=?",
+                            (state, operation.operation_id),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE workflow_profile_operations "
+                            "SET state=?,profile_digest=? WHERE id=?",
+                            (state, profile_digest, operation.operation_id),
+                        )
 
     def _release_diagnostic_leases(
         self,
@@ -529,99 +555,102 @@ class ProfileCoordinator:
         *,
         coordinator_invocation: str,
     ) -> bool:
-        released = True
-        for operation in operations:
-            for slug in operation.members:
-                org = self.orgs[slug]
-                try:
-                    with self._transaction(org) as conn:
-                        conn.execute(
-                            "DELETE FROM workflow_profile_leases "
-                            "WHERE profile_name=? AND owner_token=?",
-                            (operation.profile_name, coordinator_invocation),
+        with self._capture_orgs() as orgs:
+            released = True
+            for operation in operations:
+                for slug in operation.members:
+                    org = orgs[slug]
+                    try:
+                        with self._transaction(org) as conn:
+                            conn.execute(
+                                "DELETE FROM workflow_profile_leases "
+                                "WHERE profile_name=? AND owner_token=?",
+                                (operation.profile_name, coordinator_invocation),
+                            )
+                    except Exception:
+                        released = False
+                        # This row is diagnostic only; the kernel flock is the
+                        # ownership authority and is still released by the outer
+                        # context. Startup will overwrite a stale diagnostic row.
+                        logger.exception(
+                            "profile diagnostic lease cleanup failed org=%s profile=%s",
+                            slug,
+                            operation.profile_name,
                         )
-                except Exception:
-                    released = False
-                    # This row is diagnostic only; the kernel flock is the
-                    # ownership authority and is still released by the outer
-                    # context. Startup will overwrite a stale diagnostic row.
-                    logger.exception(
-                        "profile diagnostic lease cleanup failed org=%s profile=%s",
-                        slug,
-                        operation.profile_name,
-                    )
-        return released
+            return released
 
     def _apply_store_state(
         self,
         operation: _ProfileOperation,
         effective: _EffectiveProfile,
     ) -> None:
-        for slug in operation.members:
-            org = self.orgs[slug]
-            with self._transaction(org) as conn:
-                existing = conn.execute(
-                    "SELECT generation FROM workflow_profile_store "
-                    "WHERE profile_name=?",
-                    (operation.profile_name,),
-                ).fetchone()
-                if existing is not None and int(existing["generation"]) > operation.target_generation:
-                    raise ProfileCoordinatorError("profile_generation_stale")
-                conn.execute(
-                    "INSERT INTO workflow_profile_store("
-                    "profile_name,generation,profile_digest,state) VALUES (?,?,?,?) "
-                    "ON CONFLICT(profile_name) DO UPDATE SET "
-                    "generation=excluded.generation,"
-                    "profile_digest=excluded.profile_digest,state=excluded.state",
-                    (
-                        operation.profile_name,
-                        operation.target_generation,
-                        effective.digest,
-                        effective.state,
-                    ),
-                )
-                if effective.state == "removed":
-                    conn.execute(
-                        "UPDATE workflow_profile_dependencies SET state='unbound' "
-                        "WHERE profile_name=? AND state='active'",
+        with self._capture_orgs() as orgs:
+            for slug in operation.members:
+                org = orgs[slug]
+                with self._transaction(org) as conn:
+                    existing = conn.execute(
+                        "SELECT generation FROM workflow_profile_store "
+                        "WHERE profile_name=?",
                         (operation.profile_name,),
-                    )
-                else:
+                    ).fetchone()
+                    if existing is not None and int(existing["generation"]) > operation.target_generation:
+                        raise ProfileCoordinatorError("profile_generation_stale")
                     conn.execute(
-                        "UPDATE workflow_profile_dependencies "
-                        "SET bound_generation=?,state='active' "
-                        "WHERE profile_name=? AND state IN ('active','unbound')",
-                        (operation.target_generation, operation.profile_name),
+                        "INSERT INTO workflow_profile_store("
+                        "profile_name,generation,profile_digest,state) VALUES (?,?,?,?) "
+                        "ON CONFLICT(profile_name) DO UPDATE SET "
+                        "generation=excluded.generation,"
+                        "profile_digest=excluded.profile_digest,state=excluded.state",
+                        (
+                            operation.profile_name,
+                            operation.target_generation,
+                            effective.digest,
+                            effective.state,
+                        ),
                     )
-                conn.execute(
-                    "UPDATE workflow_profile_operations "
-                    "SET state='store_committed',profile_digest=? WHERE id=?",
-                    (effective.digest, operation.operation_id),
-                )
+                    if effective.state == "removed":
+                        conn.execute(
+                            "UPDATE workflow_profile_dependencies SET state='unbound' "
+                            "WHERE profile_name=? AND state='active'",
+                            (operation.profile_name,),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE workflow_profile_dependencies "
+                            "SET bound_generation=?,state='active' "
+                            "WHERE profile_name=? AND state IN ('active','unbound')",
+                            (operation.target_generation, operation.profile_name),
+                        )
+                    conn.execute(
+                        "UPDATE workflow_profile_operations "
+                        "SET state='store_committed',profile_digest=? WHERE id=?",
+                        (effective.digest, operation.operation_id),
+                    )
 
     def _apply_registry_state(
         self,
         operation: _ProfileOperation,
         effective: _EffectiveProfile,
     ) -> bool:
-        publishable = effective.state == "removed" or effective.resolvable
-        for slug in operation.members:
-            org = self.orgs[slug]
-            with self._transaction(org) as conn:
-                if publishable:
-                    conn.execute(
-                        "INSERT INTO workflow_profile_registry("
-                        "profile_name,published_generation) VALUES (?,?) "
-                        "ON CONFLICT(profile_name) DO UPDATE SET "
-                        "published_generation=excluded.published_generation",
-                        (operation.profile_name, operation.target_generation),
-                    )
-                else:
-                    conn.execute(
-                        "DELETE FROM workflow_profile_registry WHERE profile_name=?",
-                        (operation.profile_name,),
-                    )
-        return publishable
+        with self._capture_orgs() as orgs:
+            publishable = effective.state == "removed" or effective.resolvable
+            for slug in operation.members:
+                org = orgs[slug]
+                with self._transaction(org) as conn:
+                    if publishable:
+                        conn.execute(
+                            "INSERT INTO workflow_profile_registry("
+                            "profile_name,published_generation) VALUES (?,?) "
+                            "ON CONFLICT(profile_name) DO UPDATE SET "
+                            "published_generation=excluded.published_generation",
+                            (operation.profile_name, operation.target_generation),
+                        )
+                    else:
+                        conn.execute(
+                            "DELETE FROM workflow_profile_registry WHERE profile_name=?",
+                            (operation.profile_name,),
+                        )
+            return publishable
 
     def _closure_coherent(self, org: OrgState) -> bool:
         with org.db._lock:
@@ -660,28 +689,29 @@ class ProfileCoordinator:
         publisher: str,
         expected_fenced: set[str],
     ) -> bool:
-        all_published = True
-        for slug in sorted(expected_fenced):
-            org = self.orgs[slug]
-            if not self._closure_coherent(org):
-                all_published = False
-                continue
-            try:
-                org.workflow_authority.publish_profile_change(
-                    publisher=publisher,
-                    binding=bindings[slug],
-                )
-            except Exception:
-                all_published = False
-                logger.exception(
-                    "profile dependent republish failed org=%s publisher=%s",
-                    slug,
-                    publisher,
-                )
-        if not all_published:
-            for operation in operations:
-                self._set_operation_state(operation, "forward_recovery_required")
-        return all_published
+        with self._capture_orgs() as orgs:
+            all_published = True
+            for slug in sorted(expected_fenced):
+                org = orgs[slug]
+                if not self._closure_coherent(org):
+                    all_published = False
+                    continue
+                try:
+                    org.workflow_authority.publish_profile_change(
+                        publisher=publisher,
+                        binding=bindings[slug],
+                    )
+                except Exception:
+                    all_published = False
+                    logger.exception(
+                        "profile dependent republish failed org=%s publisher=%s",
+                        slug,
+                        publisher,
+                    )
+            if not all_published:
+                for operation in operations:
+                    self._set_operation_state(operation, "forward_recovery_required")
+            return all_published
 
     def _finalize(
         self,
@@ -744,104 +774,105 @@ class ProfileCoordinator:
         publisher: str,
     ) -> Iterator[None]:
         """Create the durable U1A claim after profile leases are held."""
-        coordinator_invocation = uuid.uuid4().hex
-        operations = tuple(
-            _ProfileOperation(
-                operation_id=f"WPO-{uuid.uuid4().hex}",
-                profile_name=name,
-                operation_kind=operation_kind,
-                members=self._required_members(name),
-                target_generation=self._max_generation(name) + 1,
-                prior=self._effective_profile(name),
-            )
-            for name in names
-        )
-        members = sorted({slug for op in operations for slug in op.members})
-        for slug in members:
-            org = self.orgs[slug]
-            with org.db._lock:
-                active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
-            if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
-                raise ProfileCoordinatorError("profile_consumer_changed")
-        with ExitStack() as move_writers:
-            dispositions = []
-            try:
-                for slug in members:
-                    dispositions.append(move_writers.enter_context(native_writer(self.orgs[slug].db,
-                        publisher=f'profile:{publisher}')))
-            except Exception as exc:
-                # Earlier acquired reservations have not entered any profile
-                # operation/fence/body. Only those completed reservations may
-                # settle; a failing reservation retains its own native evidence.
-                for disposition in dispositions:
-                    disposition.no_effect_error = exc
-                raise
-            for operation in operations:
-                self._insert_operation_rows(
-                    operation,
-                    coordinator_invocation=coordinator_invocation,
+        with self._capture_orgs() as orgs:
+            coordinator_invocation = uuid.uuid4().hex
+            operations = tuple(
+                _ProfileOperation(
+                    operation_id=f"WPO-{uuid.uuid4().hex}",
+                    profile_name=name,
+                    operation_kind=operation_kind,
+                    members=self._required_members(name),
+                    target_generation=self._max_generation(name) + 1,
+                    prior=self._effective_profile(name),
                 )
-            bindings: dict[str, ProfileFenceBinding] = {}
-            with ExitStack() as org_stack:
-                for slug in members:
-                    bindings[slug] = org_stack.enter_context(
-                        self.orgs[slug].workflow_authority.profile_change_interval(
-                            reason=f"profile:{','.join(names)}:{publisher}",
-                            coordinator_invocation=coordinator_invocation,
-                        )
-                    )
-                for operation in operations:
-                    self._set_operation_state(operation, "fenced")
+                for name in names
+            )
+            members = sorted({slug for op in operations for slug in op.members})
+            for slug in members:
+                org = orgs[slug]
+                with org.db._lock:
+                    active = org.workflow_authority._active_journal(org.db._conn, org.workflow_authority.namespace)
+                if active is not None and not str(active["publisher_invocation"]).startswith("profile-coordinator:"):
+                    raise ProfileCoordinatorError("profile_consumer_changed")
+            with ExitStack() as move_writers:
+                dispositions = []
                 try:
-                    yield
-                except BaseException:
-                    try:
-                        reconciled = self._finalize(
-                            operations=operations,
-                            bindings=bindings,
-                            publisher=publisher,
-                            mutation_succeeded=False,
-                        )
-                        if not reconciled:
-                            for disposition in dispositions:
-                                disposition.uncertain = True
-                    except Exception:
-                        for disposition in dispositions:
-                            disposition.uncertain = True
-                        logger.exception(
-                            "profile compensation publication deferred publisher=%s",
-                            publisher,
-                        )
+                    for slug in members:
+                        dispositions.append(move_writers.enter_context(native_writer(orgs[slug].db,
+                            publisher=f'profile:{publisher}')))
+                except Exception as exc:
+                    # Earlier acquired reservations have not entered any profile
+                    # operation/fence/body. Only those completed reservations may
+                    # settle; a failing reservation retains its own native evidence.
+                    for disposition in dispositions:
+                        disposition.no_effect_error = exc
                     raise
-                else:
-                    try:
-                        reconciled = self._finalize(
-                            operations=operations,
-                            bindings=bindings,
-                            publisher=publisher,
-                            mutation_succeeded=True,
-                        )
-                        if not reconciled:
-                            for disposition in dispositions:
-                                disposition.uncertain = True
-                    except Exception:
-                        for disposition in dispositions:
-                            disposition.uncertain = True
-                        # The existing writer already committed. Preserve its
-                        # response contract while the durable operation/fence
-                        # remains discoverable for cold forward recovery.
-                        logger.exception(
-                            "profile post-commit publication deferred publisher=%s",
-                            publisher,
-                        )
-                finally:
-                    released = self._release_diagnostic_leases(
-                        operations,
+                for operation in operations:
+                    self._insert_operation_rows(
+                        operation,
                         coordinator_invocation=coordinator_invocation,
                     )
-                    if not released:
-                        for disposition in dispositions:
-                            disposition.uncertain = True
+                bindings: dict[str, ProfileFenceBinding] = {}
+                with ExitStack() as org_stack:
+                    for slug in members:
+                        bindings[slug] = org_stack.enter_context(
+                            orgs[slug].workflow_authority.profile_change_interval(
+                                reason=f"profile:{','.join(names)}:{publisher}",
+                                coordinator_invocation=coordinator_invocation,
+                            )
+                        )
+                    for operation in operations:
+                        self._set_operation_state(operation, "fenced")
+                    try:
+                        yield
+                    except BaseException:
+                        try:
+                            reconciled = self._finalize(
+                                operations=operations,
+                                bindings=bindings,
+                                publisher=publisher,
+                                mutation_succeeded=False,
+                            )
+                            if not reconciled:
+                                for disposition in dispositions:
+                                    disposition.uncertain = True
+                        except Exception:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
+                            logger.exception(
+                                "profile compensation publication deferred publisher=%s",
+                                publisher,
+                            )
+                        raise
+                    else:
+                        try:
+                            reconciled = self._finalize(
+                                operations=operations,
+                                bindings=bindings,
+                                publisher=publisher,
+                                mutation_succeeded=True,
+                            )
+                            if not reconciled:
+                                for disposition in dispositions:
+                                    disposition.uncertain = True
+                        except Exception:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
+                            # The existing writer already committed. Preserve its
+                            # response contract while the durable operation/fence
+                            # remains discoverable for cold forward recovery.
+                            logger.exception(
+                                "profile post-commit publication deferred publisher=%s",
+                                publisher,
+                            )
+                    finally:
+                        released = self._release_diagnostic_leases(
+                            operations,
+                            coordinator_invocation=coordinator_invocation,
+                        )
+                        if not released:
+                            for disposition in dispositions:
+                                disposition.uncertain = True
 
     @contextmanager
     def operation(
@@ -1109,8 +1140,9 @@ class ProfileCoordinator:
 
     def synchronize_all_dependencies(self, *, publish: bool = True) -> set[str]:
         """Capture outside leases, then validate and synchronize each closure."""
-        captured = [(slug, org, self._capture_org_dependencies(org)) for slug, org in sorted(self.orgs.items())]
-        return self._synchronize_captured(captured, publish=publish)
+        with self._capture_orgs() as orgs:
+            captured = [(slug, org, self._capture_org_dependencies(org)) for slug, org in sorted(orgs.items())]
+            return self._synchronize_captured(captured, publish=publish)
 
     def reconcile_supported_roster_batch(self, authority, *, completed_writer_invocation):
         """Close the existing one-shot migration after its canonical batch exits.
@@ -1119,13 +1151,14 @@ class ProfileCoordinator:
         writer's journal. This exit owns no publisher/profile lease or scan
         transaction; legacy mutation/consumption/response semantics stay intact.
         """
-        for slug, org in self.orgs.items():
-            if org.workflow_authority is authority:
-                capture = self._capture_org_dependencies(
-                    org, completed_writer_invocation=completed_writer_invocation,
-                )
-                return self._synchronize_captured([(slug, org, capture)], publish=True)
-        raise ProfileCoordinatorError("profile_dependency_incoherent")
+        with self._capture_orgs() as orgs:
+            for slug, org in orgs.items():
+                if org.workflow_authority is authority:
+                    capture = self._capture_org_dependencies(
+                        org, completed_writer_invocation=completed_writer_invocation,
+                    )
+                    return self._synchronize_captured([(slug, org, capture)], publish=True)
+            raise ProfileCoordinatorError("profile_dependency_incoherent")
 
     def _synchronize_captured(self, captured, *, publish):
         profile_names = sorted({name for _, _, capture in captured for name in capture.profile_names})
@@ -1306,199 +1339,195 @@ class ProfileCoordinator:
             )
 
     def _discover_operation_groups(self) -> dict[str, set[str]]:
-        groups: dict[str, set[str]] = {}
-        for org in self.orgs.values():
-            with org.db._lock:
-                rows = org.db._conn.execute(
-                    "SELECT coordinator_invocation,profile_name "
-                    "FROM workflow_profile_operations "
-                    "WHERE state NOT IN ('published','aborted')"
-                ).fetchall()
-            for row in rows:
-                groups.setdefault(str(row["coordinator_invocation"]), set()).add(
-                    str(row["profile_name"])
-                )
-        return groups
+        with self._capture_orgs() as orgs:
+            groups: dict[str, set[str]] = {}
+            for org in orgs.values():
+                with org.db._lock:
+                    rows = org.db._conn.execute(
+                        "SELECT coordinator_invocation,profile_name "
+                        "FROM workflow_profile_operations "
+                        "WHERE state NOT IN ('published','aborted')"
+                    ).fetchall()
+                for row in rows:
+                    groups.setdefault(str(row["coordinator_invocation"]), set()).add(
+                        str(row["profile_name"])
+                    )
+            return groups
 
     def _load_group_operations(
         self,
         coordinator_invocation: str,
         profile_names: Sequence[str],
     ) -> tuple[_ProfileOperation, ...]:
-        operation_rows: dict[str, list[sqlite3.Row]] = {}
-        for org in self.orgs.values():
-            with org.db._lock:
-                rows = org.db._conn.execute(
-                    "SELECT id,profile_name,operation_kind,captured_members,"
-                    "target_generation,state,profile_digest "
-                    "FROM workflow_profile_operations "
-                    "WHERE coordinator_invocation=?",
-                    (coordinator_invocation,),
-                ).fetchall()
-            for row in rows:
-                name = str(row["profile_name"])
-                if name not in profile_names:
-                    continue
-                operation_rows.setdefault(name, []).append(row)
-        if set(operation_rows) != set(profile_names):
-            raise ProfileCoordinatorError("profile_operation_missing")
-        rank = {
-            "captured": 0,
-            "fenced": 1,
-            "store_committed": 2,
-            "forward_recovery_required": 3,
-            "published": 4,
-            "aborted": 4,
-        }
-        operations: dict[str, _ProfileOperation] = {}
-        for name, rows in operation_rows.items():
-            first = rows[0]
-            identity = (
-                str(first["id"]),
-                str(first["operation_kind"]),
-                str(first["captured_members"]),
-                int(first["target_generation"]),
-            )
-            if any(
-                (
-                    str(row["id"]),
-                    str(row["operation_kind"]),
-                    str(row["captured_members"]),
-                    int(row["target_generation"]),
+        with self._capture_orgs() as orgs:
+            operation_rows: dict[str, list[sqlite3.Row]] = {}
+            for org in orgs.values():
+                with org.db._lock:
+                    rows = org.db._conn.execute(
+                        "SELECT id,profile_name,operation_kind,captured_members,"
+                        "target_generation,state,profile_digest "
+                        "FROM workflow_profile_operations "
+                        "WHERE coordinator_invocation=?",
+                        (coordinator_invocation,),
+                    ).fetchall()
+                for row in rows:
+                    name = str(row["profile_name"])
+                    if name not in profile_names:
+                        continue
+                    operation_rows.setdefault(name, []).append(row)
+            if set(operation_rows) != set(profile_names):
+                raise ProfileCoordinatorError("profile_operation_missing")
+            rank = {
+                "captured": 0,
+                "fenced": 1,
+                "store_committed": 2,
+                "forward_recovery_required": 3,
+                "published": 4,
+                "aborted": 4,
+            }
+            operations: dict[str, _ProfileOperation] = {}
+            for name, rows in operation_rows.items():
+                first = rows[0]
+                identity = (
+                    str(first["id"]),
+                    str(first["operation_kind"]),
+                    str(first["captured_members"]),
+                    int(first["target_generation"]),
                 )
-                != identity
-                for row in rows[1:]
-            ):
-                raise ProfileCoordinatorError("profile_operation_incoherent")
-            state = max((str(row["state"]) for row in rows), key=rank.__getitem__)
-            prior_rows = [
-                row for row in rows if str(row["state"]) in {"captured", "fenced"}
-            ]
-            prior_digest = str((prior_rows or rows)[0]["profile_digest"])
-            operations[name] = _ProfileOperation(
-                operation_id=identity[0],
-                profile_name=name,
-                operation_kind=identity[1],
-                members=tuple(json.loads(identity[2])),
-                target_generation=identity[3],
-                prior=_EffectiveProfile(
-                    digest=prior_digest,
-                    state="active",
-                    resolvable=False,
-                ),
-                recovery_state=state,
-            )
-        return tuple(operations[name] for name in sorted(operations))
+                if any(
+                    (
+                        str(row["id"]),
+                        str(row["operation_kind"]),
+                        str(row["captured_members"]),
+                        int(row["target_generation"]),
+                    )
+                    != identity
+                    for row in rows[1:]
+                ):
+                    raise ProfileCoordinatorError("profile_operation_incoherent")
+                state = max((str(row["state"]) for row in rows), key=rank.__getitem__)
+                prior_rows = [
+                    row for row in rows if str(row["state"]) in {"captured", "fenced"}
+                ]
+                prior_digest = str((prior_rows or rows)[0]["profile_digest"])
+                operations[name] = _ProfileOperation(
+                    operation_id=identity[0],
+                    profile_name=name,
+                    operation_kind=identity[1],
+                    members=tuple(json.loads(identity[2])),
+                    target_generation=identity[3],
+                    prior=_EffectiveProfile(
+                        digest=prior_digest,
+                        state="active",
+                        resolvable=False,
+                    ),
+                    recovery_state=state,
+                )
+            return tuple(operations[name] for name in sorted(operations))
 
     def _members_are_already_ready(
         self,
         operations: Sequence[_ProfileOperation],
     ) -> bool:
-        members = {slug for operation in operations for slug in operation.members}
-        for slug in members:
-            org = self.orgs[slug]
-            try:
-                readiness = org.workflow_authority.verify_admission_ready()
-            except Exception:
-                return False
-            if not self._closure_coherent(org):
-                return False
-            snapshot = json.loads(readiness.snapshot_bytes)
-            if (
-                not isinstance(snapshot, dict)
-                or snapshot.get("machine_global_profiles")
-                != org.workflow_authority._profile_projection()
-            ):
-                return False
-        return True
+        with self._capture_orgs() as orgs:
+            members = {slug for operation in operations for slug in operation.members}
+            for slug in members:
+                org = orgs[slug]
+                try:
+                    readiness = org.workflow_authority.verify_admission_ready()
+                except Exception:
+                    return False
+                if not self._closure_coherent(org):
+                    return False
+                snapshot = json.loads(readiness.snapshot_bytes)
+                if (
+                    not isinstance(snapshot, dict)
+                    or snapshot.get("machine_global_profiles")
+                    != org.workflow_authority._profile_projection()
+                ):
+                    return False
+            return True
 
     def _recover_group(
         self,
         coordinator_invocation: str,
         profile_names: Sequence[str],
     ) -> None:
-        with self._profile_leases(profile_names, wait=False):
-            operations = self._load_group_operations(
-                coordinator_invocation, profile_names,
-            )
-            # A crash after all canonical publications but before the final
-            # operation-row update must not manufacture another generation.
-            if self._members_are_already_ready(operations):
-                for operation in operations:
-                    effective = self._effective_profile(operation.profile_name)
-                    terminal = (
-                        "published"
-                        if effective.digest != operation.prior.digest
-                        or operation.recovery_state
-                        in {"store_committed", "published", "forward_recovery_required"}
-                        else "aborted"
-                    )
-                    self._set_operation_state(
-                        operation, terminal, profile_digest=effective.digest,
-                    )
-                self._release_diagnostic_leases(
-                    operations,
-                    coordinator_invocation=coordinator_invocation,
+        with self._capture_orgs() as orgs:
+            with self._profile_leases(profile_names, wait=False):
+                operations = self._load_group_operations(
+                    coordinator_invocation, profile_names,
                 )
-                return
-            for operation in operations:
-                self._insert_operation_rows(
-                    operation,
-                    coordinator_invocation=coordinator_invocation,
-                )
-            bindings: dict[str, ProfileFenceBinding] = {}
-            members = sorted({slug for op in operations for slug in op.members})
-            with ExitStack() as stack:
-                for slug in members:
-                    bindings[slug] = stack.enter_context(
-                        self.orgs[slug].workflow_authority.profile_change_interval(
-                            reason="profile:startup-recovery",
-                            coordinator_invocation=coordinator_invocation,
-                            resume=True,
+                # A crash after all canonical publications but before the final
+                # operation-row update must not manufacture another generation.
+                if self._members_are_already_ready(operations):
+                    for operation in operations:
+                        effective = self._effective_profile(operation.profile_name)
+                        terminal = (
+                            "published"
+                            if effective.digest != operation.prior.digest
+                            or operation.recovery_state
+                            in {"store_committed", "published", "forward_recovery_required"}
+                            else "aborted"
                         )
+                        self._set_operation_state(
+                            operation, terminal, profile_digest=effective.digest,
+                        )
+                    self._release_diagnostic_leases(
+                        operations,
+                        coordinator_invocation=coordinator_invocation,
                     )
+                    return
                 for operation in operations:
-                    if operation.recovery_state in {"captured", "fenced"}:
-                        self._set_operation_state(operation, "fenced")
-                self._finalize(
-                    operations=operations,
-                    bindings=bindings,
-                    publisher="profile-startup-recovery",
-                    mutation_succeeded=True,
-                )
-                self._release_diagnostic_leases(
-                    operations,
-                    coordinator_invocation=coordinator_invocation,
-                )
+                    self._insert_operation_rows(
+                        operation,
+                        coordinator_invocation=coordinator_invocation,
+                    )
+                bindings: dict[str, ProfileFenceBinding] = {}
+                members = sorted({slug for op in operations for slug in op.members})
+                with ExitStack() as stack:
+                    for slug in members:
+                        bindings[slug] = stack.enter_context(
+                            orgs[slug].workflow_authority.profile_change_interval(
+                                reason="profile:startup-recovery",
+                                coordinator_invocation=coordinator_invocation,
+                                resume=True,
+                            )
+                        )
+                    for operation in operations:
+                        if operation.recovery_state in {"captured", "fenced"}:
+                            self._set_operation_state(operation, "fenced")
+                    self._finalize(
+                        operations=operations,
+                        bindings=bindings,
+                        publisher="profile-startup-recovery",
+                        mutation_succeeded=True,
+                    )
+                    self._release_diagnostic_leases(
+                        operations,
+                        coordinator_invocation=coordinator_invocation,
+                    )
 
     def reconcile_startup(self) -> None:
         """Recover interrupted work, then publish current exact dependencies."""
-        if getattr(self, "_move_diagnostic_orgs", None):
-            logger.warning("profile startup reconciliation deferred: diagnostic team-move org remains held")
-            return
-        for invocation, names in sorted(self._discover_operation_groups().items()):
-            self._recover_group(invocation, sorted(names))
-        changed = self.synchronize_all_dependencies(publish=False)
-        for slug in sorted(changed):
-            org = self.orgs[slug]
-            try:
-                org.workflow_authority.verify_admission_ready()
-            except Exception:
-                # An interrupted operation owns this fence; its recovery above
-                # either completed it or intentionally left the org fenced.
-                continue
-            self._publish_dependency_change(org)
+        with self._capture_orgs() as orgs:
+            if getattr(self, "_move_diagnostic_orgs", None):
+                logger.warning("profile startup reconciliation deferred: diagnostic team-move org remains held")
+                return
+            for invocation, names in sorted(self._discover_operation_groups().items()):
+                self._recover_group(invocation, sorted(names))
+            changed = self.synchronize_all_dependencies(publish=False)
+            for slug in sorted(changed):
+                org = orgs[slug]
+                try:
+                    org.workflow_authority.verify_admission_ready()
+                except Exception:
+                    # An interrupted operation owns this fence; its recovery above
+                    # either completed it or intentionally left the org fenced.
+                    continue
+                self._publish_dependency_change(org)
 
-    @asynccontextmanager
-    async def consumer_batch_writer(self, *, org, operation_id):
-        """ONE D-owned interval for the exact two unchanged executor consumers.
-
-        The operation row itself is the durable native writer: emitting a C3
-        writer whose failed tail becomes immutable unknown would prevent the
-        forward-recovery operation from reconciling its OWN known partial work.
-        No other native writer's history is adopted/cleared. The ordinary C3 hold
-        still refuses every conflicting writer. Empty dependency sets are real.
-        """
+    def _move_batch_inputs(self, org: OrgState, operation_id: str) -> tuple:
         from runtime.infrastructure.team_move_store import MoveRequest, _decode
         move = org.db._team_move_coordinator
         row = move.store.read()
@@ -1510,6 +1539,22 @@ class ProfileCoordinator:
         definitions = tuple(parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"),
             expected_name=agent) for agent, image in zip(request.affected_agents, request.files[:2]))
         names = tuple(sorted({name for definition in definitions if (name := _dependency_profile(definition.executor)) is not None}))
+        return definitions, names
+
+    @asynccontextmanager
+    async def consumer_batch_writer(self, *, org, operation_id, native=None):
+        """ONE D-owned interval for the exact two unchanged executor consumers.
+
+        The operation row itself is the durable native writer: emitting a C3
+        writer whose failed tail becomes immutable unknown would prevent the
+        forward-recovery operation from reconciling its OWN known partial work.
+        No other native writer's history is adopted/cleared. The ordinary C3 hold
+        still refuses every conflicting writer. Empty dependency sets are real.
+        """
+        if native is None:
+            definitions, names = self._move_batch_inputs(org, operation_id)
+        else:
+            definitions, names = await native(lambda: self._move_batch_inputs(org, operation_id))
         org.workflow_authority._profile_coordinator = self
         async with org.workflow_authority._async_writer_lock:
             interval = _MoveBatchInterval(self, org, operation_id, definitions, names)

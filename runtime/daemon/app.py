@@ -63,7 +63,7 @@ def _attach_org_runtime_wiring(state: DaemonState) -> None:
     populated separately so unit tests that build an OrgState without a
     daemon can still inspect the orchestrator before the queue exists.
     """
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         org.orchestrator.attach_queue(state.queue)
         org.orchestrator.attach_sessions(org.sessions)
         org.orchestrator.attach_host_supervisor(state.host_supervisor)
@@ -93,7 +93,7 @@ def _attach_thread_queue_wiring(state: DaemonState, loop) -> None:
     ``asyncio.run_coroutine_threadsafe`` when enqueuing task-followup
     invocations. Mirrors ``_attach_org_runtime_wiring``'s decoupled pattern.
     """
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         org.orchestrator.attach_thread_queue(org.thread_queue, loop)
 
 
@@ -151,7 +151,7 @@ async def _lifespan(app: FastAPI):
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("happyranch.daemon")
     from runtime.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
         # recovery scan reads any stdout_path/stderr_path. The DB-side
         # rename already happened in Database init; this realigns disk.
@@ -251,7 +251,7 @@ async def _lifespan(app: FastAPI):
     # audits enqueue_unavailable and the thread loses its task-completed
     # message.
     from runtime.orchestrator.run_step import _maybe_resume_blocked_task
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         for _task_id in org.db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 org.orchestrator, _task_id,
@@ -263,7 +263,7 @@ async def _lifespan(app: FastAPI):
     # synthesized callback. Diagnostic/held orgs never enter this runnable set.
     from runtime.infrastructure.team_move_store import validate_team_move_schema
     from runtime.orchestrator.team_move_operation import TeamMoveOperation
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         with org.db._lock:
             installed = validate_team_move_schema(org.db._conn, org_slug=org.slug)
             completed_move = installed and org.db._conn.execute(
@@ -273,7 +273,7 @@ async def _lifespan(app: FastAPI):
             await TeamMoveOperation(org, state.profile_coordinator).redeliver()
 
     from runtime.orchestrator.task_pause import discover_pause_work
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         await discover_pause_work(org, state.queue)
 
     # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
@@ -281,7 +281,7 @@ async def _lifespan(app: FastAPI):
     # queued wakes and daemon_restart replacements are picked up exactly once
     # (duplicate notifications remain harmless through the claim CAS).
     from runtime.daemon.thread_queue import ThreadJob
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         for token in getattr(org, "_startup_recovered_thread_tokens", []):
             await org.thread_queue.put(
                 ThreadJob(org_slug=org.slug, invocation_token=token),
@@ -302,7 +302,7 @@ async def _lifespan(app: FastAPI):
     )
     from runtime.daemon.dream_queue import dream_worker_loop
 
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         recover_running_dreams(org)
 
     dream_worker_tasks = [
@@ -316,7 +316,7 @@ async def _lifespan(app: FastAPI):
 
     # Startup recovery: a wake left `running` when the daemon died can never
     # receive its spawn callback, so mark it failed (mirrors recover_running_dreams).
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         org.db.work_hours.recover_running()
 
     wake_worker_tasks = [
@@ -331,7 +331,7 @@ async def _lifespan(app: FastAPI):
 
     # Startup recovery: a schedule left `firing` when the daemon died can never
     # receive its spawn callback, so mark it failed (mirrors recover_running).
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         recovered = org.db.schedules.recover_firing()
         for schedule_id, agent_name in recovered:
             org.db.insert_audit_log(
@@ -380,7 +380,7 @@ async def _lifespan(app: FastAPI):
     # the first warm completes.
     from runtime.infrastructure.kb_store import KBStore
     _dashboard_tasks: list[asyncio.Task] = []
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         mgr = org.dashboard_projection
         # Load persisted snapshot from disk synchronously (no-op if missing).
         # This is a fast filesystem read — no DB access, no event-loop block.
@@ -408,6 +408,7 @@ async def _lifespan(app: FastAPI):
         # attachment before the first shutdown await. Native owners remain live
         # through worker completion, effects unwind and their final settlement.
         state._stop_runner_admission()
+        await state._drain_attachments()
         # C native work/outer retirement must be positively idle before host
         # shutdown. Revoke or drain failure forbids every close fallthrough.
         await state._drain_thread_releases()
@@ -428,18 +429,18 @@ async def _lifespan(app: FastAPI):
         # to_thread/warm path doesn't make daemon shutdown wait for
         # cooperative stop observation. Then reap to collect outcomes
         # with return_exceptions — never leave unowned task exceptions.
-        for org in state.orgs.values():
+        for org in state.orgs_snapshot().values():
             org.dashboard_projection.cancel_scheduler()
         if _dashboard_tasks:
             await asyncio.gather(*_dashboard_tasks, return_exceptions=True)
-        for org in state.orgs.values():
+        for org in state.orgs_snapshot().values():
             await org.dashboard_projection.reap_scheduler()
         runner_tasks = set(
             thread_worker_tasks + dream_worker_tasks + wake_worker_tasks + schedule_worker_tasks
             + [thread_breaker_scheduler_task, dream_scheduler_task,
                work_hours_scheduler_task, schedule_scheduler_task]
         )
-        for org in state.orgs.values():
+        for org in state.orgs_snapshot().values():
             runner_tasks.update(org._runner_tasks)
         for task in runner_tasks:
             task.cancel()

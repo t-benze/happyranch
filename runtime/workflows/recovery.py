@@ -94,7 +94,7 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     return True
 
 
-def rediscover_returned(coding: Any) -> None:
+def rediscover_returned(coding: Any, *, queue: Any = None) -> None:
     """Replay only committed caller notifications, never a stage or PR action.
 
     Terminal coding sources are absent from ordinary nonterminal startup scans.
@@ -113,4 +113,4 @@ def rediscover_returned(coding: Any) -> None:
             return
         returned = tuple(key for key, entry in inventory.queued.runs.items() if entry['native'].get('returned'))
     for instance in returned:
-        notify_returned(coding, instance)
+        notify_returned(coding, instance, queue=queue)
