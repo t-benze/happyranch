@@ -380,7 +380,7 @@ jobs:
           export N3_PACKAGE_STAGE
           echo "N3_PACKAGE_STAGE=$N3_PACKAGE_STAGE" >> "$GITHUB_ENV"
           echo "N3_PACKAGE_UPLOAD=$N3_PACKAGE_STAGE/unavailable.tar" >> "$GITHUB_ENV"
-          echo "N3_PACKAGE_MANIFEST=$N3_PACKAGE_STAGE/unavailable.json" >> "$GITHUB_ENV"
+          echo "N3_PACKAGE_MANIFEST=$N3_PACKAGE_STAGE/package-manifest.json" >> "$GITHUB_ENV"
           python3 - <<'PYMANIFEST'
           import json
           import os
