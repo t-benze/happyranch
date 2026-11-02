@@ -645,7 +645,7 @@ LF/CRLF/whitespace/escape/Unicode bytes and original hashes/counts remain exact.
 Nonempty LF-terminated witness object records, decoded and whole-literal original
 secret checks, unchanged-safe key/value postconditions and the SAME persistent
 preparation owner/end are required. Only record syntax bounds reset at LF.
-Unsupported decoded backslashes/nested forms refuse the whole image, retaining
+Unregistered decoded backslashes/nested forms refuse the whole image, retaining
 prior complete files/tree/FAIL and truthful incomplete-line failure information;
 no partial accepted witness metadata/rows. Refused UTF8 diagnostics retain actual
 error identity/offsets without the image. Collector scan-only mode and ordinary
@@ -675,7 +675,7 @@ launch-witnesses.jsonl complete LF-terminated object records without a raw tree,
 full token plan, second safe image or reparse. Strict UTF8, decoded duplicates
 before values, every original decoded scalar/key and finite grammar/depth/facts
 are checked under the SAME remaining scenario owner. Public quote/LF/Unicode/
-escaped-solidus syntax is admitted; original secrets and decoded backslashes
+escaped-solidus syntax is admitted; original secrets and unregistered decoded backslashes
 withhold the whole member. Required replacement is ordinary under intact
 eligibility; sanitizer/postcondition failure stops detailed work. All records,
 repetitions, unchanged safe passes, active keys and the exact original candidate
@@ -684,6 +684,13 @@ record withholds the entire new image, preserving prior commits. The one admitte
 literal UTF8 candidate retains ALL original bytes and transfers directly into
 staging/publication. No suffix/key-name or nested encoding grant follows.
 Plain/unregistered R1 whole-backslash refusal remains.
+Only canonical observations.relay[*] (also the exact observations prefix) admits
+one strict response_text JSON stage after complete capture/request/status and
+ordered typed response equality. Late fields use charged selected response
+events, never a raw tree or general token index; the prefix keeps its ONE required
+tree. Entire original bytes, full original-secret checks, shared C/F/depth/end,
+whole-member refusal and pre-pending closure remain. Other encoded/copy families
+are unfinished and conservatively refused; this supplies no native-fit evidence.
 Existing controls supply file/preparation evidence only, with temporal, allocation
 and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.

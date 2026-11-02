@@ -882,28 +882,53 @@ def _evidence_buffer(tokens: list, size: int, ledger: _EvidenceLedger,
     return candidate
 
 
+def _evidence_original(text: str, context: tuple | list, ledger: _EvidenceLedger,
+                       check: Callable[[], None], sanitize: Callable[[str], str]) -> None:
+    """Unchanged-safe original JSON spelling, never a decoded-text grant."""
+    try:
+        size = _evidence_utf8_size(text, check)
+        ledger.charge(size, 1, check)
+        for secret in context:
+            ledger.charge(8, 1, check)
+            if secret in text:
+                raise ValueError("original evidence content withheld")
+        if _evidence_safe(text, size, sanitize, context, ledger, check) != text:
+            raise _EvidenceUnsafe("original unchanged postcondition")
+    finally:
+        text = None
+
+
 def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLedger,
-                    check: Callable[[], None]) -> bytearray:
+                    check: Callable[[], None], *, observations: bool = False) -> bytearray:
     """Typed original admission -> flat charged spans -> ONE compact candidate.
 
     No second writer tree. Original references and syntax slots close metadata
     first; no sanitation/emission chooses a policy before a later identity key.
     """
     tokens, ancestors = [], set()
-    authenticated = changed = False
+    authenticated = changed = relay_captured = False
     def retain(kind: str, content: object) -> None:
         ledger.charge(24, 3, check)
         tokens.append((kind, content))
-    def visit(item: object, depth: int = 0, *, key: bool = False) -> None:
-        nonlocal authenticated, changed
+    def sanitize(text: str) -> str:
+        for secret in context:
+            text = text.replace(secret, "[REDACTED]")
+        return text
+    def visit(item: object, depth: int = 0, *, key: bool = False, route: int = 0,
+              event: Callable | None = None, encoded: bool = False) -> None:
+        nonlocal authenticated, changed, relay_captured
         if depth > 64:
             raise _EvidenceCapacity("evidence depth capacity refused")
         ledger.charge(0, 1, check)
+        if route == 2 and type(item) is not list or route == 3 and type(item) is not dict:
+            raise ValueError("Relay entry shape withheld")
         if type(item) is str:
             size = _evidence_utf8_size(item, check)
             ledger.charge(size, 0, check)
-            if "\\" in item:
+            if "\\" in item and not encoded:
                 raise ValueError("evidence representation withheld")
+            if event is not None:
+                event("key" if key else "scalar", item)
             changed = changed or any(secret in item for secret in context)
             if key:
                 authenticated = authenticated or item in ("bytes", "byte_length", "sha256", "original_byte_check", "entity_copy") or item.endswith(("_bytes", "_sha256"))
@@ -913,7 +938,10 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                 raise ValueError("evidence cycle refused")
             ledger.charge(8, 1, check)
             ancestors.add(id(item))
+            proof = _EvidenceRelay(context, ledger, check, sanitize, depth) if route == 3 else None
             try:
+                if event is not None:
+                    event("object" if type(item) is dict else "array", None)
                 retain("syntax", "{" if type(item) is dict else "[")
                 for index, member in enumerate(item.items() if type(item) is dict else item):
                     if index:
@@ -923,20 +951,39 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                         if type(name) is not str:
                             raise ValueError("evidence key unavailable")
                         visit(name, depth + 1, key=True)
+                        if event is not None:
+                            event("key", name)
                         retain("syntax", ":")
-                        visit(child, depth + 1)
+                        if proof is not None:
+                            proof.field(name, child)
+                        visit(child, depth + 1, route=2 if route == 1 and name == "relay" else 0,
+                              event=(proof.response_event if name == "response" else proof.request_event
+                                     if name == "request" else None) if proof is not None else event,
+                              encoded=proof is not None and name == "response_text")
                     else:
-                        visit(member, depth + 1)
+                        visit(member, depth + 1, route=3 if route == 2 else 0, event=event)
                 retain("syntax", "}" if type(item) is dict else "]")
+                if event is not None:
+                    event("end-object" if type(item) is dict else "end-array", None)
+                if proof is not None:
+                    capture = proof.close()
+                    relay_captured = relay_captured or capture
+                    authenticated = authenticated or capture
             finally:
+                if proof is not None:
+                    proof.release()
                 ancestors.remove(id(item))
         elif item is None or type(item) is bool:
+            if event is not None:
+                event("scalar", item)
             retain("syntax", "null" if item is None else "true" if item else "false")
         elif type(item) in (int, float):
+            if event is not None:
+                event("scalar", item)
             retain("syntax", _evidence_number(item, ledger, check))
         else:
             raise ValueError("evidence value unavailable")
-    visit(value)
+    visit(value, route=1 if observations else 0)
     if authenticated and changed:
         raise ValueError("authenticated evidence requires original bytes")
     size, keys = 0, []
@@ -973,7 +1020,14 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
             raise _EvidenceCapacity("evidence encoded capacity refused")
         size += count
     check()
-    return _evidence_buffer(tokens, size, ledger, check)
+    candidate = _evidence_buffer(tokens, size, ledger, check)
+    if relay_captured:
+        for secret in context:
+            count = _evidence_utf8_size(secret, check)
+            ledger.charge(count + len(candidate), 1, check)
+            if secret.encode("utf8") in candidate:
+                raise ValueError("original literal content withheld")
+    return candidate
 
 
 def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], None],
@@ -1017,6 +1071,154 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
     return text
 
 
+class _EvidenceRelay:
+    """Only observations.relay[*]: one capture record and its response edge.
+
+    The response tape is indispensable ordered equality state, not a raw tree
+    or a general token index. Request content streams into its original HTTPX
+    compact-JSON digest. Nothing outside this record is retained.
+    """
+    fields = ("path", "method", "body_sha256", "status", "response", "dropped",
+              "request", "response_text", "entered")
+
+    def __init__(self, context: tuple | list, ledger: _EvidenceLedger,
+                 check: Callable[[], None], sanitize: Callable[[str], str], depth: int) -> None:
+        ledger.charge(96, 12, check)
+        self.context, self.ledger, self.check, self.sanitize, self.depth = context, ledger, check, sanitize, depth
+        self.metadata, self.response, self.request_stack = {}, [], []
+        self.request_hash = hashlib.sha256()
+        self.request_top = None
+
+    def field(self, name: str, value: object) -> None:
+        self.ledger.charge(16 + _evidence_utf8_size(name, self.check), 2, self.check)
+        # response/request are represented by their stream, never another tree.
+        if name in self.fields and name not in ("request", "response"):
+            if type(value) not in (str, int, float, bool, type(None)):
+                raise ValueError("Relay metadata shape withheld")
+            size = _evidence_utf8_size(value, self.check) if type(value) is str else 8
+            self.ledger.charge(size, 1, self.check)
+            self.metadata[name] = value
+        else:
+            self.metadata[name] = None
+
+    def response_event(self, kind: str, value: object) -> None:
+        size = _evidence_utf8_size(value, self.check) if type(value) is str else 8
+        self.ledger.charge(24 + size, 4, self.check)
+        self.response.append((kind, value))
+
+    def request_event(self, kind: str, value: object) -> None:
+        self.ledger.charge(24, 3, self.check)
+        if self.request_top is None:
+            self.request_top = kind if kind != "scalar" else type(value)
+        def put(text: str, string: bool = False) -> None:
+            self.ledger.charge(48, 5, self.check)
+            spans = [(text, 0, len(text))]
+            size = _evidence_string_size(spans, self.check) if string else len(text)
+            data = _evidence_buffer([("string" if string else "literal", spans)], size,
+                                    self.ledger, self.check)
+            self.request_hash.update(data)
+        if kind in ("object", "array", "scalar") and self.request_stack and self.request_stack[-1][0] == "array":
+            if self.request_stack[-1][1]:
+                put(",")
+            self.request_stack[-1][1] += 1
+        if kind in ("object", "array"):
+            self.ledger.charge(16, 2, self.check)
+            self.request_stack.append([kind, 0])
+            put("{" if kind == "object" else "[")
+        elif kind.startswith("end-"):
+            self.request_stack.pop()
+            put("}" if kind == "end-object" else "]")
+        elif kind == "key":
+            if self.request_stack[-1][1]:
+                put(",")
+            self.request_stack[-1][1] += 1
+            put(value, True)
+            put(":")
+        elif type(value) is str:
+            put(value, True)
+        else:
+            put("null" if value is None else "true" if value is True else "false" if value is False
+                else _evidence_number(value, self.ledger, self.check))
+
+    def original(self, text: str) -> None:
+        _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+
+    def scalar(self, text: str) -> None:
+        if "\\" in text:
+            raise ValueError("Relay decoded representation withheld")
+        self.original(text)
+
+    def close(self) -> bool:
+        m = self.metadata
+        if "response_text" not in m:
+            return False  # Ordinary legacy records have no invented nested edge.
+        self.ledger.charge(24 * len(m) + 72, 3 * len(m) + 9, self.check)
+        if (set(m) != set(self.fields) or type(m["path"]) is not str
+                or type(m["method"]) is not str or type(m["body_sha256"]) is not str
+                or type(m["status"]) is not int or m["status"] not in (200, 403, 404, 409, 422)
+                or m["dropped"] is not False or type(m["response_text"]) is not str
+                or type(m["entered"]) not in (int, float) or not math.isfinite(m["entered"]) or m["entered"] < 0
+                or not self.response or self.response[0] != ("object", None)):
+            raise ValueError("Relay capture identity withheld")
+        path, method, digest = m["path"], m["method"], m["body_sha256"]
+        pieces = path.count("/") + 1
+        self.ledger.charge(2 * len(path) + 32 * pieces + 64, 6 * pieces + 8, self.check)
+        parts = path.split("/")
+        # These are the actual E05 CLI Relay endpoints, not a URL/suffix grant.
+        selected = method == "GET" and path == "/api/v1/orgs"
+        thread_detail = None
+        if parts[:5] == ["", "api", "v1", "orgs", "alpha"]:
+            tail = parts[5:]
+            thread = len(tail) >= 2 and tail[0] == "threads" and tail[1].startswith("THR-") and tail[1][4:].isascii() and tail[1][4:].isdigit()
+            task = len(tail) >= 2 and tail[0] == "tasks" and tail[1].startswith("TASK-") and tail[1][5:].isascii() and tail[1][5:].isdigit()
+            if method == "GET" and thread and len(tail) == 2:
+                thread_detail = tail[1]
+            selected = selected or (method == "GET" and (tail == ["identities"] or (len(tail) == 2 and (thread or task))))
+            selected = selected or (method == "POST" and (tail in (["threads"], ["identities", "resolve"])
+                or thread and len(tail) == 3 and tail[2] in ("reply", "decline", "dispatch", "send")
+                or task and len(tail) == 3 and tail[2] == "completion"))
+        if (not selected or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                or method == "GET" and (self.request_top is not type(None)
+                    or digest != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                or method == "POST" and (self.request_top != "object" or digest != self.request_hash.hexdigest())
+                or m["status"] == 200 and thread_detail is not None
+                    and (len(self.response) < 3 or self.response[1] != ("key", "thread_id")
+                         or self.response[2] != ("scalar", thread_detail))
+                or m["status"] != 200 and (len(self.response) < 2 or self.response[1] != ("key", "detail"))):
+            raise ValueError("Relay request/status identity withheld")
+        text = m["response_text"]
+        position = 0
+        def compare(kind: str, value: object) -> None:
+            nonlocal position
+            other = None
+            try:
+                size = _evidence_utf8_size(value, self.check) if type(value) is str else 8
+                self.ledger.charge(24 + 2 * size, 4, self.check)
+                if position >= len(self.response):
+                    raise ValueError("Relay response equality withheld")
+                other_kind, other = self.response[position]
+                if (kind != other_kind or type(value) is not type(other) or value != other
+                        or type(value) is float and math.copysign(1, value) != math.copysign(1, other)):
+                    raise ValueError("Relay response equality withheld")
+                position += 1
+            finally:
+                value = other = None
+        try:
+            self.original(text)  # Whole original nested image, before its single parse.
+            self.ledger.charge(32, 4, self.check)
+            _EvidenceJSON(text, self.ledger, self.check).scan("{", self.scalar, depth=self.depth + 1, event=compare)
+            if position != len(self.response):
+                raise ValueError("Relay response equality withheld")
+            return True
+        finally:
+            text = None
+
+    def release(self) -> None:
+        self.metadata.clear()
+        self.response.clear()
+        self.request_stack.clear()
+
+
 class _EvidenceJSON:
     """Indexed strict grammar for required trees AND registered raw scans.
 
@@ -1026,6 +1228,7 @@ class _EvidenceJSON:
     def __init__(self, text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> None:
         self.text, self.ledger, self.check, self.index = text, ledger, check, 0
         self.end = len(text)
+        self.relay_captured = False
 
     def error(self) -> None:
         # Do not retain the whole refused image in a JSONDecodeError diagnostic.
@@ -1154,7 +1357,8 @@ class _EvidenceJSON:
         return value
 
     def value(self, depth: int = 0, scalar: Callable[[str], None] | None = None,
-              *, tree: bool = True) -> Any:
+              *, tree: bool = True, route: int = 0, event: Callable | None = None,
+              relay_context: tuple | list = (), relay_sanitize: Callable | None = None) -> Any:
         self.check()
         if depth > 64:
             raise _EvidenceCapacity("JSON depth capacity refused")
@@ -1163,20 +1367,29 @@ class _EvidenceJSON:
             self.error()
         self.ledger.charge(0, 1, self.check)
         char = self.text[self.index]
+        if route == 2 and char != "[" or route == 3 and char != "{":
+            raise ValueError("Relay entry shape withheld")
         if char == '"':
             value = self.string()
-            if scalar is not None:
-                try:
+            try:
+                if scalar is not None:
                     scalar(value)
-                except BaseException:
-                    value = None
-                    raise
-            return value if tree else None
+                if event is not None:
+                    event("scalar", value)
+                return value
+            except BaseException:
+                value = None
+                raise
         if char in "-0123456789":
-            return self.number()
+            value = self.number()
+            if event is not None:
+                event("scalar", value)
+            return value
         for spelling, primitive in (("true", True), ("false", False), ("null", None)):
             if self.text.startswith(spelling, self.index, self.end):
                 self.index += len(spelling)
+                if event is not None:
+                    event("scalar", primitive)
                 return primitive
         if char not in "[{":
             self.error()
@@ -1184,13 +1397,20 @@ class _EvidenceJSON:
         # Active original-key set only in scan mode; arrays have no retained
         # members. The same recursion is the charged depth-bounded syntax stack.
         output = ({} if tree else set()) if char == "{" else ([] if tree else None)
+        proof = _EvidenceRelay(relay_context, self.ledger, self.check, relay_sanitize, depth) if route == 3 else None
         close = "}" if char == "{" else "]"
+        if event is not None:
+            event("object" if char == "{" else "array", None)
         self.index += 1
         self.whitespace()
-        if self.index < self.end and self.text[self.index] == close:
-            self.index += 1
-            return output if tree else None
         try:
+            if self.index < self.end and self.text[self.index] == close:
+                self.index += 1
+                if event is not None:
+                    event("end-object" if char == "{" else "end-array", None)
+                if proof is not None:
+                    self.relay_captured = proof.close() or self.relay_captured
+                return output if tree else None
             while True:
                 if char == "{":
                     key = self.string()
@@ -1198,29 +1418,46 @@ class _EvidenceJSON:
                         self.error()  # Decoded escaped-equal keys, before their value.
                     if scalar is not None:
                         scalar(key)
+                    if event is not None:
+                        event("key", key)
                     self.whitespace()
                     if self.index >= self.end or self.text[self.index] != ":":
                         self.error()
                     self.index += 1
                     self.ledger.charge(16, 1, self.check)
-                    if tree:
-                        output[key] = self.value(depth + 1, scalar, tree=True)
-                    else:
+                    if not tree:
                         output.add(key)  # Same decoded key, no additional string copy.
-                        del key
-                        self.value(depth + 1, scalar, tree=False)
+                    if proof is not None and key == "response_text":
+                        self.whitespace()
+                        if self.index >= self.end or self.text[self.index] != '"':
+                            raise ValueError("Relay response text withheld")
+                    child = self.value(depth + 1, None if proof is not None and key == "response_text" else scalar,
+                        tree=tree, route=2 if route == 1 and key == "relay" else 0,
+                        event=(proof.response_event if key == "response" else proof.request_event
+                               if key == "request" else None) if proof is not None else event,
+                        relay_context=relay_context, relay_sanitize=relay_sanitize)
+                    if proof is not None:
+                        proof.field(key, child)
+                    if tree:
+                        output[key] = child
+                    child = None
                 else:
                     self.ledger.charge(8, 1, self.check)
+                    child = self.value(depth + 1, scalar, tree=tree, route=3 if route == 2 else 0,
+                                       event=event, relay_context=relay_context, relay_sanitize=relay_sanitize)
                     if tree:
-                        output.append(self.value(depth + 1, scalar, tree=True))
-                    else:
-                        self.value(depth + 1, scalar, tree=False)
+                        output.append(child)
+                    child = None
                 self.whitespace()
                 if self.index >= self.end:
                     self.error()
                 delimiter = self.text[self.index]
                 self.index += 1
                 if delimiter == close:
+                    if event is not None:
+                        event("end-object" if char == "{" else "end-array", None)
+                    if proof is not None:
+                        self.relay_captured = proof.close() or self.relay_captured
                     return output if tree else None
                 if delimiter != ",":
                     self.error()
@@ -1230,15 +1467,19 @@ class _EvidenceJSON:
                 output.clear()
             raise
         finally:
+            if proof is not None:
+                proof.release()
             if not tree:
                 if output is not None:
                     output.clear()
             key = None
 
     def read(self, *, top: str | None = None, scalar: Callable[[str], None] | None = None,
-             jsonl: bool = False) -> Any:
+             jsonl: bool = False, observations: bool = False, context: tuple | list = (),
+             sanitize: Callable | None = None) -> Any:
         if top is not None:
-            return self.scan(top, scalar, jsonl=jsonl, tree=True)
+            return self.scan(top, scalar, jsonl=jsonl, tree=True, observations=observations,
+                             context=context, sanitize=sanitize)
         result = self.value()
         self.whitespace()
         if self.index != self.end:
@@ -1247,7 +1488,8 @@ class _EvidenceJSON:
         return result
 
     def scan(self, top: str, scalar: Callable[[str], None] | None, *, jsonl: bool = False,
-             tree: bool = False) -> Any:
+             tree: bool = False, observations: bool = False, context: tuple | list = (),
+             sanitize: Callable | None = None, depth: int = 0, event: Callable | None = None) -> Any:
         """Validate the SAME image; JSONL bounds are indices, never line copies."""
         records = result = None
         try:
@@ -1265,12 +1507,15 @@ class _EvidenceJSON:
                 if self.index >= self.end or self.text[self.index] != top:
                     self.error()
                 self.ledger.charge(8, 1, self.check)  # Record's root syntax frame, before entry.
-                result = self.value(scalar=scalar, tree=tree)
+                result = self.value(depth, scalar=scalar, tree=tree, route=1 if observations else 0,
+                                    event=event, relay_context=context, relay_sanitize=sanitize)
                 self.whitespace()
                 if self.index != self.end:
                     self.error()
                 self.check()
                 if not jsonl:
+                    if self.relay_captured:
+                        _evidence_original(self.text, context, self.ledger, self.check, sanitize)
                     return result
                 if tree:
                     self.ledger.charge(8, 1, self.check)
@@ -1527,7 +1772,9 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
 
                             top = "[" if path.name in {"browser-events.json", "e05-browser-events.json"} else "{"
                             _EvidenceJSON(text, ledger, eligible).scan(
-                                top, raw_scalar, jsonl=path.name == "launch-witnesses.jsonl")
+                                top, raw_scalar, jsonl=path.name == "launch-witnesses.jsonl",
+                                observations=path.name in {"observations.json", "e07-prefix.json"},
+                                context=ordered, sanitize=sanitize)
                             safe = text  # ONE original image, only after full closure.
                         else:
                             if "\\" in text:

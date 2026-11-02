@@ -2420,7 +2420,7 @@ records are nonempty LF-terminated objects; an unfinished final object refuses
 the whole image. Its incomplete-line flag remains failure information, while
 length/hash/full rows are assigned only after successful publication. E07's
 existing archive digest uses those same entire checkpoint bytes and its existing
-assertions use the one required tree. Decoded original secrets/backslashes and
+assertions use the one required tree. Decoded original secrets, unregistered backslashes and
 unsupported nested content refuse; original literal-image secrets also refuse.
 Every key/value has independent unchanged-safe checks with the original context.
 Refused UTF8 keeps the actual error/offsets without retaining raw diagnostic bytes.
@@ -2429,11 +2429,27 @@ collector retains scan-only mode, without an extra raw tree. Source/file control
 exercise preparation/replacement, not full Controller.evidence or E07/native
 admission; chronology/allocation/kernel-I/O proof remains NOT RUN/PROOF NOT RUN.
 
-Closed producer/copy registry and nested source/hex/browser/direct/pair/human-display
-joins remain required on this same draft. Plain/unregistered R1 whole-backslash
-refusal remains, including ordinary _atomic_text at the two exact filenames.
-No nested encoding permission, complete finite publication, fit or native acceptance
-follows. Closed observations retain their own gates.
+The canonical E05 Relay edge is admitted only at observations.relay[*], including
+that same root in the original e07-prefix checkpoint. Exact capture fields,
+builtin metadata types, the actual E05 GET/POST endpoints, request/body digest,
+status and full ordered typed response equality must close. ONE strict JSON
+stage checks the original response_text; its whitespace, escapes, Unicode and
+terminal LF remain unchanged. Decoded originals or residual backslashes refuse.
+Late metadata/response fields retain only charged record facts and response
+comparison events; the collector builds no raw tree or general token index.
+The prefix retains its ONE required tree. Nested depth, every occurrence and
+comparison, original/safe checks and candidate work share the original owner.
+Whole literal-image safety and unchanged-safe scalar checks precede admission;
+missing/conflicting/unresolved facts withhold the whole member before pending.
+The final writer uses already admitted bytes without another parse or decode.
+
+This implements one registry row. ProviderCommand.wire, settled.wire_records,
+CLI stdout, entity/SQL/source/hex/browser/direct/pair/human-display and cross-member
+joins remain unfinished and conservatively refused, with their complete copy
+obligations intact. A member containing one such obligation refuses entirely.
+Ordinary _atomic_text retains whole-backslash refusal at every filename. File
+controls do not execute full Controller.evidence/E07/native admission or prove
+allocation, kernel timing, cleanup or fit. Closed observations keep their gates.
 The completed-ledger exception handler immediately offers its original incomplete
 collection claim to the existing observer: UNKNOWN window/operation/reason and U/U
 lengths, one charged <=512-byte opportunity, no later enrichment or retry.

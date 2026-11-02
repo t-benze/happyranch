@@ -465,6 +465,243 @@ def failure_result_controls() -> dict:
             assert not (output/(name+'.tmp')).exists()
             results['C3-C5-raw-positive-'+name] = 'entire literal original source/staged/published bytes, independent full type/key/list order; no raw tree'
 
+    # SAME C5/C6/C7 table: full accepted E05 P/S/Q, canonical Relay edge only.
+    # S and Q are copied literal bytes from the accepted subject, not a writer
+    # roundtrip. P's entire ordered typed content is independently literal here.
+    relay_s = b'{\n  "thread_id": "THR-701",\n  "subject": "E05 compose race",\n  "status": "open",\n  "started_at": "2026-01-01T00:00:00+00:00",\n  "archived_at": null,\n  "forwarded_from_id": null,\n  "forwarded_from_kind": null,\n  "turn_cap": 500,\n  "turns_used": 2,\n  "summary": null,\n  "transcript_path": "threads/THR-701.md",\n  "composed_by": "founder",\n  "composed_from_task_id": null,\n  "composed_from_dream_id": null,\n  "last_speaker": "case_manager",\n  "pinned": false,\n  "pinned_at": null,\n  "last_activity_at": "2026-01-01T00:00:03+00:00",\n  "participants": [\n    "case_manager",\n    "case_worker"\n  ],\n  "messages": [\n    {\n      "seq": 1,\n      "speaker": "founder",\n      "kind": "message",\n      "body_markdown": "E05 opening\\nliteral beta",\n      "decline_reason": null,\n      "system_payload": null,\n      "attachments": [],\n      "created_at": "2026-01-01T00:00:00+00:00",\n      "responder_status": [\n        {\n          "agent_name": "case_manager",\n          "purpose": "reply",\n          "status": "replied",\n          "responded_at": "2026-01-01T00:00:02+00:00",\n          "started_at": "2026-01-01T00:00:01+00:00",\n          "decline_reason": null,\n          "category": null\n        },\n        {\n          "agent_name": "case_worker",\n          "purpose": "reply",\n          "status": "declined",\n          "responded_at": "2026-01-01T00:00:02+00:00",\n          "started_at": "2026-01-01T00:00:01+00:00",\n          "decline_reason": "E05 initial observed",\n          "category": "declined"\n        }\n      ]\n    },\n    {\n      "seq": 2,\n      "speaker": "case_manager",\n      "kind": "message",\n      "body_markdown": "E05 reply\\n@case_worker received",\n      "decline_reason": null,\n      "system_payload": null,\n      "attachments": [],\n      "created_at": "2026-01-01T00:00:02+00:00",\n      "responder_status": [\n        {\n          "agent_name": "case_worker",\n          "purpose": "reply",\n          "status": "declined",\n          "responded_at": "2026-01-01T00:00:03+00:00",\n          "started_at": "2026-01-01T00:00:02+00:00",\n          "decline_reason": "E05 reply observed",\n          "category": "declined"\n        }\n      ]\n    }\n  ],\n  "reply_delivery": []\n}\n'
+    relay_q = b'"{\\n  \\"thread_id\\": \\"THR-701\\",\\n  \\"subject\\": \\"E05 compose race\\",\\n  \\"status\\": \\"open\\",\\n  \\"started_at\\": \\"2026-01-01T00:00:00+00:00\\",\\n  \\"archived_at\\": null,\\n  \\"forwarded_from_id\\": null,\\n  \\"forwarded_from_kind\\": null,\\n  \\"turn_cap\\": 500,\\n  \\"turns_used\\": 2,\\n  \\"summary\\": null,\\n  \\"transcript_path\\": \\"threads/THR-701.md\\",\\n  \\"composed_by\\": \\"founder\\",\\n  \\"composed_from_task_id\\": null,\\n  \\"composed_from_dream_id\\": null,\\n  \\"last_speaker\\": \\"case_manager\\",\\n  \\"pinned\\": false,\\n  \\"pinned_at\\": null,\\n  \\"last_activity_at\\": \\"2026-01-01T00:00:03+00:00\\",\\n  \\"participants\\": [\\n    \\"case_manager\\",\\n    \\"case_worker\\"\\n  ],\\n  \\"messages\\": [\\n    {\\n      \\"seq\\": 1,\\n      \\"speaker\\": \\"founder\\",\\n      \\"kind\\": \\"message\\",\\n      \\"body_markdown\\": \\"E05 opening\\\\nliteral beta\\",\\n      \\"decline_reason\\": null,\\n      \\"system_payload\\": null,\\n      \\"attachments\\": [],\\n      \\"created_at\\": \\"2026-01-01T00:00:00+00:00\\",\\n      \\"responder_status\\": [\\n        {\\n          \\"agent_name\\": \\"case_manager\\",\\n          \\"purpose\\": \\"reply\\",\\n          \\"status\\": \\"replied\\",\\n          \\"responded_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n          \\"started_at\\": \\"2026-01-01T00:00:01+00:00\\",\\n          \\"decline_reason\\": null,\\n          \\"category\\": null\\n        },\\n        {\\n          \\"agent_name\\": \\"case_worker\\",\\n          \\"purpose\\": \\"reply\\",\\n          \\"status\\": \\"declined\\",\\n          \\"responded_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n          \\"started_at\\": \\"2026-01-01T00:00:01+00:00\\",\\n          \\"decline_reason\\": \\"E05 initial observed\\",\\n          \\"category\\": \\"declined\\"\\n        }\\n      ]\\n    },\\n    {\\n      \\"seq\\": 2,\\n      \\"speaker\\": \\"case_manager\\",\\n      \\"kind\\": \\"message\\",\\n      \\"body_markdown\\": \\"E05 reply\\\\n@case_worker received\\",\\n      \\"decline_reason\\": null,\\n      \\"system_payload\\": null,\\n      \\"attachments\\": [],\\n      \\"created_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n      \\"responder_status\\": [\\n        {\\n          \\"agent_name\\": \\"case_worker\\",\\n          \\"purpose\\": \\"reply\\",\\n          \\"status\\": \\"declined\\",\\n          \\"responded_at\\": \\"2026-01-01T00:00:03+00:00\\",\\n          \\"started_at\\": \\"2026-01-01T00:00:02+00:00\\",\\n          \\"decline_reason\\": \\"E05 reply observed\\",\\n          \\"category\\": \\"declined\\"\\n        }\\n      ]\\n    }\\n  ],\\n  \\"reply_delivery\\": []\\n}\\n"\n'
+    relay_p_bytes = b'{"thread_id":"THR-701","subject":"E05 compose race","status":"open","started_at":"2026-01-01T00:00:00+00:00","archived_at":null,"forwarded_from_id":null,"forwarded_from_kind":null,"turn_cap":500,"turns_used":2,"summary":null,"transcript_path":"threads/THR-701.md","composed_by":"founder","composed_from_task_id":null,"composed_from_dream_id":null,"last_speaker":"case_manager","pinned":false,"pinned_at":null,"last_activity_at":"2026-01-01T00:00:03+00:00","participants":["case_manager","case_worker"],"messages":[{"seq":1,"speaker":"founder","kind":"message","body_markdown":"E05 opening\\nliteral beta","decline_reason":null,"system_payload":null,"attachments":[],"created_at":"2026-01-01T00:00:00+00:00","responder_status":[{"agent_name":"case_manager","purpose":"reply","status":"replied","responded_at":"2026-01-01T00:00:02+00:00","started_at":"2026-01-01T00:00:01+00:00","decline_reason":null,"category":null},{"agent_name":"case_worker","purpose":"reply","status":"declined","responded_at":"2026-01-01T00:00:02+00:00","started_at":"2026-01-01T00:00:01+00:00","decline_reason":"E05 initial observed","category":"declined"}]},{"seq":2,"speaker":"case_manager","kind":"message","body_markdown":"E05 reply\\n@case_worker received","decline_reason":null,"system_payload":null,"attachments":[],"created_at":"2026-01-01T00:00:02+00:00","responder_status":[{"agent_name":"case_worker","purpose":"reply","status":"declined","responded_at":"2026-01-01T00:00:03+00:00","started_at":"2026-01-01T00:00:02+00:00","decline_reason":"E05 reply observed","category":"declined"}]}],"reply_delivery":[]}'
+    relay_p = json.loads(relay_p_bytes)  # Independent literal oracle reader only.
+    assert len(relay_s) == 2174 and hashlib.sha256(relay_s).hexdigest() == '61e8793704c04efdcb865f6a3a91c3ab41fa0cd2d67839ba91d2e6b0f209c06c'
+    assert len(relay_q) == 2451 and hashlib.sha256(relay_q).hexdigest() == '903972eece33feb898150c343c17ced7144d22888087411db71d45c773d1f4f1'
+    exact(json.loads(relay_s),relay_p)
+    empty_body = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    for form in ('original','quote-LF-unicode'):
+        s, q, p_bytes, p = relay_s, relay_q[:-1], relay_p_bytes, copy.deepcopy(relay_p)
+        if form != 'original':
+            s = s.replace(b'"summary": null', '"summary": "public \\"quote\\"\\n中"'.encode())
+            q = q.replace(b'\\"summary\\": null', '\\"summary\\": \\"public \\\\\\"quote\\\\\\"\\\\n中\\"'.encode())
+            p_bytes = p_bytes.replace(b'"summary":null', '"summary":"public \\"quote\\"\\n中"'.encode())
+            p['summary'] = 'public "quote"\n中'
+        # Complete independent original and compact fragments, not candidate bytes.
+        exact(json.loads(s),p)
+        assert json.loads(q) == s.decode()
+        fields = {'path':b'"/api/v1/orgs/alpha/threads/THR-701"','method':b'"GET"',
+            'body_sha256':b'"'+empty_body.encode()+b'"','status':b'200', 'response':s,
+            'dropped':b'false','request':b'null','response_text':q,'entered':b'10.02'}
+        values = dict(path='/api/v1/orgs/alpha/threads/THR-701',method='GET',body_sha256=empty_body,
+            status=200,response=p,dropped=False,request=None,response_text=s.decode(),entered=10.02)
+        orders = (tuple(fields), ('response_text','response','entered','path','request','status','method','dropped','body_sha256'),
+                  ('response','response_text','request','body_sha256','method','path','status','entered','dropped'))
+        for order_index,order in enumerate(orders):
+            record = {key:values[key] for key in order}
+            original_image = b' { "relay" : [ {'+b', '.join(b'"'+key.encode()+b'":'+fields[key] for key in order)+b'} ] }\r\n'
+            compact_image = b'{"relay":[{'+b','.join(b'"'+key.encode()+b'":'+(p_bytes if key == 'response' else fields[key]) for key in order)+b'}]}'
+            wanted = {'relay':[copy.deepcopy(record)]}
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer':
+                        writer._atomic_json(destination,{'relay':[record]})
+                        assert destination.read_bytes() == compact_image, (form,order_index)
+                        expected_image = compact_image
+                    elif boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        candidate,parsed = writer._prepare_original_evidence(destination,source)
+                        assert candidate == original_image and not destination.exists() and not destination.with_suffix('.json.tmp').exists()
+                        exact(parsed,wanted)
+                        writer._replace_evidence(destination,candidate)
+                        assert destination.read_bytes() == original_image and source.read_bytes() == original_image
+                        expected_image = original_image
+                    else:
+                        destination.write_bytes(original_image)
+                        expected_image = original_image
+                    complete,error = acquire(); drain(); commit()
+                    assert error is None and not complete and not state['fatal'] and not errors, (boundary,failures)
+                    assert staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads((output/name).read_bytes()),wanted)
+                    assert not destination.with_name(name+'.tmp').exists()
+                    results[f'C5-Relay-full-{form}-{order_index}-{boundary}'] = 'full independent P/S/Q/order/types/framing retained at shipping file boundary; native NOT RUN'
+
+    # Finite negative inputs; source construction is independent of admission.
+    base_record = dict(path='/api/v1/orgs/alpha/threads/THR-701',method='GET',body_sha256=empty_body,
+        status=200,response=relay_p,dropped=False,request=None,response_text=relay_s.decode(),entered=10.02)
+    relay_refusals = {}
+    for case,text in {
+        'duplicate':relay_s.replace(b'"thread_id": "THR-701",',b'"thread_id": "THR-701", "thread_id": "THR-701",',1),
+        'escaped-equal':relay_s.replace(b'"thread_id": "THR-701",',b'"thread_id": "THR-701", "\\u0074hread_id": "THR-701",',1),
+        'malformed':relay_s[:-2], 'trailing':relay_s+b'x', 'wrong-top':b'['+relay_s+b']',
+        'nonfinite':relay_s.replace(b'"summary": null',b'"summary": NaN'),
+        'surrogate':relay_s.replace(b'"summary": null',b'"summary": "\\ud800"'),
+        'escaped-secret':relay_s.replace(b'"summary": null',b'"summary": "\\u0053YNTHETIC_TOKEN"'),
+        'escaped-secret-key':relay_s.replace(b'"summary": null',b'"\\u0053YNTHETIC_TOKEN": null'),
+        'literal-secret':relay_s.replace(b'"summary": null',b'"summary": "SYNTHETIC_TOKEN"'),
+        'residual-backslash':relay_s.replace(b'"summary": null',b'"summary": "public\\\\nline"'),
+        'second-json':relay_s.replace(b'"summary": null',b'"summary": "{\\"x\\":\\"public\\\\nline\\"}"'),
+    }.items():
+        record = copy.deepcopy(base_record); record['response_text'] = text.decode(); relay_refusals[case] = {'relay':[record]}
+    for case in ('changed','missing','extra','reordered','coerced','repeat'):
+        record = copy.deepcopy(base_record)
+        if case == 'changed': record['response']['subject'] = 'changed'
+        elif case == 'missing': del record['response']['summary']
+        elif case == 'extra': record['response']['extra'] = None
+        elif case == 'reordered': record['response'] = dict(reversed(tuple(record['response'].items())))
+        elif case == 'coerced': record['response']['pinned'] = 0
+        else: record['response']['messages'].append(copy.deepcopy(record['response']['messages'][0]))
+        relay_refusals[case] = {'relay':[record]}
+    for key,value in (('path','/api/v1/orgs/alpha/jobs/JOB-701'),('method','PUT'),('status',True),
+                      ('status',403),('request',{}),('body_sha256','0'*64),('dropped',True),('entered',False)):
+        record = copy.deepcopy(base_record); record[key] = value
+        relay_refusals['identity-'+key+'-'+str(value)] = {'relay':[record]}
+    for key in ('response','entered','request','path'):
+        record = copy.deepcopy(base_record); del record[key]; relay_refusals['missing-'+key] = {'relay':[record]}
+    record = copy.deepcopy(base_record); record['unexpected'] = None; relay_refusals['extra-schema'] = {'relay':[record]}
+    relay_refusals['wrong-holder'] = {'holder':{'relay':[copy.deepcopy(base_record)]}}
+    relay_refusals['wrong-relay-type'] = {'relay':copy.deepcopy(base_record)}
+    record = copy.deepcopy(base_record); record['response']['summary'] = 'a'*550000
+    relay_refusals['shared-work'] = {'relay':[record]}
+    record = copy.deepcopy(base_record); record['response']['summary'] = [None]*70000
+    relay_refusals['shared-facts'] = {'relay':[record]}
+    depth = None
+    for _ in range(61): depth = [depth]
+    record = copy.deepcopy(base_record); record['response']['summary'] = depth
+    relay_refusals['shared-depth'] = {'relay':[record]}
+    for case,image in relay_refusals.items():
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name
+                prior = b'{"prior":"safe"}'
+                destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}
+                old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('Relay unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior
+                    assert not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image)
+                    (root/'raw/eligible-relay.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-relay.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Relay-refusal-'+case+'-'+boundary] = 'whole prior final/member/FAIL/full safe tree preserved; no new member/pending; overlapping guards stated in case record'
+
+    # Real compose request encoding is HTTPX's compact UTF8 JSON, in source order.
+    post_request_bytes = b'{"subject":"E05 denial venue","recipients":["case_worker"],"body_markdown":"E05 denial anchor"}'
+    post_response_bytes = b'{"thread_id":"THR-701","started_at":"2026-01-01T00:00:00+00:00","pending_replies":["case_worker"]}'
+    post_text = b'{"thread_id":"\\u0054HR-701","started_at":"2026-01-01T00:00:00+00:00","pending_replies":["case_worker"]}\n'
+    post_token = b'"{\\"thread_id\\":\\"\\\\u0054HR-701\\",\\"started_at\\":\\"2026-01-01T00:00:00+00:00\\",\\"pending_replies\\":[\\"case_worker\\"]}\\n"'
+    post_hash = hashlib.sha256(post_request_bytes).hexdigest()
+    post_record = dict(path='/api/v1/orgs/alpha/threads',method='POST',body_sha256=post_hash,status=200,
+        response={'thread_id':'THR-701','started_at':'2026-01-01T00:00:00+00:00','pending_replies':['case_worker']},
+        dropped=False,request={'subject':'E05 denial venue','recipients':['case_worker'],'body_markdown':'E05 denial anchor'},
+        response_text=post_text.decode(),entered=10.02)
+    post_image = (b'{"relay":[{"path":"/api/v1/orgs/alpha/threads","method":"POST","body_sha256":"'+post_hash.encode()+
+        b'","status":200,"response":'+post_response_bytes+b',"dropped":false,"request":'+post_request_bytes+
+        b',"response_text":'+post_token+b',"entered":10.02}]}')
+    exact(json.loads(post_image),{'relay':[post_record]})
+    for case in ('post','post-hash','post-request','legacy'):
+        image = copy.deepcopy({'relay':[post_record]}); original_image = post_image
+        if case == 'post-hash': image['relay'][0]['body_sha256'] = '0'*64
+        elif case == 'post-request': image['relay'][0]['request']['subject'] = 'changed'
+        elif case == 'legacy':
+            image = {'relay':[dict(path='/api/v1/orgs/alpha/tasks/TASK-701/completion',method='POST',
+                body_sha256='5'*64,status=200,response={'ok':True},dropped=False)]}
+            original_image = b'{"relay":[{"path":"/api/v1/orgs/alpha/tasks/TASK-701/completion","method":"POST","body_sha256":"'+b'5'*64+b'","status":200,"response":{"ok":true},"dropped":false}]}'
+        if case in ('post-hash','post-request'): original_image = json.dumps(image,separators=(',',':')).encode()
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                wanted = case in ('post','legacy')
+                try:
+                    if boundary == 'writer': writer._atomic_json(destination,image)
+                    elif boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                        candidate,parsed = writer._prepare_original_evidence(destination,source)
+                        assert not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image)
+                        writer._replace_evidence(destination,candidate)
+                    else:
+                        destination.write_bytes(original_image)
+                        complete,error = acquire(); drain()
+                        if error is not None: raise error[0]
+                except ValueError:
+                    assert not wanted, (case,boundary)
+                    if boundary in ('writer','prefix'): assert destination.read_bytes() == prior
+                    assert staged[name] is old_buffer
+                    exact(state['safe_scenario'],old_tree)
+                    for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                else:
+                    assert wanted, 'Relay request hash not checked: '+case+'/'+boundary
+                    assert destination.read_bytes() == original_image
+                    if boundary in ('raw','raw-prefix'): assert staged[name] == published[name] == (output/name).read_bytes() == original_image
+                    exact(json.loads(destination.read_bytes()),image)
+                assert not destination.with_name(name+'.tmp').exists() and not (output/'result.tmp').exists()
+                results['C5-Relay-'+case+'-'+boundary] = 'complete POST body/digest/response or unchanged legacy record; whole prior file/tree/FAIL preserved on refusal; native NOT RUN'
+
+    # Literal cross-token original secret: no individual decoded scalar owns it.
+    for name in ('observations.json','e07-prefix.json'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            cross = '\"GET\",\"body_sha256\":'
+            (root/'coord/redaction-context.json').write_text(json.dumps(['SYNTHETIC_TOKEN',secret,cross]))
+            destination = root/'raw'/name; destination.write_bytes(b'{"prior":"safe"}')
+            acquire(); drain(); commit()
+            earlier = {p.name:p.read_bytes() for p in output.iterdir()}
+            old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+            original_image = json.dumps({'relay':[base_record]},separators=(',',':')).encode()
+            assert cross.encode() in original_image
+            destination.write_bytes(original_image)
+            (root/'raw/eligible-relay.txt').write_bytes(b'eligible ordinary sibling\n')
+            complete,error = acquire(); drain()
+            assert not complete and error is not None and str(error[0]) == 'original evidence content withheld' and not state['fatal']
+            assert staged[name] is old_buffer and published[name] is old_buffer
+            exact(state['safe_scenario'],old_tree)
+            for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+            assert (output/'eligible-relay.txt').read_bytes() == b'eligible ordinary sibling\n'
+            assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+            results['C5-Relay-cross-token-'+name] = 'whole literal original secret across syntax refuses after complete nested closure; prior entire files/tree/FAIL exact'
+
+    # No extension of canonical owner to the same spelling at other filenames.
+    for name in ('e07.json','browser-events.json'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            path = root/'raw'/name; prior = b'[]' if name == 'browser-events.json' else b'{"prior":"safe"}'
+            path.write_bytes(prior); acquire(); drain(); commit()
+            earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario'])
+            image = {'relay':[base_record]}
+            if name == 'browser-events.json': image = [image]
+            try: writer._atomic_json(path,image)
+            except ValueError: pass
+            else: raise AssertionError('Relay grant escaped its owner: '+name)
+            assert path.read_bytes() == prior and not path.with_name(name+'.tmp').exists()
+            path.write_text(json.dumps(image))
+            complete,error = acquire(); drain()
+            assert not complete and error is not None and not state['fatal']
+            exact(state['safe_scenario'],old_tree)
+            for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+            results['C5-Relay-wrong-owner-'+name] = 'same spelling at unselected real writer/raw owner refuses wholly; earlier complete state exact'
+
     # C5/C6: required original trees at the two shipping preparation/file
     # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
     originals = {
