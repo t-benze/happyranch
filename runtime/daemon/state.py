@@ -469,7 +469,8 @@ class DaemonState:
             if current is not None:
                 return current
             assert self.runtime is not None
-            owner = {"slug": slug, "runtime": self.runtime, "root": self.runtime.orgs_dir / slug,
+            owner = {"slug": slug, "runtime": self.runtime, "org_map": self.orgs,
+                     "root": self.runtime.orgs_dir / slug,
                      "profiles": self.profile_coordinator, "org": None, "published": False,
                      "task": asyncio.current_task(), "native_token": None}
             token = object()
@@ -564,7 +565,10 @@ class DaemonState:
         def insert() -> None:
             with self._org_map_lock:
                 if (self._runner_shutdown or self.runtime is not owner["runtime"]
-                        or self.profile_coordinator is not profiles or org.slug in self.orgs):
+                        or self.orgs is not owner["org_map"]
+                        or self.profile_coordinator is not profiles
+                        or (profiles is not None and profiles.orgs is not self.orgs)
+                        or org.slug in self.orgs):
                     raise _OrgBusyError("attachment_changed_during_preparation")
                 self.orgs[org.slug] = org
                 owner["published"] = True

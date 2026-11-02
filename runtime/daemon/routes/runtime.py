@@ -24,8 +24,11 @@ def _assert_can_swap(state: DaemonState) -> None:
     if state._runner_shutdown:
         raise HTTPException(status_code=409, detail={"code": "daemon_shutting_down"})
     state.team_move_service.assert_no_owner()
-    state._assert_attachment_loads_idle()
-    state._assert_attachment_readers_idle(tuple(state.orgs_snapshot().values()))
+    try:
+        state._assert_attachment_loads_idle()
+        state._assert_attachment_readers_idle(tuple(state.orgs_snapshot().values()))
+    except _OrgBusyError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach
     refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
     for org in state.orgs_snapshot().values():
@@ -131,7 +134,10 @@ def _renew_swap_preflight(daemon: DaemonState, captured: tuple) -> None:
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     _assert_can_swap(daemon)
-    daemon._begin_attachment_swap()
+    try:
+        daemon._begin_attachment_swap()
+    except _OrgBusyError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
 
 
 @router.get("/runtime")
