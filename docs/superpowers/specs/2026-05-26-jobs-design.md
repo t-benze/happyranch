@@ -51,8 +51,24 @@ An already observed native failure keeps precedence. A failed spawn supplies no
 Process; a successful spawn after cancellation is captured and stopped/reaped.
 Post-creation admission renews the original matching listener before script input;
 listener loss still permits independently owed identity-only cleanup.
+Task termination records stop intent on the SAME actual registration even while
+its original creation is pending, including after producer commitment. Intent
+and signals run on that runner's actual loop. After the SAME successful creation,
+intent suppresses script stdin and owes original Process stop/reap, pumps and
+finalization; failed creation supplies no invented Process. This is distinct from
+Pause, which still lets actual committed work drain. Foreign-loop handoff failure
+retains the actual registration/request/error without retry or PID adoption.
 The registration also occupies the org's existing native-user close barrier through its committed
-postcommit tail, or remains retained on uncertainty. Signals, output pumps,
+postcommit tail, or remains retained on uncertainty. The separate ordinary task-
+termination tail registers under existing maintenance before Task/Thread submission,
+retaining its original attachment through grace/backstop/parent/root DB work and
+actual native/loop retirement. Active or unknown submission/start/exit/handoff/
+retirement refuses dependent close without resubmission or an absent-worker wait.
+Positive terminal/consumed-receipt cleanup is attempted exactly once even after
+verdict/history failure, with original ownership and outside writer locks. Earlier
+bookkeeping/drain E1/object/traceback survives later root/owner/cancellation E2;
+actual later errors remain independently retained, without terminal/receipt replay.
+Signals, output pumps,
 terminal CAS/first cause, registration release and native cleanup use identity
 validation independently of fresh admission. No closed gate proves quiescence.
 

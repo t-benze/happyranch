@@ -22,7 +22,12 @@ BEGIN IMMEDIATE. Cancellation, missing/terminal rows and replaced agent/SID,
 claim or delegated state return False without success verdict/history/parent
 or barrier effects. Heartbeat/updated clocks do not replace lifecycle ownership.
 Sessionless carriers remain valid; accepted recovery keeps the separate exact
-ledger/INTEGER-result conditional writer. Root before/after captures remain
+ledger/INTEGER-result conditional writer. After a positive terminal CAS or an
+accepted completed/nonroot consumed receipt, verdict/history failure still owes
+that capture's job hook exactly once outside writer locks, under the same current
+owner predicates. No transition/receipt replay follows. Its E1/object/traceback
+stays primary across actual later job, owner-reread and root-finally errors or
+cancellation; those later errors are retained separately. Root before/after captures remain
 outside the native teardown/publication tail, with both unwind layers and whole
 failed-final-batch suppression intact.
 
@@ -5231,7 +5236,15 @@ can publish another wake. Unrelated entries retain FIFO order and ordinary
 enqueue remains deliberately non-coalescing. Tests must join every cleanup
 worker they create before another sweep, inspecting the queue, or restoring
 shared `jobs_runner` state; durable job settlement alone is not cleanup-tail
-completion.
+completion. Ordinary tails retain their original org/DB/map/gate/loop under the
+existing maintenance barrier before either Task or native Thread submission.
+They remain visible through grace, backstop, parent/root work, actual native exit
+and original-loop retirement. Active/unknown tails refuse idle/detach/DB close;
+enqueue/start-then-raise or missing acknowledgements retain the same owner without
+resubmission or waiting for an absent worker. Task termination also records stop
+intent on the actual registered pending spawn's owning loop. A later successful
+SAME Process receives no script input and owes its original stop/reap/pumps and
+finalization. Pause alone does not create this task-ended obligation.
 
 Graceful shutdown uses the same blocked-job recovery ownership without adding
 a resume mechanism: lifespan teardown stops `TaskQueue` first, so terminal job

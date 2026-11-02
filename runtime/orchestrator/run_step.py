@@ -3046,13 +3046,17 @@ def _consume_accepted_completion_recovery(
                 verdict=report.verdict if report.verdict is not None else "approved",
             )
         if transitioned:
-            orch._update_task_history(task_id)
-            _handoff_consumed_recovery_terminal_effects(
-                orch, task_id, agent, session_id, result_row_id,
-                TaskStatus.COMPLETED.value,
-                after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
-                root_transitions=root_transitions,
-            )
+            errors = _JobTailErrors()
+            def finish_jobs():
+                _handoff_consumed_recovery_terminal_effects(
+                    orch, task_id, agent, session_id, result_row_id,
+                    TaskStatus.COMPLETED.value,
+                    after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+                    root_transitions=root_transitions,
+                    _errors=errors,
+                )
+            with _owed_job_cleanup(orch, errors, finish_jobs):
+                orch._update_task_history(task_id)
         return
     _recovery_decision = getattr(report, "decision", None)
     _recovery_action = (
@@ -3093,12 +3097,16 @@ def _consume_accepted_completion_recovery(
             settled_at=datetime.now(timezone.utc).isoformat(),
         )
         if transitioned:
-            orch._update_task_history(task_id)
-            _handoff_consumed_recovery_terminal_effects(
-                orch, task_id, agent, session_id, result_row_id,
-                TaskStatus.FAILED.value,
-                after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
-            )
+            errors = _JobTailErrors()
+            def finish_jobs():
+                _handoff_consumed_recovery_terminal_effects(
+                    orch, task_id, agent, session_id, result_row_id,
+                    TaskStatus.FAILED.value,
+                    after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+                    _errors=errors,
+                )
+            with _owed_job_cleanup(orch, errors, finish_jobs):
+                orch._update_task_history(task_id)
         return
     if not effects_applied:
         # An interrupted ordinary terminal transition may have committed its
@@ -5417,6 +5425,237 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
     )
 
 
+class _JobTailErrors:
+    """Original terminal-effect cause and fixed, independently owed outcomes."""
+
+    def __init__(self):
+        self.primary = self.traceback = None
+        self.errors = {}
+        self.lock = threading.RLock()
+
+    def remember(self, kind, error):
+        # Actual errors have their own slots; cancellation diagnostics cannot
+        # evict a later job/root/submission/retirement failure.
+        with self.lock:
+            self.errors.setdefault(kind, (error, error.__traceback__))
+            if self.primary is None:
+                self.primary, self.traceback = error, error.__traceback__
+            BaseException.__setattr__(self.primary, '_job_tail_errors', self)
+
+    def raise_first(self):
+        with self.lock:
+            primary, traceback = self.primary, self.traceback
+        if primary is not None:
+            raise primary.with_traceback(traceback)
+
+
+@contextmanager
+def _owed_job_cleanup(orch, errors, cleanup):
+    """One hook for an already committed transition, including bookkeeping E1."""
+    try:
+        yield
+    except BaseException as error:
+        errors.remember('bookkeeping', error)
+        startup = _startup_sweep_owner(orch)
+        if startup is not None:
+            try:
+                startup.fail(error)  # Close the ENTIRE cold root batch before cleanup.
+            except BaseException as secondary:
+                errors.remember('cold_failure', secondary)
+    finally:
+        try:
+            cleanup()
+        except BaseException as error:
+            errors.remember('job_cleanup', error)
+    errors.raise_first()
+
+
+class _JobTerminationTail:
+    """ONE ordinary tail, retained before its Task/Thread submission can escape."""
+
+    def __init__(self, orch, errors):
+        self.orch, self.db, self.errors = orch, orch._db, errors
+        self.state, self.org = orch._startup_state, orch._startup_org
+        self.gate = orch._startup_recovery
+        self.org_map = None if self.state is None else self.state.orgs
+        self.runtime = None if self.state is None else self.state.runtime
+        self.runtime_root = None if self.runtime is None else self.runtime.root
+        self.org_root = None if self.org is None else self.org.root
+        self.db_path = self.db.db_path
+        self.queue = None if self.state is None else self.state.queue
+        self.refs = None if self.org is None else self.org._startup_admission_refs
+        self.epoch = None if self.gate is None else self.gate.epoch
+        self.loop = None if self.gate is None else self.gate._loop
+        self.thread = self.task = None
+        self.callback_registered = False
+        self.submitted = self.started = self.finished = False
+        self.posted = self.acknowledged = self.observed = False
+        self.retired = self.unknown = False
+        self.completion = Future()
+        self.completion.set_running_or_notify_cancel()
+        self.completion._job_termination_owner = self
+        self.validate()
+        if self.state is not None:
+            with self.state._maintenance_workers_lock:
+                self.state._maintenance_workers.add(self.completion)
+
+    def validate(self):
+        # Reference checks only; stop/Pause do not revoke owed cleanup.
+        if (self.orch._db is not self.db or self.db.db_path != self.db_path
+                or self.orch._startup_state is not self.state
+                or self.orch._startup_org is not self.org or self.orch._startup_recovery is not self.gate
+                or self.state is None and (self.org is not None or self.gate is not None)
+                or self.state is not None and (self.org is None
+                    or self.state.orgs is not self.org_map or self.state.runtime is not self.runtime
+                    or self.state.queue is not self.queue or self.state._startup_recovery is not self.gate
+                    or (None if self.runtime is None else self.runtime.root) != self.runtime_root
+                    or self.org.root != self.org_root or self.org_map.get(self.org.slug) is not self.org
+                    or self.org.orchestrator is not self.orch or self.org.db is not self.db
+                    or self.org._startup_state is not self.state
+                    or self.org._startup_recovery is not self.gate
+                    or self.org._startup_admission_refs is not self.refs
+                    or not isinstance(self.refs, tuple) or len(self.refs) != 7
+                    or any(current is not original for current, original in zip(
+                        (self.orch, self.db, self.org.sessions, self.org.thread_queue,
+                         self.org.dream_queue, self.org.wake_queue, self.org.schedule_queue), self.refs)))
+                or self.gate is not None and (self.gate.state is not self.state
+                    or self.gate.app.state.daemon is not self.state
+                    or self.gate.epoch != self.epoch or self.gate._loop is not self.loop)):
+            raise RuntimeError('job_termination_attachment_changed')
+
+    async def run(self, operation):
+        actual = asyncio.current_task()
+        if self.task is not None and self.task is not actual:
+            raise RuntimeError('job_termination_task_changed')
+        self.task = actual
+        self.started = True
+        try:
+            if self.thread is None and not self.callback_registered:
+                actual.add_done_callback(self.task_done)
+                self.callback_registered = True
+            self.validate()
+            await operation()
+        except BaseException as error:
+            self.errors.remember('tail', error)
+            self.errors.raise_first()
+        finally:
+            # For a native Thread this is body completion only. asyncio.run,
+            # actual Thread exit and original-loop acknowledgement still follow.
+            self.finished = True
+
+    def task_done(self, task):
+        try:
+            if task is not self.task:
+                # A Task cancelled before body entry is still this submission's
+                # object, but supplies no body/finally acknowledgement.
+                if self.task is not None:
+                    raise RuntimeError('job_termination_task_changed')
+                self.task = task
+            task.result()
+        except BaseException as error:
+            self.errors.remember('task_outcome', error)
+        self.observed = True
+        self.acknowledged = True  # This callback runs on that actual Task's loop.
+        self.publish_completion()
+        self.retire()
+
+    def run_thread(self, operation):
+        try:
+            if threading.current_thread() is not self.thread:
+                raise RuntimeError('job_termination_thread_changed')
+            asyncio.run(self.run(operation))
+        except BaseException as error:
+            self.errors.remember('thread_outcome', error)
+        finally:
+            # Includes asyncio.run's own loop/pump shutdown, not just coroutine
+            # return. Exit is observed separately, never inferred from this flag.
+            self.observed = True
+            self.publish_completion()
+            if self.loop is not None:
+                try:
+                    self.loop.call_soon_threadsafe(self.acknowledge)
+                except BaseException as error:
+                    self.errors.remember('handoff', error)
+                    self.unknown = True
+                else:
+                    self.posted = True
+            else:
+                self.acknowledged = self.state is None
+
+    def publish_completion(self):
+        if not self.completion.done():
+            if self.errors.primary is None:
+                self.completion.set_result(None)
+            else:
+                self.completion.set_exception(self.errors.primary)
+
+    def acknowledge(self):
+        self.acknowledged = True
+        self.retire()
+
+    def retirement_ready(self):
+        self.validate()
+        # No join under a registry/native/DB lock, no wait for an absent worker.
+        # is_alive=False is used only for this real started Thread together with
+        # its positive body/run/submission/handoff acknowledgements.
+        native_exited = (self.thread is None or not self.thread.is_alive())
+        return (not self.unknown and self.errors.primary is None and self.submitted
+                and self.started and self.finished and self.observed and self.acknowledged
+                and native_exited and (self.thread is None or self.state is None or self.posted)
+                and self.task is not None and self.task.done() and not self.task.cancelled())
+
+    def maintenance_error(self):
+        if self.retirement_ready():
+            return None
+        error = self.errors.primary or RuntimeError('job_termination_active_or_unknown')
+        error.maintenance_native_unsettled = True
+        BaseException.__setattr__(error, '_job_termination_owner', self)
+        return error
+
+    def retire(self):
+        try:
+            if self.state is not None:
+                self.state._retire_maintenance_worker(self.completion)
+        except BaseException as error:
+            self.unknown = True
+            self.errors.remember('retirement', error)
+            # Preserve even a partial registry retirement.
+            with self.state._maintenance_workers_lock:
+                self.state._maintenance_workers.add(self.completion)
+
+    def submit(self, operation):
+        self.operation = operation  # Retain the original IDs/closures/root manifest.
+        coroutine = None
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.thread = threading.Thread(target=self.run_thread, args=(operation,), daemon=True)
+                self.thread._job_termination_owner = self
+                self.thread.start()
+                self.submitted = True
+                return self.thread
+            else:
+                if self.state is not None and loop is not self.loop:
+                    raise RuntimeError('job_termination_loop_changed')
+                coroutine = self.run(operation)
+                self.task = loop.create_task(coroutine)
+                self.task._job_termination_owner = self
+                if not self.callback_registered:
+                    self.task.add_done_callback(self.task_done)
+                    self.callback_registered = True
+                self.submitted = True
+                return self.task
+        except BaseException as error:
+            self.unknown = True
+            self.errors.remember('submission', error)
+            # An enqueue-then-raise may still own this coroutine. Do not close,
+            # cancel or resubmit it without positive no-run evidence.
+            self.coroutine = coroutine
+            self.publish_completion()
+            self.errors.raise_first()
+
+
 def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str | None = None,
               recovery_owner: tuple[str, str, int] | None = None,
               after_recovery_cleanup: Callable[[], None] | None = None,
@@ -5429,6 +5668,23 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
     root_handed_off = False
     tail_failed = False
     completion_committed = False
+    errors = _JobTailErrors()
+
+    def finish_jobs():
+        nonlocal root_handed_off
+        if recovery_owner is None:
+            _kill_jobs_for_terminating_task(orch, task_id, _errors=errors)
+        elif orch._db.mark_task_completion_recovery_callback_consumed(
+            task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
+            result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
+        ):
+            _handoff_consumed_recovery_terminal_effects(
+                orch, task_id, recovery_owner[0], recovery_owner[1], recovery_owner[2],
+                TaskStatus.COMPLETED.value, after_recovery_cleanup=after_recovery_cleanup,
+                after_recovery_parent_effect=after_recovery_parent_effect,
+                root_transitions=root_transitions, _errors=errors,
+            )
+            root_handed_off = True
     try:
         from datetime import datetime, timezone
         # Idempotence guard: /cancel may have already taken this task to FAILED
@@ -5458,30 +5714,23 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
             if not committed:
                 return False
         completion_committed = True
-        _log_verdict_if_delegated(orch, task_id, success=True)
-        orch._update_task_history(task_id)
-        if recovery_owner is None:
-            _kill_jobs_for_terminating_task(orch, task_id)
-            if reclaim_terminal_worktree and not root_transitions:
-                _reclaim_terminal_task_worktree(orch, task_id)
-        elif orch._db.mark_task_completion_recovery_callback_consumed(
-            task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
-            result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
-        ):
-            _handoff_consumed_recovery_terminal_effects(
-                orch, task_id, recovery_owner[0], recovery_owner[1], recovery_owner[2],
-                TaskStatus.COMPLETED.value, after_recovery_cleanup=after_recovery_cleanup,
-                after_recovery_parent_effect=after_recovery_parent_effect,
-                root_transitions=root_transitions,
-            )
-            root_handed_off = True
+        with _owed_job_cleanup(orch, errors, finish_jobs):
+            _log_verdict_if_delegated(orch, task_id, success=True)
+            orch._update_task_history(task_id)
+        if recovery_owner is None and reclaim_terminal_worktree and not root_transitions:
+            _reclaim_terminal_task_worktree(orch, task_id)
         return True
-    except BaseException:
+    except BaseException as error:
         tail_failed = True
+        errors.remember('terminal', error)
         raise
     finally:
         if root_transitions and not root_handed_off:
-            _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or recovery_owner is not None or not completion_committed)
+            try:
+                _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or recovery_owner is not None or not completion_committed)
+            except BaseException as error:
+                errors.remember('root_terminal_cleanup', error)
+                errors.raise_first()
 
 
 
@@ -5599,37 +5848,43 @@ def _fail_terminal_tail(
         )
 
     tail_failed = False
+    errors = _JobTailErrors()
+
+    def finish_jobs():
+        if current():
+            _kill_jobs_for_terminating_task(orch, task_id,
+                current_owner=current, _errors=errors)
+
     try:
-        if current():
-            if current_owner is None:
-                _log_verdict_if_delegated(orch, task_id, success=False)
-            else:
-                _attachment_owned_effect(orch, current, lambda: _log_verdict_if_delegated(orch, task_id, success=False))
-        if current():
-            if current_owner is None:
-                orch._update_task_history(task_id)
-            else:
-                _attachment_owned_effect(orch, current, lambda: orch._update_task_history(task_id), history=True)
-        if current():
-            if current_owner is None:
-                _kill_jobs_for_terminating_task(orch, task_id)
-            else:
-                _attachment_owned_effect(orch, current, lambda: _kill_jobs_for_terminating_task(
-                    orch, task_id, current_owner=current,
-                ))
+        with _owed_job_cleanup(orch, errors, finish_jobs):
+            if current():
+                if current_owner is None:
+                    _log_verdict_if_delegated(orch, task_id, success=False)
+                else:
+                    _attachment_owned_effect(orch, current, lambda: _log_verdict_if_delegated(orch, task_id, success=False))
+            if current():
+                if current_owner is None:
+                    orch._update_task_history(task_id)
+                else:
+                    _attachment_owned_effect(orch, current, lambda: orch._update_task_history(task_id), history=True)
         if reclaim_terminal_worktree and not root_transitions and current():
             _reclaim_terminal_task_worktree(orch, task_id, current_owner=current_owner)
-    except BaseException:
+    except BaseException as error:
         tail_failed = True
+        errors.remember('terminal', error)
         raise
     finally:
         if root_transitions:
             try:
                 owner_current = current()
-            except Exception:
+            except BaseException as error:
                 owner_current = False
-                logger.exception('root worktree failure-tail owner unavailable')
-            _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or not owner_current)
+                errors.remember('owner_reread', error)
+            try:
+                _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or not owner_current)
+            except BaseException as error:
+                errors.remember('root_failure_cleanup', error)
+            errors.raise_first()
 
 
 
@@ -5639,6 +5894,7 @@ def _handoff_consumed_recovery_terminal_effects(
     after_recovery_cleanup: Callable[[], None] | None = None,
     root_transitions: list | None = None,
     after_recovery_parent_effect: Callable[[], None] | None = None,
+    _errors: _JobTailErrors | None = None,
 ) -> None:
     """Capture a consumed recovery's exact jobs before asynchronous effects.
 
@@ -5647,54 +5903,68 @@ def _handoff_consumed_recovery_terminal_effects(
     the async cleanup receives only the captured IDs and fences parent delivery
     with the same consumed owner predicate.
     """
-    task = orch._db.get_task(task_id)
-    if terminal_status == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
-        try:
-            human = orch.teams.manager_for_team(task.team).kind == "human"
-        except KeyError:
-            human = False
-        if human:
-            return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id,
-                parent_effect=after_recovery_cleanup,
-                bookkeeping=after_recovery_parent_effect)
-    recovery_job_ids = orch._db.settle_consumed_task_completion_recovery_jobs(
-        task_id=task_id, agent=agent, recovery_session_id=session_id,
-        result_row_id=result_row_id, terminal_status=terminal_status,
-        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    )
-    if recovery_job_ids is None:
-        if root_transitions:
-            _root_worktree_batch(orch, root_transitions, teardown_incomplete=True)
-        return
-    # A valid zero-job receipt has no asynchronous termination boundary.  Its
-    # parent handoff must not be lost merely because there is nothing for the
-    # runner to drain.
-    if not recovery_job_ids:
-        handed_off = False
-        if after_recovery_cleanup is not None:
-            with _startup_sweep_effect(orch):
-                handed_off = orch._db.handoff_consumed_task_completion_recovery_parent_effect(
+    errors = _errors if _errors is not None else _JobTailErrors()
+    try:
+        task = orch._db.get_task(task_id)
+        if terminal_status == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
+            try:
+                human = orch.teams.manager_for_team(task.team).kind == "human"
+            except KeyError:
+                human = False
+            if human:
+                return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id,
+                    parent_effect=after_recovery_cleanup,
+                    bookkeeping=after_recovery_parent_effect)
+        recovery_job_ids = orch._db.settle_consumed_task_completion_recovery_jobs(
+            task_id=task_id, agent=agent, recovery_session_id=session_id,
+            result_row_id=result_row_id, terminal_status=terminal_status,
+            finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        if recovery_job_ids is None:
+            if root_transitions:
+                _root_worktree_batch(orch, root_transitions, teardown_incomplete=True)
+            return
+        # A valid zero-job receipt has no asynchronous termination boundary.  Its
+        # parent handoff must not be lost merely because there is nothing for the
+        # runner to drain.
+        if not recovery_job_ids:
+            handed_off = False
+            if after_recovery_cleanup is not None:
+                with _startup_sweep_effect(orch):
+                    handed_off = orch._db.handoff_consumed_task_completion_recovery_parent_effect(
+                        task_id=task_id, agent=agent, recovery_session_id=session_id,
+                        result_row_id=result_row_id, terminal_status=terminal_status,
+                        effect=after_recovery_cleanup,
+                    )
+            if handed_off and after_recovery_parent_effect is not None:
+                with _startup_sweep_effect(orch):
+                    after_recovery_parent_effect()
+            if root_transitions:
+                current_owner = orch._db.consumed_task_completion_recovery_owner_is_current(
                     task_id=task_id, agent=agent, recovery_session_id=session_id,
-                    result_row_id=result_row_id, terminal_status=terminal_status,
-                    effect=after_recovery_cleanup,
-                )
-        if handed_off and after_recovery_parent_effect is not None:
-            with _startup_sweep_effect(orch):
-                after_recovery_parent_effect()
+                    result_row_id=result_row_id, terminal_status=terminal_status)
+                _root_worktree_batch(orch, root_transitions, teardown_incomplete=not current_owner)
+            return
+        _kill_jobs_for_terminating_task(
+            orch, task_id,
+            recovery_owner=(agent, session_id, result_row_id, terminal_status),
+            recovery_job_ids=recovery_job_ids,
+            root_transitions=root_transitions,
+            after_recovery_cleanup=after_recovery_cleanup,
+            after_recovery_parent_effect=after_recovery_parent_effect,
+            _errors=errors,
+        )
+    except BaseException as error:
+        errors.remember('job_handoff', error)
+        startup = _startup_sweep_owner(orch)
+        if startup is not None:
+            startup.fail(errors.primary)
         if root_transitions:
-            current_owner = orch._db.consumed_task_completion_recovery_owner_is_current(
-                task_id=task_id, agent=agent, recovery_session_id=session_id,
-                result_row_id=result_row_id, terminal_status=terminal_status)
-            _root_worktree_batch(orch, root_transitions, teardown_incomplete=not current_owner)
-        return
-    _kill_jobs_for_terminating_task(
-        orch, task_id,
-        recovery_owner=(agent, session_id, result_row_id, terminal_status),
-        recovery_job_ids=recovery_job_ids,
-        root_transitions=root_transitions,
-        after_recovery_cleanup=after_recovery_cleanup,
-        after_recovery_parent_effect=after_recovery_parent_effect,
-    )
+            try:
+                _root_worktree_batch(orch, root_transitions, teardown_incomplete=True)
+            except BaseException as secondary:
+                errors.remember('root_handoff_cleanup', secondary)
+        errors.raise_first()
 
 
 def _kill_jobs_for_terminating_task(
@@ -5706,8 +5976,9 @@ def _kill_jobs_for_terminating_task(
     after_recovery_parent_effect: Callable[[], None] | None = None,
     human_recovery_operation: _HumanFailedRecoveryOperation | None = None,
     current_owner: Callable[[], bool] | None = None,
+    _errors: _JobTailErrors | None = None,
 ) -> asyncio.Task | threading.Thread | None:
-    """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
+    """Retain and terminate the original persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
     terminal state. The kill runs out-of-band so task-row progression never
@@ -5741,6 +6012,9 @@ def _kill_jobs_for_terminating_task(
     import threading
 
     from runtime.daemon.jobs_runner import terminate_jobs_for_task
+
+    errors = _errors if _errors is not None else _JobTailErrors()
+    ordinary = None
 
     async def _kill_and_backstop() -> None:
         if human_recovery_operation is not None:
@@ -5792,6 +6066,8 @@ def _kill_jobs_for_terminating_task(
                 logger.exception("human failed recovery job drain failed")
                 operation.finish("recovery_required")
                 return
+            if ordinary is not None:
+                ordinary.validate()
             # Keep the original K and callback. Busy here retries only this
             # handoff; it never settles/drains the already finished jobs again.
             operation.phase = "parent_handoff"
@@ -5803,9 +6079,11 @@ def _kill_jobs_for_terminating_task(
                 if startup is not None:
                     startup.local_hold()
                 return
-        drain_failed = False
+        drain_failed = errors.primary is not None
         try:
             await terminate_jobs_for_task(task_id, db=orch._db, org_slug=orch._slug, inflight_to_task=inflight_map)
+            if ordinary is not None:
+                ordinary.validate()
             # Backstop DB update — guarded by status='running' so we don't trample
             # the runner's own terminal write if it got there first.  The database
             # helper owns only this short transaction; never hold its lock across
@@ -5840,19 +6118,27 @@ def _kill_jobs_for_terminating_task(
                         after_recovery_parent_effect()
         except BaseException as exc:
             drain_failed = True
+            errors.remember('job_drain', exc)
             startup = _startup_sweep_owner(orch)
             if startup is not None:
                 startup.fail(exc)
-            raise
         finally:
             if root_transitions:
                 startup = _startup_sweep_owner(orch)
+                attachment_current = True
+                try:
+                    if ordinary is not None:
+                        ordinary.validate()
+                except BaseException as exc:
+                    attachment_current = False
+                    ordinary.unknown = True
+                    errors.remember('attachment', exc)
                 try:
                     # Do not shadow the closure's current_owner predicate.
                     # A suppressed cold tail only merges its capture: no DB
                     # ownership reread, report or cleanup executor escape.
                     batch_owner_current = False
-                    if startup is None or startup.admission_open():
+                    if attachment_current and (startup is None or startup.admission_open()):
                         if recovery_owner is not None:
                             agent, session_id, result_row_id, terminal_status = recovery_owner
                             batch_owner_current = db.consumed_task_completion_recovery_owner_is_current(
@@ -5861,29 +6147,30 @@ def _kill_jobs_for_terminating_task(
                         else:
                             with db._lock:
                                 batch_owner_current = current_owner is None or current_owner()
-                    await _await_root_worktree_batch(orch, root_transitions,
-                        teardown_incomplete=drain_failed or not batch_owner_current)
                 except BaseException as exc:
-                    if startup is None:
-                        raise
-                    startup.fail(exc)
-                    if not drain_failed:
-                        raise
+                    batch_owner_current = False
+                    errors.remember('owner_reread', exc)
+                    if startup is not None:
+                        startup.fail(exc)
+                try:
+                    if attachment_current:
+                        disposition = await _await_root_worktree_batch(orch, root_transitions,
+                            teardown_incomplete=drain_failed or errors.primary is not None or not batch_owner_current)
+                        if ordinary is not None:
+                            ordinary.validate()
+                            if getattr(disposition, 'kind', None) == 'unknown':
+                                ordinary.unknown = True
+                except BaseException as exc:
+                    errors.remember('root_cleanup', exc)
+                    if startup is not None:
+                        startup.fail(exc)
+        errors.raise_first()
 
     startup = _startup_sweep_owner(orch)
     if startup is not None:
         return startup.start_tail(lambda: asyncio.run(_kill_and_backstop()))
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # No event loop — run_step thread-pool worker. Spawn a daemon thread
-        # that owns its own loop.
-        threading.Thread(
-            target=lambda: asyncio.run(_kill_and_backstop()),
-            daemon=True,
-        ).start()
-    else:
-        return loop.create_task(_kill_and_backstop())
+    ordinary = _JobTerminationTail(orch, errors)
+    return ordinary.submit(_kill_and_backstop)
 
 
 

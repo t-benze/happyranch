@@ -87,7 +87,22 @@ class DaemonState:
     def _retire_maintenance_worker(self, worker) -> None:
         # A marked original failure retains its actual Process and blocks
         # destruction even after its Python wrapper has ended.
+        tail = getattr(worker, '_job_termination_owner', None)
+        if tail is not None:
+            try:
+                if not tail.retirement_ready():
+                    return
+            except BaseException as error:
+                tail.unknown = True
+                tail.errors.remember('retirement', error)
+                tail.errors.raise_first()
         with self._maintenance_workers_lock:
+            if tail is not None:
+                if worker not in self._maintenance_workers and not tail.retired:
+                    raise RuntimeError('job_termination_retirement_owner_missing')
+                self._maintenance_workers.discard(worker)
+                tail.retired = True
+                return
             cleanup = getattr(worker, '_worktree_cleanup_owner', None)
             if cleanup is not None:
                 if not cleanup.retirement_ready:
@@ -118,6 +133,14 @@ class DaemonState:
             workers = tuple(self._maintenance_workers)
         for worker in workers:
             try:
+                tail = getattr(worker, '_job_termination_owner', None)
+                if tail is not None:
+                    # Active/missing native/loop acknowledgements refuse rather
+                    # than waiting for an absent worker or a foreign-loop Task.
+                    failure = tail.maintenance_error()
+                    if failure is not None:
+                        raise failure
+                    continue
                 cleanup = getattr(worker, '_worktree_cleanup_owner', None)
                 if cleanup is not None:
                     # Missing submission/native/loop/retirement acknowledgement
@@ -133,9 +156,20 @@ class DaemonState:
                 if primary is None:
                     primary, traceback = exc, exc.__traceback__
                 else:
-                    self._startup_recovery._retain_secondary(exc)
+                    if self._startup_recovery is not None:
+                        self._startup_recovery._retain_secondary(exc)
+                    elif getattr(worker, '_job_termination_owner', None) is not None:
+                        worker._job_termination_owner.errors.remember('maintenance_drain', exc)
             finally:
-                self._retire_maintenance_worker(worker)
+                try:
+                    self._retire_maintenance_worker(worker)
+                except BaseException as exc:
+                    if primary is None:
+                        primary, traceback = exc, exc.__traceback__
+                    elif getattr(worker, '_job_termination_owner', None) is not None:
+                        worker._job_termination_owner.errors.remember('retirement', exc)
+                    elif self._startup_recovery is not None:
+                        self._startup_recovery._retain_secondary(exc)
         if primary is not None:
             raise primary.with_traceback(traceback)
 
@@ -235,6 +269,13 @@ class DaemonState:
             raise primary.with_traceback(traceback)
 
     def _assert_startup_idle(self, org=None) -> None:
+        # A native tail's loop callback may precede actual Thread exit. Renew
+        # that SAME completed owner once, without joining under this mutex.
+        with self._maintenance_workers_lock:
+            tails = tuple(worker for worker in self._maintenance_workers
+                          if getattr(worker, '_job_termination_owner', None) is not None)
+        for worker in tails:
+            self._retire_maintenance_worker(worker)
         with self._maintenance_workers_lock:
             if self._maintenance_workers:
                 raise _OrgBusyError("maintenance_native_in_flight")

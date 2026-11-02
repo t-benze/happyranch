@@ -15,7 +15,9 @@ import logging
 import os
 import shutil
 import signal
-from dataclasses import dataclass
+import threading
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -124,6 +126,12 @@ class _JobRegistration:
     output_tasks: tuple[asyncio.Task, ...] = ()
     output_process: asyncio.subprocess.Process | None = None
     output_error: Exception | None = None
+    # Task termination belongs to this actual registration before a Process
+    # exists. Pause alone never creates this obligation.
+    task_ended: bool = False
+    task_end_handoffs: dict = field(default_factory=dict)
+    task_end_errors: dict = field(default_factory=dict)
+    task_end_lock: object = field(default_factory=threading.RLock, repr=False)
 
     @property
     def key(self):
@@ -679,6 +687,7 @@ async def run_job(
     # Establish exception custody before the successful spawn can encounter
     # registration, scratch, accounting, stdin or output setup failures.
     proc = None
+    stopped_before_spawn = object()  # Private positive no-creation outcome only.
     pumps = []
     watcher = None
     cancellation = cancellation_traceback = None
@@ -738,6 +747,8 @@ async def run_job(
                     require_job_admission()
                 if runner_task.cancelling():
                     raise asyncio.CancelledError()
+                if registration is not None and registration.task_ended:
+                    return stopped_before_spawn
                 if move_owner is not None:
                     # Retain the reservation's selection after this Task turn.
                     move_owner.require_admission()
@@ -780,6 +791,17 @@ async def run_job(
                 if spawn.cancelled() or spawn.exception() is not None:
                     raise primary.with_traceback(primary_traceback)
                 proc = spawn.result()
+            if proc is stopped_before_spawn:
+                proc = None
+                if cancellation is not None:
+                    raise cancellation.with_traceback(cancellation_traceback)
+                # No native call occurred. Preserve task_ended rather than
+                # classifying a positive original stop as an internal error;
+                # producer/Pause finalization still owns its existing proof.
+                return JobRunResult(status='failed', exit_code=None,
+                    duration_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
+                    stdout_head=None, stderr_head=None, stdout_bytes=0, stderr_bytes=0,
+                    truncated_stdout=False, truncated_stderr=False, reason='task_ended')
             if registration is not None:
                 # Capture even when scratch reset or later accounting fails. The
                 # original org native-user barrier retains DB-close ownership.
@@ -811,7 +833,26 @@ async def run_job(
                 # Creation already happened; actual listener loss forbids script
                 # input while identity-only original-owner stop/reap remains owed.
                 startup_closed = True
-        if cancellation is None and not startup_closed:
+        if registration is not None:
+            # The ordinary terminal hook itself is submitted out of band. Close
+            # that scheduling interval too, on this SAME registered runner after
+            # actual creation and before any script input. Rows select stop
+            # intent; only the validated registration owns the Process effects.
+            _validate_registration(registration, running_task=True)
+            from runtime.models import TaskStatus
+            owning_task = registration.db.get_task(registration.task_id)
+            if owning_task is None:
+                raise RuntimeError('job_task_owner_unavailable')
+            if (owning_task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED,
+                                       TaskStatus.SUPERSEDED, TaskStatus.CANCELLED)
+                    or owning_task.cancelled_at is not None):
+                registration.task_ended = True
+        task_ended = registration is not None and registration.task_ended
+        if task_ended and registration.cause is None:
+            # This positive original stop obligation predates Process publication;
+            # it is not a provisional signal whose failed delivery erases intent.
+            registration.cause = _JobCause(registration, proc, 'task_ended', registration.attempt)
+        if cancellation is None and not startup_closed and not task_ended:
             proc.stdin.write(script_text.encode("utf-8"))
         proc.stdin.close()
 
@@ -888,12 +929,13 @@ async def run_job(
         try:
             if cancellation is not None:
                 raise cancellation.with_traceback(cancellation_traceback)
-            if startup_closed:
-                _signal_registered_job(registration, "daemon_shutdown")
+            if startup_closed or task_ended:
+                stop_reason = 'task_ended' if task_ended else 'daemon_shutdown'
+                _signal_registered_job(registration, stop_reason)
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except asyncio.TimeoutError:
-                    _signal_registered_job(registration, "daemon_shutdown", signal.SIGKILL)
+                    _signal_registered_job(registration, stop_reason, signal.SIGKILL)
                     await proc.wait()
             if max_runtime_seconds is None:
                 await proc.wait()
@@ -1029,8 +1071,9 @@ async def run_job(
                     if proc.stdin is not None:
                         proc.stdin.close()
                     if proc.returncode is None:
-                        if registration is not None and startup_closed:
-                            _signal_registered_job(registration, "daemon_shutdown", signal.SIGKILL)
+                        if registration is not None and (startup_closed or registration.task_ended):
+                            _signal_registered_job(registration,
+                                'task_ended' if registration.task_ended else 'daemon_shutdown', signal.SIGKILL)
                         else:
                             try:
                                 os.killpg(proc.pid, signal.SIGKILL)
@@ -1101,25 +1144,109 @@ def in_flight_job_ids(*, db) -> list[str]:
     return [_validate_registration(r).job_id for r in tuple(_INFLIGHT.values()) if r.db is db]
 
 
+async def _task_end_on_runner_loop(r, sig):
+    """One identity-bound request/acknowledgement on the actual runner's loop."""
+    loop = r.task.get_loop()
+    current = asyncio.get_running_loop()
+
+    def request():
+        if r.released or _RUNNER_TASKS.get(r.key) is not r:
+            return False
+        _validate_registration(r)
+        if asyncio.get_running_loop() is not loop:
+            raise RuntimeError('job_task_end_loop_changed')
+        r.task_ended = True
+        if r.process is None:
+            return True  # SAME pending creation must reconcile before stdin.
+        return _signal_registered_job(r, 'task_ended', sig)
+
+    if current is loop:
+        return request()
+    # A worker tail must never operate an asyncio Task/Process on a foreign
+    # loop. Retain the actual callback/Future even when posting enqueues then
+    # raises; there is no retry or inference that the callback did not run.
+    with r.task_end_lock:
+        handoff = r.task_end_handoffs.get(sig)
+        submit = handoff is None
+        if submit:
+            handoff = Future()
+            handoff.set_running_or_notify_cancel()
+            r.task_end_handoffs[sig] = handoff
+        failed_submission = r.task_end_errors.get(('submission', sig))
+    if failed_submission is not None:
+        raise failed_submission[0].with_traceback(failed_submission[1])
+    if submit:
+        def deliver():
+            try:
+                handoff.set_result(request())
+            except BaseException as error:
+                r.task_end_errors.setdefault(sig, (error, error.__traceback__))
+                r.tail_failed = True
+                handoff.set_exception(error)
+        try:
+            if not loop.is_running() or loop.is_closed():
+                raise RuntimeError('job_task_end_loop_unavailable')
+            loop.call_soon_threadsafe(deliver)
+        except BaseException as error:
+            r.task_end_errors.setdefault(('submission', sig), (error, error.__traceback__))
+            r.tail_failed = True
+            raise
+    from runtime.daemon.startup_recovery import _await_startup_owned
+    def retain(error):
+        r.task_end_errors.setdefault(('waiter', sig), (error, error.__traceback__))
+    return await _await_startup_owned(asyncio.wrap_future(handoff), retain)
+
+
 async def terminate_jobs_for_task(
     task_id: str, *, db, org_slug: str,
     inflight_to_task: dict[str, str] | None = None,
     grace_seconds: float = 5.0,
 ) -> list[str]:
-    # DB rows select candidates; only the original actual registration owns signals.
+    # Rows select candidates, including genuine registered-but-spawning jobs.
+    # The original registration/attempt and owning loop still control effects.
     candidates = inflight_to_task or {}
-    targets = [r for r in tuple(_INFLIGHT.values())
+    targets = [r for r in tuple(_RUNNER_TASKS.values())
                if r.db is db and r.org_slug == org_slug and r.task_id == task_id
-               and candidates.get(r.job_id) == task_id]
-    signalled = []
+               and candidates.get(r.job_id) == task_id and not r.released]
+    requested = []
+    primary = traceback = None
+    failures = []
     for r in targets:
-        if _signal_registered_job(r, 'task_ended'):
-            signalled.append(r)
-    if signalled:
-        await asyncio.sleep(grace_seconds)
-    for r in signalled:
-        _signal_registered_job(r, 'task_ended', signal.SIGKILL)
-    return [r.job_id for r in signalled]
+        try:
+            if await _task_end_on_runner_loop(r, signal.SIGTERM):
+                requested.append(r)
+        except BaseException as error:
+            failures.append((r, 'request', error, error.__traceback__))
+            # A waiter cancellation can follow the actual acknowledged TERM.
+            # That original request still owes its KILL stage exactly once.
+            if r.task_ended and r not in requested:
+                requested.append(r)
+            if primary is None:
+                primary, traceback = error, error.__traceback__
+            else:
+                r.task_end_errors.setdefault('later_request', (error, error.__traceback__))
+    if requested:
+        try:
+            await asyncio.sleep(grace_seconds)
+        except BaseException as error:
+            failures.append((None, 'grace', error, error.__traceback__))
+            if primary is None:
+                primary, traceback = error, error.__traceback__
+            else:
+                BaseException.__setattr__(primary, '_job_task_end_wait_secondary', (error, error.__traceback__))
+    for r in requested:
+        try:
+            await _task_end_on_runner_loop(r, signal.SIGKILL)
+        except BaseException as error:
+            failures.append((r, 'kill', error, error.__traceback__))
+            if primary is None:
+                primary, traceback = error, error.__traceback__
+            else:
+                r.task_end_errors.setdefault('later_kill', (error, error.__traceback__))
+    if primary is not None:
+        BaseException.__setattr__(primary, '_job_task_end_errors', tuple(failures))
+        raise primary.with_traceback(traceback)
+    return [r.job_id for r in requested]
 
 
 async def terminate_all_inflight(

@@ -435,8 +435,17 @@ even if recovery close reports an error. Lifespan attempts independent service
 and diagnostic drains, preserves its earlier primary and prevents logging errors
 from replacing it. Independently owed host, consumer/dashboard, queue, job and
 maintenance drains are attempted while the loop and DB remain available, even
-when an unrelated ended drain failed. Active maintenance is joined before the
-final idle preflight. Positive original startup/read/service/revocation/host/
+when an unrelated ended drain failed. Ordinary job-termination tails register
+under the existing maintenance barrier before Task/Thread submission and retain
+the original attachment through final backstop/parent/root DB use. Job/queue
+retirement or terminal rows cannot stand in for that tail's submission, actual
+body/run/native exit, original-loop handoff and retirement acknowledgements.
+Drain/idle refuse active or unknown tails without an absent-worker wait, retry or
+inferred no-run; direct close, remove, runtime swap, global and lifespan close
+consult the same barrier. Earlier bookkeeping/job E1 and original traceback stay
+primary across later independent cleanup errors, retained in fixed slots.
+Active maintenance is joined or refuses destruction before the final idle
+preflight. Positive original startup/read/service/revocation/host/
 consumer/queue/job/maintenance barriers and executor closure permit dependent
 destruction; close_all renews attachment, runner and diagnostic barriers before
 DB close. Cancelled wrappers, native-uncertain failures, failed cleanup and an

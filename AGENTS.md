@@ -222,8 +222,17 @@ refresh and no-active-pin close retain their original paths. Missing production
 org/preparation/DB attachment refuses. SOURCE only; behavior/PROOF NOT RUN.
 
 Shutdown joins original maintenance operations and attempts independently owed
-host/consumer/dashboard/queue/job/service drains even after an ended error. Active
-maintenance is not an early reason to skip them. Positive final native/maintenance/
+host/consumer/dashboard/queue/job/service drains even after an ended error. Each
+ordinary job-termination tail registers its SAME original org/DB attachment under
+that maintenance barrier before Task/Thread submission. Runner/queue retirement,
+terminal rows and Process-map absence cannot retire its later grace/backstop/
+parent/root work. Positive submission, body/run completion, actual native exit,
+original-loop handoff and retirement acknowledgements are required; active or
+unknown tails refuse dependent idle/remove/swap/direct/global/lifespan DB close.
+Enqueue/start-then-raise and missing acknowledgements retain the original owner,
+without resubmission, shield spin or an absent-worker wait. Actual earlier and
+later errors/tracebacks occupy separate fixed slots. Active maintenance is not
+an early reason to skip independent drains. Positive final native/maintenance/
 executor/reader/service/runner barriers still precede DB destruction. Job and disk
 spawn/reap/report waits preserve the first observed cause, original traceback
 and interruption attribution: earlier post-spawn admission failure precedes
@@ -238,6 +247,15 @@ Only positive actual report completion attaches a report before the same first
 exception is rethrown; repeated cancellation cannot skip the original joins.
 Marked projection native uncertainty escapes operation isolation to the retained
 maintenance barrier and stops further ticks; ordinary errors remain isolated.
+Positive ordinary terminal CAS and accepted completed/nonroot recovery receipts
+owe their same-owner job hook exactly once, outside writer locks, even when
+verdict/history bookkeeping fails. No terminal/receipt replay or lost-owner waiver
+follows. Bookkeeping or job-drain E1 retains its original object/traceback through
+later owner-reread/root-finally E2 or cancellation; actual later errors stay
+separately retained. Task-ended stop intent also binds to the SAME real pending
+job registration on its actual runner loop. After the SAME successful creation,
+that intent suppresses stdin and owes original Process/pump/finalization cleanup;
+failed creation supplies no Process. Pause alone still lets committed work drain.
 The zombie owner retains the exact original legacy child only after a positive
 cancellation COMMIT, before the separate audit or any import/publication tail.
 Audit or parent-publication failure still owes that child's hook exactly once;

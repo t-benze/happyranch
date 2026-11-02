@@ -100,7 +100,20 @@ acknowledgements retain unknown native custody; no shield spin, inferred no-run
 or resubmission follows. Positive callable completion and successful original-loop
 handoff/retirement are required. Drain refuses unknown ownership without an
 unbounded wait for a possibly absent worker. Reference renewal preserves the
-original org/map/dispatcher; owed cleanup gains no new readiness gate.
+original org/map/dispatcher; owed cleanup gains no new readiness gate. The
+separate ordinary job-termination tail likewise registers its SAME org/DB owner
+before Task/Thread submission and remains visible through final DB/parent/root
+work, actual native exit and original-loop retirement. Active or missing/failed
+submission/start/handoff/retirement acknowledgement refuses dependent destruction
+without resubmission or an absent-worker wait. A positive terminal CAS or accepted
+completed/nonroot consumed receipt still owes its job hook exactly once when
+verdict/history fails, under the original current-owner checks and outside writer
+locks. Original bookkeeping/drain E1 and its traceback survive later owner-reread,
+root-join E2 or cancellation, with actual later errors retained independently.
+Task-end intent targets the SAME registered pending spawn on its owning loop;
+a successful late Process receives no script input and owes original native/
+pump/finalization cleanup. Pause's committed drain and cold first-cause ownership
+remain distinct; no INTEGER, receipt, first tuple or committed prefix is replaced.
 
 At the actual periodic join, a normally returned typed root ``unknown`` retains
 the SAME disposition/receipts/process facts and original owner through maintenance,
