@@ -1377,6 +1377,18 @@ class _WorktreeCleanupOwner:
         self.validate()
         return True
 
+    def on_cancel(self, error: BaseException) -> BaseException:
+        with self.lock:
+            # The callable can have ended with E1 before its asyncio handoff
+            # becomes done. Consume that retained earlier outcome at the first
+            # cancellation observation; later native E2 cannot replace it.
+            ended = self.errors['native'] if self.finished else None
+            selected = ended if isinstance(error, asyncio.CancelledError) and ended is not None else error
+            self.select(selected)
+            if self.primary is ended:
+                self.traceback = self.error_tracebacks['native']
+            return self.primary
+
     def run(self) -> Any:
         with self.lock:
             self.started = True
@@ -1492,7 +1504,8 @@ async def _join_worktree_cleanup(owner: _WorktreeCleanupOwner) -> Any:
     from runtime.daemon.startup_recovery import _await_startup_owned
     if owner.worker is not None:
         try:
-            result = await _await_startup_owned(owner.worker, owner.retain)
+            result = await _await_startup_owned(owner.worker, owner.retain,
+                                               on_cancel=owner.on_cancel)
             if not owner.finished or result is not owner.result:
                 error = RuntimeError('worktree_cleanup_original_outcome_missing')
                 error.maintenance_native_unsettled = True
