@@ -1147,7 +1147,8 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             return finish
 
         while index < end:
-            check()
+            if index % 1024 == 0:
+                check()
             char, begin = source[index], index
             if char in ' \t\f\r\n':
                 index += 1
