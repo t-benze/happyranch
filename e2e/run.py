@@ -898,8 +898,345 @@ def _evidence_original(text: str, context: tuple | list, ledger: _EvidenceLedger
         text = None
 
 
+def _evidence_digest(text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> tuple[int, str]:
+    """Hash the entire original UTF8 image in precharged <=4096-byte chunks."""
+    size = _evidence_utf8_size(text, check)
+    ledger.charge(size + 96, 12, check)
+    digest = hashlib.sha256()
+    # At most1024 codepoints, hence at most4096 encoded bytes. Both the slice
+    # and its conversion are reserved before either is allocated.
+    for index in range(0, len(text), 1024):
+        check()
+        end = min(index + 1024, len(text))
+        ledger.charge(8 * (end - index), 2, check)
+        chunk = text[index:end].encode('utf8', errors='strict')
+        digest.update(chunk)
+        chunk = None
+    ledger.charge(64, 1, check)
+    return size, digest.hexdigest()
+
+
+def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
+    """Actual HTTPX compact UTF8 request, preserving producer insertion order."""
+    ledger.charge(128, 16, check)
+    digest = hashlib.sha256()
+    def put(text: str, string: bool = False) -> None:
+        ledger.charge(24, 3, check)
+        size = _evidence_string_size([(text, 0, len(text))], check) if string else len(text)
+        ledger.charge(3 * size, 1, check)
+        ledger.reserve(8, 1, check)
+        try:
+            if string:
+                digest.update(b'"')
+            for index, char in enumerate(text):
+                if index % 1024 == 0:
+                    check()
+                code = ord(char)
+                if string and (code < 32 or char in '"\\'):
+                    pos = '"\\\b\f\n\r\t'.find(char)
+                    if pos >= 0:
+                        data = ('\\' + '"\\bfnrt'[pos]).encode('ascii')
+                    else:
+                        data = ('\\u00' + '0123456789abcdef'[code >> 4] + '0123456789abcdef'[code & 15]).encode('ascii')
+                else:
+                    data = char.encode('utf8', errors='strict')
+                digest.update(data)
+            if string:
+                digest.update(b'"')
+        finally:
+            ledger.settle(8, 0)
+    put('{')
+    for index, (key, value) in enumerate(payload.items()):
+        if index:
+            put(',')
+        put(key, True); put(':')
+        if type(value) is str:
+            put(value, True)
+        else:
+            put('null' if value is None else 'true' if value is True else 'false' if value is False
+                else _evidence_number(value, ledger, check))
+    put('}')
+    ledger.charge(64, 1, check)
+    return digest.hexdigest()
+
+
+def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger,
+                     check: Callable[[], None], sanitize: Callable[[str], str], depth: int) -> None:
+    """Finite SOURCE lexical admission only; no Python parser or execution.
+
+    Preflight uses indices, never physical-line/token copies. Each selected
+    occurrence owns its scan and original/decoded-literal unchanged checks.
+    """
+    try:
+        if depth + 2 > 64:
+            raise _EvidenceCapacity('Python depth capacity refused')
+        size = _evidence_utf8_size(source, check, 524288)
+        ledger.charge(size + 64, 8, check)
+        line = 0
+        for index, char in enumerate(source):
+            if index % 4096 == 0:
+                check()
+            code = ord(char)
+            line += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if line > 65536:
+                raise _EvidenceCapacity('Python physical line capacity refused')
+            if char == '\r' and (index + 1 == len(source) or source[index + 1] != '\n'):
+                raise ValueError('Python lone CR withheld')
+            if char == '\n':
+                line = 0
+        _evidence_original(source, context, ledger, check, sanitize)
+        end, index, stack = len(source), 0, []
+
+        def fail() -> None:
+            raise ValueError('Python lexical representation withheld')
+
+        def literal(begin: int, quote_at: int) -> int:
+            ledger.charge(64, 8, check)
+            prefix = ''.join(source[n].lower() for n in range(begin, quote_at))
+            if prefix not in ('', 'u', 'b', 'r', 'br', 'rb'):
+                fail()
+            raw, binary = 'r' in prefix, 'b' in prefix
+            quote = source[quote_at]
+            triple = source.startswith(quote * 3, quote_at)
+            opening = quote_at + (3 if triple else 1)
+
+            def codes() -> Iterator[int]:
+                cursor = opening
+                while cursor < end:
+                    if cursor % 1024 == 0:
+                        check()
+                    char = source[cursor]
+                    if char == quote and (not triple or source.startswith(quote * 3, cursor)):
+                        return
+                    if char in '\r\n' and not triple:
+                        fail()
+                    code = ord(char)
+                    cursor += 1
+                    if char == '\r' and triple:
+                        if cursor == end or source[cursor] != '\n':
+                            fail()
+                        cursor += 1
+                        code = 10
+                    if binary and code >= 128:
+                        fail()
+                    if char == '\\':
+                        if cursor == end:
+                            fail()
+                        char = source[cursor]
+                        cursor += 1
+                        if raw:
+                            # Backslash protects a quote for termination, but remains
+                            # literal content and therefore owes residual safety.
+                            yield 92
+                            if char == '\r':
+                                if cursor == end or source[cursor] != '\n':
+                                    fail()
+                                cursor += 1
+                                yield 13
+                                yield 10
+                            else:
+                                yield ord(char)
+                            continue
+                        if char == '\n':
+                            continue
+                        if char == '\r':
+                            if cursor == end or source[cursor] != '\n':
+                                fail()
+                            cursor += 1
+                            continue
+                        escapes = "\\\"'abfnrtv"
+                        if char in escapes:
+                            code = (92, 34, 39, 7, 8, 12, 10, 13, 9, 11)[escapes.index(char)]
+                        elif char in '01234567':
+                            code, count = int(char), 1
+                            while count < 3 and cursor < end and source[cursor] in '01234567':
+                                code = code * 8 + int(source[cursor]); cursor += 1; count += 1
+                            if binary and code > 255:
+                                fail()
+                        elif char in 'xuU' and (char == 'x' or not binary):
+                            digits = 2 if char == 'x' else 4 if char == 'u' else 8
+                            code = 0
+                            for _ in range(digits):
+                                if cursor == end or source[cursor] not in '0123456789abcdefABCDEF':
+                                    fail()
+                                code = code * 16 + int(source[cursor], 16); cursor += 1
+                        else:
+                            fail()
+                    if code > 0x10ffff or 0xd800 <= code <= 0xdfff:
+                        fail()
+                    yield code
+                fail()
+
+            def decoded() -> Iterator[int]:
+                needed = value = minimum = 0
+                for code in codes():
+                    if not binary:
+                        yield code
+                    elif needed:
+                        if not 128 <= code <= 191:
+                            fail()
+                        value = (value << 6) | (code & 63)
+                        needed -= 1
+                        if not needed:
+                            if value < minimum or value > 0x10ffff or 0xd800 <= value <= 0xdfff:
+                                fail()
+                            yield value
+                    elif code < 128:
+                        yield code
+                    elif 194 <= code <= 244:
+                        needed, value, minimum = ((1, code & 31, 128) if code < 224 else
+                                                  (2, code & 15, 2048) if code < 240 else
+                                                  (3, code & 7, 65536))
+                    else:
+                        fail()
+                if needed:
+                    fail()
+
+            # Locate the closing spelling without slices, including escaped quote
+            # and raw termination rules. Grammar/decoded length preflight follows.
+            cursor = opening
+            while cursor < end:
+                if cursor % 1024 == 0:
+                    check()
+                if source[cursor] == quote and (not triple or source.startswith(quote * 3, cursor)):
+                    finish = cursor + (3 if triple else 1)
+                    break
+                if source[cursor] == '\\':
+                    cursor += 1
+                    if cursor == end:
+                        fail()
+                    if source[cursor] == '\r' and cursor + 1 < end and source[cursor + 1] == '\n':
+                        cursor += 1
+                cursor += 1
+            else:
+                fail()
+            spelling_size = 0
+            for n in range(begin, finish):
+                if n % 1024 == 0:
+                    check()
+                code = ord(source[n])
+                spelling_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                if spelling_size > 262144:
+                    raise _EvidenceCapacity('Python literal spelling capacity refused')
+            decoded_size = 0
+            for code in decoded():
+                decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                if decoded_size > 262144:
+                    raise _EvidenceCapacity('Python literal output capacity refused')
+            chunks = (decoded_size + 1020) // 1021
+            ledger.charge(2 * decoded_size + 8 * chunks + 32, chunks + 4, check)
+            ledger.reserve(min(4096, 4 * decoded_size), 1, check)
+            try:
+                parts, chunk, width = [], '', 0
+                for code in decoded():
+                    count = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if width + count > 1024:
+                        parts.append(chunk); chunk, width = '', 0
+                        check()
+                    ledger.charge(width + 2 * count, 0, check)
+                    chunk += chr(code); width += count
+                if chunk:
+                    parts.append(chunk)
+                value = ''.join(parts)
+                if '\\' in value:
+                    fail()
+                _evidence_original(value, context, ledger, check, sanitize)
+            finally:
+                ledger.settle(min(4096, 4 * decoded_size), 0)
+                parts = chunk = value = None
+            return finish
+
+        while index < end:
+            check()
+            char, begin = source[index], index
+            if char in ' \t\f\r\n':
+                index += 1
+                continue
+            ledger.charge(16, 3, check)  # Token/span, before retaining any state.
+            if char == '#':
+                while index < end and source[index] not in '\r\n':
+                    if index % 4096 == 0:
+                        check()
+                    if source[index] == '\\':
+                        fail()
+                    index += 1
+                continue
+            if char in "\"'":
+                index = literal(index, index)
+                continue
+            if char.isascii() and (char.isalpha() or char == '_'):
+                index += 1
+                while index < end and source[index].isascii() and (source[index].isalnum() or source[index] == '_'):
+                    if index - begin >= 65536:
+                        raise _EvidenceCapacity('Python token capacity refused')
+                    if index % 4096 == 0:
+                        check()
+                    index += 1
+                if index < end and source[index] in "\"'":
+                    if index - begin > 2:
+                        fail()
+                    index = literal(begin, index)
+                continue
+            if char in '0123456789' or char == '.' and index + 1 < end and source[index + 1] in '0123456789':
+                def digits(cursor: int) -> int:
+                    count, underscore = 0, False
+                    while cursor < end and source[cursor] in '0123456789_':
+                        if cursor - begin >= 65536:
+                            raise _EvidenceCapacity('Python token capacity refused')
+                        if cursor % 4096 == 0:
+                            check()
+                        if source[cursor] == '_':
+                            if not count or underscore:
+                                fail()
+                            underscore = True
+                        else:
+                            count += 1; underscore = False
+                        cursor += 1
+                    if underscore:
+                        fail()
+                    return cursor
+                index = digits(index)
+                if index < end and source[index] == '.':
+                    index = digits(index + 1)
+                if index < end and source[index] in 'eE':
+                    index += 1
+                    if index < end and source[index] in '+-':
+                        index += 1
+                    start = index; index = digits(index)
+                    if start == index:
+                        fail()
+                if index < end and (source[index].isascii() and (source[index].isalpha() or source[index] == '_')):
+                    fail()
+                continue
+            if char in '([{':
+                if depth + len(stack) + 3 > 64:
+                    raise _EvidenceCapacity('Python depth capacity refused')
+                ledger.charge(8, 1, check)
+                stack.append(char)
+            elif char in ')]}':
+                if not stack or '([{'.index(stack.pop()) != ')]}'.index(char):
+                    fail()
+            elif char == '\\':
+                index += 1
+                if index < end and source[index] == '\r':
+                    index += 1
+                if index == end or source[index] != '\n':
+                    fail()
+            elif char not in ':.,;+-*/%&|^~<>=!@':
+                fail()
+            elif char == '!' and (index + 1 == end or source[index + 1] != '='):
+                fail()
+            index += 1
+        if stack:
+            fail()
+        check()
+    finally:
+        source = None
+
+
 def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLedger,
-                    check: Callable[[], None], *, observations: bool = False) -> bytearray:
+                    check: Callable[[], None], *, observations: bool = False,
+                    submission_identity: tuple | None = None) -> bytearray:
     """Typed original admission -> flat charged spans -> ONE compact candidate.
 
     No second writer tree. Original references and syntax slots close metadata
@@ -915,11 +1252,16 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
             text = text.replace(secret, "[REDACTED]")
         return text
     def visit(item: object, depth: int = 0, *, key: bool = False, route: int = 0,
-              event: Callable | None = None, encoded: bool = False) -> None:
+              event: Callable | None = None, encoded: bool = False,
+              selected: Callable | None = None, selected_path: tuple = ()) -> None:
         nonlocal authenticated, changed, relay_captured
         if depth > 64:
             raise _EvidenceCapacity("evidence depth capacity refused")
         ledger.charge(0, 1, check)
+        if selected is not None:
+            ledger.charge(8 * len(selected_path), len(selected_path), check)
+            selected(selected_path, 'object' if type(item) is dict else 'array' if type(item) is list else 'scalar', item if type(item) not in (dict, list) else None)
+            encoded = encoded or _EvidenceObservations.encoded(selected_path)
         if route == 2 and type(item) is not list or route == 3 and type(item) is not dict:
             raise ValueError("Relay entry shape withheld")
         if type(item) is str:
@@ -939,6 +1281,7 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
             ledger.charge(8, 1, check)
             ancestors.add(id(item))
             proof = _EvidenceRelay(context, ledger, check, sanitize, depth) if route == 3 else None
+            selection = None
             try:
                 if event is not None:
                     event("object" if type(item) is dict else "array", None)
@@ -951,6 +1294,10 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                         if type(name) is not str:
                             raise ValueError("evidence key unavailable")
                         visit(name, depth + 1, key=True)
+                        if selected is not None:
+                            selected(selected_path, 'key', name)
+                        if route == 1 and name in ('starts', 'durable', 'provider_commands') and selection is None:
+                            selection = _EvidenceObservations(context, ledger, check, sanitize, depth, submission_identity)
                         if event is not None:
                             event("key", name)
                         retain("syntax", ":")
@@ -959,17 +1306,28 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                         visit(child, depth + 1, route=2 if route == 1 and name == "relay" else 0,
                               event=(proof.response_event if name == "response" else proof.request_event
                                      if name == "request" else None) if proof is not None else event,
-                              encoded=proof is not None and name == "response_text")
+                              encoded=proof is not None and name == "response_text",
+                              selected=selection.event if route == 1 and name in ('starts', 'durable', 'provider_commands') else selected,
+                              selected_path=(name,) if route == 1 else selected_path + (name,) if selected is not None else ())
                     else:
-                        visit(member, depth + 1, route=3 if route == 2 else 0, event=event)
+                        visit(member, depth + 1, route=3 if route == 2 else 0, event=event,
+                              selected=selected, selected_path=selected_path + (index,) if selected is not None else ())
                 retain("syntax", "}" if type(item) is dict else "]")
                 if event is not None:
                     event("end-object" if type(item) is dict else "end-array", None)
+                if selected is not None:
+                    selected(selected_path, 'end-object' if type(item) is dict else 'end-array', None)
+                if selection is not None:
+                    capture = selection.close()
+                    relay_captured = relay_captured or capture
+                    authenticated = authenticated or capture
                 if proof is not None:
                     capture = proof.close()
                     relay_captured = relay_captured or capture
                     authenticated = authenticated or capture
             finally:
+                if selection is not None:
+                    selection.release()
                 if proof is not None:
                     proof.release()
                 ancestors.remove(id(item))
@@ -1219,6 +1577,367 @@ class _EvidenceRelay:
         self.request_stack.clear()
 
 
+class _EvidenceSubmission:
+    """Finite proof facts for ONE canonical provider command, never a raw tree."""
+    fields = ('action', 'operation', 'argv', 'exit', 'stdout', 'stderr', 'payload', 'payload_file',
+              'entered', 'finished', 'timed_out', 'execution_deadline', 'provider', 'child_pid',
+              'child_start', 'child_parent', 'child_stat', 'python', 'source_sha', 'callback_sha256', 'wire')
+    payload_fields = ('title', 'rationale', 'script', 'interpreter', 'cwd_hint', 'review_required',
+                      'persistent', 'max_runtime_seconds', 'task_id', 'session_id')
+    result_fields = ('id', 'status', 'created_at', 'started_at', 'cwd_resolved', 'timeout_seconds',
+                     'events_url', 'authentication')
+
+    def __init__(self, owner: _EvidenceObservations, depth: int) -> None:
+        owner.ledger.charge(128, 16, owner.check)
+        self.owner, self.depth = owner, depth
+        self.metadata, self.payload, self.provider, self.file = {}, {}, {}, {}
+        self.response, self.authentication, self.wire, self.argv = {}, {}, {}, []
+        self.shapes, self.deferred = {}, False
+
+    def event(self, path: tuple, kind: str, value: object) -> None:
+        ledger, check = self.owner.ledger, self.owner.check
+        ledger.charge(16, 2, check)
+        # Only named source-owned holders can retain facts. Unsupported holders
+        # record a shape error; they cannot create an arbitrary subtree/index.
+        if kind in ('object', 'array'):
+            if path in ((), ('provider',), ('payload',), ('payload_file',), ('wire',), ('argv',),
+                        ('wire', 0), ('wire', 0, 'response'), ('wire', 0, 'response', 'authentication')):
+                ledger.charge(16, 2, check)
+                self.shapes[path] = [kind, []]
+            else:
+                self.deferred = True
+            return
+        if kind == 'key':
+            if path in self.shapes:
+                ledger.charge(16 + _evidence_utf8_size(value, check), 2, check)
+                self.shapes[path][1].append(value)
+            return
+        if kind.startswith('end-'):
+            return
+        if type(value) is str:
+            ledger.charge(_evidence_utf8_size(value, check), 1, check)
+        if len(path) == 1 and path[0] in self.fields:
+            self.metadata[path[0]] = value
+        elif len(path) == 2 and path[0] == 'provider' and path[1] in ('task','session','agent','org','pid'):
+            self.provider[path[1]] = value
+        elif len(path) == 2 and path[0] == 'payload' and path[1] in self.payload_fields:
+            self.payload[path[1]] = value
+        elif len(path) == 2 and path[0] == 'payload_file' and path[1] in ('path','text','bytes','sha256'):
+            self.file[path[1]] = value
+        elif len(path) == 2 and path[0] == 'argv' and path[1] == len(self.argv):
+            ledger.charge(8, 1, check)
+            self.argv.append(value)
+        elif path[:2] == ('wire', 0):
+            if len(path) == 3 and path[2] in ('path','method','body_sha256','status','dropped'):
+                self.wire[path[2]] = value
+            elif len(path) == 4 and path[2] == 'response' and path[3] in self.result_fields + ('deferred','code'):
+                self.response[path[3]] = value
+            elif len(path) == 5 and path[2:4] == ('response', 'authentication') and path[4] in ('task_id','session_id'):
+                self.authentication[path[4]] = value
+            else:
+                self.deferred = True
+        else:
+            self.deferred = True
+
+    def ordinary(self, text: str) -> None:
+        if '\\' in text:
+            raise ValueError('submission ordinary representation withheld')
+        _evidence_original(text, self.owner.context, self.owner.ledger, self.owner.check, self.owner.sanitize)
+
+    def object(self, text: str, expected: dict, *, script: bool, stdout: bool = False) -> None:
+        """One strict nested parse, complete keyed equality, original ordering."""
+        try:
+            o = self.owner
+            _evidence_original(text, o.context, o.ledger, o.check, o.sanitize)
+            if not text.startswith('{') or not text.endswith('}\n' if stdout else '}'):
+                raise ValueError('submission original framing withheld')
+            o.ledger.charge(128 + 32 * len(expected), 16 + 4 * len(expected), o.check)
+            frames, field = [], None
+            def compare(kind: str, value: object) -> None:
+                nonlocal field
+                o.ledger.charge(24, 3, o.check)
+                if kind == 'object':
+                    if not frames:
+                        frames.append((expected, sorted(expected), 0))
+                    elif len(frames) == 1 and field == 'authentication' and not script:
+                        frames.append((self.authentication, sorted(self.authentication), 0))
+                    else:
+                        raise ValueError('submission nested shape withheld')
+                elif kind == 'end-object':
+                    wanted, keys, position = frames.pop()
+                    if position != len(keys):
+                        raise ValueError('submission complete equality withheld')
+                    if frames:
+                        field = None
+                elif kind == 'key':
+                    self.ordinary(value)
+                    wanted, keys, position = frames[-1]
+                    if position >= len(keys) or value != keys[position]:
+                        raise ValueError('submission sorted fields withheld')
+                    frames[-1] = (wanted, keys, position + 1)
+                    field = value
+                elif kind == 'scalar':
+                    wanted = frames[-1][0]
+                    if field not in wanted or type(value) is not type(wanted[field]) or value != wanted[field]:
+                        raise ValueError('submission complete equality withheld')
+                    if type(value) is str:
+                        if script and field == 'script':
+                            _evidence_python(value, o.context, o.ledger, o.check, o.sanitize, self.depth + 4)
+                        else:
+                            self.ordinary(value)
+                    field = None
+                else:
+                    raise ValueError('submission nested shape withheld')
+            # Keys and values are checked in their one event stream. The parser
+            # still detects decoded duplicate keys BEFORE attempting their values.
+            _EvidenceJSON(text, o.ledger, o.check).scan('{', None, depth=self.depth + (2 if stdout else 3), event=compare)
+            if frames:
+                raise ValueError('submission unresolved equality withheld')
+        finally:
+            text = None
+
+    def close(self) -> bool:
+        o, m, p, f, provider = self.owner, self.metadata, self.payload, self.file, self.provider
+        selected = m.get('action') in ('jobs-submit', 'jobs-refuse-review')
+        if not selected:
+            # Deferred locations are ordinary unless this complete family wins.
+            for value in (m.get('stdout'), p.get('script'), f.get('text')):
+                if type(value) is str:
+                    self.ordinary(value)
+            return False
+        o.ledger.charge(1024, 128, o.check)
+        def shape(path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = self.shapes.get(path)
+            return (got is not None and got[0] == kind and
+                    (keys is None or len(got[1]) == len(keys) and set(got[1]) == set(keys)))
+        refusal = m['action'] == 'jobs-refuse-review'
+        if (self.deferred or not shape((), 'object', self.fields)
+                or not shape(('provider',), 'object', ('task', 'session', 'agent', 'org', 'pid'))
+                or not shape(('payload',), 'object', self.payload_fields)
+                or not shape(('payload_file',), 'object', ('path', 'text', 'bytes', 'sha256'))
+                or not shape(('argv',), 'array') or not shape(('wire',), 'array')
+                or m.get('operation', False) is not None or type(m.get('exit')) is not int
+                or m['exit'] != (2 if refusal else 0) or m.get('timed_out') is not False
+                or any(type(m.get(k)) is not str for k in ('stdout', 'stderr', 'python', 'source_sha', 'callback_sha256', 'child_stat', 'child_start'))
+                or any(type(m.get(k)) not in (int, float) or not math.isfinite(m[k]) or m[k] < 0
+                       for k in ('entered', 'finished', 'execution_deadline'))
+                or not m['entered'] <= m['finished'] < m['execution_deadline']
+                or any(type(m.get(k)) is not int or m[k] <= 0 for k in ('child_pid', 'child_parent'))
+                or type(provider.get('pid')) is not int or provider['pid'] <= 0
+                or m['child_parent'] != provider['pid']
+                or any(type(provider.get(k)) is not str or not provider[k] for k in ('task', 'session', 'agent', 'org'))
+                or provider['org'] != 'alpha' or provider['agent'] != 'case_manager'
+                or not provider['task'].startswith('TASK-') or not provider['task'][5:].isascii() or not provider['task'][5:].isdigit()
+                or any(type(p.get(k)) is not str or not p[k] for k in ('title', 'rationale', 'script', 'interpreter', 'task_id', 'session_id'))
+                or p['interpreter'] != 'python3' or p.get('cwd_hint', False) is not None
+                or p.get('review_required') is not refusal or p.get('persistent') is not False
+                or type(p.get('max_runtime_seconds')) is not int or p['max_runtime_seconds'] not in (5, 30)
+                or p['task_id'] != provider['task'] or p['session_id'] != provider['session']
+                or type(f.get('path')) is not str or type(f.get('text')) is not str
+                or type(f.get('bytes')) is not int or type(f.get('sha256')) is not str
+                or not _failure_source(m['source_sha']) or len(m['callback_sha256']) != 64
+                or any(c not in '0123456789abcdef' for c in m['callback_sha256'])):
+            raise ValueError('submission producer identity withheld')
+        # Original /proc spelling is retained. Only indispensable child identity
+        # fields are inspected; this is no liveness/process lookup.
+        stat_text = m['child_stat']
+        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 64, 64, o.check)
+        close = stat_text.rfind(')')
+        fields, cursor = [], close + 2
+        while close >= 0 and cursor < len(stat_text) and len(fields) < 20:
+            while cursor < len(stat_text) and stat_text[cursor].isspace():
+                cursor += 1
+            begin = cursor
+            while cursor < len(stat_text) and not stat_text[cursor].isspace():
+                cursor += 1
+                if cursor % 1024 == 0:
+                    o.check()
+            if cursor > begin:
+                fields.append(stat_text[begin:cursor])
+        if (not stat_text.startswith(str(m['child_pid']) + ' (') or len(fields) < 20
+                or fields[1] != str(provider['pid']) or fields[19] != m['child_start']
+                or not m['child_start'].isascii() or not m['child_start'].isdigit()):
+            raise ValueError('submission child identity withheld')
+        # Each occurrence pays its own source scan; the file occurrence is not
+        # decoded until its complete sorted JSON stage below.
+        _evidence_python(p['script'], o.context, o.ledger, o.check, o.sanitize, self.depth + 2)
+        count, digest = _evidence_digest(f['text'], o.ledger, o.check)
+        if count != f['bytes'] or digest != f['sha256']:
+            raise ValueError('submission original file identity withheld')
+        self.object(f['text'], p, script=True)
+        if refusal:
+            o.ledger.charge(2 * _evidence_utf8_size(f['path'], o.check) + 512, 1, o.check)
+            expected_error = ('Error reading scripts-submit file ' + f['path'] +
+                ': review_required_removed: obtain any required authorization in a thread before submitting; '
+                'upgrade old clients and omit review_required or set it to false. This request was not submitted.\n')
+            if m['stdout'] != '' or m['stderr'] != expected_error or ('wire', 0) in self.shapes:
+                raise ValueError('submission local refusal withheld')
+        else:
+            response_keys = self.result_fields + (('deferred', 'code') if 'deferred' in self.response else ())
+            if (m['stderr'] != '' or not shape(('wire', 0), 'object', ('path', 'method', 'body_sha256', 'status', 'response', 'dropped'))
+                    or not shape(('wire', 0, 'response'), 'object', response_keys)
+                    or not shape(('wire', 0, 'response', 'authentication'), 'object', ('task_id', 'session_id'))
+                    or self.wire.get('path') != '/api/v1/orgs/alpha/jobs/submit' or self.wire.get('method') != 'POST'
+                    or type(self.wire.get('status')) is not int or self.wire['status'] != 201 or self.wire.get('dropped') is not False
+                    or type(self.wire.get('body_sha256')) is not str or len(self.wire['body_sha256']) != 64
+                    or self.wire['body_sha256'] != _evidence_submit_digest(p, o.ledger, o.check)
+                    or self.authentication != {'task_id': provider['task'], 'session_id': provider['session']}
+                    or any(type(self.authentication.get(k)) is not str for k in ('task_id', 'session_id'))):
+                raise ValueError('submission wire identity withheld')
+            r = self.response
+            if (type(r.get('id')) is not str or not r['id'].startswith('JOB-')
+                    or not r['id'][4:].isascii() or not r['id'][4:].isdigit()
+                    or type(r.get('created_at')) is not str or not r['created_at']
+                    or ('deferred' in r and (r['deferred'] is not True or type(r.get('code')) is not str or not r['code'] or r.get('status') != 'pending'))
+                    or ('deferred' not in r and r.get('status') != 'running')
+                    or any(type(r.get(k)) not in (str, type(None)) for k in ('started_at', 'cwd_resolved', 'events_url'))
+                    or type(r.get('timeout_seconds')) not in (int, type(None))
+                    or r.get('timeout_seconds') not in (None, p['max_runtime_seconds'])
+                    or r.get('events_url') not in (None, '/api/v1/orgs/alpha/jobs/' + r['id'] + '/events')
+                    or 'deferred' in r and any(r.get(k) is not None for k in ('started_at','cwd_resolved','timeout_seconds','events_url'))
+                    or 'deferred' not in r and (not r.get('started_at') or not r.get('cwd_resolved')
+                        or r.get('timeout_seconds') != p['max_runtime_seconds'] or not r.get('events_url'))):
+                raise ValueError('submission public result withheld')
+            r['authentication'] = self.authentication
+            self.object(m['stdout'], r, script=False, stdout=True)
+        o.ledger.charge(128, 16, o.check)
+        o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
+                          self.argv, f['path'], f['sha256'], m['child_pid'], self.response.get('id')))
+        # Only owner identities remain outstanding. Source/file/result scratch
+        # is released at the command close, with no spent work/fact refund.
+        self.provider, self.argv = {}, []
+        self.release()
+        return True
+
+    def release(self) -> None:
+        for value in (self.metadata, self.payload, self.provider, self.file, self.response,
+                      self.authentication, self.wire, self.argv, self.shapes):
+            value.clear()
+
+
+class _EvidenceObservations:
+    """Selected canonical ledger + existing start/executable identity facts.
+
+    Raw input remains scan-only. These finite joins are indispensable to the
+    selected record and can arrive in either order; there is no full raw tree.
+    """
+    def __init__(self, context: tuple | list, ledger: _EvidenceLedger,
+                 check: Callable[[], None], sanitize: Callable[[str], str], depth: int,
+                 identity: tuple | None) -> None:
+        ledger.charge(128, 16, check)
+        self.context, self.ledger, self.check, self.sanitize, self.depth = context, ledger, check, sanitize, depth
+        self.identity = identity
+        self.starts, self.manifests, self.pending = [], [], []
+        self.current = self.start = self.manifest = None
+        self.captured = False
+
+    @staticmethod
+    def encoded(path: tuple) -> bool:
+        return (len(path) == 3 and path[0] == 'provider_commands' and path[2] == 'stdout'
+                or len(path) == 4 and path[0] == 'provider_commands'
+                    and path[2:] in (('payload', 'script'), ('payload_file', 'text')))
+
+    def event(self, path: tuple, kind: str, value: object) -> None:
+        self.ledger.charge(8, 1, self.check)
+        if path[0] == 'provider_commands':
+            if len(path) == 1:
+                if kind not in ('array', 'end-array'):
+                    raise ValueError('submission ledger shape withheld')
+                return
+            if len(path) == 2 and kind == 'object':
+                if self.current is not None:
+                    raise ValueError('submission overlapping owner withheld')
+                self.current = _EvidenceSubmission(self, self.depth + 2)
+            if self.current is None:
+                raise ValueError('submission command shape withheld')
+            self.current.event(path[2:], kind, value)
+            if len(path) == 2 and kind == 'end-object':
+                try:
+                    selected = self.current.close()
+                    self.captured = selected or self.captured
+                finally:
+                    self.current.release()
+                    self.current = None
+        elif path[0] == 'starts':
+            if len(path) == 2 and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                self.start = {}
+            elif len(path) == 2 and kind == 'key' and self.start is not None:
+                self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+                self.start[value] = None
+            elif len(path) == 3 and kind == 'scalar' and self.start is not None:
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                self.start[path[2]] = value
+            elif len(path) == 2 and kind == 'end-object' and self.start is not None:
+                self.ledger.charge(8, 1, self.check)
+                self.starts.append(self.start); self.start = None
+        elif path[0] == 'durable' and len(path) >= 3 and path[2] == 'executable_manifest':
+            if len(path) == 3 and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                self.manifest = {}
+            elif len(path) == 3 and kind == 'key' and self.manifest is not None:
+                self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+                self.manifest[value] = None
+            elif len(path) == 4 and path[3] == 'stubs' and kind == 'object' and self.manifest is not None:
+                self.manifest['stubs'] = True
+            elif len(path) == 4 and kind == 'scalar' and self.manifest is not None:
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                self.manifest[path[3]] = value
+            elif len(path) == 3 and kind == 'end-object' and self.manifest is not None:
+                self.ledger.charge(8, 1, self.check)
+                self.manifests.append(self.manifest); self.manifest = None
+
+    def close(self) -> bool:
+        try:
+            if not self.captured:
+                return False
+            if len(self.manifests) != 1:
+                raise ValueError('submission executable owner withheld')
+            manifest = self.manifests[0]
+            if (set(manifest) != {'root', 'source', 'revision', 'python', 'callback', 'callback_sha256', 'stubs'}
+                    or manifest['stubs'] is not True):
+                raise ValueError('submission manifest identity withheld')
+            if self.identity is None or self.identity != (manifest['root'], manifest['revision']):
+                raise ValueError('submission original caller identity withheld')
+            root = manifest['root']
+            self.ledger.charge(1024 + 4 * _evidence_utf8_size(root, self.check), 128, self.check)
+            if (type(root) is not str or not root.startswith('/') or root.endswith(('/', '/.', '/..')) or '//' in root or '/./' in root or '/../' in root
+                    or '\\' in root or '\x00' in root or manifest['python'] != root + '/venv/bin/python'
+                    or manifest['callback'] != root + '/bin/happyranch'
+                    or type(manifest['source']) is not str or not manifest['source'].startswith('/')
+                    or not _failure_source(manifest['revision'])):
+                raise ValueError('submission executable identity withheld')
+            children, jobs = set(), set()
+            for p, source_sha, python, callback_sha256, argv, path, sha256, child_pid, job_id in self.pending:
+                self.ledger.charge(32, 4, self.check)
+                if child_pid in children or job_id is not None and job_id in jobs:
+                    raise ValueError('submission duplicate identity withheld')
+                children.add(child_pid)
+                if job_id is not None:
+                    jobs.add(job_id)
+                self.ledger.charge(128 + 32 * len(self.starts), 16 + 4 * len(self.starts), self.check)
+                matching = [s for s in self.starts if s.get('session') == p['session']]
+                if (len(matching) != 1 or set(matching[0]) != {'task', 'session', 'agent', 'org', 'pid', 'pid_start', 'pgid'}
+                        or any(type(matching[0][k]) is not type(v) or matching[0][k] != v for k, v in p.items())
+                        or type(matching[0]['pid_start']) is not str or not matching[0]['pid_start'].isdigit()
+                        or type(matching[0]['pgid']) is not int or matching[0]['pgid'] != p['pid']
+                        or source_sha != manifest['revision'] or python != manifest['python']
+                        or callback_sha256 != manifest['callback_sha256']
+                        or path != root + '/coord/' + sha256 + '.json'
+                        or argv != [manifest['callback'], 'jobs', 'submit', '--org', p['org'], '--from-file', path, '--json']
+                        or any(type(v) is not str for v in argv)):
+                    raise ValueError('submission complete owner join withheld')
+            return True
+        finally:
+            self.release()
+
+    def release(self) -> None:
+        if self.current is not None:
+            self.current.release(); self.current = None
+        self.pending.clear(); self.starts.clear(); self.manifests.clear()
+        self.start = self.manifest = None
+
+
 class _EvidenceJSON:
     """Indexed strict grammar for required trees AND registered raw scans.
 
@@ -1358,7 +2077,9 @@ class _EvidenceJSON:
 
     def value(self, depth: int = 0, scalar: Callable[[str], None] | None = None,
               *, tree: bool = True, route: int = 0, event: Callable | None = None,
-              relay_context: tuple | list = (), relay_sanitize: Callable | None = None) -> Any:
+              relay_context: tuple | list = (), relay_sanitize: Callable | None = None,
+              selected: Callable | None = None, selected_path: tuple = (),
+              submission_identity: tuple | None = None) -> Any:
         self.check()
         if depth > 64:
             raise _EvidenceCapacity("JSON depth capacity refused")
@@ -1367,13 +2088,20 @@ class _EvidenceJSON:
             self.error()
         self.ledger.charge(0, 1, self.check)
         char = self.text[self.index]
+        if selected is not None:
+            self.ledger.charge(8 * len(selected_path), len(selected_path), self.check)
+            if char in '[{':
+                selected(selected_path, 'object' if char == '{' else 'array', None)
+        deferred = selected is not None and _EvidenceObservations.encoded(selected_path)
         if route == 2 and char != "[" or route == 3 and char != "{":
             raise ValueError("Relay entry shape withheld")
         if char == '"':
             value = self.string()
             try:
-                if scalar is not None:
+                if scalar is not None and not deferred:
                     scalar(value)
+                if selected is not None:
+                    selected(selected_path, 'scalar', value)
                 if event is not None:
                     event("scalar", value)
                 return value
@@ -1382,12 +2110,16 @@ class _EvidenceJSON:
                 raise
         if char in "-0123456789":
             value = self.number()
+            if selected is not None:
+                selected(selected_path, 'scalar', value)
             if event is not None:
                 event("scalar", value)
             return value
         for spelling, primitive in (("true", True), ("false", False), ("null", None)):
             if self.text.startswith(spelling, self.index, self.end):
                 self.index += len(spelling)
+                if selected is not None:
+                    selected(selected_path, 'scalar', primitive)
                 if event is not None:
                     event("scalar", primitive)
                 return primitive
@@ -1398,16 +2130,22 @@ class _EvidenceJSON:
         # members. The same recursion is the charged depth-bounded syntax stack.
         output = ({} if tree else set()) if char == "{" else ([] if tree else None)
         proof = _EvidenceRelay(relay_context, self.ledger, self.check, relay_sanitize, depth) if route == 3 else None
+        selection = None
         close = "}" if char == "{" else "]"
         if event is not None:
             event("object" if char == "{" else "array", None)
         self.index += 1
         self.whitespace()
+        member_index = 0
         try:
             if self.index < self.end and self.text[self.index] == close:
                 self.index += 1
                 if event is not None:
                     event("end-object" if char == "{" else "end-array", None)
+                if selected is not None:
+                    selected(selected_path, 'end-object' if char == '{' else 'end-array', None)
+                if selection is not None:
+                    self.relay_captured = selection.close() or self.relay_captured
                 if proof is not None:
                     self.relay_captured = proof.close() or self.relay_captured
                 return output if tree else None
@@ -1418,6 +2156,10 @@ class _EvidenceJSON:
                         self.error()  # Decoded escaped-equal keys, before their value.
                     if scalar is not None:
                         scalar(key)
+                    if selected is not None:
+                        selected(selected_path, 'key', key)
+                    if route == 1 and key in ('starts', 'durable', 'provider_commands') and selection is None:
+                        selection = _EvidenceObservations(relay_context, self.ledger, self.check, relay_sanitize, depth, submission_identity)
                     if event is not None:
                         event("key", key)
                     self.whitespace()
@@ -1435,7 +2177,10 @@ class _EvidenceJSON:
                         tree=tree, route=2 if route == 1 and key == "relay" else 0,
                         event=(proof.response_event if key == "response" else proof.request_event
                                if key == "request" else None) if proof is not None else event,
-                        relay_context=relay_context, relay_sanitize=relay_sanitize)
+                        relay_context=relay_context, relay_sanitize=relay_sanitize,
+                        selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands') else selected,
+                        selected_path=(key,) if route == 1 else selected_path + (key,) if selected is not None else (),
+                        submission_identity=submission_identity)
                     if proof is not None:
                         proof.field(key, child)
                     if tree:
@@ -1444,7 +2189,10 @@ class _EvidenceJSON:
                 else:
                     self.ledger.charge(8, 1, self.check)
                     child = self.value(depth + 1, scalar, tree=tree, route=3 if route == 2 else 0,
-                                       event=event, relay_context=relay_context, relay_sanitize=relay_sanitize)
+                                       event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
+                                       selected=selected, selected_path=selected_path + (member_index,) if selected is not None else (),
+                                       submission_identity=submission_identity)
+                    member_index += 1
                     if tree:
                         output.append(child)
                     child = None
@@ -1456,6 +2204,10 @@ class _EvidenceJSON:
                 if delimiter == close:
                     if event is not None:
                         event("end-object" if char == "{" else "end-array", None)
+                    if selected is not None:
+                        selected(selected_path, 'end-object' if char == '{' else 'end-array', None)
+                    if selection is not None:
+                        self.relay_captured = selection.close() or self.relay_captured
                     if proof is not None:
                         self.relay_captured = proof.close() or self.relay_captured
                     return output if tree else None
@@ -1467,6 +2219,8 @@ class _EvidenceJSON:
                 output.clear()
             raise
         finally:
+            if selection is not None:
+                selection.release()
             if proof is not None:
                 proof.release()
             if not tree:
@@ -1476,10 +2230,10 @@ class _EvidenceJSON:
 
     def read(self, *, top: str | None = None, scalar: Callable[[str], None] | None = None,
              jsonl: bool = False, observations: bool = False, context: tuple | list = (),
-             sanitize: Callable | None = None) -> Any:
+             sanitize: Callable | None = None, submission_identity: tuple | None = None) -> Any:
         if top is not None:
             return self.scan(top, scalar, jsonl=jsonl, tree=True, observations=observations,
-                             context=context, sanitize=sanitize)
+                             context=context, sanitize=sanitize, submission_identity=submission_identity)
         result = self.value()
         self.whitespace()
         if self.index != self.end:
@@ -1489,7 +2243,8 @@ class _EvidenceJSON:
 
     def scan(self, top: str, scalar: Callable[[str], None] | None, *, jsonl: bool = False,
              tree: bool = False, observations: bool = False, context: tuple | list = (),
-             sanitize: Callable | None = None, depth: int = 0, event: Callable | None = None) -> Any:
+             sanitize: Callable | None = None, depth: int = 0, event: Callable | None = None,
+             submission_identity: tuple | None = None) -> Any:
         """Validate the SAME image; JSONL bounds are indices, never line copies."""
         records = result = None
         try:
@@ -1508,7 +2263,7 @@ class _EvidenceJSON:
                     self.error()
                 self.ledger.charge(8, 1, self.check)  # Record's root syntax frame, before entry.
                 result = self.value(depth, scalar=scalar, tree=tree, route=1 if observations else 0,
-                                    event=event, relay_context=context, relay_sanitize=sanitize)
+                                    event=event, relay_context=context, relay_sanitize=sanitize, submission_identity=submission_identity)
                 self.whitespace()
                 if self.index != self.end:
                     self.error()
@@ -1774,7 +2529,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                             _EvidenceJSON(text, ledger, eligible).scan(
                                 top, raw_scalar, jsonl=path.name == "launch-witnesses.jsonl",
                                 observations=path.name in {"observations.json", "e07-prefix.json"},
-                                context=ordered, sanitize=sanitize)
+                                context=ordered, sanitize=sanitize, submission_identity=(str(root), receipt.get("source_sha")))
                             safe = text  # ONE original image, only after full closure.
                         else:
                             if "\\" in text:

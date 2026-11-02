@@ -2443,10 +2443,36 @@ Whole literal-image safety and unchanged-safe scalar checks precede admission;
 missing/conflicting/unresolved facts withhold the whole member before pending.
 The final writer uses already admitted bytes without another parse or decode.
 
-This implements one registry row. ProviderCommand.wire, settled.wire_records,
-CLI stdout, entity/SQL/source/hex/browser/direct/pair/human-display and cross-member
-joins remain unfinished and conservatively refused, with their complete copy
-obligations intact. A member containing one such obligation refuses entirely.
+The canonical observations.provider_commands[*] submission family also admits
+only jobs-submit or jobs-refuse-review with operation=null and the complete
+provider/payload/file/argv/child/timing identities. Existing caller root/source,
+original starts and durable executable_manifest must agree, even when they arrive
+after the command. The original typed payload and sorted payload_file.text retain
+their own order and full content; ONE strict whole JSON stage compares every
+keyed builtin value and checks the original file length, incremental UTF8 hash
+and hash-derived filename. Each payload.script occurrence uses the finite Python
+lexical scanner, including the separate file occurrence. Original spelling is
+never rewritten. JSON/Python keys, originals and decoded literals owe frozen
+original-secret and independent unchanged-safe checks, with residual backslashes
+and unsupported layers refused. Scanner limits are source524288, physical
+line65536 including LF1/CRLF2/EOF0, literal spelling/output262144, token65536,
+inside the same remaining C/F/depth/end. No tokenize/AST/execution is used.
+
+jobs-submit stdout retains its entire sorted public submit-result JSON and print
+LF, matched by complete keyed values to the original legacy HTTP201 wire response
+and provider/task/session/job facts. The actual deferred/code/null branch remains
+a retained receipt, not evidence of a successful E04 journey. Refusal remains
+local exit2, exact empty stdout/error and no wire. Legacy wire gains no capture
+fields; unsupported captured-wire obligations refuse the entire member. Only
+indispensable selected scalar/shape/owner facts are retained, released without
+refund at record/root close; raw scanning has no full tree or general token
+index. The required prefix keeps its ONE existing tree. Closure completes before
+candidate/pending/publication, and every copied occurrence pays its own work.
+
+Other ProviderCommand actions/copies, settled.wire_records/distinct CLI,
+entity/SQL/other source/hex/browser/direct/pair/human-display and cross-member joins
+remain unfinished and conservatively refused, with complete copy obligations
+intact. A member containing one such obligation refuses entirely.
 Ordinary _atomic_text retains whole-backslash refusal at every filename. File
 controls do not execute full Controller.evidence/E07/native admission or prove
 allocation, kernel timing, cleanup or fit. Closed observations keep their gates.

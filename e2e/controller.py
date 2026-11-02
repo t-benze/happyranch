@@ -1455,7 +1455,8 @@ class Controller:
             self._evidence_budget.charge(32, 4, self._check_evidence)
             parsed = _EvidenceJSON(text, self._evidence_budget, self._check_evidence).read(
                 top="{", scalar=unchanged, jsonl=witness, observations=not witness,
-                context=context, sanitize=self._evidence_sanitize)
+                context=context, sanitize=self._evidence_sanitize,
+                submission_identity=(str(self.root), getattr(self, "revision", None)))
             self._evidence_budget.charge(len(data), 1, self._check_evidence)
             self._check_evidence()
             return data, parsed
@@ -1489,7 +1490,8 @@ class Controller:
         try:
             candidate = _evidence_json(value, self._evidence_context[-1],
                                         self._evidence_budget, self._check_evidence,
-                                        observations=path == self.root / "raw/observations.json")
+                                        observations=path == self.root / "raw/observations.json",
+                                        submission_identity=(str(self.root), getattr(self, "revision", None)))
             self._check_evidence()
             self._replace_evidence(path, candidate)
         except BaseException as exc:

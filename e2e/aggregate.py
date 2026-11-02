@@ -702,6 +702,301 @@ def failure_result_controls() -> dict:
             for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
             results['C5-Relay-wrong-owner-'+name] = 'same spelling at unselected real writer/raw owner refuses wholly; earlier complete state exact'
 
+    # SAME fixture/table, canonical submission edges. Original SOURCE strings
+    # are copied literally; their source/SID/token identity is never rebound.
+    submission_sources = {'exit0': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/e08eba4596159ebe63677c14.started\').write_text(json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())))\nsys.stdout.write(\'E04_OK_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_OK_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if False:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(0)\n', 'exit7': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started\').write_text(json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())))\nsys.stdout.write(\'E04_EXIT7_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_EXIT7_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if False:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(7)\n', 'timeout': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif True:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started\').write_text(json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())))\nsys.stdout.write(\'E04_TIMEOUT_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_TIMEOUT_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if True:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(-9)\n'}
+    submission_source_tokens = {'exit0': b'"import json, os, signal, socket, sys, time\\nfrom pathlib import Path\\nif False:\\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\\nPath(\'/tmp/e04-show/coord/e08eba4596159ebe63677c14.started\').write_text(json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())))\\nsys.stdout.write(\'E04_OK_OUT\\\\n\'); sys.stdout.flush()\\nsys.stderr.write(\'E04_OK_ERR\\\\n\'); sys.stderr.flush()\\nend = 40.0\\ndef remaining():\\n    value = end - time.monotonic()\\n    if value <= 0:\\n        raise TimeoutError(\\"E04 script absolute deadline\\")\\n    return min(20, value)\\nwith socket.socket(socket.AF_UNIX) as peer:\\n    peer.settimeout(remaining())\\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\\n    peer.settimeout(remaining())\\n    peer.sendall((json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())) + \\"\\\\n\\").encode())\\n    remaining()\\n    if False:\\n        while True:\\n            signal.pause()\\n    peer.settimeout(remaining())\\n    released = peer.recv(1)\\n    remaining()\\n    if released != b\\"R\\":\\n        raise RuntimeError(\\"missing external release\\")\\nraise SystemExit(0)\\n"', 'exit7': b'"import json, os, signal, socket, sys, time\\nfrom pathlib import Path\\nif False:\\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\\nPath(\'/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started\').write_text(json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())))\\nsys.stdout.write(\'E04_EXIT7_OUT\\\\n\'); sys.stdout.flush()\\nsys.stderr.write(\'E04_EXIT7_ERR\\\\n\'); sys.stderr.flush()\\nend = 40.0\\ndef remaining():\\n    value = end - time.monotonic()\\n    if value <= 0:\\n        raise TimeoutError(\\"E04 script absolute deadline\\")\\n    return min(20, value)\\nwith socket.socket(socket.AF_UNIX) as peer:\\n    peer.settimeout(remaining())\\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\\n    peer.settimeout(remaining())\\n    peer.sendall((json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())) + \\"\\\\n\\").encode())\\n    remaining()\\n    if False:\\n        while True:\\n            signal.pause()\\n    peer.settimeout(remaining())\\n    released = peer.recv(1)\\n    remaining()\\n    if released != b\\"R\\":\\n        raise RuntimeError(\\"missing external release\\")\\nraise SystemExit(7)\\n"', 'timeout': b'"import json, os, signal, socket, sys, time\\nfrom pathlib import Path\\nif True:\\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\\nPath(\'/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started\').write_text(json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())))\\nsys.stdout.write(\'E04_TIMEOUT_OUT\\\\n\'); sys.stdout.flush()\\nsys.stderr.write(\'E04_TIMEOUT_ERR\\\\n\'); sys.stderr.flush()\\nend = 40.0\\ndef remaining():\\n    value = end - time.monotonic()\\n    if value <= 0:\\n        raise TimeoutError(\\"E04 script absolute deadline\\")\\n    return min(20, value)\\nwith socket.socket(socket.AF_UNIX) as peer:\\n    peer.settimeout(remaining())\\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\\n    peer.settimeout(remaining())\\n    peer.sendall((json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())) + \\"\\\\n\\").encode())\\n    remaining()\\n    if True:\\n        while True:\\n            signal.pause()\\n    peer.settimeout(remaining())\\n    released = peer.recv(1)\\n    remaining()\\n    if released != b\\"R\\":\\n        raise RuntimeError(\\"missing external release\\")\\nraise SystemExit(-9)\\n"', 'F4-one-backslash': b'"print(\\"public\\\\nline\\")"', 'F4-two-backslash': b'"print(\\"public\\\\\\\\nline\\")"'}
+    old_source = 'd6a605d8a22610b0074d87c9523b9b87742513ae'
+    def submission_input(root: Path, source: str, *, refusal: bool = False, late: bool = False) -> dict:
+        # Independent source-shaped input. stdlib test-side JSON specifies the
+        # actual producer's inner sorted presentation and compact HTTPX body;
+        # no shipping parser/scanner/sanitizer/renderer constructs expectations.
+        provider = dict(task='TASK-701',session='sess-e04-first',agent='case_manager',org='alpha',pid=101)
+        payload = dict(title='E04 source fixture',rationale='Full original submission',script=source,interpreter='python3',
+            cwd_hint=None,review_required=refusal,persistent=False,max_runtime_seconds=30,
+            task_id=provider['task'],session_id=provider['session'])
+        text = json.dumps(payload,sort_keys=True)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        file = dict(path=str(root/'coord'/(digest+'.json')),text=text,bytes=len(text.encode()),sha256=digest)
+        response = dict(id='JOB-701',status='running',created_at='2026-01-01T00:00:00+00:00',
+            started_at='2026-01-01T00:00:01+00:00',cwd_resolved=str(root/'runtime/orgs/alpha/workspaces/case_manager'),
+            timeout_seconds=30,events_url='/api/v1/orgs/alpha/jobs/JOB-701/events',
+            authentication=dict(task_id=provider['task'],session_id=provider['session']))
+        wire = dict(path='/api/v1/orgs/alpha/jobs/submit',method='POST',
+            body_sha256=hashlib.sha256(json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+            status=201,response=response,dropped=False)
+        record = dict(action='jobs-refuse-review' if refusal else 'jobs-submit',operation=None,
+            argv=[str(root/'bin/happyranch'),'jobs','submit','--org','alpha','--from-file',file['path'],'--json'],
+            exit=2 if refusal else 0,stdout='' if refusal else json.dumps(response,sort_keys=True)+'\n',
+            stderr=('Error reading scripts-submit file '+file['path']+': review_required_removed: obtain any required authorization in a thread before submitting; '
+                'upgrade old clients and omit review_required or set it to false. This request was not submitted.\n') if refusal else '',
+            payload=payload,payload_file=file,entered=10.,finished=10.5,timed_out=False,execution_deadline=19.,provider=provider,
+            child_pid=202,child_start='456',child_parent=101,child_stat='202 (python) S 101 '+'0 '*17+'456\n',
+            python=str(root/'venv/bin/python'),source_sha=old_source,callback_sha256='a'*64,wire=[] if refusal else [wire])
+        manifest = dict(root=str(root),source='/original/source-fixture',revision=old_source,
+            python=str(root/'venv/bin/python'),callback=str(root/'bin/happyranch'),callback_sha256='a'*64,
+            stubs={p:dict(path=str(root/'bin'/p),sha256='b'*64) for p in ('claude','codex','opencode')})
+        starts = [dict(provider,pid_start='123',pgid=101)]
+        if late:
+            record = {k:record[k] for k in ('stdout','payload_file','payload','wire','provider','argv','stderr','exit','child_stat',
+                'child_start','child_parent','child_pid','python','callback_sha256','source_sha','finished','entered','execution_deadline','timed_out','operation','action')}
+            return dict(provider_commands=[record],durable=[dict(executable_manifest=manifest)],starts=starts)
+        return dict(starts=starts,durable=[dict(executable_manifest=manifest)],provider_commands=[record])
+
+    def submission_reseal(image: dict) -> None:
+        # Finite negative-input construction only. Keeps every unrelated
+        # identity correct so JSON/lexical negatives reach their own layer.
+        record = image['provider_commands'][0]; file = record['payload_file']
+        data = file['text'].encode(); file['bytes'] = len(data); file['sha256'] = hashlib.sha256(data).hexdigest()
+        file['path'] = str(Path(file['path']).parent/(file['sha256']+'.json'))
+        record['argv'][-2] = file['path']
+        if record['wire']:
+            record['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(record['payload'],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+    source_forms = dict(submission_sources)
+    source_forms.update({
+        'F4-one-backslash': 'print("public\\nline")',
+        'quotes-unicode': "x = '中'; y = u'\\u03b2'; z = \\\"public\\\"\n".replace('\\"','"'),
+        'bytes-UTF8': 'x = b"\\xe4\\xb8\\xad"\n',
+        'raw-no-backslash': 'x=r"public"; y=BR"ASCII"; z=rb\'public\'\n',
+        'triple': 'x="""public\nline 中"""\n',
+        'triple-CRLF': 'x="""public\r\nline"""\r\n',
+        'continuation': 'x = (1 + \\\n 2); y="public\\\nline"\n',
+        'escaped-quote-controls': 'x="public\\"quote\\n\\t\\a\\b\\f\\r\\v\\101\\x42\\u03b2\\U0001f600"\n',
+        'cross-chunk-literal': 'x="'+('p'*1020)+'\\n'+('q'*1050)+'"\n',
+    })
+    for ending,cost in (('LF',1),('CRLF',2),('EOF',0)):
+        source_forms['physical-'+ending+'-inclusive'] = 'x=0'+' '*(65536-3-cost)+{'LF':'\n','CRLF':'\r\n','EOF':''}[ending]
+    for form,source in source_forms.items():
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            for late in (False,True) if form in ('exit0','exit7','timeout') else (False,):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = submission_input(root,source,late=late)
+                    if form in submission_source_tokens:
+                        literal_token = submission_source_tokens[form]
+                        assert json.loads(literal_token) == source
+                        assert b'\"script\": '+literal_token in image['provider_commands'][0]['payload_file']['text'].encode()
+                    # Independent exact expected full outer framing only.
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer':
+                        writer._atomic_json(destination,image)
+                        expected_image = compact
+                    elif boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        data,parsed = writer._prepare_original_evidence(destination,source_file)
+                        assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image); writer._replace_evidence(destination,data)
+                        expected_image = original_image
+                    else:
+                        destination.write_bytes(original_image); expected_image = original_image
+                    assert destination.read_bytes() == expected_image
+                    complete,error = acquire(); drain(); commit()
+                    assert not complete and error is None and not state['fatal'] and not errors, (form,boundary,failures)
+                    assert staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads(expected_image),image)
+                    for record in json.loads(expected_image)['provider_commands']:
+                        assert record['payload']['script'] == source
+                        decoded_file = json.loads(record['payload_file']['text'])
+                        assert set(decoded_file) == set(record['payload'])
+                        for key in decoded_file: exact(decoded_file[key],record['payload'][key])
+                        assert list(json.loads(record['payload_file']['text'])) == sorted(record['payload'])
+                        assert record['payload_file']['sha256'] == hashlib.sha256(record['payload_file']['text'].encode()).hexdigest()
+                    results[f'C5-Submit-full-{form}-{int(late)}-{boundary}'] = 'entire original SOURCE/file/public/wire/typed trees and independent compact or original framing; native NOT RUN'
+    for boundary in ('writer','raw','raw-prefix','prefix'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            writer.revision = row['source_sha'] = old_source
+            image = submission_input(root,submission_sources['exit0'],refusal=True,late=True)
+            name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+            destination = root/'raw'/name
+            expected_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+            if boundary == 'prefix':
+                source_file = root/'raw/observations.json'; source_file.write_bytes(expected_image)
+                data,parsed = writer._prepare_original_evidence(destination,source_file)
+                exact(parsed,image); writer._replace_evidence(destination,data)
+            elif boundary == 'writer': writer._atomic_json(destination,image)
+            else: destination.write_bytes(expected_image)
+            complete,error = acquire(); drain(); commit()
+            assert error is None and not complete and not state['fatal'] and not errors, failures
+            assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+            exact(json.loads(expected_image),image)
+            results['C5-Submit-refusal-original-'+boundary] = 'genuine local exit2/empty stdout/exact error/true review mode/no wire retained; no legacy pending success'
+
+    for form in ('deferred-retained','repeated-occurrences'):
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = submission_input(root,submission_sources['exit0'],late=True)
+                record = image['provider_commands'][0]
+                if form == 'deferred-retained':
+                    r = record['wire'][0]['response']; r['status'] = 'pending'
+                    for key in ('started_at','cwd_resolved','timeout_seconds','events_url'): r[key] = None
+                    r.update(deferred=True,code='root_paused')
+                    record['stdout'] = json.dumps(r,sort_keys=True)+'\n'
+                else:
+                    second = copy.deepcopy(record)
+                    # Reuse the actual original payload/file scalar aliases;
+                    # every occurrence must still pay its own admission work.
+                    second['payload'],second['payload_file'] = record['payload'],record['payload_file']
+                    second['child_pid'] = 203; second['child_stat'] = second['child_stat'].replace('202 (','203 (',1)
+                    r = second['wire'][0]['response']; r['id'] = 'JOB-702'; r['events_url'] = '/api/v1/orgs/alpha/jobs/JOB-702/events'
+                    second['stdout'] = json.dumps(r,sort_keys=True)+'\n'
+                    image['provider_commands'].append(second)
+                name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name
+                expected_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary == 'writer': writer._atomic_json(destination,image)
+                elif boundary == 'prefix':
+                    source_file = root/'raw/observations.json'; source_file.write_bytes(expected_image)
+                    data,parsed = writer._prepare_original_evidence(destination,source_file)
+                    exact(parsed,image); writer._replace_evidence(destination,data)
+                else: destination.write_bytes(expected_image)
+                complete,error = acquire(); drain(); commit()
+                assert not complete and error is None and not state['fatal'] and not errors, failures
+                assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                exact(json.loads(expected_image),image)
+                results['C5-Submit-'+form+'-'+boundary] = 'whole original receipt retained with actual deferred null/code branch or independently charged copied occurrences; no legacy/native success claim'
+
+    lexical_refusals = {
+        'F4-two-backslash':'print("public\\\\nline")', 'f-prefix':'x=f"public"', 't-prefix':'x=t"public"',
+        'bad-prefix':'x=ur"public"', 'raw-layer':'x=r"public\\nline"', 'unknown-escape':'x="public\\q"',
+        'named-escape':'x="\\N{LATIN CAPITAL LETTER A}"', 'unfinished':'x="public',
+        'unfinished-delimiter':'x=(1', 'wrong-delimiter':'x=(1]', 'lone-CR':'x=0\r',
+        'nonUTF8-bytes':'x=b"\\xff"', 'bytes-unicode':'x=b"\\u0061"', 'bytes-nonASCII':'x=b"中"',
+        'surrogate-literal':'x="\\ud800"', 'beyond-unicode':'x="\\U00110000"', 'bad-hex':'x="\\x0z"',
+        'literal-secret':'x="SYNTHETIC_TOKEN"', 'decoded-secret':'x="\\x53YNTHETIC_TOKEN"',
+        'escape-boundary-secret':'x="SYNTHETIC_\\x54OKEN"',
+        'continuation-secret':'x="SYNTHETIC_\\\nTOKEN"',
+        'chunk-secret':'x="'+('p'*1020)+'SYNTHETIC_\\x54OKEN"',
+        'comment-backslash':'# public\\n\nx=0', 'unsupported-character':'x=$public',
+        'source-total-over': ('x=0\n'*131073),
+        'literal-spelling-over': 'x="'+('p\\\n'*90000)+'"',
+    }
+    for ending,cost in (('LF',1),('CRLF',2),('EOF',0)):
+        lexical_refusals['physical-'+ending+'-over'] = 'x=0'+' '*(65537-3-cost)+{'LF':'\n','CRLF':'\r\n','EOF':''}[ending]
+    for case in (list(lexical_refusals)+[
+            'file-duplicate','file-escaped-equal','file-malformed','file-trailing','file-nonfinite','file-surrogate','file-wrong-top',
+            'file-unsupported-layer','file-equality','file-sorted-order','file-hash','file-count','filename','source-copy',
+            'stdout-duplicate','stdout-escaped-equal','stdout-malformed','stdout-trailing','stdout-nonfinite','stdout-surrogate',
+            'stdout-wrong-top','stdout-unsupported-layer','stdout-equality','stdout-no-LF',
+            'missing-action','foreign-action','operation','provider','task','SID','org','source','callback','python','argv',
+            'exit-bool','timed-out','time-bool','child-parent','child-start','missing-payload','missing-file',
+            'wire-job','wire-auth','wire-status','wire-hash','wire-extra','wire-captured-unsupported',
+            'payload-interpreter','payload-review-bool','payload-persistent-bool','payload-extra','wrong-root','wrong-owner',
+            'missing-start','foreign-start','duplicate-start','missing-manifest','foreign-manifest','duplicate-record',
+            'plain-stdout','shared-work','shared-facts','shared-depth']):
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = submission_input(root,lexical_refusals.get(case,submission_sources['exit0']),late=True)
+                record = image['provider_commands'][0]; file = record['payload_file']; response = record['wire'][0]['response']
+                if case.startswith('file-'):
+                    changes = {
+                        'duplicate':lambda x:x.replace('"title":','"title":"other", "title":',1),
+                        'escaped-equal':lambda x:x.replace('"title":','"\\u0074itle":"other", "title":',1),
+                        'malformed':lambda x:x[:-1]+',}', 'trailing':lambda x:x+' {}',
+                        'nonfinite':lambda x:x.replace('"cwd_hint": null','"cwd_hint": NaN'),
+                        'surrogate':lambda x:x.replace('"cwd_hint": null','"cwd_hint": "\\ud800"'),
+                        'wrong-top':lambda x:'['+x+']', 'unsupported-layer':lambda x:json.dumps(x),
+                        'equality':lambda x:x.replace('Full original submission','different original submission'),
+                        'sorted-order':lambda x:json.dumps(record['payload']),
+                    }
+                    suffix = case[5:]
+                    if suffix in changes: file['text'] = changes[suffix](file['text']); submission_reseal(image)
+                    elif suffix == 'hash': file['sha256'] = '0'*64
+                    elif suffix == 'count': file['bytes'] += 1
+                elif case.startswith('stdout-'):
+                    changes = {
+                        'duplicate':lambda x:x.replace('"id":','"id":"JOB-999", "id":',1),
+                        'escaped-equal':lambda x:x.replace('"id":','"\\u0069d":"JOB-999", "id":',1),
+                        'malformed':lambda x:x[:-2]+',}\n', 'trailing':lambda x:x+'{}',
+                        'nonfinite':lambda x:x.replace('"timeout_seconds": 30','"timeout_seconds": Infinity'),
+                        'surrogate':lambda x:x.replace('JOB-701','\\ud800'), 'wrong-top':lambda x:'['+x+']',
+                        'unsupported-layer':lambda x:json.dumps(x), 'equality':lambda x:x.replace('JOB-701','JOB-999'),
+                        'no-LF':lambda x:x[:-1],
+                    }
+                    record['stdout'] = changes[case[7:]](record['stdout'])
+                elif case == 'filename': file['path'] += '.json'; record['argv'][-2] = file['path']
+                elif case == 'source-copy': record['payload']['script'] += '# different\n'; submission_reseal(image)
+                elif case == 'missing-action': del record['action']
+                elif case == 'foreign-action': record['action'] = 'jobs-read'
+                elif case == 'operation': record['operation'] = 'receipt'
+                elif case == 'provider': record['provider']['agent'] = 'case_worker'
+                elif case == 'task': record['provider']['task'] = 'TASK-999'
+                elif case == 'SID': record['provider']['session'] = 'foreign-sid'
+                elif case == 'org': record['provider']['org'] = 'beta'
+                elif case == 'source': record['source_sha'] = 'f'*40
+                elif case == 'callback': record['callback_sha256'] = 'c'*64
+                elif case == 'python': record['python'] = '/foreign/python'
+                elif case == 'argv': record['argv'].append('--extra')
+                elif case == 'exit-bool': record['exit'] = False
+                elif case == 'timed-out': record['timed_out'] = True
+                elif case == 'time-bool': record['entered'] = True
+                elif case == 'child-parent': record['child_parent'] = 999
+                elif case == 'child-start': record['child_start'] = '999'
+                elif case == 'missing-payload': del record['payload']
+                elif case == 'missing-file': del record['payload_file']
+                elif case == 'wire-job': response['id'] = 'JOB-999'
+                elif case == 'wire-auth': response['authentication']['session_id'] = 'foreign-sid'
+                elif case == 'wire-status': record['wire'][0]['status'] = True
+                elif case == 'wire-hash': record['wire'][0]['body_sha256'] = '0'*64
+                elif case == 'wire-extra': record['wire'][0]['unexpected'] = None
+                elif case == 'wire-captured-unsupported':
+                    record['wire'][0].update(request=record['payload'],response_text=record['stdout'],entered=10.1)
+                elif case == 'payload-interpreter': record['payload']['interpreter'] = 'bash'; submission_reseal(image)
+                elif case == 'payload-review-bool': record['payload']['review_required'] = 0; submission_reseal(image)
+                elif case == 'payload-persistent-bool': record['payload']['persistent'] = 0; submission_reseal(image)
+                elif case == 'payload-extra': record['payload']['unexpected'] = None; submission_reseal(image)
+                elif case == 'wrong-root': image = {'holder':image}
+                elif case == 'wrong-owner': pass
+                elif case == 'missing-start': image['starts'] = []
+                elif case == 'foreign-start': image['starts'][0]['task'] = 'TASK-999'
+                elif case == 'duplicate-start': image['starts'] *= 2
+                elif case == 'missing-manifest': image['durable'] = []
+                elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                elif case == 'duplicate-record': image['provider_commands'] *= 2
+                elif case == 'plain-stdout': record['stdout'] = 'print("public\\nline")'
+                elif case == 'shared-work': record['payload']['title'] = 'p'*550000; submission_reseal(image)
+                elif case == 'shared-facts': image['starts'] = [copy.deepcopy(image['starts'][0]) for _ in range(10000)]
+                elif case == 'shared-depth':
+                    nested = None
+                    for _ in range(62): nested = [nested]
+                    record['payload']['extra'] = nested
+                name = ('e07.json' if case == 'wrong-owner' else 'e07-prefix.json'
+                        if boundary in ('raw-prefix','prefix') else 'observations.json')
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source_file)
+                    except (ValueError,AssertionError):
+                        pass
+                    else:
+                        raise AssertionError('Submission unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image)
+                    (root/'raw/eligible-submit.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-submit.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Submit-refusal-'+case+'-'+boundary] = 'whole prior file/member/full safe tree/FAIL preserved; no selected pending/output; overlapping guards documented'
+
     # C5/C6: required original trees at the two shipping preparation/file
     # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
     originals = {

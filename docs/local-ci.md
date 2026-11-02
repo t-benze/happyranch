@@ -695,6 +695,23 @@ Existing controls supply file/preparation evidence only, with temporal, allocati
 and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.
 
+The same finite source-owned admission now covers canonical
+observations.provider_commands[*] jobs-submit/jobs-refuse-review only, including
+its exact original prefix. Complete caller/source/start/executable/provider,
+payload/file/argv/child/timing identities close before publication. Payload-file
+JSON and public submit stdout use one strict complete stage, full keyed builtin
+equality and their original sorted presentation; matching typed objects retain
+their own insertion order. Each selected script occurrence uses the finite Python
+lexical scanner without tokenize/AST/execution. Original file text/count/hash,
+SOURCE spelling, public framing/LF and actual deferred/refusal meanings survive.
+Unimplemented copies/actions and unsupported captured wires still refuse whole
+members; raw collection builds no full tree. Existing shared C/F/depth/end,
+whole-backslash ordinary text, prior files/FAIL and fatal-stop rules remain.
+Existing aggregate --controls is the finite file-boundary venue; it supplies no
+full Controller.evidence/E07/native/Product or RSS/kernel/cleanup proof. Required
+local/hosted CI remains lint/static only, with no new trigger or Product run.
+
+
 
 Only the existing aggregate --controls reader boundary is worker-authorized here.
 Native H NOT RUN, unsupported proof PROOF NOT RUN; integration INCLUDING actual
