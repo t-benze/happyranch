@@ -279,9 +279,15 @@ or a cancelled bridge never establishes native return. Service close owns one
 shielded join: fence new requests, join admitted request handoffs, then snapshot,
 cancel and join operation runners. Uncertain submission/return or restricted
 context close retains strong owners/handles and refuses remove/swap/DB close.
-This boundary correction remains partial while dynamic reattachment and
-generation-aware task redelivery retain native work on the loop; it establishes
-no behavioral readiness or hard filesystem completion deadline.
+A service-owned redelivery child shares the original org lifetime through native
+generation claim, real loop queue put and native exact acknowledgement/failure.
+Its parent joins it across repeated cancellation before returning or closing;
+uncertain native return retains both queue reservation and service close barrier.
+Synchronous generation publishers keep their original entry and error behavior.
+This boundary correction remains partial while dynamic reattachment retains
+native work on-loop: coherent worker map publication also needs safe live-map
+readers outside the attachment owner. No native lease crosses an await. Source
+and static evidence establish no behavioral readiness or hard completion bound.
 
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active

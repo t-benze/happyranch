@@ -10,7 +10,7 @@ import json
 import os
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Callable
 
 from runtime.infrastructure.team_move_store import (
     CompletedReceipt, Diagnostic, ExpectedInputs, ForwardDecision, FounderAdmission,
@@ -391,7 +391,7 @@ class TeamMoveOperation:
                 raise TeamMoveError("team_move_precommit_reset_present")
             return self._transition(row, Phase.REFUSED, diagnostic=Diagnostic(code=code))
 
-    async def advance(self, *, operation_key: str, expected_revision: int, native):
+    async def advance(self, *, operation_key: str, expected_revision: int, native: Callable, redeliver: Callable | None = None) -> dict:
         """Loop-owned async orchestration; complete native intervals are joined."""
         row, request = await native(lambda: self._advance_inputs(operation_key, expected_revision))
         if request is None:
@@ -401,7 +401,10 @@ class TeamMoveOperation:
         async with self.profiles.consumer_batch_writer(org=self.org, operation_id=row["operation_id"], native=native) as batch:
             result = await native(lambda: self._advance_owned(row, request, batch, operation_key))
         if result["phase"] in {"complete", "refused", "abandoned"}:
-            await self.redeliver(native=native)
+            if redeliver is None:
+                await self.redeliver(native=native)
+            else:
+                await redeliver(self)
         return result
 
     def _advance_inputs(self, operation_key: str, expected_revision: int) -> tuple:
@@ -666,7 +669,7 @@ class TeamMoveOperation:
             self.org.db.insert_audit_log_uncommitted(task_id="config:team-move:" + row["operation_id"], agent="founder", action="team_move_owner_finished",
                 payload={"owner_id": owner, "request_digest": row["request_digest"]})
 
-    async def recover(self, *, operation_key: str, expected_revision: int, native):
+    async def recover(self, *, operation_key: str, expected_revision: int, native: Callable, redeliver: Callable | None = None) -> dict:
         """Original explicit native owner proof and CAS, with loop-owned waits."""
         row, owner, recovery = await native(lambda: self._recovery_inputs(operation_key, expected_revision))
         if owner is None:
@@ -674,7 +677,10 @@ class TeamMoveOperation:
         async with self.profiles.consumer_batch_writer(org=self.org, operation_id=row["operation_id"], native=native) as batch:
             result = await native(lambda: self._recover_owned(row, owner, recovery, batch, operation_key))
         if result["phase"] == "complete":
-            await self.redeliver(native=native)
+            if redeliver is None:
+                await self.redeliver(native=native)
+            else:
+                await redeliver(self)
         return result
 
     def _recovery_inputs(self, operation_key: str, expected_revision: int) -> tuple:
@@ -776,14 +782,17 @@ class TeamMoveOperation:
             raise TeamMoveError("team_move_recovery_owner_live_or_unknown")
         return {"owner_id": owner, "start_audit": start["id"], "different_process_identity": current}
 
-    async def redeliver(self, *, native=None):
+    async def redeliver(self, *, native: Callable | None = None) -> None:
         """After durable release, existing deduplicating owners retain semantics."""
         held = self.store.read() if native is None else await native(self.store.read)
         if held is not None:
             raise TeamMoveError("team_move_release_not_committed")
         if not hasattr(self.org.orchestrator, "redeliver_team_move_tasks"):
             raise TeamMoveError("team_move_recovery_reattach_for_redelivery")
-        self.org.orchestrator.redeliver_team_move_tasks()
+        if native is None:
+            self.org.orchestrator.redeliver_team_move_tasks()
+        else:
+            await self.org.orchestrator.redeliver_team_move_tasks(native=native)
         await self.move.threads.redeliver_after_release(self.org.thread_queue, native=native)
         if native is None:
             # Existing startup caller retains its original synchronous entry.

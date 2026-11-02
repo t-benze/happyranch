@@ -86,7 +86,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -4846,6 +4846,52 @@ def publish_authority_policy_v2_notifications(
     This function performs no evaluation, no remint and no task mutation, and
     returns bounded per-target receipts for the caller.
     """
+    steps = _v2_publication_steps(orch, queue, limit=limit, root_task_id=root_task_id)
+    error = None
+    while True:
+        put, receipts = _advance_v2_publication(steps, error)
+        if put is None:
+            return receipts
+        error = None
+        try:
+            put()
+        except Exception as exc:
+            error = exc
+
+
+async def _publish_v2_notifications_native(
+    orch: Any, queue: Any, *, native: Callable, root_task_id: str,
+) -> list[dict]:
+    # The service owns/joins this whole publication. Every advance ends AFTER
+    # native DB transactions/leases have closed; only the raw put crosses out.
+    steps = _v2_publication_steps(orch, queue, root_task_id=root_task_id)
+    error = None
+    while True:
+        put, receipts = await native(lambda: _advance_v2_publication(steps, error))
+        if put is None:
+            return receipts
+        error = None
+        try:
+            put()  # Real asyncio queue insertion on its owning loop.
+        except Exception as exc:
+            error = exc
+
+
+def _advance_v2_publication(
+    steps: Generator, error: Exception | None,
+) -> tuple[Callable | None, list[dict] | None]:
+    # StopIteration never escapes an executor Future. This owner-specific
+    # iterator retains values only, never a cursor/transaction/native lease.
+    try:
+        return steps.send(error), None
+    except StopIteration as done:
+        return None, done.value
+
+
+def _v2_publication_steps(
+    orch: Any, queue: Any, *, limit: int | None = 32,
+    root_task_id: str | None = None,
+) -> Generator[Callable[[], None], Exception | None, list[dict]]:
     db = orch._db
     receipts: list[dict] = []
     try:
@@ -4893,7 +4939,7 @@ def publish_authority_policy_v2_notifications(
                 "notification_id": target.notification_id,
             })
             continue
-        try:
+        def put(target: Any = target, claim: Any = claim) -> None:
             queue.put_nowait(
                 orch._slug,
                 target.root_task_id,
@@ -4902,6 +4948,10 @@ def publish_authority_policy_v2_notifications(
                     "publication_attempt": claim.publication_attempt,
                 },
             )
+        try:
+            error = yield put
+            if error is not None:
+                raise error
         except Exception as exc:
             try:
                 failure = (
@@ -5243,6 +5293,44 @@ def enqueue_task_generation_aware(
         else:
             _ordinary_enqueue(queue, slug, task_id, metadata)
 
+    classification = _classify_generation_enqueue(orch, task_id)
+    if classification == "pending":
+        receipts = publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=task_id,
+        )
+        return _v2_enqueue_receipt_status(receipts)
+    if classification == ENQUEUE_DISPATCH_ORDINARY:
+        _ordinary()
+    return classification
+
+
+async def _enqueue_task_generation_aware_native(
+    orch: Any, queue: Any, slug: str, task_id: str, *, native: Callable,
+    metadata: dict | None = None,
+) -> str:
+    """Team-move path only; native classification/claim and real loop put."""
+    if queue is None:
+        return ENQUEUE_DISPATCH_NO_QUEUE
+    classification = await native(lambda: _classify_generation_enqueue(orch, task_id))
+    if classification == "pending":
+        receipts = await _publish_v2_notifications_native(
+            orch, queue, native=native, root_task_id=task_id,
+        )
+        return _v2_enqueue_receipt_status(receipts)
+    if classification == ENQUEUE_DISPATCH_ORDINARY:
+        _ordinary_enqueue(queue, slug, task_id, metadata)
+    return classification
+
+
+def _v2_enqueue_receipt_status(receipts: list[dict]) -> str:
+    published = any(
+        isinstance(r, dict) and r.get("status") in ("published", "published_exact")
+        for r in receipts
+    )
+    return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+
+
+def _classify_generation_enqueue(orch: Any, task_id: str) -> str:
     db = getattr(orch, "_db", None)
     # Only a genuine durable ``Database`` carries the classification read.  A
     # duck-typed/mock orchestrator (a test double or an org with no durable
@@ -5250,7 +5338,6 @@ def enqueue_task_generation_aware(
     # so it keeps the unchanged ordinary path.
     classifier = _durable_dispatch_classifier(db)
     if classifier is None:
-        _ordinary()
         return ENQUEUE_DISPATCH_ORDINARY
     try:
         classification = classifier(task_id)
@@ -5262,17 +5349,7 @@ def enqueue_task_generation_aware(
         return ENQUEUE_DISPATCH_REFUSED
     kind = getattr(classification, "kind", None)
     if kind == "pending":
-        # Route the EXACT pending generation through the authenticated publisher.
-        # The publisher performs the claim -> raw put -> ack itself; a refusal or
-        # an empty target set means NO queue call and NO ordinary fallback.
-        receipts = publish_authority_policy_v2_notifications(
-            orch, queue, root_task_id=task_id,
-        )
-        published = any(
-            isinstance(r, dict) and r.get("status") in ("published", "published_exact")
-            for r in receipts
-        )
-        return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+        return "pending"
     if kind in ("admitted", "malformed", "unreadable"):
         logger.warning(
             "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
@@ -5282,7 +5359,6 @@ def enqueue_task_generation_aware(
     # kind can never become ordinary permission.
     if kind != "absent" and kind != "retired":
         return ENQUEUE_DISPATCH_REFUSED
-    _ordinary()
     return ENQUEUE_DISPATCH_ORDINARY
 
 

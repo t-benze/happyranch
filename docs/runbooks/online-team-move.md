@@ -61,8 +61,14 @@ before native submission; it no longer relies on an unregistered FastAPI worker.
 Apply/recover reserve off-loop and publish the once-only runner on-loop before
 propagating cancellation. Shutdown joins admitted request handoffs before its
 runner snapshot and refuses uncertain native return or restricted-handle close.
-The correction remains draft/partial: dynamic `add_org` reattachment and
-generation-aware task redelivery still require their native/loop owner splits.
+Generation-aware task redelivery joins native claim, real loop queue insertion
+and native exact acknowledgement/failure under the original service/org owner.
+Cancellation waits for publication retirement; uncertain submission retains the
+queue reservation and close barrier. Native final admission remains authoritative.
+The correction remains draft/partial: dynamic `add_org` reattachment still runs
+native work on-loop. A worker-side shared-map insertion cannot be declared safe
+while other readers iterate the live map during native DB work. The attachment
+split remains required before whole-service completion.
 Source and static evidence establish no complete responsiveness, behavioral
 readiness, filesystem deadline or dominant slow planning stage. Keep the existing
 client deadline and same-key custody after timeout. No extra preview/apply/recover

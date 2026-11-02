@@ -202,8 +202,10 @@ class Orchestrator:
         currently-executing task without reaching into the private attribute."""
         return self._db
 
-    def redeliver_team_move_tasks(self) -> None:
+    def redeliver_team_move_tasks(self, *, native: Callable | None = None) -> Any:
         """Task-only release seam for D; no operation release or startup owner."""
+        if native is not None:
+            return self._redeliver_team_move_tasks_native(native)
         from runtime.orchestrator.authority import enqueue_task_generation_aware
         if self._queue is None:
             from runtime.orchestrator.team_move import DeferredTeamMove
@@ -213,6 +215,22 @@ class Orchestrator:
                 publisher=lambda: enqueue_task_generation_aware(self, self._queue, self._slug,
                     task_id, metadata=metadata))
         self._team_moves.redeliver_tasks(publish)
+
+    async def _redeliver_team_move_tasks_native(self, native: Callable) -> None:
+        from runtime.orchestrator.authority import _enqueue_task_generation_aware_native
+        if self._queue is None:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            raise DeferredTeamMove("team_move_task_queue_unavailable")
+
+        async def publish(task_id: str, metadata: dict | None) -> bool:
+            return await self._queue._enqueue_if_absent_native(
+                self._slug, task_id,
+                publisher=lambda: _enqueue_task_generation_aware_native(
+                    self, self._queue, self._slug, task_id, native=native, metadata=metadata,
+                ),
+            )
+
+        await self._team_moves._redeliver_tasks_native(publish, native=native)
 
     def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.

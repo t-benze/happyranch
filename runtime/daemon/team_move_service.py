@@ -154,20 +154,26 @@ class TeamMoveService:
         # handoff failure cannot remove the DB-close barrier speculatively.
         with self._observations:
             self._workers[ticket] = (slug, owner, None, returned, outcome, callback)
-        worker = asyncio.get_running_loop().run_in_executor(None, run)
-        with self._observations:
-            self._workers[ticket] = (slug, owner, worker, returned, outcome, callback)
-        cancellation = None
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-        # A private bridge cancellation/failed submission supplies no evidence
-        # about native execution. Leave the original strong owner held.
-        worker.result()
-        if not returned.is_set():
-            raise TeamMoveError("team_move_owner_interrupted")
+        try:
+            worker = asyncio.get_running_loop().run_in_executor(None, run)
+            with self._observations:
+                self._workers[ticket] = (slug, owner, worker, returned, outcome, callback)
+            cancellation = None
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+            # A private bridge cancellation/failed submission supplies no evidence
+            # about native execution. Leave the original strong owner held.
+            worker.result()
+            if not returned.is_set():
+                raise TeamMoveError("team_move_owner_interrupted")
+        except BaseException as exc:
+            # Same primary exception; this private fact prevents release of a
+            # redelivery reservation while the recorded native owner is held.
+            BaseException.__setattr__(exc, "_team_move_native_unretired", True)
+            raise
         with self._observations:
             self._workers.pop(ticket)
         if "error" in outcome:
@@ -517,6 +523,8 @@ class TeamMoveService:
                 self._restricted.pop(asyncio.current_task())
         async def native(callback: Callable) -> Any:
             return await self.native(slug, callback)
+        async def redeliver(operation: TeamMoveOperation) -> None:
+            await self._redeliver(slug, operation)
         try:
             # Deadline bounds native awaits (including the <=30s thread drain),
             # never grants TTL takeover, rollback, or a completion-time promise.
@@ -527,7 +535,7 @@ class TeamMoveService:
                         try:
                             attached = await self.state.add_org(slug)
                             self._hold_attachment(slug, attached)
-                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver(native=native)
+                            await self._redeliver(slug, TeamMoveOperation(attached, self.state.profile_coordinator))
                         except Exception as exc:
                             error = TeamMoveError("team_move_reattachment_or_redelivery_failed")
                             error.team_move_secondary_codes = (TeamMoveOperation._diagnostic(exc).code,)
@@ -545,11 +553,11 @@ class TeamMoveService:
                     operation = TeamMoveOperation(org, self.state.profile_coordinator)
                 try:
                     if recover:
-                        result = await operation.recover(operation_key=row["operation_key"], expected_revision=row["state_revision"], native=native)
+                        result = await operation.recover(operation_key=row["operation_key"], expected_revision=row["state_revision"], native=native, redeliver=redeliver)
                         if restricted is None and row["phase"] in {"waiting", "complete", "refused", "abandoned"} and result["active_slot"] is None:
-                            await operation.redeliver(native=native)
+                            await self._redeliver(slug, operation)
                     else:
-                        await operation.advance(operation_key=row["operation_key"], expected_revision=row["state_revision"], native=native)
+                        await operation.advance(operation_key=row["operation_key"], expected_revision=row["state_revision"], native=native, redeliver=redeliver)
                 except TeamMoveError as exc:
                     if restricted is None or exc.code != "team_move_recovery_reattach_for_redelivery":
                         raise
@@ -565,7 +573,7 @@ class TeamMoveService:
                         try:
                             attached = await self.state.add_org(slug)
                             self._hold_attachment(slug, attached)
-                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver(native=native)
+                            await self._redeliver(slug, TeamMoveOperation(attached, self.state.profile_coordinator))
                         except Exception as exc:
                             error = TeamMoveError("team_move_reattachment_or_redelivery_failed")
                             error.team_move_secondary_codes = (TeamMoveOperation._diagnostic(exc).code,)
@@ -607,6 +615,31 @@ class TeamMoveService:
                 else:
                     with self._observations:
                         self.errors[(slug, row["operation_key"])] = view
+
+    async def _redeliver(self, slug: str, operation: TeamMoveOperation) -> None:
+        """Join the complete claim/loop-put/ack lifetime before cancellation.
+
+        The child shares the original org lease. Shutdown joins these admitted
+        owners before its runner snapshot; direct loop cancellation is deferred
+        through each native return and publication/ack before it propagates.
+        """
+        async def deliver() -> None:
+            async def native(callback: Callable) -> Any:
+                return await self.native(slug, callback, propagate_cancel=False)
+            await operation.redeliver(native=native)
+            if asyncio.current_task().cancelling():
+                raise asyncio.CancelledError
+
+        task = self._owned_task(slug, deliver, name="team-move-redelivery:" + slug)
+        cancellation = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        task.result()  # A genuine native/publication failure stays primary.
+        if cancellation is not None:
+            raise cancellation
 
     def assert_no_owner(self, slug=None):
         with self._observations:

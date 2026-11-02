@@ -433,9 +433,20 @@ cancelled Futures, timeouts and missing task-map entries prove no retirement.
 Close fences new requests, joins admitted handoffs, then cancels/joins runners;
 a shielded shared join survives repeated close-waiter cancellation.
 
-This source is still partial: `DaemonState.add_org` reattachment and the
-`Orchestrator.redeliver_team_move_tasks` generation-aware publisher still combine
-native work with loop publication and need separately allocated owner splits.
+Task redelivery uses a service-owned child sharing the original org lease.
+Native discovery/classification/claim returns a value-only publication step;
+no cursor, transaction or native lease survives that return. The real queue put
+runs on-loop, followed by native exact claim acknowledgement or failure, using
+the same publisher state machine and receipt/error shapes as synchronous callers.
+The original metadata identity is removed only after actual pending publication.
+Cancellation joins the complete publication; uncertain submission/bridge return
+retains queue reservation and service/DB-close ownership. Discovery grants no
+admission and pending/admitted/malformed/unreadable never gain ordinary fallback.
+
+This source is still partial: `DaemonState.add_org` reattachment retains native
+work on-loop. Its coherent native map insertion needs every shared-map reader
+and close fence to remain safe; a live-map DB reader outside this owner prevents
+that conclusion. Holding a native lease across an await is not an alternative.
 Existing startup/scheduler entries retain their original behavior. Whole-service
 completion/responsiveness and behavioral acceptance are not established. Native
 validation, the 45-second native-await semantics and CLI deadlines remain; there

@@ -16,7 +16,7 @@ from functools import partial
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 if TYPE_CHECKING:
     from runtime.daemon.metrics import MetricsRegistry
@@ -94,6 +94,9 @@ class TaskQueue:
         self._admission_lock = threading.RLock()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
         self._admission_reservations: set[tuple[str, str]] = set()
+        # Only the team-move async publisher needs an insertion receipt that
+        # survives dequeue while its native generation acknowledgement runs.
+        self._native_publication_puts: dict[tuple[str, str], bool] = {}
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(
             self._admission_lock, self._record_dequeue,
         )
@@ -120,6 +123,8 @@ class TaskQueue:
                 return
             self._queue.put_nowait((slug, task_id, metadata))
             self._pending_counts[(slug, task_id)] += 1
+            if (slug, task_id) in self._native_publication_puts:
+                self._native_publication_puts[(slug, task_id)] = True
 
     def put_nowait(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
         self.enqueue(slug, task_id, metadata=metadata)
@@ -146,6 +151,20 @@ class TaskQueue:
         by the pending count until the same locked dequeue operation, so a
         later qualifying wake is admitted.
         """
+        if not self._reserve_bounded_enqueue(slug, task_id):
+            return False
+        key = slug, task_id
+        try:
+            if publisher is None:
+                self.enqueue(slug, task_id, metadata=metadata)
+            else:
+                publisher()
+            with self._admission_lock:
+                return self._pending_counts[key] > 0
+        finally:
+            self._release_bounded_enqueue(key)
+
+    def _reserve_bounded_enqueue(self, slug: str, task_id: str, *, track_put: bool = False) -> bool:
         key = slug, task_id
         with self._admission_lock:
             if self._stopping:
@@ -156,16 +175,38 @@ class TaskQueue:
             if self._pending_counts[key] or key in self._admission_reservations:
                 return False
             self._admission_reservations.add(key)
+            if track_put:
+                self._native_publication_puts[key] = False
+            return True
+
+    def _release_bounded_enqueue(self, key: tuple[str, str]) -> None:
+        with self._admission_lock:
+            self._admission_reservations.discard(key)
+            self._native_publication_puts.pop(key, None)
+
+    async def _enqueue_if_absent_native(
+        self, slug: str, task_id: str, *, publisher: Callable[[], Awaitable[str]],
+    ) -> bool:
+        """Same bounded reservation for the joined team-move publisher only."""
+        if not self._reserve_bounded_enqueue(slug, task_id, track_put=True):
+            return False
+        key = slug, task_id
+        retired = True
         try:
-            if publisher is None:
-                self.enqueue(slug, task_id, metadata=metadata)
-            else:
-                publisher()
+            await publisher()
             with self._admission_lock:
-                return self._pending_counts[key] > 0
+                return self._native_publication_puts[key]
+        except BaseException as exc:
+            # A private native submission/bridge failure retains the actual
+            # service owner. Do not release this SAME reservation underneath
+            # an uncertain publisher. Ordinary returned failures still release.
+            retired = not BaseException.__getattribute__(exc, "__dict__").get(
+                "_team_move_native_unretired", False,
+            )
+            raise
         finally:
-            with self._admission_lock:
-                self._admission_reservations.discard(key)
+            if retired:
+                self._release_bounded_enqueue(key)
 
     @staticmethod
     async def _heartbeat(work: _NativeWork) -> None:

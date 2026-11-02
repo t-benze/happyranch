@@ -74,10 +74,19 @@ failed restricted closes remain held. Close fences new requests, joins admitted
 request handoffs, then cancels/joins runners across repeated waiter cancellation.
 Profile preparation, drain census and operation mutation are native intervals;
 async profile locks, deadlines/sleeps and thread/producer queues stay loop-owned.
-The source correction is still partial: dynamic reattachment in
-`DaemonState.add_org` and generation-aware task redelivery still mix native work
-with loop publication. Their owner splits remain required before whole-service
-completion. Existing startup/scheduler entries retain their original behavior.
+Task redelivery uses the same generation classifier and authenticated publisher:
+native discovery/claim, actual loop queue put, then native exact ack/failure.
+One service-owned child retains the original org and queue reservation through
+that entire sequence, joining through cancellation before its parent returns.
+Deferred notification removal follows actual pending publication and compares the
+original metadata identity. Unknown native submission/retirement retains the
+reservation and DB-close owner. Synchronous callers retain the same publisher,
+metadata, refusal and error behavior; discovery never grants launch permission.
+The source correction is still partial: dynamic `DaemonState.add_org`
+reattachment retains native work on-loop. Moving its coherent shared-map insertion
+to a worker requires resolving live-map readers outside the attachment owner;
+profile leases alone do not protect every reader. No lease crosses an await.
+Existing startup/scheduler entries retain their original behavior.
 No responsiveness/behavioral acceptance or filesystem deadline is established.
 Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
