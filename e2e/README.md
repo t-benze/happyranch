@@ -2469,6 +2469,26 @@ refund at record/root close; raw scanning has no full tree or general token
 index. The required prefix keeps its ONE existing tree. Closure completes before
 candidate/pending/publication, and every copied occurrence pays its own work.
 
+Canonical observations.provider_commands jobs-read admits only receipt/output
+with null payload/file, complete original command/start/executable/caller joins,
+and distinct child identities. The genuine later S2 reader is authenticated;
+it is not required to equal the earlier S1 submit session. Both reads of the
+same job remain distinct commands. Org discovery stays complete ordinary evidence,
+followed by exactly one legacy GET receipt with the actual operation query,
+status200, dropped=false and empty request digest. No capture fields are invented.
+The receipt is closed authentication/job/output with exactly16 identity fields
+and six output fields, distinct from public27/SQL27. Wire insertion order and
+CLI sorted JSON plus print LF are both preserved. ONE indexed strict nested scan
+compares every keyed builtin field, type, null and entire value; only both
+selected job.script_text occurrences use the existing Python scanner. Output
+streams remain ordinary literal UTF8/R1 with all LFs. Exact Boolean truncation
+and nonnegative byte totals retain the producer's 1MiB read cap and errors=replace
+semantics; a replacement scalar supplies only a bounded byte relation, never
+proof of original undecoded output bytes. Completed nonzero and timeout exits
+retain their actual meaning. All retained comparison/shape/source facts, aliases
+and original/safe work consume the same nonrenewing owner. Missing, conflicting,
+unsupported or unresolved facts refuse the whole member before pending/output.
+
 Other ProviderCommand actions/copies, settled.wire_records/distinct CLI,
 entity/SQL/other source/hex/browser/direct/pair/human-display and cross-member joins
 remain unfinished and conservatively refused, with complete copy obligations

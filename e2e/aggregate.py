@@ -997,6 +997,228 @@ def failure_result_controls() -> dict:
                 assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
                 results['C5-Submit-refusal-'+case+'-'+boundary] = 'whole prior file/member/full safe tree/FAIL preserved; no selected pending/output; overlapping guards documented'
 
+    # SAME controls: complete closed receipt16/authentication/output6. These
+    # literal values come from the accepted independent three-form subjects;
+    # SOURCE remains the original submission_sources, never candidate output.
+    receipt_jobs = {'exit0': {'id': 'JOB-701', 'task_id': 'TASK-701', 'agent_name': 'case_manager', 'title': 'E04.approve-exit0/e08eba4596159ebe63677c14', 'rationale': 'Disposable owned deterministic job', 'script_text': None, 'interpreter': 'python3', 'cwd_hint': None, 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager', 'status': 'completed', 'exit_code': 0, 'reason': None, 'duration_ms': 100, 'created_at': '2026-01-01T00:00:00+00:00', 'started_at': '2026-01-01T00:00:01+00:00', 'finished_at': '2026-01-01T00:00:01.100000+00:00'}, 'exit7': {'id': 'JOB-703', 'task_id': 'TASK-703', 'agent_name': 'case_manager', 'title': 'E04.completed-exit7/df5f1abd9fb56d8c669f17e2', 'rationale': 'Disposable owned deterministic job', 'script_text': None, 'interpreter': 'python3', 'cwd_hint': None, 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager', 'status': 'completed', 'exit_code': 7, 'reason': None, 'duration_ms': 100, 'created_at': '2026-01-01T00:00:00+00:00', 'started_at': '2026-01-01T00:00:01+00:00', 'finished_at': '2026-01-01T00:00:01.100000+00:00'}, 'timeout': {'id': 'JOB-702', 'task_id': 'TASK-702', 'agent_name': 'case_manager', 'title': 'E04.failed-timeout/effc58d0f834d9ba4fc7c83e', 'rationale': 'Disposable owned deterministic job', 'script_text': None, 'interpreter': 'python3', 'cwd_hint': None, 'cwd_resolved': '/tmp/e04-show/runtime/orgs/alpha/workspaces/case_manager', 'status': 'failed', 'exit_code': -9, 'reason': 'timeout', 'duration_ms': 5001, 'created_at': '2026-01-01T00:00:00+00:00', 'started_at': '2026-01-01T00:00:01+00:00', 'finished_at': '2026-01-01T00:00:06.001000+00:00'}}
+    receipt_streams = {'exit0': ('E04_OK_OUT\n', 'E04_OK_ERR\n'),
+                       'exit7': ('E04_EXIT7_OUT\n', 'E04_EXIT7_ERR\n'),
+                       'timeout': ('E04_TIMEOUT_OUT\n', 'E04_TIMEOUT_ERR\n')}
+    def receipt_input(root: Path, form: str = 'exit0', *, late: bool = False, source: str | None = None) -> dict:
+        image = submission_input(root,submission_sources[form],late=late)
+        template = image['provider_commands'][0]
+        job = dict(receipt_jobs[form]); job['script_text'] = submission_sources[form] if source is None else source
+        first = dict(task=job['task_id'],session='sess-e04-first',agent='case_manager',org='alpha',pid=101)
+        second = dict(task=job['task_id'],session='sess-e04-second',agent='case_manager',org='alpha',pid=303)
+        image['starts'] = [dict(first,pid_start='123',pgid=101),dict(second,pid_start='789',pgid=303)]
+        commands = []
+        for number,operation in enumerate(('receipt','output')):
+            out,err = receipt_streams[form]
+            response = dict(authentication=dict(task_id=job['task_id'],session_id=second['session']),job=dict(job),
+                output=dict(stdout=out,stderr=err,truncated_stdout=False,truncated_stderr=False,
+                            total_stdout_bytes=len(out.encode()),total_stderr_bytes=len(err.encode())))
+            query = 'task_id='+job['task_id']+'&session_id='+second['session']
+            if operation == 'output': query += '&stream=both&max_bytes=1048576'
+            discovery = dict(path='/api/v1/orgs',method='GET',body_sha256=hashlib.sha256(b'').hexdigest(),status=200,
+                response=dict(orgs=[dict(slug='alpha',root=str(root/'runtime/orgs/alpha')),
+                                    dict(slug='beta',root=str(root/'runtime/orgs/beta'))],broken=[]),dropped=False)
+            wire = dict(path='/api/v1/orgs/alpha/jobs/'+job['id']+'/receipt?'+query,method='GET',
+                body_sha256=hashlib.sha256(b'').hexdigest(),status=200,response=response,dropped=False)
+            command = dict(template)
+            child = 404+number
+            command.update(action='jobs-read',operation=operation,
+                argv=[str(root/'bin/happyranch'),'jobs','show' if operation == 'receipt' else 'output',job['id'],
+                      '--org','alpha','--json','--task-id',job['task_id'],'--session-id',second['session']],
+                payload=None,payload_file=None,stdout=json.dumps(response,sort_keys=True)+'\n',stderr='',provider=dict(second),
+                entered=32.+number,finished=32.5+number,execution_deadline=39.,child_pid=child,child_start=str(900+number),
+                child_parent=303,child_stat=str(child)+' (python) S 303 '+'0 '*17+str(900+number)+'\n',wire=[discovery,wire])
+            if late:
+                command['wire'][1] = {k:wire[k] for k in ('response','dropped','status','body_sha256','method','path')}
+            commands.append(command)
+        image['provider_commands'] = commands
+        return image
+
+    receipt_positive_forms = ('exit0','exit7','timeout','F4-one-backslash','quotes-output','JSON-output','rejected-null','failed-null','repeated-alias')
+    for form in receipt_positive_forms:
+        for late in (False,True) if form in ('exit0','exit7','timeout') else (False,):
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = receipt_input(root,form if form in receipt_jobs else 'exit0',late=late,
+                        source=source_forms['F4-one-backslash'] if form == 'F4-one-backslash' else None)
+                    for command in image['provider_commands']:
+                        response = command['wire'][1]['response']
+                        if form in ('quotes-output','JSON-output'):
+                            response['output']['stdout'] = 'full "quote" 中\nlast\n' if form == 'quotes-output' else '{"plain":"JSON resembling output"}\n'
+                            response['output']['total_stdout_bytes'] = len(response['output']['stdout'].encode())
+                        if form in ('rejected-null','failed-null'):
+                            response['job'].update(status='rejected' if form == 'rejected-null' else 'failed',exit_code=None,
+                                duration_ms=None,started_at=None,finished_at=None,cwd_resolved=None,reason=None)
+                        command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                    if form == 'repeated-alias':
+                        duplicate = dict(image['provider_commands'][0]); duplicate.update(child_pid=406,child_start='902',child_stat='406 (python) S 303 '+'0 '*17+'902\n')
+                        image['provider_commands'].append(duplicate)
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                    elif boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        data,parsed = writer._prepare_original_evidence(destination,source_file)
+                        assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image); writer._replace_evidence(destination,data); expected_image = original_image
+                    else: destination.write_bytes(original_image); expected_image = original_image
+                    assert destination.read_bytes() == expected_image
+                    complete,error = acquire(); drain(); commit()
+                    assert not complete and error is None and not state['fatal'] and not errors, (form,boundary,failures)
+                    assert staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads(expected_image),image)
+                    for command in image['provider_commands']:
+                        assert len(command['wire']) == 2 and command['wire'][0]['path'] == '/api/v1/orgs'
+                        response = command['wire'][1]['response']; decoded = json.loads(command['stdout'])
+                        assert list(decoded) == sorted(response) and command['stdout'].endswith('}\n')
+                        for holder in ('authentication','job','output'):
+                            assert list(decoded[holder]) == sorted(response[holder])
+                            for key in response[holder]: exact(decoded[holder][key],response[holder][key])
+                        assert list(response['job']) == list(receipt_jobs['exit0'])
+                    results[f'C5-Receipt-full-{form}-{int(late)}-{boundary}'] = 'entire independent closed16/auth/output6, discovery, full SOURCE/output and actual sorted stdout LF preserved; same-job distinct S2 reads; native NOT RUN'
+
+    receipt_refusals = (['stdout-'+holder+'-'+key for holder,keys in (
+        ('authentication',('task_id','session_id')),('job',tuple(receipt_jobs['exit0'])),
+        ('output',('stdout','stderr','truncated_stdout','truncated_stderr','total_stdout_bytes','total_stderr_bytes'))) for key in keys] + [
+        'duplicate','escaped-equal','malformed','trailing','nonfinite','surrogate','wrong-top','unsupported-layer','inner-order','no-LF','extra-LF','output-LF',
+        'F4-two-backslash','decoded-secret','chunk-secret','output-backslash','output-secret',
+        'missing-action','foreign-action','operation','provider','task','SID','S1-as-S2','org','source','callback','python','argv','payload','payload-file',
+        'exit-bool','timed-out','time-bool','child-parent','child-start','duplicate-child','missing-start','foreign-start','duplicate-start','missing-manifest','foreign-manifest',
+        'job-id','job-task','job-agent','job-interpreter','job-exit-bool','job-duration-bool','job-timeout','job-missing','job-extra','job-order',
+        'wire-missing','wire-extra','discovery-missing','discovery-masquerade','discovery-source','wire-status','wire-drop','wire-hash','wire-method','wire-query','wire-extra-query','wire-body','wire-response-text','wire-auth',
+        'output-bool','output-count','output-truncated','output-negative','wrong-root','wrong-owner','plain-stdout','shared-work','shared-facts','shared-depth'])
+    for case in receipt_refusals:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = receipt_input(root,late=True)
+                command = image['provider_commands'][0]; wire = command['wire'][1]; response = wire['response']
+                if case.startswith('stdout-'):
+                    _,holder,key = case.split('-',2)
+                    changed = copy.deepcopy(response); value = changed[holder][key]
+                    changed[holder][key] = value+' changed' if type(value) is str else not value if type(value) is bool else value+1 if type(value) is int else ''
+                    command['stdout'] = json.dumps(changed,sort_keys=True)+'\n'
+                elif case in ('duplicate','escaped-equal','malformed','trailing','nonfinite','surrogate','wrong-top','unsupported-layer','inner-order','no-LF','extra-LF','output-LF'):
+                    changes = {
+                        'duplicate':lambda x:x.replace('"title":','"title":"other","title":',1),
+                        'escaped-equal':lambda x:x.replace('"title":','"\\u0074itle":"other","title":',1),
+                        'malformed':lambda x:x[:-2]+',}\n','trailing':lambda x:x+'{}',
+                        'nonfinite':lambda x:x.replace('"duration_ms": 100','"duration_ms": NaN'),
+                        'surrogate':lambda x:x.replace('JOB-701','\\ud800'),'wrong-top':lambda x:'['+x+']',
+                        'unsupported-layer':lambda x:json.dumps(x),'inner-order':lambda x:json.dumps(response)+'\n',
+                        'no-LF':lambda x:x[:-1],'extra-LF':lambda x:x+'\n',
+                        'output-LF':lambda x:x.replace('E04_OK_OUT\\n','E04_OK_OUT'),
+                    }
+                    command['stdout'] = changes[case](command['stdout'])
+                elif case in ('F4-two-backslash','decoded-secret','chunk-secret'):
+                    response['job']['script_text'] = lexical_refusals[case]
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case in ('output-backslash','output-secret'):
+                    response['output']['stdout'] = 'ordinary\\noutput' if case == 'output-backslash' else 'SYNTHETIC_TOKEN\n'
+                    response['output']['total_stdout_bytes'] = len(response['output']['stdout'].encode())
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'missing-action': del command['action']
+                elif case == 'foreign-action': command['action'] = 'jobs-final'
+                elif case == 'operation': command['operation'] = 'show'
+                elif case == 'provider': command['provider']['agent'] = 'case_worker'
+                elif case == 'task': command['provider']['task'] = 'TASK-999'
+                elif case == 'SID': command['provider']['session'] = 'foreign-sid'
+                elif case == 'S1-as-S2': command['provider']['session'] = 'sess-e04-first'
+                elif case == 'org': command['provider']['org'] = 'beta'
+                elif case == 'source': command['source_sha'] = 'f'*40
+                elif case == 'callback': command['callback_sha256'] = 'c'*64
+                elif case == 'python': command['python'] = '/foreign/python'
+                elif case == 'argv': command['argv'].append('--extra')
+                elif case == 'payload': command['payload'] = {}
+                elif case == 'payload-file': command['payload_file'] = {}
+                elif case == 'exit-bool': command['exit'] = False
+                elif case == 'timed-out': command['timed_out'] = True
+                elif case == 'time-bool': command['entered'] = True
+                elif case == 'child-parent': command['child_parent'] = 999
+                elif case == 'child-start': command['child_start'] = '999'
+                elif case == 'duplicate-child': image['provider_commands'][1]['child_pid'] = command['child_pid']
+                elif case == 'missing-start': image['starts'] = image['starts'][:1]
+                elif case == 'foreign-start': image['starts'][1]['task'] = 'TASK-999'
+                elif case == 'duplicate-start': image['starts'].append(dict(image['starts'][1]))
+                elif case == 'missing-manifest': image['durable'] = []
+                elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                elif case.startswith('job-'):
+                    key = case[4:]; job = response['job']
+                    if key == 'id': job['id'] = 'JOB-999'
+                    elif key == 'task': job['task_id'] = 'TASK-999'
+                    elif key == 'agent': job['agent_name'] = 'case_worker'
+                    elif key == 'interpreter': job['interpreter'] = 'bash'
+                    elif key == 'exit-bool': job['exit_code'] = False
+                    elif key == 'duration-bool': job['duration_ms'] = False
+                    elif key == 'timeout': job['reason'] = 'timeout'
+                    elif key == 'missing': del job['finished_at']
+                    elif key == 'extra': job['review_required'] = False
+                    elif key == 'order': response['job'] = dict(reversed(list(job.items())))
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'wire-missing': command['wire'].pop()
+                elif case == 'wire-extra': command['wire'].append(copy.deepcopy(wire))
+                elif case == 'discovery-missing': command['wire'].pop(0)
+                elif case == 'discovery-masquerade': command['wire'][0]['response'] = copy.deepcopy(response)
+                elif case == 'discovery-source': command['wire'][0]['response']['job'] = copy.deepcopy(response['job'])
+                elif case == 'wire-status': wire['status'] = True
+                elif case == 'wire-drop': wire['dropped'] = True
+                elif case == 'wire-hash': wire['body_sha256'] = '0'*64
+                elif case == 'wire-method': wire['method'] = 'POST'
+                elif case == 'wire-query': wire['path'] = wire['path'].replace('sess-e04-second','sess-e04-first')
+                elif case == 'wire-extra-query': wire['path'] += '&stream=both'
+                elif case == 'wire-body': wire['request'] = None
+                elif case == 'wire-response-text': wire['response_text'] = command['stdout']
+                elif case == 'wire-auth': response['authentication']['session_id'] = 'sess-e04-first'
+                elif case.startswith('output-'):
+                    out = response['output']
+                    if case == 'output-bool': out['truncated_stdout'] = 0
+                    elif case == 'output-count': out['total_stdout_bytes'] += 1
+                    elif case == 'output-truncated': out['truncated_stdout'] = True
+                    elif case == 'output-negative': out['total_stdout_bytes'] = -1
+                    command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'wrong-root': image = dict(holder=image)
+                elif case == 'wrong-owner': pass
+                elif case == 'plain-stdout': command['stdout'] = 'print("public\\nline")'
+                elif case == 'shared-work': response['job']['title'] = 'p'*700000; command['stdout'] = json.dumps(response,sort_keys=True)+'\n'
+                elif case == 'shared-facts': image['starts'] *= 5000
+                elif case == 'shared-depth':
+                    nested = None
+                    for _ in range(62): nested = [nested]
+                    response['job']['extra'] = nested
+                name = ('e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json')
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix': source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source_file)
+                    except (ValueError,AssertionError): pass
+                    else: raise AssertionError('Receipt unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image); (root/'raw/eligible-receipt.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-receipt.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Receipt-refusal-'+case+'-'+boundary] = 'whole prior file/member/full safe tree/FAIL preserved; no selected pending/output; no generic read grant; overlapping guards documented'
+
     # C5/C6: required original trees at the two shipping preparation/file
     # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
     originals = {

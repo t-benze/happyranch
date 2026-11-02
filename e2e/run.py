@@ -1594,10 +1594,13 @@ class _EvidenceSubmission:
         self.metadata, self.payload, self.provider, self.file = {}, {}, {}, {}
         self.response, self.authentication, self.wire, self.argv = {}, {}, {}, []
         self.shapes, self.deferred = {}, False
+        self.receipts, self.read_invalid = [], False
 
     def event(self, path: tuple, kind: str, value: object) -> None:
         ledger, check = self.owner.ledger, self.owner.check
         ledger.charge(16, 2, check)
+        if path and path[0] == 'wire':
+            self.read_event(path[1:], kind, value)
         # Only named source-owned holders can retain facts. Unsupported holders
         # record a shape error; they cannot create an arbitrary subtree/index.
         if kind in ('object', 'array'):
@@ -1645,7 +1648,7 @@ class _EvidenceSubmission:
             raise ValueError('submission ordinary representation withheld')
         _evidence_original(text, self.owner.context, self.owner.ledger, self.owner.check, self.owner.sanitize)
 
-    def object(self, text: str, expected: dict, *, script: bool, stdout: bool = False) -> None:
+    def object(self, text: str, expected: dict, *, script: bool, stdout: bool = False, receipt: bool = False) -> None:
         """One strict nested parse, complete keyed equality, original ordering."""
         try:
             o = self.owner
@@ -1660,8 +1663,12 @@ class _EvidenceSubmission:
                 if kind == 'object':
                     if not frames:
                         frames.append((expected, sorted(expected), 0))
-                    elif len(frames) == 1 and field == 'authentication' and not script:
-                        frames.append((self.authentication, sorted(self.authentication), 0))
+                    elif (len(frames) == 1 and not script and
+                          (field == 'authentication' or receipt and field in ('job', 'output'))
+                          and type(expected.get(field)) is dict):
+                        child = expected[field]
+                        o.ledger.charge(32 * len(child), 4 * len(child), o.check)
+                        frames.append((child, sorted(child), 0))
                     else:
                         raise ValueError('submission nested shape withheld')
                 elif kind == 'end-object':
@@ -1679,10 +1686,13 @@ class _EvidenceSubmission:
                     field = value
                 elif kind == 'scalar':
                     wanted = frames[-1][0]
+                    if type(value) is str:
+                        o.ledger.charge(_evidence_utf8_size(value, o.check) +
+                            (_evidence_utf8_size(wanted.get(field), o.check) if type(wanted.get(field)) is str else 0), 1, o.check)
                     if field not in wanted or type(value) is not type(wanted[field]) or value != wanted[field]:
                         raise ValueError('submission complete equality withheld')
                     if type(value) is str:
-                        if script and field == 'script':
+                        if script and field == 'script' or receipt and field == 'script_text':
                             _evidence_python(value, o.context, o.ledger, o.check, o.sanitize, self.depth + 4)
                         else:
                             self.ordinary(value)
@@ -1699,9 +1709,14 @@ class _EvidenceSubmission:
 
     def close(self) -> bool:
         o, m, p, f, provider = self.owner, self.metadata, self.payload, self.file, self.provider
+        if m.get('action') == 'jobs-read' and m.get('operation') in ('receipt', 'output'):
+            return self.read_close()
         selected = m.get('action') in ('jobs-submit', 'jobs-refuse-review')
         if not selected:
             # Deferred locations are ordinary unless this complete family wins.
+            for r in self.receipts:
+                if type(r['job'].get('script_text')) is str:
+                    self.ordinary(r['job']['script_text'])
             for value in (m.get('stdout'), p.get('script'), f.get('text')):
                 if type(value) is str:
                     self.ordinary(value)
@@ -1803,14 +1818,188 @@ class _EvidenceSubmission:
             self.object(m['stdout'], r, script=False, stdout=True)
         o.ledger.charge(128, 16, o.check)
         o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
-                          self.argv, f['path'], f['sha256'], m['child_pid'], self.response.get('id')))
+                          self.argv, f['path'], f['sha256'], m['child_pid'], self.response.get('id'), None))
         # Only owner identities remain outstanding. Source/file/result scratch
         # is released at the command close, with no spent work/fact refund.
         self.provider, self.argv = {}, []
         self.release()
         return True
 
+    receipt_fields = ('authentication', 'job', 'output')
+    job_fields = ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter',
+                  'cwd_hint', 'cwd_resolved', 'status', 'exit_code', 'reason', 'duration_ms',
+                  'created_at', 'started_at', 'finished_at')
+    output_fields = ('stdout', 'stderr', 'truncated_stdout', 'truncated_stderr',
+                     'total_stdout_bytes', 'total_stderr_bytes')
+
+    def read_event(self, path: tuple, kind: str, value: object) -> None:
+        """Only two legacy wire envelopes and closed receipt scalar facts.
+
+        Discovery stays ordinary scan-only evidence. No general response tree
+        or value index is retained, even when its path arrives after response.
+        """
+        if not path:
+            return
+        o = self.owner
+        index = path[0]
+        if type(index) is not int or index not in (0, 1):
+            self.read_invalid = True
+            if kind == 'scalar' and path[1:] == ('response', 'job', 'script_text') and type(value) is str:
+                self.ordinary(value)
+            return
+        if len(path) == 1 and kind == 'object':
+            if index != len(self.receipts):
+                self.read_invalid = True
+                return
+            o.ledger.charge(192, 24, o.check)
+            self.receipts.append(dict(meta={}, authentication={}, job={}, output={}, shapes={}, invalid=False))
+        if index >= len(self.receipts):
+            self.read_invalid = True
+            return
+        r, local = self.receipts[index], path[1:]
+        named = ((), ('response',), ('response', 'authentication'), ('response', 'job'), ('response', 'output'))
+        if kind in ('object', 'array'):
+            if local in named:
+                o.ledger.charge(24, 3, o.check)
+                r['shapes'][local] = [kind, []]
+            elif local[:2] not in (('response', 'orgs'), ('response', 'broken')):
+                r['invalid'] = True
+        elif kind == 'key' and local in r['shapes']:
+            o.ledger.charge(16 + _evidence_utf8_size(value, o.check), 2, o.check)
+            r['shapes'][local][1].append(value)
+        elif kind == 'scalar':
+            target = None
+            if len(local) == 1 and local[0] in ('path', 'method', 'body_sha256', 'status', 'dropped'):
+                target = r['meta']
+            elif len(local) == 3 and local[0] == 'response' and local[1] in self.receipt_fields:
+                allowed = ('task_id', 'session_id') if local[1] == 'authentication' else self.job_fields if local[1] == 'job' else self.output_fields
+                if local[2] in allowed:
+                    target = r[local[1]]
+            if target is not None:
+                o.ledger.charge(16 + (_evidence_utf8_size(value, o.check) if type(value) is str else 8), 2, o.check)
+                target[local[-1]] = value
+
+    def read_close(self) -> bool:
+        o, m, p = self.owner, self.metadata, self.provider
+        o.ledger.charge(2048, 256, o.check)
+        def shape(shapes: dict, path: tuple, kind: str, keys: tuple | None = None) -> bool:
+            got = shapes.get(path)
+            # This finite set comparison is reserved above, before allocation.
+            return got is not None and got[0] == kind and (keys is None or got[1] == list(keys))
+        if (self.read_invalid or len(self.receipts) != 2
+                or not shape(self.shapes, (), 'object')
+                or len(self.shapes[()][1]) != len(self.fields) or set(self.shapes[()][1]) != set(self.fields)
+                or not shape(self.shapes, ('provider',), 'object', ('task', 'session', 'agent', 'org', 'pid'))
+                or not shape(self.shapes, ('argv',), 'array') or not shape(self.shapes, ('wire',), 'array')
+                or m.get('payload', False) is not None or m.get('payload_file', False) is not None
+                or type(m.get('exit')) is not int or m['exit'] != 0 or m.get('timed_out') is not False
+                or any(type(m.get(k)) is not str for k in ('stdout', 'stderr', 'python', 'source_sha', 'callback_sha256', 'child_stat', 'child_start'))
+                or m['stderr'] != ''
+                or any(type(m.get(k)) not in (int, float) or not math.isfinite(m[k]) or m[k] < 0
+                       for k in ('entered', 'finished', 'execution_deadline'))
+                or not m['entered'] <= m['finished'] < m['execution_deadline']
+                or any(type(m.get(k)) is not int or m[k] <= 0 for k in ('child_pid', 'child_parent'))
+                or type(p.get('pid')) is not int or p['pid'] <= 0 or m['child_parent'] != p['pid']
+                or any(type(p.get(k)) is not str or not p[k] for k in ('task', 'session', 'agent', 'org'))
+                or p['org'] != 'alpha' or p['agent'] != 'case_manager'
+                or not p['task'].startswith('TASK-') or not p['task'][5:].isascii() or not p['task'][5:].isdigit()
+                or not _failure_source(m['source_sha']) or len(m['callback_sha256']) != 64
+                or any(c not in '0123456789abcdef' for c in m['callback_sha256'])):
+            raise ValueError('receipt command identity withheld')
+        stat_text = m['child_stat']
+        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 64, 64, o.check)
+        close = stat_text.rfind(')')
+        fields, cursor = [], close + 2
+        while close >= 0 and cursor < len(stat_text) and len(fields) < 20:
+            while cursor < len(stat_text) and stat_text[cursor].isspace():
+                cursor += 1
+            begin = cursor
+            while cursor < len(stat_text) and not stat_text[cursor].isspace():
+                cursor += 1
+                if cursor % 1024 == 0:
+                    o.check()
+            if cursor > begin:
+                fields.append(stat_text[begin:cursor])
+        if (not stat_text.startswith(str(m['child_pid']) + ' (') or len(fields) < 20
+                or fields[1] != str(p['pid']) or fields[19] != m['child_start']
+                or not m['child_start'].isascii() or not m['child_start'].isdigit()):
+            raise ValueError('receipt child identity withheld')
+        discovery, actual = self.receipts
+        wire_fields = ('path', 'method', 'body_sha256', 'status', 'response', 'dropped')
+        for r in self.receipts:
+            w = r['meta']
+            if (r['invalid'] or not shape(r['shapes'], (), 'object')
+                    or len(r['shapes'][()][1]) != len(wire_fields) or set(r['shapes'][()][1]) != set(wire_fields)
+                    or w.get('method') != 'GET' or type(w.get('status')) is not int or w['status'] != 200
+                    or w.get('dropped') is not False or w.get('body_sha256') != hashlib.sha256(b'').hexdigest()):
+                raise ValueError('receipt wire envelope withheld')
+        if (discovery['meta'].get('path') != '/api/v1/orgs'
+                or not shape(discovery['shapes'], ('response',), 'object', ('orgs', 'broken'))
+                or any(discovery[k] for k in self.receipt_fields)):
+            raise ValueError('receipt discovery cannot authenticate job')
+        j, output, authentication = actual['job'], actual['output'], actual['authentication']
+        if (not shape(actual['shapes'], ('response',), 'object', self.receipt_fields)
+                or not shape(actual['shapes'], ('response', 'authentication'), 'object', ('task_id', 'session_id'))
+                or not shape(actual['shapes'], ('response', 'job'), 'object', self.job_fields)
+                or not shape(actual['shapes'], ('response', 'output'), 'object', self.output_fields)
+                or set(j) != set(self.job_fields) or set(output) != set(self.output_fields)
+                or authentication != dict(task_id=p['task'], session_id=p['session'])
+                or any(type(authentication.get(k)) is not str for k in ('task_id', 'session_id'))
+                or any(type(j.get(k)) is not str for k in ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter', 'status', 'created_at'))
+                or not j['id'].startswith('JOB-') or not j['id'][4:].isascii() or not j['id'][4:].isdigit()
+                or j['task_id'] != p['task'] or j['agent_name'] != p['agent'] or j['interpreter'] != 'python3'
+                or j['status'] not in ('completed', 'failed', 'rejected') or not j['created_at']
+                or any(type(j.get(k)) not in (str, type(None)) for k in ('cwd_hint', 'cwd_resolved', 'reason', 'started_at', 'finished_at'))
+                or type(j.get('exit_code')) not in (int, type(None))
+                or type(j.get('duration_ms')) not in (int, type(None))
+                or j['duration_ms'] is not None and j['duration_ms'] < 0
+                or j['status'] == 'completed' and (type(j['exit_code']) is not int or type(j['duration_ms']) is not int
+                    or not j['started_at'] or not j['finished_at'] or not j['cwd_resolved'] or j['reason'] is not None)
+                or j['status'] == 'rejected' and (j['exit_code'] is not None or j['duration_ms'] is not None)
+                or j['reason'] == 'timeout' and (j['status'] != 'failed' or j['exit_code'] != -9)):
+            raise ValueError('receipt closed identity withheld')
+        # HTTPX preserves these actual CLI parameter insertion orders. Runtime
+        # task/session identifiers use unreserved ASCII, so no URL rewrite is
+        # performed. Unsupported spellings refuse rather than normalize.
+        for value in (p['task'], p['session']):
+            o.ledger.charge(2 * _evidence_utf8_size(value, o.check), 1, o.check)
+            if not value.isascii() or any(not (c.isalnum() or c in '-._~') for c in value):
+                raise ValueError('receipt query spelling withheld')
+        o.ledger.charge(512 + 4 * sum(_evidence_utf8_size(v, o.check) for v in (p['task'], p['session'], j['id'])), 8, o.check)
+        path = '/api/v1/orgs/alpha/jobs/' + j['id'] + '/receipt?task_id=' + p['task'] + '&session_id=' + p['session']
+        if m['operation'] == 'output':
+            path += '&stream=both&max_bytes=1048576'
+        if actual['meta'].get('path') != path:
+            raise ValueError('receipt exact operation query withheld')
+        for stream in ('stdout', 'stderr'):
+            text, truncated, total = output.get(stream), output.get('truncated_' + stream), output.get('total_' + stream + '_bytes')
+            if type(text) is not str or type(truncated) is not bool or type(total) is not int or total < 0 or truncated != (total > 1048576):
+                raise ValueError('receipt output types withheld')
+            size = _evidence_utf8_size(text, o.check)
+            o.ledger.charge(size, 1, o.check)
+            read_bytes = min(total, 1048576)
+            # The producer decodes with errors=replace. Without a replacement
+            # scalar UTF8 counts are exact; with one, only this truthful bound
+            # is observable without acquiring the original output file again.
+            if size < read_bytes or size > 3 * read_bytes or '\ufffd' not in text and size != read_bytes:
+                raise ValueError('receipt output byte relationship withheld')
+            self.ordinary(text)
+        _evidence_python(j['script_text'], o.context, o.ledger, o.check, o.sanitize, self.depth + 4)
+        expected = dict(authentication=authentication, job=j, output=output)
+        self.object(m['stdout'], expected, script=False, stdout=True, receipt=True)
+        o.ledger.charge(128, 16, o.check)
+        o.pending.append((p, m['source_sha'], m['python'], m['callback_sha256'],
+                          self.argv, None, None, m['child_pid'], j['id'], m['operation']))
+        self.provider, self.argv = {}, []
+        return True
+
     def release(self) -> None:
+        for r in self.receipts:
+            for value in r.values():
+                if type(value) is dict:
+                    value.clear()
+            r.clear()
+        self.receipts.clear()
         for value in (self.metadata, self.payload, self.provider, self.file, self.response,
                       self.authentication, self.wire, self.argv, self.shapes):
             value.clear()
@@ -1836,7 +2025,9 @@ class _EvidenceObservations:
     def encoded(path: tuple) -> bool:
         return (len(path) == 3 and path[0] == 'provider_commands' and path[2] == 'stdout'
                 or len(path) == 4 and path[0] == 'provider_commands'
-                    and path[2:] in (('payload', 'script'), ('payload_file', 'text')))
+                    and path[2:] in (('payload', 'script'), ('payload_file', 'text'))
+                or len(path) == 7 and path[0] == 'provider_commands' and path[2] == 'wire'
+                    and path[4:] == ('response', 'job', 'script_text'))
 
     def event(self, path: tuple, kind: str, value: object) -> None:
         self.ledger.charge(8, 1, self.check)
@@ -1909,14 +2100,23 @@ class _EvidenceObservations:
                     or not _failure_source(manifest['revision'])):
                 raise ValueError('submission executable identity withheld')
             children, jobs = set(), set()
-            for p, source_sha, python, callback_sha256, argv, path, sha256, child_pid, job_id in self.pending:
+            for p, source_sha, python, callback_sha256, argv, path, sha256, child_pid, job_id, read in self.pending:
                 self.ledger.charge(32, 4, self.check)
-                if child_pid in children or job_id is not None and job_id in jobs:
+                if child_pid in children or read is None and job_id is not None and job_id in jobs:
                     raise ValueError('submission duplicate identity withheld')
                 children.add(child_pid)
-                if job_id is not None:
+                if read is None and job_id is not None:
                     jobs.add(job_id)
                 self.ledger.charge(128 + 32 * len(self.starts), 16 + 4 * len(self.starts), self.check)
+                self.ledger.charge(128 + 2 * sum(_evidence_utf8_size(v, self.check) for v in argv if type(v) is str),
+                                   16 + len(argv), self.check)
+                if read is None:
+                    expected_argv = [manifest['callback'], 'jobs', 'submit', '--org', p['org'], '--from-file', path, '--json']
+                    if path != root + '/coord/' + sha256 + '.json':
+                        raise ValueError('submission original path withheld')
+                else:
+                    expected_argv = [manifest['callback'], 'jobs', 'show' if read == 'receipt' else 'output', job_id,
+                        '--org', p['org'], '--json', '--task-id', p['task'], '--session-id', p['session']]
                 matching = [s for s in self.starts if s.get('session') == p['session']]
                 if (len(matching) != 1 or set(matching[0]) != {'task', 'session', 'agent', 'org', 'pid', 'pid_start', 'pgid'}
                         or any(type(matching[0][k]) is not type(v) or matching[0][k] != v for k, v in p.items())
@@ -1924,8 +2124,7 @@ class _EvidenceObservations:
                         or type(matching[0]['pgid']) is not int or matching[0]['pgid'] != p['pid']
                         or source_sha != manifest['revision'] or python != manifest['python']
                         or callback_sha256 != manifest['callback_sha256']
-                        or path != root + '/coord/' + sha256 + '.json'
-                        or argv != [manifest['callback'], 'jobs', 'submit', '--org', p['org'], '--from-file', path, '--json']
+                        or argv != expected_argv
                         or any(type(v) is not str for v in argv)):
                     raise ValueError('submission complete owner join withheld')
             return True
