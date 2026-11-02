@@ -428,7 +428,14 @@ lock, deadlines/sleeps and thread/producer queue publication stay on-loop. Nativ
 selection remains notification only; current reserve/claim revalidation grants
 admission. Restricted open results are captured even during cancellation, close
 is joined, failed closes retain original handles and primary failures survive
-cleanup/diagnostic errors. Actual native return plus bridge retirement is required;
+cleanup/diagnostic errors. The actual restricted DB and both nested read-only
+inspection connections register under the SAME original service/native task at
+acquisition, before validation or constructor return. Each original helper attempts
+close once; affine inspection cleanup stays on its acquiring thread. Only positive
+original close removes a handle. Failed-close codes remain safe secondary facts in
+diagnostic readback, while the original owner/handle stays held. A later successful
+observation or saved terminal receipt never clears it or admits a new runner.
+Actual native return plus bridge retirement is required;
 cancelled Futures, timeouts and missing task-map entries prove no retirement.
 Close fences new requests, joins admitted handoffs, then cancels/joins runners;
 a shielded shared join survives repeated close-waiter cancellation.

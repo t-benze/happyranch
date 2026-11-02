@@ -72,6 +72,12 @@ cannot cancel the service request. Actual native return and bridge retirement,
 not cancellation or task-map absence, permit release; uncertain submissions and
 failed restricted closes remain held. Close fences new requests, joins admitted
 request handoffs, then cancels/joins runners across repeated waiter cancellation.
+Restricted acquisition retains each actual DB and both nested read-only inspection
+connections under that same original service/native owner before validation. Only
+positive original close releases a handle; inspection cleanup stays on its acquiring
+thread. Constructor failure retains the primary and safe secondary close code,
+including in diagnostic readback. Later successful reads or saved terminal receipts
+cannot clear a failed close, retire its owner or admit a new runner.
 Profile preparation, drain census and operation mutation are native intervals;
 async profile locks, deadlines/sleeps and thread/producer queues stay loop-owned.
 Task redelivery uses the same generation classifier and authenticated publisher:

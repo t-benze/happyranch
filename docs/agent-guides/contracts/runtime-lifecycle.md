@@ -279,6 +279,13 @@ or a cancelled bridge never establishes native return. Service close owns one
 shielded join: fence new requests, join admitted request handoffs, then snapshot,
 cancel and join operation runners. Uncertain submission/return or restricted
 context close retains strong owners/handles and refuses remove/swap/DB close.
+Restricted DB acquisition and both inner inspection connections register their
+actual handles to the SAME service/native task before fallible validation, even
+when no context is returned. Each original helper attempts close once; affine
+inspection connections close on their acquiring thread. Positive original close
+alone removes that handle. Failed cleanup retains the owner and safe close code
+beside the primary failure in diagnostic readback; native return, a saved terminal
+receipt and a later successful observation never establish handle retirement.
 A service-owned redelivery child shares the original org lifetime through native
 generation claim, real loop queue put and native exact acknowledgement/failure.
 Its parent joins it across repeated cancellation before returning or closing;

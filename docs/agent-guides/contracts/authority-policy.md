@@ -62,6 +62,11 @@ the original bounded reservation is retained while any actual put is unretired,
 including when native failure bookkeeping catches the submission exception.
 Known callback failure remains a completed outcome with the original error;
 native return or bridge cancellation alone cannot retire the attachment owner.
+Restricted DB/inner inspection acquisition likewise retains the original service
+owner before validation; only positive original close retires each actual handle.
+Constructor/close failure retains primary and safe secondary diagnostics, without
+another closer, publication, retry or authority grant. Affine inspection cleanup
+stays on its acquiring thread; a later read or terminal receipt clears nothing.
 All original generation refusals, tagged metadata and final admission fences remain.
 
 **Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 full-schema comparison (with S1 F/E references) and every non-schema v2 fence remain in force. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.

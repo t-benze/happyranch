@@ -7,13 +7,15 @@ this owner and close it before ordinary reattachment after durable completion.
 from __future__ import annotations
 
 import base64
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Callable
 
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.team_move_store import MoveRequest, TeamMoveError, TeamMoveStore, _decode, _digest, _inspection_error
+from runtime.infrastructure.team_move_store import (
+    MoveRequest, TeamMoveError, TeamMoveStore, _decode, _digest, _close_team_move_recovery_handle,
+)
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.team_move import TeamMoveCoordinator
 from runtime.orchestrator.team_move_canonical import check_parents, read_regular, validate_candidate
@@ -33,19 +35,20 @@ class RestrictedMoveContext:
     orchestrator: object
     workflow_authority: WorkflowAuthorityCoordinator
     naming_readiness: str = "unavailable"
+    _handle_owner: Callable | None = None
 
-    def close(self):
-        try:
-            self.db.close()
-        except (OSError, sqlite3.Error) as exc:
-            raise _inspection_error("team_move_recovery_database_close_failed", exc) from exc
+    def close(self, *, primary: BaseException | None = None) -> None:
+        _close_team_move_recovery_handle(self.db, code="team_move_recovery_database_close_failed",
+            primary=primary, _handle_owner=self._handle_owner)
 
 
-def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, sessions, diagnostic_only=False, operation_key=None):
+def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, sessions, diagnostic_only=False,
+                          operation_key=None, _handle_owner=None):
     """Use actual current host/tracker owners, never caller quiescence flags."""
     if not diagnostic_only and (host_supervisor is None or sessions is None):
         raise TeamMoveError("team_move_recovery_native_host_tracker_required")
-    db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug, require_active=not diagnostic_only)
+    db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug,
+        require_active=not diagnostic_only, _handle_owner=_handle_owner)
     try:
         store = TeamMoveStore(db, slug)
         row = store.read(operation_key=operation_key) if diagnostic_only else store.read()
@@ -71,17 +74,13 @@ def open_recovery_context(*, root, slug, settings, profiles, host_supervisor, se
         authority = WorkflowAuthorityCoordinator(db=db, org_slug=slug, root=root, teams=teams)
         authority._profile_coordinator = profiles
         org = RestrictedMoveContext(slug, root, settings, db, teams, sessions,
-            SimpleNamespace(_host_supervisor=host_supervisor), authority)
+            SimpleNamespace(_host_supervisor=host_supervisor), authority, _handle_owner=_handle_owner)
         from runtime.identities.schema import validate_names
         with db._lock:
             if validate_names(db._conn, org_slug=slug):
                 org.naming_readiness = "ready"
         return org, TeamMoveOperation(org, profiles)
     except BaseException as primary:
-        try:
-            db.close()
-        except BaseException as cleanup:
-            primary.team_move_secondary_codes = (*getattr(primary, "team_move_secondary_codes", ()),
-                TeamMoveOperation._diagnostic(cleanup).code)
-            primary.add_note("restricted move context close failed: " + type(cleanup).__name__)
+        _close_team_move_recovery_handle(db, code="team_move_recovery_database_close_failed",
+            primary=primary, _handle_owner=_handle_owner)
         raise

@@ -61,6 +61,12 @@ before native submission; it no longer relies on an unregistered FastAPI worker.
 Apply/recover reserve off-loop and publish the once-only runner on-loop before
 propagating cancellation. Shutdown joins admitted request handoffs before its
 runner snapshot and refuses uncertain native return or restricted-handle close.
+Restricted DB and both nested inspection handles are retained from acquisition,
+before validation or constructor return, by the SAME service/native owner. Their
+original helpers attempt cleanup once; affine inspection connections close on
+their acquiring thread. Failed close retains the actual handle and safe secondary
+code beside the original failure, including diagnostic readback. A later successful
+read or saved terminal receipt cannot clear it or permit owner retirement/new runner.
 Generation-aware task redelivery joins native claim, real loop queue insertion
 and native exact acknowledgement/failure under the original service/org owner.
 Cancellation waits for publication retirement; uncertain submission retains the

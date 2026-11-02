@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 from contextlib import contextmanager
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from typing import Any, Callable
 
 from runtime.infrastructure.database import Database
@@ -39,8 +39,8 @@ class TeamMoveService:
         self._observations = threading.RLock()
         self._owners = {}
         self._workers = {}
+        self._native_owner = ContextVar("team_move_restricted_native_owner", default=None)
         self._restricted = {}
-        self._unsafe_handles = {}
         self._mutation_locks = {}
         self._close_task = None
 
@@ -117,7 +117,7 @@ class TeamMoveService:
         # after uncertain submission, native return or restricted-handle close.
         error = None if task.cancelled() else task.exception()
         with self._observations:
-            uncertain = (task in self._restricted
+            uncertain = (any(owner is task for _, owner, _ in self._restricted.values())
                 or any(owner is task for _, owner, *_ in self._workers.values()))
             lease = None if uncertain else self._owners.pop(token)[2]
         self._release_attachment(lease)
@@ -142,9 +142,16 @@ class TeamMoveService:
         outcome = {}
         context = copy_context()
 
+        def invoke() -> Any:
+            binding = self._native_owner.set((slug, owner))
+            try:
+                return callback()
+            finally:
+                self._native_owner.reset(binding)
+
         def run() -> None:
             try:
-                outcome["result"] = context.run(callback)
+                outcome["result"] = context.run(invoke)
             except BaseException as exc:
                 outcome["error"] = exc
             finally:
@@ -186,6 +193,28 @@ class TeamMoveService:
             raise cancellation
         return result
 
+    def _restricted_handle_owner(self, slug: str) -> Callable:
+        """Bind restricted acquisitions to this ORIGINAL service/native task.
+
+        The hook records actual handles only; cleanup stays in the acquiring
+        helper (in particular, affine inspection connections never move thread).
+        Failed close records remain sticky; later reads cannot retire them.
+        """
+        binding = self._native_owner.get()
+        if binding is None or binding[0] != slug:
+            raise TeamMoveError("team_move_service_owner_busy")
+        owner = binding[1]
+
+        def record(handle: Any, *, closed: bool = False, close_error: str | None = None) -> None:
+            with self._observations:
+                if closed:
+                    self._restricted.pop(handle)
+                else:
+                    previous = self._restricted.get(handle)
+                    self._restricted[handle] = ((slug, owner, close_error) if previous is None
+                        else (previous[0], previous[1], close_error or previous[2]))
+        return record
+
     def require_runtime(self, slug):
         if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", slug) is None:
             raise TeamMoveError("team_move_invalid_org")
@@ -216,7 +245,9 @@ class TeamMoveService:
             yield TeamMoveStore(self.state.get_org(slug).db, slug)
             return
         root = self.diagnostic_root(slug)
-        db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug, require_active=False)
+        handle_owner = self._restricted_handle_owner(slug)
+        db = Database._open_team_move_recovery(OrgPaths(root).db_path, org_slug=slug,
+            require_active=False, _handle_owner=handle_owner)
         primary = None
         try:
             yield TeamMoveStore(db, slug)
@@ -227,11 +258,14 @@ class TeamMoveService:
             try:
                 db.close()
             except BaseException as exc:
-                with self._observations:
-                    self._unsafe_handles.setdefault(slug, []).append(db)
+                handle_owner(db, close_error="team_move_diagnostic_close_failed")
                 if primary is None:
                     raise TeamMoveError("team_move_diagnostic_close_failed") from exc
+                primary.team_move_secondary_codes = (*getattr(primary, "team_move_secondary_codes", ()),
+                    "team_move_diagnostic_close_failed")
                 primary.add_note("team move diagnostic close failed; retain diagnostics")
+            else:
+                handle_owner(db, closed=True)
 
     def availability(self, slug: str) -> dict:
         """Read actual release/attachment owners; never install or repair.
@@ -291,7 +325,8 @@ class TeamMoveService:
         if row is not None:
             reasons.append("team_move_operation_held")
         with self._observations:
-            busy = any(s == slug for s, _ in self.tasks)
+            busy = (any(s == slug for s, _ in self.tasks)
+                or any(s == slug for s, _, _ in self._restricted.values()))
         if busy:
             reasons.append("team_move_service_owner_busy")
         reasons = list(dict.fromkeys(reasons))
@@ -340,6 +375,7 @@ class TeamMoveService:
         reports unknown ownership. Saved identities/diagnostics remain separate.
         """
         restricted = None
+        primary = None
         result = {"source": "current_native_read", "state_revision": row["state_revision"],
             "census_available": False, "publication_available": False, "blockers": None,
             "owner_settlement": "not_observed", "unavailable_code": None}
@@ -352,22 +388,28 @@ class TeamMoveService:
                 restricted, operation = open_recovery_context(root=self.diagnostic_root(slug), slug=slug,
                     settings=self.state.settings, profiles=self.state.profile_coordinator,
                     host_supervisor=self.state.host_supervisor, sessions=sessions,
-                    diagnostic_only=True, operation_key=row["operation_key"])
+                    diagnostic_only=True, operation_key=row["operation_key"],
+                    _handle_owner=self._restricted_handle_owner(slug))
             else:
                 operation = TeamMoveOperation(org, self.state.profile_coordinator)
             result = operation.observe_recovery(row)
-        except Exception as exc:
+        except BaseException as exc:
+            primary = exc
+            if not isinstance(exc, Exception):
+                raise
             result["unavailable_code"] = TeamMoveOperation._diagnostic(exc).code
         finally:
             if restricted is not None:
                 try:
-                    restricted.close()
+                    restricted.close(primary=primary)
                 except Exception as exc:
                     # Keep useful observations and the primary refusal. A close
                     # failure is another diagnostic, never successful absence.
                     result["close_error"] = TeamMoveOperation._diagnostic(exc).code
-                    with self._observations:
-                        self._unsafe_handles.setdefault(slug, []).append(restricted)
+            with self._observations:
+                close_errors = tuple(code for s, _, code in self._restricted.values() if s == slug and code is not None)
+            if close_errors:
+                result.setdefault("close_error", close_errors[-1])
         return result
 
     def require_enabled(self, slug: str, *, recover: bool = False) -> None:
@@ -478,7 +520,8 @@ class TeamMoveService:
 
     def _assert_no_runner(self, slug: str) -> None:
         with self._observations:
-            if any(s == slug for s, _ in self.tasks):
+            if (any(s == slug for s, _ in self.tasks)
+                    or any(s == slug for s, _, _ in self._restricted.values())):
                 raise TeamMoveError("team_move_service_owner_busy")
 
     def start(self, slug, row, *, recover):
@@ -516,11 +559,6 @@ class TeamMoveService:
         def opened(pair: tuple) -> None:
             nonlocal restricted
             restricted = pair[0]
-            with self._observations:
-                self._restricted[asyncio.current_task()] = restricted
-        def closed(_result: Any) -> None:
-            with self._observations:
-                self._restricted.pop(asyncio.current_task())
         async def native(callback: Callable) -> Any:
             return await self.native(slug, callback)
         async def redeliver(operation: TeamMoveOperation) -> None:
@@ -548,7 +586,8 @@ class TeamMoveService:
                         sessions = self.diagnostic_sessions.setdefault(slug, SessionTracker())
                     restricted, operation = await self.native(slug, lambda: open_recovery_context(root=root, slug=slug,
                         settings=self.state.settings, profiles=self.state.profile_coordinator,
-                        host_supervisor=self.state.host_supervisor, sessions=sessions), publish=opened)
+                        host_supervisor=self.state.host_supervisor, sessions=sessions,
+                        _handle_owner=self._restricted_handle_owner(slug)), publish=opened)
                 else:
                     operation = TeamMoveOperation(org, self.state.profile_coordinator)
                 try:
@@ -568,7 +607,7 @@ class TeamMoveService:
                     closing = restricted
                     # native() joins actual close before propagating cancellation.
                     restricted = None  # One attempt; retain the original failure.
-                    await self.native(slug, closing.close, publish=closed)
+                    await self.native(slug, closing.close)
                     if result["active_slot"] is None:
                         try:
                             attached = await self.state.add_org(slug)
@@ -598,7 +637,7 @@ class TeamMoveService:
         finally:
             if restricted is not None:
                 try:
-                    await self.native(slug, restricted.close, publish=closed, propagate_cancel=False)
+                    await self.native(slug, restricted.close, propagate_cancel=False)
                 except BaseException as exc:
                     if primary is None:
                         raise
@@ -646,7 +685,7 @@ class TeamMoveService:
             if (any(slug is None or s == slug for s, _ in self.tasks)
                     or any(slug is None or s == slug for s, _, _ in self._owners.values())
                     or any(slug is None or s == slug for s, *_ in self._workers.values())
-                    or any(slug is None or s == slug for s in self._unsafe_handles)):
+                    or any(slug is None or s == slug for s, _, _ in self._restricted.values())):
                 raise TeamMoveError("team_move_service_owner_busy")
 
     async def close(self):

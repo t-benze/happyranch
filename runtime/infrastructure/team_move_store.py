@@ -934,7 +934,32 @@ class TeamMoveStore:
         return updated
 
 
-def inspect_team_move_database(path, *, org_slug: str, require_existing=False, reader_capabilities=None):
+def _close_team_move_recovery_handle(handle: Any, *, code: str, primary: BaseException | None = None,
+                                     _handle_owner: Any = None) -> None:
+    """One original close; an unsuccessful close never releases its service owner.
+
+    Inspection callers invoke this on their acquiring thread. This helper holds
+    no closer/retry and retains only safe secondary classification on the cause.
+    """
+    try:
+        handle.close()
+    except BaseException as cleanup:
+        failure = _inspection_error(code, cleanup)
+        if _handle_owner is not None:
+            _handle_owner(handle, close_error=failure.code)
+        if primary is None:
+            if isinstance(cleanup, (OSError, sqlite3.Error)):
+                raise failure from cleanup
+            raise
+        primary.team_move_secondary_codes = (*getattr(primary, "team_move_secondary_codes", ()), failure.code)
+        primary.add_note("restricted move handle close failed: " + type(cleanup).__name__)
+    else:
+        if _handle_owner is not None:
+            _handle_owner(handle, closed=True)
+
+
+def inspect_team_move_database(path, *, org_slug: str, require_existing=False, reader_capabilities=None,
+                               _handle_owner=None):
     """Schema owner's coherent read BEFORE Database compatibility writers.
 
     Reads complete optional layout/history, never installs/upgrades or repairs.
@@ -960,6 +985,8 @@ def inspect_team_move_database(path, *, org_slug: str, require_existing=False, r
                 or path.resolve(strict=True) != path):
             raise TeamMoveError("team_move_startup_database_identity_unknown")
         conn = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)
+        if _handle_owner is not None:
+            _handle_owner(conn)
         conn.row_factory = sqlite3.Row
         after = path.lstat()
         if (info.st_dev, info.st_ino) != (after.st_dev, after.st_ino):
@@ -977,13 +1004,17 @@ def inspect_team_move_database(path, *, org_slug: str, require_existing=False, r
             raise TeamMoveError("team_move_startup_database_identity_changed")
         return None if row is None else dict(row)
     except (OSError, sqlite3.Error) as exc:
-        primary = exc
-        raise _inspection_error("team_move_startup_database_unavailable", exc) from exc
+        failure = _inspection_error("team_move_startup_database_unavailable", exc)
+        primary = failure if _handle_owner is not None else exc
+        raise failure from exc
     except BaseException as exc:
         primary = exc
         raise
     finally:
-        if conn is not None:
+        if conn is not None and _handle_owner is not None:
+            _close_team_move_recovery_handle(conn, code="team_move_startup_database_close_failed",
+                primary=primary, _handle_owner=_handle_owner)
+        elif conn is not None:
             try:
                 conn.close()
             except sqlite3.Error as cleanup:
