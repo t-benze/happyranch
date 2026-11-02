@@ -71,6 +71,15 @@ notification handoff. Loop wiring precedes publication. Finite map captures and
 actual reader lifetimes fence detach/swap/close; shutdown joins attachment work,
 and uncertainty preserves the original owner. Profile leases remain on their
 native thread and no map mutex encloses I/O, DB work, worker join or await.
+Thread/task/job event responses retain a DB reader only for endpoint work and
+later replay/poll reads of the SAME attachment. Idle bus waits and sends hold no
+reader; a replaced/detached org refuses later DB reads, including same-slug reuse.
+Task attachment bytes and audit bodies are already materialized; audit transport
+keeps its original deadline/identity fence without later SQL. Both task and thread
+notification outcomes are retained before submission. An uncertain task put keeps
+the original bounded reservation and attachment owner even if the generation
+publisher catches its error; native return or cancelled wrappers prove no put
+retirement. Known callback failures preserve their original failure behavior.
 Source and static evidence establish no complete responsiveness, behavioral
 readiness, filesystem deadline or dominant slow planning stage. Keep the existing
 client deadline and same-key custody after timeout. No extra preview/apply/recover
@@ -372,6 +381,7 @@ publication under the original profile leases. A short state fence captures map
 membership, while native profile/metrics and request readers retain the actual
 DB attachment. Removal/swap/close refuse active readers; shutdown fences insertion
 and joins original attachment children before DB/host close. Uncertain workers,
+unretired task/thread puts (including task submission errors),
 unpublished load/close failures and actual handles remain owned. A published org
 is never speculatively removed/closed after a later wiring/notification error, and
 fresh-org rollback preserves its skeleton. This source/static correction is not

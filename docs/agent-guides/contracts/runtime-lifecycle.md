@@ -290,13 +290,25 @@ outcome, and joins each native interval through repeated cancellation. Loop queu
 session, host and thread references are wired before native profile validation
 publishes into the original map within the original profile lease interval.
 Returned notification rediscovery keeps its existing owner and waits for actual
-loop queue puts before retirement. Published attachments survive later errors;
+loop task/thread queue puts before retirement. Their actual outcomes are retained
+before submission. An uncertain task put keeps the original attachment owner and
+bounded reservation even after native return or caught publication error; a known
+callback failure retires that put with its original error. Cancelled bridges and
+map absence prove no retirement, and no automatic uncertainty clearance is added.
+Published attachments survive later errors;
 unknown submission/return/constructor close retains its original handle and blocks
 shutdown/removal/swap, without a second speculative close.
 All shared-map iterations use finite captures. The state mutex covers only map
 membership and in-memory reader bookkeeping, never I/O/DB/profile acquisition,
-worker join or await. Native profile/metrics readers and selected request
-attachments retain DB lifetime independently of runner admission. Detach/close
+worker join or await. Native profile/metrics readers and ordinary request
+attachments retain DB lifetime independently of runner admission. The selected
+thread/task/job event responses end their endpoint reader before transport and
+capture their original attachment for each lazy DB replay or job poll. EventBus
+registration/replay/cleanup stay on the original bus, without a DB reader during
+idle waits or sends. A detached/replaced attachment refuses later DB reads rather
+than resolving its slug again. Fully materialized task attachments and audit
+bodies need no transport reader; audit retains its original budget/identity fence
+without later SQL. Detach/close
 atomically refuse active readers and fence new captures; runtime swap closes
 capture admission at its final preflight before registry effects, then renews the
 original map/profile identity on replacement. Shutdown fences native insertion and

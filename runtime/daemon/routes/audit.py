@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
 
 from runtime.daemon.auth import require_token
-from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep
 from runtime.infrastructure.database import _decode_cursor
 from runtime.infrastructure.memory_collection import (
     CensusReadUnavailable, _census_budget, acquire_memory_collection_response,
@@ -25,7 +25,7 @@ _THREAD_SCOPE_PREFIX = "THR-"
 
 
 @router.get("/audit/memory-collection", responses={422: {}, 503: {}})
-def get_memory_collection(slug: str, org: OrgDep, request: Request) -> StreamingResponse:
+def get_memory_collection(slug: str, org: OrgStreamDep, request: Request) -> StreamingResponse:
     """Acquire one complete observation-only envelope under server-owned limits."""
     if request.scope.get("query_string"):
         raise HTTPException(status_code=422, detail="Memory collection acquisition takes no parameters")
@@ -38,6 +38,9 @@ def get_memory_collection(slug: str, org: OrgDep, request: Request) -> Streaming
             raise HTTPException(status_code=503, detail="acquisition_unavailable") from exc
 
         def chunks():
+            # Body acquisition is complete. The original fence checks budget,
+            # object/boot identity and lock ownership, without any later SQL.
+            # Transport therefore needs no attachment reader across a send.
             # Retain only this response's original private budget through actual
             # transport. A late transfer cannot become a complete successful body.
             # These cooperative checks cannot cancel a stalled OS send.

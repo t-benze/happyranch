@@ -93,10 +93,12 @@ class DaemonState:
             return dict(self.orgs)
 
     @contextmanager
-    def capture_orgs(self, slugs: tuple[str, ...] | None = None) -> Iterator[dict[str, OrgState]]:
+    def capture_orgs(self, slugs: tuple[str, ...] | None = None, *, original: OrgState | None = None) -> Iterator[dict[str, OrgState]]:
         """Retain the actual DB attachments for a native read interval."""
         with self._org_map_lock:
             orgs = dict(self.orgs) if slugs is None else {slug: self.orgs[slug] for slug in slugs if slug in self.orgs}
+            if original is not None and orgs.get(original.slug) is not original:
+                raise _OrgBusyError("attachment_changed_during_read")
             if self._attachment_swap_pending or any(id(org) in self._retiring_orgs for org in orgs.values()):
                 raise _OrgBusyError("attachment_retiring")
             for org in orgs.values():
@@ -499,7 +501,7 @@ class DaemonState:
                 queue = _AttachmentNotificationQueue(self.queue, loop, org.thread_queue)
                 owner["notifications"] = queue
                 await self._attachment_native(owner, lambda: org.orchestrator._rediscover_returned(queue=queue))
-                await queue.join_thread_puts()
+                await queue.join_puts()
                 self.broken_orgs.pop(slug, None)
                 if owner["profiles"] is not None:
                     getattr(owner["profiles"], "_move_diagnostic_orgs", {}).pop(slug, None)

@@ -452,15 +452,29 @@ A contended profile lease gives loop callers the existing
 `profile_coordinator_busy` refusal immediately; native callers retain their
 original bounded wait. The loop never sleeps behind the attachment worker.
 Short synchronized membership captures replace live-map iteration. Profile and
-metrics readers retain their actual OrgStates/DBs; request dependencies retain
-the selected attachment. Native publication, shutdown admission and close-capture
+metrics readers retain their actual OrgStates/DBs; ordinary request dependencies
+retain the selected attachment. Thread/task/job event responses end the endpoint
+reader before transport and capture the SAME attachment during lazy DB replay or
+job polling, without a reader over bus waits or sends. Their EventBus view shares
+the original lock/subscriber registry and reuses the original subscribe engine;
+only its synchronous history loader is guarded. Reads refuse detached/replaced
+OrgStates rather than resolving the slug into a new attachment. Materialized task
+attachment bytes and audit bodies require no transport reader; audit retains the
+original private deadline/identity fence without later SQL.
+Native publication, shutdown admission and close-capture
 fences share the state mutex, which contains no I/O, DB/profile acquisition, worker
 join or await. Removal/swap/close refuse active readers or uncertain native owners.
 Swap closes read admission before registry effects and rebinds the profile capture
 to the actual serving state, preserving map identity pins.
 Returned-coding rediscovery reuses the existing recovery/notification owner with
 actual task queue puts on the original loop before native exact ack/failure, and
-joined original thread puts. Post-publication errors preserve the map/DB owner;
+joined original thread puts. Both task and thread actual put outcomes are retained
+before submission and included in attachment retirement/join. An uncertain task
+put preserves the SAME bounded reservation even if generation failure bookkeeping
+catches the submission exception. Known callback failure remains a completed
+outcome with its original error; native return, cancelled wrappers or map absence
+never prove put retirement. No automatic uncertainty clearance is introduced.
+Post-publication errors preserve the map/DB owner;
 unpublished close failures retain the original handle and primary error. Fresh-org
 rollback cannot remove a published or uncertain attachment. Shutdown joins actual
 attachment children before host/DB close. Existing startup/scheduler business

@@ -100,10 +100,12 @@ class _AttachmentNotificationQueue:
     def __init__(self, queue: TaskQueue, loop: asyncio.AbstractEventLoop, thread_queue: Any) -> None:
         self._queue = queue
         self._loop = loop
+        self.task_puts: list[Future] = []
         self.thread_queue = _AttachmentThreadQueue(thread_queue)
 
     def enqueue(self, *args: object, **kwargs: object) -> None:
         result: Future = Future()
+        self.task_puts.append(result)  # retain BEFORE the thread-safe submission
         def put() -> None:
             try:
                 self._queue.enqueue(*args, **kwargs)
@@ -111,6 +113,9 @@ class _AttachmentNotificationQueue:
                 result.set_exception(exc)
             else:
                 result.set_result(None)
+        # A submission exception leaves this actual outcome pending. A known
+        # callback failure completes it with that error instead. Neither path
+        # substitutes or wraps the original publisher exception.
         self._loop.call_soon_threadsafe(put)
         result.result()
 
@@ -120,15 +125,20 @@ class _AttachmentNotificationQueue:
     def enqueue_if_absent(self, slug: str, task_id: str, *, metadata: dict | None = None, publisher: Callable | None = None) -> bool:
         # Original reservation and generation publisher run natively. Their
         # supplied publisher reaches this adapter only for the real raw put.
+        first_put = len(self.task_puts)
         return self._queue.enqueue_if_absent(slug, task_id, metadata=metadata,
-            publisher=publisher or (lambda: self.enqueue(slug, task_id, metadata=metadata)))
+            publisher=publisher or (lambda: self.enqueue(slug, task_id, metadata=metadata)),
+            _put_outcomes=lambda: tuple(self.task_puts[first_put:]))
 
     def has_unretired_puts(self) -> bool:
-        return any(not done.done() or done.cancelled() for done in self.thread_queue.puts)
+        return any(not done.done() or done.cancelled() for done in self._puts())
 
-    async def join_thread_puts(self) -> None:
+    def _puts(self) -> tuple[Future, ...]:
+        return (*self.task_puts, *self.thread_queue.puts)
+
+    async def join_puts(self) -> None:
         cancellation = None
-        for done in self.thread_queue.puts:
+        for done in self._puts():
             bridge = asyncio.wrap_future(done)
             while not bridge.done():
                 try:
@@ -210,6 +220,7 @@ class TaskQueue:
         *,
         metadata: dict | None = None,
         publisher: Callable[[], None] | None = None,
+        _put_outcomes: Callable[[], tuple[Future, ...]] | None = None,
     ) -> bool:
         """Publish only when this task has no reservation or pending item.
 
@@ -221,9 +232,11 @@ class TaskQueue:
         callback without the lock: DB-aware publishers must never participate
         in a queue-lock/DB-lock cycle.  Concurrent bounded producers observe
         the reservation and lose until publication succeeds or refuses.  The
-        reservation is always released; a successful insertion remains owned
-        by the pending count until the same locked dequeue operation, so a
-        later qualifying wake is admitted.
+        reservation is released after a returned publisher outcome. An
+        uncertain attachment loop submission retains this SAME reservation;
+        only the actual put's positive retirement can qualify its release.
+        A successful insertion remains owned by the pending count until the
+        same locked dequeue operation, so a later qualifying wake is admitted.
         """
         if not self._reserve_bounded_enqueue(slug, task_id):
             return False
@@ -236,7 +249,12 @@ class TaskQueue:
             with self._admission_lock:
                 return self._pending_counts[key] > 0
         finally:
-            self._release_bounded_enqueue(key)
+            # The generation publisher can record/catch a raw-put exception.
+            # Its return therefore cannot retire an uncertain loop submission.
+            # Observe the SAME per-call outcomes even on that caught-error path;
+            # cancellation is never callback retirement. No late retry/clearance.
+            if _put_outcomes is None or all(done.done() and not done.cancelled() for done in _put_outcomes()):
+                self._release_bounded_enqueue(key)
 
     def _reserve_bounded_enqueue(self, slug: str, task_id: str, *, track_put: bool = False) -> bool:
         key = slug, task_id

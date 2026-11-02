@@ -92,14 +92,27 @@ A contended profile lease gives loop callers the existing
 original bounded wait. The loop never sleeps behind the attachment worker.
 A short state mutex protects membership capture/publication only, with no I/O,
 DB/profile acquisition, worker join or await inside it. Profile and metrics reads
-retain actual captured OrgStates; request dependencies retain their selected org.
+retain actual captured OrgStates. Ordinary request dependencies retain their
+selected org. Thread/task/job event responses instead release the endpoint reader
+before transport, retaining the original attachment only during synchronous DB
+replay or job polling. EventBus registration, replay order, terminal handling and
+cleanup use the original bus; idle bus waits and sends hold no DB reader. Later
+reads atomically refuse a detached/replaced OrgState, including same-slug reuse.
+Task attachment bytes and audit bodies are materialized before endpoint return;
+the audit transport keeps its original deadline/identity fence without later SQL.
 Detach/swap/close refuse retained readers and atomically fence new captures before
 DB close. Shutdown fences insertion, joins attachment children and retains unknown
 workers/loaded DBs/failed closes. Failed post-publication work never closes or
 removes the published owner; fresh-org rollback preserves its skeleton.
 Returned-coding rediscovery reuses its existing native owner: real task puts run
 on the original loop before native exact acknowledgement/failure; original thread
-notifications are joined through their actual loop puts. Diagnostic clearing
+notifications are joined through their actual loop puts. Both task and thread
+put outcomes are registered before submission and checked before attachment
+retirement. An uncertain task submission retains its SAME bounded reservation,
+even if the generation publisher records/catches the submission error. A known
+callback error is a retired put and retains its original failure meaning. Native
+return or a cancelled bridge alone never retires a put; no automatic retry or
+uncertainty clearance is added. Diagnostic clearing
 follows successful attachment and notification completion. Startup/scheduler
 business rules and final native execution admission stay unchanged. Source/static
 evidence establishes no responsiveness/behavioral acceptance or filesystem bound.
