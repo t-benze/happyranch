@@ -635,8 +635,23 @@ every pass, candidate and bounded scratch share the persistent preparation owner
 spent work never refunds. No hard RSS or syscall-time guarantee follows.
 The action convenience scenario read is removed; ordinary refusal preserves prior
 complete bytes/snapshots and spent work, without retrying failed sources. Complete
-producer/copy registry, nested/browser/direct/pair/human-display joins and E07
-prefix/Controller witness tree-parse reuse remain unfinished. Initial closed FAIL
+producer/copy registry and nested/browser/direct/pair/human-display joins remain
+unfinished. Controller's witness export and actual E07 admission now use one
+bounded original binary acquisition/precharged strict UTF8 decode and the shared
+strict reader in required-tree mode BEFORE publication. Full launch_witnesses or
+archived_prefix comes from that one parse; the already charged original bytes
+pass directly to replacement without another read/parse/sanitize/encode. Entire
+LF/CRLF/whitespace/escape/Unicode bytes and original hashes/counts remain exact.
+Nonempty LF-terminated witness object records, decoded and whole-literal original
+secret checks, unchanged-safe key/value postconditions and the SAME persistent
+preparation owner/end are required. Only record syntax bounds reset at LF.
+Unsupported decoded backslashes/nested forms refuse the whole image, retaining
+prior complete files/tree/FAIL and truthful incomplete-line failure information;
+no partial accepted witness metadata/rows. Refused UTF8 diagnostics retain actual
+error identity/offsets without the image. Collector scan-only mode and ordinary
+_atomic_text whole-backslash refusal remain. Preparation/file controls do not
+execute full Controller.evidence/E07 admission or prove allocation/kernel timing.
+Initial closed FAIL
 and final detailed FAIL/PASS now use the finite typed compact UTF8 encoder over
 their complete selected envelope INCLUDING metadata. Original+safe strings,
 aliases, context/order scratch, keys/facts/plan/output retain C8388608/F200000/

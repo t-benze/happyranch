@@ -694,9 +694,10 @@ def exercise(c: Controller) -> None:
         failures = len(c.failures)
         c.evidence(require_success=False)
         check(c.redaction_ready and len(c.failures) == failures, 'safe prepared checkpoint export without new failure')
-        prefix_content = (c.root / 'raw/observations.json').read_bytes()
-        c._atomic_text(c.root / 'raw/e07-prefix.json', prefix_content.decode())
-        archived_prefix = json.loads(prefix_content)
+        prefix_path = c.root / 'raw/e07-prefix.json'
+        prefix_content, archived_prefix = c._prepare_original_evidence(
+            prefix_path, c.root / 'raw/observations.json')
+        c._replace_evidence(prefix_path, prefix_content)
         check(not archived_prefix['capture_inventory']['refusals']
               and all(r['original']['entity_copy']['original_byte_check'] == 'available'
                       for r in archived_prefix['thread_proxy'] if 'original' in r), 'complete safely exported unchanged originals')

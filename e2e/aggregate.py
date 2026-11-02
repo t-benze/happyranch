@@ -465,6 +465,38 @@ def failure_result_controls() -> dict:
             assert not (output/(name+'.tmp')).exists()
             results['C3-C5-raw-positive-'+name] = 'entire literal original source/staged/published bytes, independent full type/key/list order; no raw tree'
 
+    # C5/C6: required original trees at the two shipping preparation/file
+    # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
+    originals = {
+        'witness': ('launch-witnesses.jsonl', 'witness/identities.jsonl', raw_lines, line_values,
+                    96, 'dda9febd81e71b7b1d4903835e0ef7d062087d856275692ce4d1193eab7ee060'),
+        'prefix': ('e07-prefix.json', 'raw/observations.json', raw_object, object_value,
+                   178, 'b61b97cce1e792f408ad6e40ea4b7310a6b20de88dcd899da2997c95bb975131'),
+    }
+    for kind,(name,relative,image,wanted,length,digest) in originals.items():
+        for framing in ('LF','CRLF'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                source, destination = root/relative, root/'raw'/name
+                source.parent.mkdir(exist_ok=True)
+                source_bytes = image if framing == 'LF' else image.replace(b'\n',b'\r\n')
+                source.write_bytes(source_bytes)
+                witness_rows = {}
+                candidate,parsed = writer._prepare_original_evidence(destination,source,witness_rows=witness_rows)
+                exact(parsed,wanted)
+                assert candidate == source_bytes and not destination.exists(), 'original preparation published before closure'
+                assert not destination.with_name(name+'.tmp').exists()
+                writer._replace_evidence(destination,candidate)
+                assert source.read_bytes() == destination.read_bytes() == source_bytes
+                if framing == 'LF':
+                    assert len(candidate) == length and hashlib.sha256(candidate).hexdigest() == digest
+                    if kind == 'witness':
+                        assert hashlib.sha256(candidate[:55]).hexdigest() == '97be040eeac0844d1e9a6de06299099667c925cb5897731a32ef085df6b30577'
+                assert witness_rows == ({'witness_incomplete_line':False} if kind == 'witness' else {})
+                acquire(); drain(); commit()
+                assert (output/name).read_bytes() == source_bytes and not errors
+                exact(parsed,wanted)
+                results['C5-C6-original-'+kind+'-'+framing] = 'one required full typed ordered tree and exact original source/prepared/file/collector bytes; original digest/framing'
+
     raw_refusals = {
         'wrong-object': ('observations.json',b'[]'),
         'wrong-e07': ('e07.json',b'null'),
@@ -542,6 +574,123 @@ def failure_result_controls() -> dict:
                 assert (output/'eligible.txt').read_bytes() == b'eligible ordinary sibling\n', case
             # Guard exhaustion may also withhold the later sibling; no refund.
             results['C1-C5-C7-raw-refusal-'+case] = 'whole new image withheld; prior full bytes/tree/FAIL and first cause retained; ordinary/fact/work boundary attributed'
+
+    # Reuse the SAME strict-format negatives at the required-tree owner. The
+    # existing scan rows above own a different collector boundary.
+    original_refusals = {case:image for case,(name,image) in raw_refusals.items()
+                         if name == 'observations.json' and case not in ('scalar-work','candidate-work')}
+    original_refusals['duplicate'] = b'{"x":1,"\\u0078":2}'
+    original_refusals['literal-across-tokens'] = b'{"a":1,"b":2}'
+    original_refusals['output-work'] = b'{"a":"'+b'a'*550000+b'","b":"'+b'b'*550000+b'"}'
+    for kind,(name,relative,prior,wanted,length,digest) in originals.items():
+        cases = dict(original_refusals)
+        if kind == 'witness':
+            cases = {case:b'{"index":1}\n'+image+b'\n' for case,image in cases.items()}
+            cases.update({case:image for case,(raw_name,image) in raw_refusals.items()
+                          if raw_name == name and case != 'line-facts'})
+            cases['output-work'] = (b'{"x":"'+b'a'*550000+b'"}\n')*2
+        for case,image in cases.items():
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                source, destination = root/relative, root/'raw'/name
+                source.parent.mkdir(exist_ok=True)
+                source.write_bytes(prior)
+                candidate,parsed = writer._prepare_original_evidence(destination,source)
+                writer._replace_evidence(destination,candidate)
+                acquire(); drain(); commit()
+                old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+                old_tree = copy.deepcopy(state['safe_scenario'])
+                old_work,old_facts = writer._evidence_budget.work,writer._evidence_budget.facts
+                witness_rows = {}
+                if case == 'literal-across-tokens':
+                    # A literal original secret spans JSON syntax, not a decoded
+                    # key/value; the whole original image still must refuse.
+                    writer.secrets.add('1,"b"')
+                    writer.prepare_redaction()
+                source.write_bytes(image)
+                try:
+                    candidate,parsed = writer._prepare_original_evidence(destination,source,witness_rows=witness_rows)
+                    writer._replace_evidence(destination,candidate)
+                except (ValueError,UnicodeError) as error:
+                    assert writer._evidence_fatal is None, (kind,case,error)
+                    if case == 'utf8':
+                        assert isinstance(error,UnicodeDecodeError) and error.object == b''
+                    if case == 'duplicate':
+                        assert isinstance(error,json.JSONDecodeError), (kind,case,error)
+                    if case in ('output-work','facts','depth','int-spelling','float-spelling'):
+                        assert type(error).__name__ == '_EvidenceCapacity', (kind,case,error)
+                else:
+                    raise AssertionError('original image admitted: '+kind+'/'+case)
+                assert source.read_bytes() == image
+                assert destination.read_bytes() == prior, (kind,case,'prior original replaced')
+                assert len(prior) == length and hashlib.sha256(destination.read_bytes()).hexdigest() == digest
+                assert not destination.with_name(name+'.tmp').exists(), (kind,case)
+                assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files
+                exact(state['safe_scenario'],old_tree)
+                assert writer._evidence_budget.work > old_work and writer._evidence_budget.facts > old_facts
+                if kind == 'witness' and case == 'line-incomplete':
+                    assert witness_rows == {'witness_incomplete_line':True}
+                if case not in ('output-work','facts','depth','int-spelling','float-spelling'):
+                    writer._atomic_text(root/'raw/ordinary-after.txt','eligible ordinary continuation\n')
+                    assert (root/'raw/ordinary-after.txt').read_bytes() == b'eligible ordinary continuation\n'
+                results['C5-C6-C7-original-refusal-'+kind+'-'+case] = 'whole required image refused before pending/assignment; complete prior original/hash/length/tree/member/FAIL retained; no work refund'
+
+    # A changed public image is NOT a checksum violation at these producers.
+    # Independent full readers retain their separate byte/hash equality duty.
+    for kind,(name,relative,image,wanted,length,digest) in originals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            source = root/relative
+            source.parent.mkdir(exist_ok=True)
+            changed = image.replace(b'public',b'PUBLIC')
+            source.write_bytes(changed)
+            candidate,parsed = writer._prepare_original_evidence(root/'raw'/name,source)
+            writer._replace_evidence(root/'raw'/name,candidate)
+            changed_tree = copy.deepcopy(wanted)
+            (changed_tree[0] if kind == 'witness' else changed_tree)['sample'] = 'PUBLIC\nline'
+            exact(parsed,changed_tree)
+            assert source.read_bytes() == (root/'raw'/name).read_bytes() == changed
+            assert hashlib.sha256(candidate).hexdigest() != digest
+            results['C5-C6-original-changed-public-'+kind] = 'new safe original image retained exactly; producer has no external expected checksum assertion'
+
+    for kind,(name,relative,image,wanted,length,digest) in originals.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            source, destination = root/relative, root/'raw'/name
+            source.parent.mkdir(exist_ok=True)
+            source.write_bytes(image)
+            candidate,parsed = writer._prepare_original_evidence(destination,source)
+            writer._replace_evidence(destination,candidate)
+            acquire(); drain(); commit()
+            prior_files = {p.name:p.read_bytes() for p in output.iterdir()}
+            writer.token = 'CHANGED_ORIGINAL_TOKEN'
+            try:
+                writer._prepare_original_evidence(destination,source)
+            except AssertionError as error:
+                assert writer._evidence_fatal[0] is error
+            else:
+                raise AssertionError('original context drift admitted: '+kind)
+            original_fatal = writer._evidence_fatal
+            try:
+                writer._atomic_text(root/'raw/later.txt','later ordinary member')
+            except AssertionError as error:
+                # Existing readiness guard emits a fresh refusal, while the
+                # original fatal cause/traceback remains latched unchanged.
+                assert writer._evidence_fatal is original_fatal
+            else:
+                raise AssertionError('fatal original context allowed continuation: '+kind)
+            assert not (root/'raw/later.txt').exists()
+            assert not destination.with_name(name+'.tmp').exists() and destination.read_bytes() == image
+            assert {p.name:p.read_bytes() for p in output.iterdir()} == prior_files
+            results['C5-C6-original-fatal-context-'+kind] = 'original context drift stops detailed work; entire earlier file/FAIL and actual fatal cause retained'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        for name in ('launch-witnesses.jsonl','e07-prefix.json','ordinary.txt'):
+            try:
+                writer._atomic_text(root/'raw'/name,raw_object.decode('utf-8'))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('ordinary text gained structured permission: '+name)
+            assert not (root/'raw'/name).exists() and not (root/'raw'/(name+'.tmp')).exists()
+        results['C5-C6-original-no-text-exemption'] = 'ordinary atomic text retains whole-backslash refusal at every filename'
 
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
         (root/'raw/observations.json').write_bytes(b'{"x":"public\\\\path"}')

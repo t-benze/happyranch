@@ -977,7 +977,8 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
 
 
 def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], None],
-                    returned: Callable[[str], None], measured: Callable[[int], None]) -> str:
+                    returned: Callable[[Any], None], measured: Callable[[int], None],
+                    *, binary: bool = False) -> str | bytes:
     """The original single read; metadata never supplies a content image."""
     check()
     before = os.fstat(stream.fileno())
@@ -987,12 +988,14 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
     if not stat.S_ISREG(before.st_mode) or tuple(getattr(named, k) for k in fields) != signature:
         raise ValueError("evidence input identity refused")
     bound = min(8388608, before.st_size)
+    if binary:
+        ledger.charge(1, 1, check)  # Rejection-only byte sentinel, before read.
     ledger.reserve(bound, 0, check)  # Refuse BEFORE read if remaining space is smaller.
     try:
         text = stream.read(bound + 1)  # Rejection-only sentinel, never parse capacity.
         returned(text)  # Original returned-slice annotation precedes later checks.
         check()
-        size = _evidence_utf8_size(text, check, 33554436)
+        size = len(text) if binary else _evidence_utf8_size(text, check, 33554436)
         measured(size)
         check()
         after = os.fstat(stream.fileno())
@@ -1007,6 +1010,8 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
     except BaseException:
         # A failed read/returned prefix cannot refund its reserved work.
         ledger.settle(bound, bound)
+        if binary:
+            text = None  # Never retain a refused original image in this frame.
         raise
     ledger.settle(bound, size)
     return text
@@ -1148,7 +1153,8 @@ class _EvidenceJSON:
             self.error()
         return value
 
-    def value(self, depth: int = 0, scalar: Callable[[str], None] | None = None) -> Any:
+    def value(self, depth: int = 0, scalar: Callable[[str], None] | None = None,
+              *, tree: bool = True) -> Any:
         self.check()
         if depth > 64:
             raise _EvidenceCapacity("JSON depth capacity refused")
@@ -1162,10 +1168,10 @@ class _EvidenceJSON:
             if scalar is not None:
                 try:
                     scalar(value)
-                finally:
+                except BaseException:
                     value = None
-                return None
-            return value
+                    raise
+            return value if tree else None
         if char in "-0123456789":
             return self.number()
         for spelling, primitive in (("true", True), ("false", False), ("null", None)):
@@ -1177,13 +1183,13 @@ class _EvidenceJSON:
         self.ledger.charge(8, 1, self.check)
         # Active original-key set only in scan mode; arrays have no retained
         # members. The same recursion is the charged depth-bounded syntax stack.
-        output = ({} if scalar is None else set()) if char == "{" else ([] if scalar is None else None)
+        output = ({} if tree else set()) if char == "{" else ([] if tree else None)
         close = "}" if char == "{" else "]"
         self.index += 1
         self.whitespace()
         if self.index < self.end and self.text[self.index] == close:
             self.index += 1
-            return output if scalar is None else None
+            return output if tree else None
         try:
             while True:
                 if char == "{":
@@ -1197,35 +1203,42 @@ class _EvidenceJSON:
                         self.error()
                     self.index += 1
                     self.ledger.charge(16, 1, self.check)
-                    if scalar is None:
-                        output[key] = self.value(depth + 1)
+                    if tree:
+                        output[key] = self.value(depth + 1, scalar, tree=True)
                     else:
                         output.add(key)  # Same decoded key, no additional string copy.
                         del key
-                        self.value(depth + 1, scalar)
+                        self.value(depth + 1, scalar, tree=False)
                 else:
                     self.ledger.charge(8, 1, self.check)
-                    if scalar is None:
-                        output.append(self.value(depth + 1))
+                    if tree:
+                        output.append(self.value(depth + 1, scalar, tree=True))
                     else:
-                        self.value(depth + 1, scalar)
+                        self.value(depth + 1, scalar, tree=False)
                 self.whitespace()
                 if self.index >= self.end:
                     self.error()
                 delimiter = self.text[self.index]
                 self.index += 1
                 if delimiter == close:
-                    return output if scalar is None else None
+                    return output if tree else None
                 if delimiter != ",":
                     self.error()
                 self.whitespace()
+        except BaseException:
+            if output is not None:
+                output.clear()
+            raise
         finally:
-            if scalar is not None:
+            if not tree:
                 if output is not None:
                     output.clear()
-                key = None
+            key = None
 
-    def read(self) -> Any:
+    def read(self, *, top: str | None = None, scalar: Callable[[str], None] | None = None,
+             jsonl: bool = False) -> Any:
+        if top is not None:
+            return self.scan(top, scalar, jsonl=jsonl, tree=True)
         result = self.value()
         self.whitespace()
         if self.index != self.end:
@@ -1233,9 +1246,14 @@ class _EvidenceJSON:
         self.check()
         return result
 
-    def scan(self, top: str, scalar: Callable[[str], None], *, jsonl: bool = False) -> None:
+    def scan(self, top: str, scalar: Callable[[str], None] | None, *, jsonl: bool = False,
+             tree: bool = False) -> Any:
         """Validate the SAME image; JSONL bounds are indices, never line copies."""
+        records = result = None
         try:
+            if tree and jsonl:
+                self.ledger.charge(8, 1, self.check)
+                records = []
             if jsonl and not self.text:
                 self.error()  # Empty evidence is never a launch witness.
             while True:
@@ -1247,17 +1265,27 @@ class _EvidenceJSON:
                 if self.index >= self.end or self.text[self.index] != top:
                     self.error()
                 self.ledger.charge(8, 1, self.check)  # Record's root syntax frame, before entry.
-                self.value(scalar=scalar)
+                result = self.value(scalar=scalar, tree=tree)
                 self.whitespace()
                 if self.index != self.end:
                     self.error()
                 self.check()
                 if not jsonl:
-                    return
+                    return result
+                if tree:
+                    self.ledger.charge(8, 1, self.check)
+                    records.append(result)
                 self.index = self.end + 1  # Preserve the original full LF image.
                 if self.index == len(self.text):
-                    return
+                    return records
+        except BaseException:
+            if records is not None:
+                records.clear()
+            if type(result) in (dict, list):
+                result.clear()
+            raise
         finally:
+            result = records = None
             self.text = ""  # Refused-image traceback keeps syntax facts, not input.
 
 

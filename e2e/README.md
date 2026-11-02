@@ -2408,9 +2408,30 @@ E-1 admission; only successful os.replace marks final_result_committed, with no
 postcommit reclassification. This is source/file evidence, not kernel-I/O,
 crash/signal/cleanup or whole-main chronology certification.
 
-Closed producer/copy registry, nested source/hex/browser/direct/pair/human-display
-joins, E07 prefix and Controller witness tree-parse reuse remain required on
-this same draft. Plain/unregistered R1 whole-backslash refusal remains.
+Controller's actual witness export and E07 admission now prepare their original
+images before publication, reusing the required strict parse to build the full
+launch_witnesses list or archived_prefix tree. Each exact source/destination pair
+uses one bounded binary acquisition and precharged strict UTF8 decode under the
+original frozen preparation owner/end; metadata reserves eligibility/size only.
+The original byte buffer is charged for final retention and passed directly to
+replacement, without a second read, parse, sanitation or encoding roundtrip.
+Entire whitespace, escapes, Unicode and LF/CRLF framing remain exact. Witness
+records are nonempty LF-terminated objects; an unfinished final object refuses
+the whole image. Its incomplete-line flag remains failure information, while
+length/hash/full rows are assigned only after successful publication. E07's
+existing archive digest uses those same entire checkpoint bytes and its existing
+assertions use the one required tree. Decoded original secrets/backslashes and
+unsupported nested content refuse; original literal-image secrets also refuse.
+Every key/value has independent unchanged-safe checks with the original context.
+Refused UTF8 keeps the actual error/offsets without retaining raw diagnostic bytes.
+Syntax record bounds alone reset at LF; work/facts/context never reset. The
+collector retains scan-only mode, without an extra raw tree. Source/file controls
+exercise preparation/replacement, not full Controller.evidence or E07/native
+admission; chronology/allocation/kernel-I/O proof remains NOT RUN/PROOF NOT RUN.
+
+Closed producer/copy registry and nested source/hex/browser/direct/pair/human-display
+joins remain required on this same draft. Plain/unregistered R1 whole-backslash
+refusal remains, including ordinary _atomic_text at the two exact filenames.
 No nested encoding permission, complete finite publication, fit or native acceptance
 follows. Closed observations retain their own gates.
 The completed-ledger exception handler immediately offers its original incomplete

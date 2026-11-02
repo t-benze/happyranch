@@ -1334,7 +1334,7 @@ class Controller:
             self._stop_evidence(exc)
             raise
 
-    def _replace_evidence(self, path: Path, candidate: bytearray) -> None:
+    def _replace_evidence(self, path: Path, candidate: bytes | bytearray) -> None:
         self._check_evidence()
         try:
             require(path == self.root / "scenario.json" or path.parent == self.root / "raw",
@@ -1390,6 +1390,80 @@ class Controller:
             if not _ordinary_evidence_error(exc):
                 self._stop_evidence(exc)
             raise
+
+    def _prepare_original_evidence(self, path: Path, source: Path,
+                                   *, witness_rows: dict | None = None) -> tuple[bytes, Any]:
+        """The two original-image callers: one acquisition, required tree, bytes.
+
+        Ordinary text never enters this branch. Neither pathname nor a writer's
+        provenance replaces whole-image grammar and unchanged-safe admission.
+        """
+        from run import (_EvidenceJSON, _EvidenceUnsafe, _evidence_input,
+                         _ordinary_evidence_error)
+        self._check_evidence()
+        data = text = parsed = None
+        try:
+            witness = path == self.root / "raw/launch-witnesses.jsonl"
+            require((witness and source == self.root / "witness/identities.jsonl")
+                    or (path == self.root / "raw/e07-prefix.json"
+                        and source == self.root / "raw/observations.json"),
+                    "original evidence owner/path unavailable")
+            parent = source.parent.lstat()
+            info = source.lstat()
+            require(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.geteuid()
+                    and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    and info.st_uid == os.geteuid(), "unsafe original evidence source")
+            with source.open("rb") as stream:
+                data = _evidence_input(stream, self._evidence_budget, self._check_evidence,
+                                       lambda value: None, lambda size: None, binary=True)
+            if witness and witness_rows is not None:
+                # Failure information only: no accepted length/hash/partial rows.
+                witness_rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
+            current = source.parent.lstat()
+            require(stat.S_ISDIR(current.st_mode)
+                    and (current.st_dev, current.st_ino) == (parent.st_dev, parent.st_ino),
+                    "original evidence parent changed")
+            # Precharge strict decoding and final retained original buffer, even
+            # though publication borrows the same bytes rather than copying them.
+            self._evidence_budget.charge(len(data), 1, self._check_evidence)
+            try:
+                text = data.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                # Keep the actual exception/traceback/category and byte offsets,
+                # without making its diagnostic own the entire refused image.
+                exc.object = b""
+                exc.args = (exc.encoding, b"", exc.start, exc.end, exc.reason)
+                raise
+            context = self._evidence_context[-1]
+            for secret in context:
+                self._evidence_budget.charge(8, 1, self._check_evidence)
+                if secret in text:
+                    raise ValueError("original literal content withheld")
+            def unchanged(value: str) -> None:
+                try:
+                    self._check_evidence()
+                    if "\\" in value:
+                        raise ValueError("original decoded representation withheld")
+                    for secret in context:
+                        self._evidence_budget.charge(8, 1, self._check_evidence)
+                        if secret in value:
+                            raise ValueError("original evidence content withheld")
+                    if self._evidence_sanitize(value) != value:
+                        raise _EvidenceUnsafe("original unchanged postcondition")
+                finally:
+                    value = None
+            self._evidence_budget.charge(32, 4, self._check_evidence)
+            parsed = _EvidenceJSON(text, self._evidence_budget, self._check_evidence).read(
+                top="{", scalar=unchanged, jsonl=witness)
+            self._evidence_budget.charge(len(data), 1, self._check_evidence)
+            self._check_evidence()
+            return data, parsed
+        except BaseException as exc:
+            if isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc):
+                self._stop_evidence(exc)
+            raise
+        finally:
+            data = text = parsed = None  # No failed whole image in this traceback.
 
     def _atomic_text(self, path: Path, text: str) -> None:
         from run import _EvidenceUnsafe, _evidence_buffer, _evidence_utf8_size, _ordinary_evidence_error
@@ -1630,13 +1704,11 @@ class Controller:
         if witness.exists():
             def witness_evidence() -> None:
                 # Digest and parse exactly the same frozen genuine prefix.
-                self._check_evidence()
-                data = witness.read_bytes()
-                rows["witness_bytes"] = len(data)
-                rows["witness_sha256"] = hashlib.sha256(data).hexdigest()
-                rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
-                self._atomic_text(self.root / "raw/launch-witnesses.jsonl", data.decode())
-                rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
+                path = self.root / "raw/launch-witnesses.jsonl"
+                data, launch_witnesses = self._prepare_original_evidence(path, witness, witness_rows=rows)
+                self._replace_evidence(path, data)
+                rows.update(witness_bytes=len(data), witness_sha256=hashlib.sha256(data).hexdigest(),
+                            witness_incomplete_line=False, launch_witnesses=launch_witnesses)
             self._attempt("export-launch-witness", witness_evidence, blocking=False)
         self._attempt("export-observations", lambda: self._atomic_json(self.root / "raw/observations.json", rows), blocking=False)
         self._attempt("export-scenario", lambda: self._atomic_json(self.root / "scenario.json",
