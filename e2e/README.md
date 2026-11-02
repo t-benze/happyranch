@@ -2330,13 +2330,31 @@ before postcheck. An inner-finally save error remains secondary to an earlier bo
 exception and its original traceback; a save error alone propagates. Root/end/context
 checks are cooperative observations, not kernel-I/O or crash-atomicity proof.
 
-This is an unfinished compound repair. The shared nonrenewing C=8388608/F=200000
-ledger is used by preparation and evidence text transformations, and persists across
-existing preparations. The finite scanner/registry, typed pre-escape admission,
-compact bounded encoding, full collector/projection/publication integration and
-prefix admission are still required on this same draft. Legacy JSON framing and
-collector raw-backslash refusal remain; this slice supplies no typed admission,
-preallocation/fit or native acceptance. Closed observations retain their own gates.
+Each launcher collection opportunity now carries one nonrenewing C=8388608,
+F=200000, depth64 owner through its original context/scenario inputs, strict JSON,
+selected-seven detachment and literal raw siblings. Descriptor size/identity is
+checked around the same single bounded read; returned-slice facts are recorded
+only after return. Remaining-capacity refusal before read is not an input-cap
+witness. UTF8 sizing indexes codepoints without a whole encoding copy. The strict
+indexed JSON grammar materializes only the original context list and one required
+scenario tree; duplicate decoded keys, malformed/trailing/nonfinite/surrogate or
+out-of-bounds numeric input refuses. Parser storage can refuse before projection.
+Original-plus-safe projection bytes remain charged even for borrowed objects,
+aliases and no-match strings. Sanitation is reserved before allocation, preserving
+original context order, full nested order/types/copies and collision postconditions.
+Only complete detached claims can replace the prior safe snapshot. The action
+phase's redundant unbounded scenario read is removed; previously refused sources
+are not retried in the second existing opportunity. Ordinary refusal retains spent
+work and eligible siblings; fatal original-context/end loss stops detailed work.
+
+This remains an unfinished compound repair. Controller preparation/text writers
+retain their separate existing persistent owner; it supplies no launcher quota.
+Closed producer/copy registry, scan-only registered raw admission, nested source/
+hex/browser joins, typed Controller writers, compact bounded final encoding/
+publication, prefix and JSONL reuse remain required on this same draft. Legacy
+JSON framing/final encoding and raw-backslash refusal remain. This slice grants
+no nested/raw structured exemption, complete finite publication, fit or native
+acceptance. Closed observations retain their own gates.
 The completed-ledger exception handler immediately offers its original incomplete
 collection claim to the existing observer: UNKNOWN window/operation/reason and U/U
 lengths, one charged <=512-byte opportunity, no later enrichment or retry.

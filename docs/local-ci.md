@@ -614,10 +614,20 @@ failure. Evidence writers refuse later context changes; actual replacement is
 recorded before postcheck and a prior body exception keeps its traceback through
 inner-finally save. C8 observes the original incomplete collection claim immediately,
 with UNKNOWN/U annotations and its same one charged diagnostic opportunity.
-Preparation/text writers share one nonrenewing ledger. Finite typed admission,
-registry/scanner, compact encoding and full collector/projection/publication
-integration remain unfinished on that same draft; existing raw-backslash refusal
-remains. Existing controls supply file/preparation evidence only, with temporal,
+Preparation/text writers retain their existing persistent ledger. Each launcher
+collection now uses its own original nonrenewing C8388608/F200000/depth64 owner
+for bounded original context/scenario acquisition, strict indexed outer JSON,
+selected-seven original-plus-safe detachment and literal raw siblings. Metadata
+checks surround the single read; UTF8 counts use indexed codepoints. Early
+remaining-capacity refusal has no returned-slice/input-cap witness. Only the two
+required original trees are materialized; a file may refuse parser storage before
+projection. Borrowed-object projection still owes original PLUS safe bytes.
+The action convenience scenario read is removed; ordinary refusal preserves prior
+complete bytes/snapshots and spent work, without retrying failed sources. Complete
+registry/scan-only raw admission, nested/browser joins, typed Controller writers,
+compact final encoding/publication and prefix/JSONL reuse remain unfinished.
+Legacy encoding/publication and existing raw-backslash refusal remain. Existing
+controls supply file/preparation evidence only, with temporal,
 allocation and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.
 

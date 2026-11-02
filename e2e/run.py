@@ -489,67 +489,87 @@ def _read_failure_categories(root: Path | None, source: object, check: Callable[
         return unavailable, _failure_error(exc), "refused"
 
 
-def scenario_fields(result: dict, sanitize: Callable[[str], str]) -> dict:
-    """Detach only existing scenario fields through the established redactor.
+def scenario_fields(result: dict, sanitize: Callable[[str], str], *, context: list[str],
+                    ledger: _EvidenceLedger | None = None,
+                    check: Callable[[], None] = lambda: None) -> dict:
+    """Privately detach the seven claims using the collection's actual owner.
 
-    These are producer claims, not accepted cases or cleanup/export proof.
-    Call only after acquiring the complete original redaction context. A failed
-    projection cannot replace a previously retained safe snapshot.
+    Borrowed objects still owe original PLUS safe bytes, including aliases.
+    Parsing does not grant a zero-cost original projection obligation.
     """
-    if type(result) is not dict or type(result.get('variants')) is not dict:
-        raise ValueError('scenario state unavailable')
-    # This is a bounded publication projection, not a case/content validator.
-    # Redact individual strings BEFORE JSON escaping, including nested keys.
-    remaining = 8 * 1024 * 1024
-    facts = 200000
+    if type(result) is not dict or type(result.get("variants")) is not dict:
+        raise ValueError("scenario state unavailable")
+    if ledger is None:
+        ledger = _EvidenceLedger()  # The existing borrowed-object opportunity.
+    ledger.charge(8, 1, check)
+    ancestors = set()
 
-    def detach(value: object, depth: int = 0):
-        nonlocal remaining, facts
-        facts -= 1
-        if facts < 0 or depth > 64:
-            raise ValueError('scenario projection capacity refused')
+    def detach(value: object, depth: int = 0) -> Any:
+        if depth > 64:
+            raise _EvidenceCapacity("scenario projection capacity refused")
+        ledger.charge(0, 1, check)
         if type(value) is str:
-            if len(value) > remaining:
-                raise ValueError('scenario projection capacity refused')
-            remaining -= len(value.encode('utf8'))
-            safe = sanitize(value)
-            if type(safe) is not str or len(safe) > remaining:
-                raise ValueError('scenario projection capacity refused')
-            remaining -= len(safe.encode('utf8'))
-            if remaining < 0:
-                raise ValueError('scenario projection capacity refused')
-            return safe
-        if type(value) is dict:
-            if len(value) > facts:
-                raise ValueError('scenario projection capacity refused')
-            output = {}
-            for key, item in value.items():
-                if type(key) is not str:
-                    raise ValueError('scenario key unavailable')
-                safe_key = detach(key, depth + 1)
-                if safe_key in output:
-                    raise ValueError('scenario redacted key collision')
-                output[safe_key] = detach(item, depth + 1)
-            return output
-        if type(value) is list:
-            if len(value) > facts:
-                raise ValueError('scenario projection capacity refused')
-            return [detach(item, depth + 1) for item in value]
+            size = _evidence_utf8_size(value, check)
+            ledger.charge(size, 0, check)
+            if "\\" in value:
+                raise ValueError("scenario representation withheld")
+            return _evidence_safe(value, size, sanitize, context, ledger, check)
+        if type(value) in (dict, list):
+            if id(value) in ancestors:
+                raise ValueError("scenario cycle refused")
+            ledger.charge(8, 1, check)  # Active ancestor and private container.
+            ancestors.add(id(value))
+            try:
+                if type(value) is dict:
+                    output = {}
+                    for key, item in value.items():
+                        if type(key) is not str:
+                            raise ValueError("scenario key unavailable")
+                        safe_key = detach(key, depth + 1)
+                        if safe_key in output:
+                            raise ValueError("scenario redacted key collision")
+                        ledger.charge(16, 1, check)
+                        output[safe_key] = detach(item, depth + 1)
+                    return output
+                output = []
+                for item in value:
+                    ledger.charge(8, 1, check)
+                    output.append(detach(item, depth + 1))
+                return output
+            finally:
+                ancestors.remove(id(value))
         if (value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64
                 or type(value) is float and math.isfinite(value)):
             return value
-        raise ValueError('scenario value unavailable')
+        raise ValueError("scenario value unavailable")
 
-    selected = {k: result[k] for k in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization") if k in result}
-    detached = detach(selected)
-    detached.setdefault('variants', {})
-    # Bound the eventual JSON representation too; escaping may expand strings.
+    ledger.charge(8, 1, check)
+    detached = {}
+    for key in ("variants", "scenario_phases", "e07", "groups", "e07_admission", "failures", "finalization"):
+        if key in result:
+            safe_key = detach(key, 1)
+            if safe_key in detached:
+                raise ValueError("scenario redacted key collision")
+            ledger.charge(16, 1, check)
+            detached[safe_key] = detach(result[key], 1)
+    if type(detached.get("variants")) is not dict:
+        raise _EvidenceUnsafe("scenario required-key sanitation postcondition")
+    # Legacy final encoding remains a separate, unfinished compound boundary.
     size = 0
     for chunk in json.JSONEncoder(allow_nan=False, indent=2).iterencode(detached):
-        size += len(chunk.encode('utf8'))
-        if size > 8 * 1024 * 1024:
-            raise ValueError('scenario projection capacity refused')
+        check()
+        size += _evidence_utf8_size(chunk, check)
+        if size > 8388608:
+            raise _EvidenceCapacity("scenario projection capacity refused")
     return detached
+
+
+class _EvidenceCapacity(ValueError):
+    """An ordinary reached work/storage guard, never an input-size witness."""
+
+
+class _EvidenceUnsafe(ValueError):
+    """A broken sanitation postcondition stops the original opportunity."""
 
 
 class _EvidenceLedger:
@@ -565,9 +585,13 @@ class _EvidenceLedger:
         check()
         if (type(size) is not int or type(facts) is not int or min(size, facts) < 0
                 or self.work + self.reserved + size > 8388608 or self.facts + facts > 200000):
-            raise ValueError("evidence capacity refused")
+            raise _EvidenceCapacity("evidence capacity refused")
         self.reserved += size
         self.facts += facts
+
+    def charge(self, size: int, facts: int, check: Callable[[], None]) -> None:
+        self.reserve(size, facts, check)
+        self.settle(size, size)
 
     def settle(self, reserved: int, actual: int) -> None:
         if not 0 <= actual <= reserved <= self.reserved:
@@ -576,7 +600,7 @@ class _EvidenceLedger:
         self.work += actual  # Unused capacity releases; actual work never refunds.
 
 
-def _evidence_utf8_size(text: str, check: Callable[[], None]) -> int:
+def _evidence_utf8_size(text: str, check: Callable[[], None], limit: int = 8388608) -> int:
     if type(text) is not str:
         raise ValueError("evidence string unavailable")
     size = 0
@@ -587,17 +611,272 @@ def _evidence_utf8_size(text: str, check: Callable[[], None]) -> int:
         if 0xD800 <= code <= 0xDFFF:
             raise ValueError("evidence surrogate refused")
         size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
-        if size > 8388608:
-            raise ValueError("evidence capacity refused")
+        if size > limit:
+            raise _EvidenceCapacity("evidence capacity refused")
     check()
     return size
+
+
+def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context: list[str],
+                   ledger: _EvidenceLedger, check: Callable[[], None]) -> str:
+    # Marker overlap is rejected by the original-context owner. Replacements
+    # cannot grow beyond ten bytes per original byte. No-match passes alias.
+    matched = any(secret in text for secret in context)
+    bound = 10 * size if matched else size
+    scratch = bound if matched else 0
+    ledger.reserve(bound + scratch, 1, check)
+    try:
+        safe = sanitize(text)
+        actual = _evidence_utf8_size(safe, check)
+        if actual > bound or any(secret in safe for secret in context):
+            raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+        check()
+    except BaseException:
+        ledger.settle(bound + scratch, bound + scratch)
+        raise
+    ledger.settle(bound + scratch, actual)
+    return safe
+
+
+def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], None],
+                    returned: Callable[[str], None], measured: Callable[[int], None]) -> str:
+    """The original single read; metadata never supplies a content image."""
+    check()
+    before = os.fstat(stream.fileno())
+    named = os.stat(stream.name, follow_symlinks=False)
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+    signature = tuple(getattr(before, key) for key in fields)
+    if not stat.S_ISREG(before.st_mode) or tuple(getattr(named, k) for k in fields) != signature:
+        raise ValueError("evidence input identity refused")
+    bound = min(8388608, before.st_size)
+    ledger.reserve(bound, 0, check)  # Refuse BEFORE read if remaining space is smaller.
+    try:
+        text = stream.read(bound + 1)  # Rejection-only sentinel, never parse capacity.
+        returned(text)  # Original returned-slice annotation precedes later checks.
+        check()
+        size = _evidence_utf8_size(text, check, 33554436)
+        measured(size)
+        check()
+        after = os.fstat(stream.fileno())
+        named = os.stat(stream.name, follow_symlinks=False)
+        if (tuple(getattr(after, k) for k in fields) != signature
+                or tuple(getattr(named, k) for k in fields) != signature):
+            raise ValueError("evidence input changed")
+        if size > bound or len(text) > bound:
+            raise _EvidenceCapacity("evidence input capacity refused")
+        if size != before.st_size:
+            raise ValueError("short evidence input refused")
+    except BaseException:
+        # A failed read/returned prefix cannot refund its reserved work.
+        ledger.settle(bound, bound)
+        raise
+    ledger.settle(bound, size)
+    return text
+
+
+class _EvidenceJSON:
+    """Only the two already-required original trees, indexed strict JSON.
+
+    Raw members never call this materializer. There is no scanner/admission mode.
+    Scalar preflight indexes originals; decode uses <=1024-byte chunks and a
+    separately precharged final join. No complete token slice or validation tree.
+    """
+    def __init__(self, text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> None:
+        self.text, self.ledger, self.check, self.index = text, ledger, check, 0
+
+    def error(self) -> None:
+        # Do not retain the whole refused image in a JSONDecodeError diagnostic.
+        raise json.JSONDecodeError("invalid evidence JSON", "", 0)
+
+    def whitespace(self) -> None:
+        while self.index < len(self.text) and self.text[self.index] in " \t\r\n":
+            if self.index % 4096 == 0:
+                self.check()
+            self.index += 1
+
+    def codepoint(self, index: int) -> tuple[int, int]:
+        if index >= len(self.text):
+            self.error()
+        code = ord(self.text[index])
+        index += 1
+        if code == 92:
+            if index >= len(self.text):
+                self.error()
+            escape = self.text[index]
+            index += 1
+            if escape in '"\\/bfnrt':
+                return ord('"\\/\b\f\n\r\t'['"\\/bfnrt'.index(escape)]), index
+            if escape != "u":
+                self.error()
+            code, index = self.hex4(index)
+            if 0xD800 <= code <= 0xDBFF:
+                if index + 2 > len(self.text) or self.text[index] != "\\" or self.text[index + 1] != "u":
+                    self.error()
+                low, index = self.hex4(index + 2)
+                if not 0xDC00 <= low <= 0xDFFF:
+                    self.error()
+                code = 0x10000 + ((code - 0xD800) << 10) + low - 0xDC00
+            elif 0xDC00 <= code <= 0xDFFF:
+                self.error()
+        elif code < 32 or 0xD800 <= code <= 0xDFFF:
+            self.error()
+        return code, index
+
+    def hex4(self, index: int) -> tuple[int, int]:
+        code = 0
+        for _ in range(4):
+            if index >= len(self.text) or self.text[index] not in "0123456789abcdefABCDEF":
+                self.error()
+            code = code * 16 + int(self.text[index], 16)
+            index += 1
+        return code, index
+
+    def string(self) -> str:
+        if self.index >= len(self.text) or self.text[self.index] != '"':
+            self.error()
+        start = self.index + 1
+        cursor, size = start, 0
+        while cursor < len(self.text) and self.text[cursor] != '"':
+            if cursor % 4096 == 0:
+                self.check()
+            code, cursor = self.codepoint(cursor)
+            size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if size > 8388608:
+                raise _EvidenceCapacity("JSON scalar capacity refused")
+        if cursor >= len(self.text):
+            self.error()
+        # Charge decoded storage, chunk references, and join BEFORE decoding.
+        chunks = (size + 1020) // 1021
+        self.ledger.charge(8 + 2 * size + 8 * chunks, 1 + chunks, self.check)
+        scratch = min(4096, 2 * size)
+        self.ledger.reserve(scratch, 0, self.check)
+        try:
+            parts, chunk, chunk_size = [], "", 0
+            index = start
+            while index < cursor:
+                code, index = self.codepoint(index)
+                width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                if chunk_size + width > 1024:
+                    parts.append(chunk)
+                    chunk, chunk_size = "", 0
+                    self.check()
+                chunk += chr(code)
+                chunk_size += width
+            if chunk:
+                parts.append(chunk)
+            value = "".join(parts)
+            self.index = cursor + 1
+        finally:
+            self.ledger.settle(scratch, 0)  # Only scratch, never decoded work/facts.
+        self.check()
+        return value
+
+    def number(self) -> int | float:
+        start = self.index
+        if self.text[self.index] == "-":
+            self.index += 1
+        if self.index >= len(self.text):
+            self.error()
+        if self.text[self.index] == "0":
+            self.index += 1
+        elif self.text[self.index] in "123456789":
+            while self.index < len(self.text) and self.text[self.index] in "0123456789":
+                self.index += 1
+                if self.index - start > 128:
+                    raise _EvidenceCapacity("JSON number spelling refused")
+        else:
+            self.error()
+        floating = False
+        for delimiter, signs in ((".", False), ("eE", True)):
+            if self.index < len(self.text) and self.text[self.index] in delimiter:
+                floating = True
+                self.index += 1
+                if signs and self.index < len(self.text) and self.text[self.index] in "+-":
+                    self.index += 1
+                digits = self.index
+                while self.index < len(self.text) and self.text[self.index] in "0123456789":
+                    self.index += 1
+                    if self.index - start > 128:
+                        raise _EvidenceCapacity("JSON number spelling refused")
+                if self.index == digits:
+                    self.error()
+        length = self.index - start
+        if length > (128 if floating else 21):
+            raise _EvidenceCapacity("JSON number spelling refused")
+        self.ledger.charge(length + 8, 1, self.check)
+        spelling = "".join(self.text[i] for i in range(start, self.index))
+        value = float(spelling) if floating else int(spelling)
+        if (floating and not math.isfinite(value)) or (not floating and value.bit_length() > 64):
+            self.error()
+        return value
+
+    def value(self, depth: int = 0) -> Any:
+        self.check()
+        if depth > 64:
+            raise _EvidenceCapacity("JSON depth capacity refused")
+        self.whitespace()
+        if self.index >= len(self.text):
+            self.error()
+        self.ledger.charge(0, 1, self.check)
+        char = self.text[self.index]
+        if char == '"':
+            return self.string()
+        if char in "-0123456789":
+            return self.number()
+        for spelling, primitive in (("true", True), ("false", False), ("null", None)):
+            if self.text.startswith(spelling, self.index):
+                self.index += len(spelling)
+                return primitive
+        if char not in "[{":
+            self.error()
+        self.ledger.charge(8, 1, self.check)
+        output = {} if char == "{" else []
+        close = "}" if char == "{" else "]"
+        self.index += 1
+        self.whitespace()
+        if self.index < len(self.text) and self.text[self.index] == close:
+            self.index += 1
+            return output
+        while True:
+            if char == "{":
+                key = self.string()
+                if key in output:
+                    self.error()  # Decoded escaped-equal keys, before their value.
+                self.whitespace()
+                if self.index >= len(self.text) or self.text[self.index] != ":":
+                    self.error()
+                self.index += 1
+                self.ledger.charge(16, 1, self.check)
+                output[key] = self.value(depth + 1)
+            else:
+                self.ledger.charge(8, 1, self.check)
+                output.append(self.value(depth + 1))
+            self.whitespace()
+            if self.index >= len(self.text):
+                self.error()
+            delimiter = self.text[self.index]
+            self.index += 1
+            if delimiter == close:
+                return output
+            if delimiter != ",":
+                self.error()
+            self.whitespace()
+
+    def read(self) -> Any:
+        result = self.value()
+        self.whitespace()
+        if self.index != len(self.text):
+            self.error()
+        self.check()
+        return result
 
 
 def redact(text: str, token: str, context: list[str]) -> str:
     """Use only the complete original literal redaction context."""
     if not token or not context or token not in context:
         raise ValueError("redaction context unavailable")
-    for secret in [token, *context]:
+    text = text.replace(token, "[REDACTED]")
+    for secret in context:
         text = text.replace(secret, "[REDACTED]")
     return text
 
@@ -634,11 +913,12 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                      failed: Callable[..., None]) -> tuple[bool, tuple | None]:
     """Scenario first, then the SAME raw enumeration after ordinary refusal.
 
-    State retains only complete original context/snapshots and a fatal latch.
+    State retains complete original context/snapshots, refused sources and a fatal latch.
     Failed operations reserve their real cause before diagnostics/continuation.
     """
     first_error = None
     incomplete = False
+    ledger = _EvidenceLedger()  # SAME original collection opportunity, through raw siblings.
     state.update(operation="ROOT", window="ROOT", chars="U", utf8_bytes="U")
 
     def refuse(error: BaseException | None, *, reason: str | None = None) -> None:
@@ -696,14 +976,26 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
             context_path = root / "coord/redaction-context.json"
             if not step("CONTEXT_PRESENT", context_path.exists):
                 raise ValueError("retained redaction context unavailable")
-            context_text = step("CONTEXT_READ", context_path.read_text)
-            context = step("CONTEXT_DECODE", lambda: json.loads(context_text))
+            def read_context() -> str:
+                with context_path.open(encoding="utf8", newline="") as stream:
+                    return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
+
+            context_text = step("CONTEXT_READ", read_context)
+            context = step("CONTEXT_DECODE", lambda: _EvidenceJSON(context_text, ledger, eligible).read())
+            del context_text
             mark("CONTEXT_VALIDATE")
             if (type(context) is not list or not context or any(type(s) is not str or not s for s in context)
-                    or candidate_token not in context or state.get("context") and context != state["context"]):
+                    or candidate_token not in context or state.get("context") and context != state["context"]
+                    or any("[REDACTED]" in secret or secret in "[REDACTED]" for secret in context)):
                 raise ValueError("invalid or changed retained redaction context")
             eligible()
             state.update(token=candidate_token, context=context)
+            ledger.charge(8, 1, eligible)
+            refused_sources = state.setdefault("refused_sources", set())
+
+            def remember_refusal(name: str) -> None:
+                if name not in refused_sources:
+                    refused_sources.add(name)  # Slot charged before its acquisition.
 
             def sanitize(text: str) -> str:
                 try:
@@ -713,42 +1005,48 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                     raise
 
             scenario_present = False
+            scenario_slot = False
             try:
+                ledger.charge(32, 1, eligible)
+                scenario_slot = True
                 scenario_path = root / "scenario.json"
                 scenario_present = step("SCENARIO_PRESENT", scenario_path.exists)
                 if not scenario_present:
                     refuse(None, reason="MISSING")
                 else:
-                    scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open(encoding="utf8"))
-                    with scenario_file:
-                        # Facts are set only when each original operation returns.
-                        mark("SCENARIO_READ")
-                        eligible()
-                        scenario_text = scenario_file.read(8 * 1024 * 1024 + 1)
-                        state["chars"] = len(scenario_text)
-                        eligible()
-                    mark("SCENARIO_UTF8")
-                    eligible()
-                    encoded = scenario_text.encode("utf8")
-                    state["utf8_bytes"] = len(encoded)
-                    eligible()
-                    mark("SCENARIO_CAPACITY")
-                    if len(encoded) > 8 * 1024 * 1024:
-                        raise ValueError("scenario input capacity refused")
-                    result = step("SCENARIO_DECODE", lambda: json.loads(scenario_text))
-                    detached = step("SCENARIO_PROJECT", lambda: scenario_fields(result, sanitize))
-                    state["safe_scenario"] = detached  # Complete assignment only.
-                    receipt.update(detached)
+                    if "scenario.json" in refused_sources:
+                        refuse(None, reason="VALUE")  # No new cause or content attempt.
+                    else:
+                        scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open(encoding="utf8", newline=""))
+                        with scenario_file:
+                            def returned(text: str) -> None:
+                                state["chars"] = len(text)
+                                mark("SCENARIO_UTF8")
+
+                            def measured(size: int) -> None:
+                                state["utf8_bytes"] = size
+                                mark("SCENARIO_CAPACITY")
+
+                            mark("SCENARIO_READ")
+                            scenario_text = _evidence_input(scenario_file, ledger, eligible, returned, measured)
+                        result = step("SCENARIO_DECODE", lambda: _EvidenceJSON(scenario_text, ledger, eligible).read())
+                        detached = step("SCENARIO_PROJECT", lambda: scenario_fields(
+                            result, sanitize, context=context, ledger=ledger, check=eligible))
+                        del scenario_text, result
+                        state["safe_scenario"] = detached  # Complete assignment only.
+                        receipt.update(detached)
             except BaseException as exc:
-                fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
+                fatal = state.get("fatal") or isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc)
                 if fatal:
                     state["fatal"] = True
-                reason = ("CAPACITY" if state["operation"] == "SCENARIO_CAPACITY" and type(exc) is ValueError
+                reason = ("CAPACITY" if isinstance(exc, _EvidenceCapacity)
                           else "DECODE" if state["operation"] == "SCENARIO_DECODE" and isinstance(exc, json.JSONDecodeError)
                           else None)
                 refuse(exc, reason=reason)
                 if fatal:
                     raise
+                if scenario_slot:
+                    remember_refusal("scenario.json")
             eligible()  # Slow ordinary errors cannot borrow another allowance.
             paths = iter(step("RAW_ENUM", lambda: (root / "raw").glob("*")))
             while True:
@@ -766,28 +1064,43 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                     eligible()
                     break  # No re-enumeration after unavailable membership.
                 try:
+                    ledger.charge(_evidence_utf8_size(path.name, eligible) + 16, 1, eligible)
+                except _EvidenceCapacity as exc:
+                    refuse(exc, reason="CAPACITY")
+                    break
+                try:
+                    if path.name in refused_sources:
+                        refuse(None, reason="VALUE")
+                        continue
                     if path.suffix in {".txt", ".json", ".jsonl"}:
-                        text = step("TEXT_READ", lambda: path.read_text(errors="replace"))
+                        def read_raw() -> str:
+                            with path.open(encoding="utf8", errors="replace", newline="") as stream:
+                                return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
+                        text = step("TEXT_READ", read_raw)
                         mark("REDACT")
                         eligible()
                         if "\\" in text:
                             raise ValueError("raw text representation withheld")
-                        safe = sanitize(text)
+                        size = _evidence_utf8_size(text, eligible)
+                        safe = _evidence_safe(text, size, sanitize, context, ledger, eligible)
                         if "\\" in safe or any(secret in safe for secret in state["context"]):
                             state["fatal"] = True
                             raise ValueError("unsafe raw sanitation")
                         eligible()
+                        ledger.charge(_evidence_utf8_size(safe, eligible), 1, eligible)
                         content = step("TEXT_UTF8", lambda: safe.encode("utf8"))
                         staged[path.name] = content
                     elif path.suffix == ".png":
                         staged[path.name] = step("IMAGE_READ", path.read_bytes)
                 except BaseException as exc:
-                    fatal = state.get("fatal") or not _ordinary_evidence_error(exc)
+                    fatal = state.get("fatal") or isinstance(exc, _EvidenceUnsafe) or not _ordinary_evidence_error(exc)
                     if fatal:
                         state["fatal"] = True
-                    refuse(exc, reason="UNSAFE" if state.get("fatal") and _ordinary_evidence_error(exc) else None)
+                    refuse(exc, reason="UNSAFE" if fatal and _ordinary_evidence_error(exc)
+                           else "CAPACITY" if isinstance(exc, _EvidenceCapacity) else None)
                     if fatal:
                         raise
+                    remember_refusal(path.name)
                 eligible()
             mark("REQUIRED")
             eligible()
@@ -1213,8 +1526,7 @@ def main() -> int:
                               "--root", str(root), "--source", str(source),
                               "--sha", receipt["source_sha"],
                               "--exercise", args.exercise])
-        result = json.loads((root / "scenario.json").read_text())
-        receipt.update(result)
+        # Only the existing collector admits detached scenario claims.
         receipt["status"] = "PASS"
     except BaseException as exc:
         action_failure = (exc, exc.__traceback__)  # Before formatting or diagnostic work.

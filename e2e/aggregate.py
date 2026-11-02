@@ -119,19 +119,19 @@ def failure_result_controls() -> dict:
         failures=[dict(stage='controller-action',error='ValueError',at=1.),
                   dict(stage='controller-action',error='AssertionError',at=2.)],
         finalization=[dict(stage='browser-close',error_ref=2)])
-    safe = scenario_fields(original, lambda text:text.replace(secret,'[REDACTED]'))
+    safe = scenario_fields(original, lambda text:text.replace(secret,'[REDACTED]'), context=[secret])
     assert safe == expected and 'PRIVATE_SENTINEL' not in json.dumps(safe)
     original['groups']['E05']['state'] = 'reported_pass'
     original['failures'].clear()
     assert safe == expected  # Original producer mutations cannot rewrite retained state.
-    assert scenario_fields({'variants':{}},lambda text:text) == {'variants':{}}
+    assert scenario_fields({'variants':{}},lambda text:text, context=[secret]) == {'variants':{}}
     results = {'B09-B12-detached-failure-fields':'actual bounded redaction projection; native fallback NOT RUN'}
     for name,result in (('absent',None),('missing-variants',{}),('non-object',[]),
                          ('nonfinite',dict(variants={},failures=[float('nan')])),
                          ('unsupported',dict(variants={},groups=object())),('byte-cap',dict(variants={},groups='x'*(8*1024*1024+1))),
                          ('fact-cap',dict(variants={},groups=[None]*200001))):
         try:
-            scenario_fields(result,lambda text:text)
+            scenario_fields(result,lambda text:text, context=[secret])
         except ValueError:
             results['B09-B12-projection-'+name] = 'refused; no raw fallback'
         else:
@@ -140,7 +140,7 @@ def failure_result_controls() -> dict:
     for _ in range(65):
         nested = [nested]
     try:
-        scenario_fields(dict(variants={},groups=nested),lambda text:text)
+        scenario_fields(dict(variants={},groups=nested),lambda text:text, context=[secret])
     except ValueError as exc:
         assert 'capacity refused' in str(exc)
     else:
@@ -148,7 +148,7 @@ def failure_result_controls() -> dict:
     def unavailable(_text):
         raise ValueError('complete redaction context unavailable')
     try:
-        scenario_fields(dict(variants={},groups={'E05':{}}),unavailable)
+        scenario_fields(dict(variants={},groups={'E05':{}}),unavailable, context=[secret])
     except ValueError as exc:
         assert 'redaction context unavailable' in str(exc)
     else:
@@ -157,6 +157,40 @@ def failure_result_controls() -> dict:
     # native final failure actually reached failure_receipt or was published.
     assert safe == expected
     results['B09-B12-redaction-refused'] = 'projection refuses; previous detached bytes unchanged'
+    # SAME C1/C2/F3 object keeper: no file/parser guard can own this debit.
+    borrowed = {'variants':{}, 'groups':{'value':'a'*4194304}}
+    try:
+        scenario_fields(borrowed, lambda text:text, context=[secret])
+    except ValueError as exc:
+        assert str(exc) == 'evidence capacity refused'
+    else:
+        raise AssertionError('F3 borrowed original-plus-safe projection accepted')
+    assert safe == expected
+    results['F3-projection-original-plus-safe'] = '4194304-byte borrowed scalar refuses at safe debit; earlier full tree unchanged'
+
+    repeated = {'z':[True,False,None,7,1.5,'public\nline','中']}
+    borrowed = {'variants':{},'groups':{'b':repeated,'a':repeated}}
+    detached = scenario_fields(borrowed, lambda text:text, context=[secret])
+    literal = {'variants':{},'groups':{'b':{'z':[True,False,None,7,1.5,'public\nline','中']},
+                                     'a':{'z':[True,False,None,7,1.5,'public\nline','中']}}}
+
+    def exact(actual: object, wanted: object) -> None:
+        assert type(actual) is type(wanted), (type(actual),type(wanted))
+        if type(wanted) is dict:
+            assert list(actual) == list(wanted)
+            for key in wanted: exact(actual[key],wanted[key])
+        elif type(wanted) is list:
+            assert len(actual) == len(wanted)
+            for item,other in zip(actual,wanted): exact(item,other)
+        else:
+            assert actual == wanted
+
+    exact(detached,literal)
+    repeated['z'].clear()
+    exact(detached,literal)
+    assert detached['groups']['b'] is not detached['groups']['a']
+    results['F3-projection-alias-order-types'] = 'full independently literal detached tree/types/order and repeated copies retained'
+
     # Real writer -> literal files -> shipping collection/publication -> FAIL.
     # These incomplete synthetic claims are never native/browser receipts.
     import tempfile
@@ -237,6 +271,98 @@ def failure_result_controls() -> dict:
 
             yield (controller,root,output,state,staged,published,failed_members,failures,export_errors,
                    row,check,acquire,drain,commit)
+
+    # Strict ORIGINAL scenario JSON through actual file/collector/detachment.
+    json_cases = {
+        'positive': b'{"variants":{},"groups":{"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad","pair":"\\ud83d\\ude00","order":{"b":2,"a":1}}}',
+        'numeric-positive': b'{"variants":{},"groups":[18446744073709551615,-18446744073709551615,-0.0,0.'+b'1'*126+b']}',
+        'duplicates': b'{"variants":{},"groups":{"x":1,"x":2}}',
+        'escaped-equal': b'{"variants":{},"groups":{"x":1,"\\u0078":2}}',
+        'bad-escape': b'{"variants":{},"groups":"\\q"}',
+        'trailing': b'{"variants":{}} null',
+        'trailing-comma': b'{"variants":{},}',
+        'unclosed': b'{"variants":{},"groups":[1}',
+        'nan': b'{"variants":{},"groups":NaN}',
+        'infinity': b'{"variants":{},"groups":Infinity}',
+        'nonfinite-float': b'{"variants":{},"groups":1e999}',
+        'high-surrogate': b'{"variants":{},"groups":"\\ud800"}',
+        'low-surrogate': b'{"variants":{},"groups":"\\udc00"}',
+        'bad-pair': b'{"variants":{},"groups":"\\ud800\\u0041"}',
+        'int-value': b'{"variants":{},"groups":18446744073709551616}',
+        'int-spelling': b'{"variants":{},"groups":-1234567890123456789012}',
+        'float-spelling': b'{"variants":{},"groups":0.'+b'1'*127+b'}',
+        'leading-zero': b'{"variants":{},"groups":01}',
+        'fraction': b'{"variants":{},"groups":1.}',
+        'exponent': b'{"variants":{},"groups":1e+}',
+        'decoded-backslash': b'{"variants":{},"groups":"public\\\\path"}',
+        'parser-storage': b'{"variants":{},"groups":{"value":"'+b'a'*4194304+b'"}}',
+    }
+    json_expected = {'variants':{},'groups':{'first':[True,False,None,7,1.5],
+                     'sample':'public\nline','quote':'"','unicode':'中','pair':'😀','order':{'b':2,'a':1}}}
+    for case,source_bytes in json_cases.items():
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            (root/'scenario.json').write_bytes(source_bytes)
+            complete,error = acquire(); drain(); value = commit()
+            assert not complete and not state['fatal'] and not errors
+            assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
+            assert not (output/'result.tmp').exists()
+            if case in ('positive','numeric-positive'):
+                assert error is None
+                wanted = json_expected if case == 'positive' else {'variants':{},'groups':[
+                    18446744073709551615,-18446744073709551615,-0.0,0.1111111111111111]}
+                exact(state['safe_scenario'],wanted)
+                for key in wanted: exact(value[key],wanted[key])
+                assert (root/'scenario.json').read_bytes() == source_bytes
+            else:
+                assert error is not None and failures[0][0] is error[0], case
+                assert state['safe_scenario'] == {'variants':{}}
+                assert value['variants'] == {} and 'groups' not in value
+                expected_op = 'SCENARIO_PROJECT' if case == 'decoded-backslash' else 'SCENARIO_DECODE'
+                assert failures[0][4][0] == expected_op, (case,failures[0][4])
+                if case in ('parser-storage','int-spelling','float-spelling'):
+                    assert failures[0][4][1] == 'CAPACITY', case
+                if case == 'parser-storage':
+                    assert failures[0][4][2:] == (4194341,4194341)
+            results['F3-json-'+case] = 'actual full scenario file/tree/type/order or whole-claim refusal; eligible sibling exact'
+
+    # One owner's nonrefundable scenario work continues into the SAME raw
+    # enumeration. Each raw scalar fits alone; together only one can stage.
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain(); commit()
+        prior_result = (output/'result.json').read_bytes()
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":{"value":"'+b'a'*1000000+b'"}}')
+        (root/'raw/large-a.txt').write_bytes(b'b'*700000)
+        (root/'raw/large-b.txt').write_bytes(b'c'*700000)
+        (root/'raw/large-c.txt').write_bytes(b'd'*700000)
+        complete,error = acquire(); drain()
+        assert not complete and error is not None and not state['fatal'] and not errors, 'F3 shared owner unexpectedly renewed'
+        chosen = [name for name in ('large-a.txt','large-b.txt','large-c.txt') if name in staged]
+        assert len(chosen) == 1, chosen
+        for name,content in (('large-a.txt',b'b'*700000),('large-b.txt',b'c'*700000),('large-c.txt',b'd'*700000)):
+            if name in chosen: assert (output/name).read_bytes() == content
+            else: assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
+        exact(state['safe_scenario'],{'variants':{},'groups':{'value':'a'*1000000}})
+        assert (output/'result.json').read_bytes() == prior_result
+        assert {'REDACT','TEXT_READ'} <= {f[4][0] for f in failures if f[4][1] == 'CAPACITY'}
+        results['F3-shared-nonrefundable-siblings'] = 'same scenario/raw owner exhausts; one full sibling and prior complete result retained'
+
+    with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":"\\q"}')
+        (root/'raw/withheld.txt').write_bytes(b'public\\path')
+        complete,error = acquire(); drain(); commit()
+        first = failures[0]
+        before = (output/'result.json').read_bytes()
+        (root/'scenario.json').write_bytes(b'{"variants":{},"groups":{"fresh":"public"}}')
+        (root/'raw/withheld.txt').write_bytes(b'public repaired')
+        (root/'raw/fresh.txt').write_bytes(b'eligible safe sibling\n')
+        complete,error = acquire(); drain()
+        assert not complete and error is None and failures[0] is first
+        assert not state['fatal'] and not errors
+        assert state['safe_scenario'] == {'variants':{}}
+        assert (output/'result.json').read_bytes() == before
+        assert (output/'fresh.txt').read_bytes() == b'eligible safe sibling\n'
+        assert 'withheld.txt' not in staged and not (output/'withheld.txt').exists()
+        results['F3-no-failed-source-retry'] = 'second existing opportunity preserves first cause/prior result and admits only eligible sibling'
 
     # SAME F2/C3/C6/C7 table: actual save and the existing bare-controller venue.
     # Legacy JSON bytes are intentional until the remaining compound engine lands.
@@ -406,16 +532,19 @@ def failure_result_controls() -> dict:
             (root/'raw/empty.txt').write_bytes(b'')
             complete, error = acquire(); drain(); value = commit()
             assert not complete and not state['fatal'] and not errors
+            assert (output/'failure.txt').is_file(), case
             assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
             assert (output/'empty.txt').read_bytes() == b''
             assert value['status'] == 'FAIL' and value['cleanup']['ok'] is False
             first = failures[0]
-            if case in ('valid-empty','exact-cap','raw-directory'):
+            if case in ('valid-empty','raw-directory'):
                 assert value['variants'] == ({} if case != 'raw-directory' else {'E05.compose-race':{'status':'FAIL','error':'[REDACTED]'}})
                 assert first[3] == ('TEXT_READ' if case == 'raw-directory' else 'REQUIRED')
-            elif case in ('over-cap','multibyte-cap','long-prefix'):
-                assert first[4][:2] == ('SCENARIO_CAPACITY','CAPACITY')
-                assert first[4][2:] == ((4194305,8388610) if case == 'multibyte-cap' else (8388609,8388609))
+            elif case in ('exact-cap','over-cap','multibyte-cap','long-prefix'):
+                # Original context already spent work: the input reservation
+                # refuses before read. This is NOT a C+1 returned-slice witness.
+                assert first[4] == ('SCENARIO_READ','CAPACITY','U','U')
+                assert value['variants'] == {}
             elif case in ('open-directory','invalid-utf8'):
                 assert first[4] == (('SCENARIO_OPEN','IO','U','U') if case == 'open-directory' else ('SCENARIO_READ','UNICODE','U','U'))
             assert first[0] is error[0] if error is not None else first[0] is None
