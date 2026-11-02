@@ -62,15 +62,23 @@ only D's pure native planner and returns exact founder-only diff/digests,
 context/permission/skill deltas, complete blockers/owners, drain candidates and
 org-wide publication impact. It reserves nothing. Internal canonical images
 stay private; never copy these admitted diffs to shared artifacts/logs.
-After request decoding, preview planning, capability readback, error projection
-and response encoding run together off the serving loop. Admission registers a
-service-owned task and the original attached OrgState's native-user token before
-the request can suspend. Disconnect/cancellation leaves that worker owned; only
-actual native return releases the token. Unload/swap refuse the owner, and service
-close joins preview workers across repeated cancellation before DB closure.
-This supplies no filesystem deadline or faster-planning guarantee. Apply/recover
-and their runner still have synchronous loop segments requiring separate boundary
-correction; this preview change does not establish whole-service responsiveness.
+After request decoding, service-owned requests cover preview, capability and
+both show readers, including diagnostic-only orgs, before native submission.
+Planning/readback/error projection/encoding run off-loop. Apply/recover use native
+readiness, replay, fresh preview/blockers and reservation, then loop-owned
+once-only runner publication. The admitted original OrgState lifetime transfers
+to that runner without a new admission gap during shutdown. HTTP cancellation
+cannot cancel the service request. Actual native return and bridge retirement,
+not cancellation or task-map absence, permit release; uncertain submissions and
+failed restricted closes remain held. Close fences new requests, joins admitted
+request handoffs, then cancels/joins runners across repeated waiter cancellation.
+Profile preparation, drain census and operation mutation are native intervals;
+async profile locks, deadlines/sleeps and thread/producer queues stay loop-owned.
+The source correction is still partial: dynamic reattachment in
+`DaemonState.add_org` and generation-aware task redelivery still mix native work
+with loop publication. Their owner splits remain required before whole-service
+completion. Existing startup/scheduler entries retain their original behavior.
+No responsiveness/behavioral acceptance or filesystem deadline is established.
 Only already-running captured threads can drain (at most30s); pending tasks,
 paused roots/children/jobs/workflows/remote/cleanup uncertainty remain blockers.
 `can_drain_threads` identifies candidate turns, not clearance of hard blockers.

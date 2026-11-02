@@ -54,14 +54,19 @@ loaded daemon SHA; report loaded identity UNKNOWN without actual attestation.
 
 ## Capability and supported commands
 
-Preview's native planning and response encoding run off the serving loop under
-the original org's lifetime. A disconnected or cancelled request does not retire
-that worker; detach refuses it and shutdown joins actual return before DB close.
-This does not bound filesystem completion or identify the slow planning stage.
-Apply/recover retain synchronous loop work pending their full boundary correction;
-preview offloading alone supplies no whole-service responsiveness acceptance.
-Keep the existing client deadline and same-key custody after a timeout. No extra
-preview/apply/recover allocation follows from source correction.
+Team-move requests and operation runners retain their original service/org owner
+through joined native planning, readback, errors, encoding and mutation, including
+request disconnect and repeated cancellation. GET work is registered on-loop
+before native submission; it no longer relies on an unregistered FastAPI worker.
+Apply/recover reserve off-loop and publish the once-only runner on-loop before
+propagating cancellation. Shutdown joins admitted request handoffs before its
+runner snapshot and refuses uncertain native return or restricted-handle close.
+The correction remains draft/partial: dynamic `add_org` reattachment and
+generation-aware task redelivery still require their native/loop owner splits.
+Source and static evidence establish no complete responsiveness, behavioral
+readiness, filesystem deadline or dominant slow planning stage. Keep the existing
+client deadline and same-key custody after timeout. No extra preview/apply/recover
+allocation follows from source correction.
 
 The following command forms are source-supported; none were run against the live
 feature here. Local argument validation precedes connecting. Outputs are JSON,

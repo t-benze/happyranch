@@ -11,6 +11,7 @@ import logging
 import re
 import threading
 from contextlib import contextmanager
+from contextvars import copy_context
 from typing import Any, Callable
 
 from runtime.infrastructure.database import Database
@@ -36,83 +37,148 @@ class TeamMoveService:
         # Only short process-local observations/publications use this lock.
         # Never hold it across native DB/profile/roster work or an await.
         self._observations = threading.RLock()
-        self._previews = {}
-        self._preview_workers = {}
+        self._owners = {}
+        self._workers = {}
+        self._restricted = {}
+        self._unsafe_handles = {}
+        self._mutation_locks = {}
         self._close_task = None
 
-    def start_preview(self, slug: str, callback: Callable[[], Any]) -> asyncio.Task:
-        """Loop-only admission, before the request's first cancellable await.
-
-        The callback includes native error observation and response encoding.
-        Its thread owns every native lease from acquisition through release.
-        """
+    def start_request(self, slug: str, action: Callable) -> asyncio.Task:
+        """Own GET and POST work before submission or a cancellable await."""
         with self._observations:
             if self.closing:
                 raise TeamMoveError("team_move_service_owner_busy")
-        org = self.attached(slug)
+        return self._owned_task(slug, action, name="team-move-request:" + slug)
+
+    def _owned_task(self, slug: str, action: Callable, *, name: str) -> asyncio.Task:
+        # Admission, OrgState tokens and asyncio task publication are loop-only.
+        # Diagnostic-only orgs have no attached token; the service owner fences
+        # runtime swap/removal and retains any restricted handle instead.
+        self.require_runtime(slug)
+        org = self.state.orgs.get(slug)
         token = object()
-        if not org._acquire_native_task(token):
-            raise TeamMoveError("team_move_service_owner_busy")
+        # An admitted request transfers its ORIGINAL native lifetime to its
+        # runner. Shutdown may have fenced new OrgState tokens in the meantime.
+        parent = asyncio.current_task()
+        with self._observations:
+            inherited = next((lease for _, task, lease in self._owners.values()
+                if task is parent and lease is not None and lease[0] is org), None)
+        lease = inherited
+        if lease is not None:
+            lease[2] += 1
+        elif org is not None:
+            if not org._acquire_native_task(token):
+                raise TeamMoveError("team_move_service_owner_busy")
+            lease = [org, token, 1]
+        with self._observations:
+            self._owners[token] = (slug, None, lease)
+        coroutine = None
         try:
-            task = asyncio.create_task(self._finish_preview(token, org, callback),
-                name="team-move-preview:" + slug)
+            coroutine = action()
+            task = asyncio.create_task(coroutine, name=name)
         except BaseException:
-            org._release_native_task(token)  # No worker was submitted.
+            if coroutine is not None:
+                coroutine.close()
+            with self._observations:
+                self._owners.pop(token)
+            self._release_attachment(lease)
             raise
         with self._observations:
-            self._previews[token] = (slug, task)
-        task.add_done_callback(self._preview_finished)
+            self._owners[token] = (slug, task, lease)
+        task.add_done_callback(lambda done: self._retire(token, done))
         return task
 
     @staticmethod
-    def _preview_finished(task: asyncio.Task) -> None:
-        # Also observe failures after the HTTP caller has disconnected. Log
-        # only the existing safe native code, never the exception/private body.
-        if not task.cancelled() and (error := task.exception()) is not None:
-            logging.getLogger(__name__).warning("Team move preview failed: %s",
+    def _release_attachment(lease: Any) -> None:
+        if lease is not None:
+            lease[2] -= 1
+            if lease[2] == 0:
+                lease[0]._release_native_task(lease[1])
+
+    def _hold_attachment(self, slug: str, org: Any) -> None:
+        """Capture a positively reattached org before its next native await."""
+        owner = asyncio.current_task()
+        with self._observations:
+            token, (_slug, _task, lease) = next((token, entry) for token, entry in self._owners.items()
+                if entry[1] is owner)
+        if lease is not None:
+            if lease[0] is not org:
+                raise TeamMoveError("team_move_service_owner_busy")
+            return
+        native_token = object()
+        if not org._acquire_native_task(native_token):
+            raise TeamMoveError("team_move_service_owner_busy")
+        with self._observations:
+            self._owners[token] = (slug, owner, [org, native_token, 1])
+
+    def _retire(self, token: object, task: asyncio.Task) -> None:
+        # Always consume late errors, including an owner deliberately retained
+        # after uncertain submission, native return or restricted-handle close.
+        error = None if task.cancelled() else task.exception()
+        with self._observations:
+            uncertain = (task in self._restricted
+                or any(owner is task for _, owner, *_ in self._workers.values()))
+            lease = None if uncertain else self._owners.pop(token)[2]
+        self._release_attachment(lease)
+        if error is not None:
+            logging.getLogger(__name__).warning("Team move owner failed: %s",
                 TeamMoveOperation._diagnostic(error).code)
 
-    async def _finish_preview(self, token: object, org: Any, callback: Callable[[], Any]) -> Any:
-        returned = threading.Event()
+    async def native(self, slug: str, callback: Callable[[], Any], *,
+                     publish: Callable | None = None, propagate_cancel: bool = True) -> Any:
+        """One joined synchronous interval, retaining ContextVars and results.
 
-        def run() -> Any:
+        Only service-owned tasks call this leaf. No native lock or cursor may
+        escape callback. Publication runs on this loop after actual return,
+        including a reservation/open result received during cancellation.
+        """
+        owner = asyncio.current_task()
+        with self._observations:
+            if not any(s == slug and task is owner for s, task, _ in self._owners.values()):
+                raise TeamMoveError("team_move_service_owner_busy")
+        ticket = object()
+        returned = threading.Event()
+        outcome = {}
+        context = copy_context()
+
+        def run() -> None:
             try:
-                return callback()
+                outcome["result"] = context.run(callback)
+            except BaseException as exc:
+                outcome["error"] = exc
             finally:
                 returned.set()
 
-        # to_thread preserves ContextVar provenance. The worker task is private
-        # and is never cancelled by request disconnect or service shutdown.
-        worker = asyncio.create_task(asyncio.to_thread(run))
+        # Record submission uncertainty BEFORE the executor call. Even a
+        # handoff failure cannot remove the DB-close barrier speculatively.
         with self._observations:
-            self._preview_workers[token] = worker
+            self._workers[ticket] = (slug, owner, None, returned, outcome, callback)
+        worker = asyncio.get_running_loop().run_in_executor(None, run)
+        with self._observations:
+            self._workers[ticket] = (slug, owner, worker, returned, outcome, callback)
         cancellation = None
-        try:
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError as exc:
-                    cancellation = cancellation or exc
-                except BaseException:
-                    break  # Retrieve the original worker error below.
+        while not worker.done():
             try:
-                result = worker.result()
-            except BaseException as error:
-                if cancellation is not None:
-                    raise cancellation from error
-                raise
-            if cancellation is not None:
-                raise cancellation
-            return result
-        finally:
-            # A cancelled Future/task is not proof that its native body ended.
-            # Uncertain submission/return retains both the strong reference and
-            # the OrgState DB-close barrier; close must then refuse.
-            if worker.done() and returned.is_set():
-                org._release_native_task(token)
-                with self._observations:
-                    self._preview_workers.pop(token, None)
-                    self._previews.pop(token, None)
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+        # A private bridge cancellation/failed submission supplies no evidence
+        # about native execution. Leave the original strong owner held.
+        worker.result()
+        if not returned.is_set():
+            raise TeamMoveError("team_move_owner_interrupted")
+        with self._observations:
+            self._workers.pop(ticket)
+        if "error" in outcome:
+            # Preserve late native failure as primary, even after cancellation.
+            raise outcome["error"]
+        result = outcome["result"]
+        if publish is not None:
+            publish(result)
+        if cancellation is not None and propagate_cancel:
+            raise cancellation
+        return result
 
     def require_runtime(self, slug):
         if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", slug) is None:
@@ -155,6 +221,8 @@ class TeamMoveService:
             try:
                 db.close()
             except BaseException as exc:
+                with self._observations:
+                    self._unsafe_handles.setdefault(slug, []).append(db)
                 if primary is None:
                     raise TeamMoveError("team_move_diagnostic_close_failed") from exc
                 primary.add_note("team move diagnostic close failed; retain diagnostics")
@@ -292,6 +360,8 @@ class TeamMoveService:
                     # Keep useful observations and the primary refusal. A close
                     # failure is another diagnostic, never successful absence.
                     result["close_error"] = TeamMoveOperation._diagnostic(exc).code
+                    with self._observations:
+                        self._unsafe_handles.setdefault(slug, []).append(restricted)
         return result
 
     def require_enabled(self, slug: str, *, recover: bool = False) -> None:
@@ -334,16 +404,29 @@ class TeamMoveService:
                 hard.append(blocker)
         return tuple(hard)
 
-    def apply(self, slug, command, admission):
+    async def apply(self, slug, command, admission):
+        lock = self._mutation_locks.setdefault(slug, asyncio.Lock())
+        async with lock:
+            def publish(prepared: tuple) -> None:
+                row, _result = prepared
+                if row is not None:
+                    self.start(slug, row, recover=False)
+            row, result = await self.native(slug,
+                lambda: self._prepare_apply(slug, command, admission), publish=publish)
+            if row is None:
+                return result
+            return await self.native(slug, lambda: self.show(slug, operation_key=command.operation_key))
+
+    def _prepare_apply(self, slug: str, command: Any, admission: Any) -> tuple:
         # Same-key replay is read-only, including when source enablement changes.
         with self.store(slug) as store:
             row = store.read(operation_key=command.operation_key)
             if row is not None:
                 if public_request(_decode(MoveRequest, row["request_bytes"])) != command.request:
                     raise TeamMoveError("team_move_changed_body")
-                return self.show(slug, operation_key=command.operation_key)
+                return None, self.show(slug, operation_key=command.operation_key)
         self.require_enabled(slug)
-        self.assert_no_owner(slug)
+        self._assert_no_runner(slug)
         org = self.attached(slug)
         selection_ids(org, command.request)
         operation = TeamMoveOperation(org, self.state.profile_coordinator)
@@ -352,7 +435,7 @@ class TeamMoveService:
             if public_request(_decode(MoveRequest, prior["request_bytes"])) != command.request:
                 raise TeamMoveError("team_move_changed_body")
             result = operation_view(operation.verify_already_satisfied(prior))
-            return dict(result, already_satisfied=True, requested_operation_key=command.operation_key)
+            return None, dict(result, already_satisfied=True, requested_operation_key=command.operation_key)
         fresh = operation.preview(drain_threads=command.request.drain_threads)
         if public_request(fresh.request) != command.request:
             raise TeamMoveError("team_move_stale_preview")
@@ -365,10 +448,19 @@ class TeamMoveService:
         # hard work is cancelled; all facts are rechecked before its decision.
         row = operation.reserve(operation_key=command.operation_key,
             request_bytes=_bytes(fresh.request), admission=admission)
-        self.start(slug, row, recover=False)
-        return self.show(slug, operation_key=command.operation_key)
+        return row, None
 
-    def recover(self, slug, operation_id, expected_revision):
+    async def recover(self, slug, operation_id, expected_revision):
+        lock = self._mutation_locks.setdefault(slug, asyncio.Lock())
+        async with lock:
+            def publish(row: dict) -> None:
+                if not self.running(slug, row["operation_key"]):
+                    self.start(slug, row, recover=True)
+            await self.native(slug, lambda: self._prepare_recover(slug, operation_id, expected_revision),
+                publish=publish)
+            return await self.native(slug, lambda: self.show(slug, operation_id=operation_id))
+
+    def _prepare_recover(self, slug: str, operation_id: str, expected_revision: int) -> dict:
         self.require_enabled(slug, recover=True)
         with self.store(slug) as store:
             row = store.read(operation_id=operation_id)
@@ -376,22 +468,27 @@ class TeamMoveService:
             raise TeamMoveError("team_move_unknown_operation")
         if row["state_revision"] != expected_revision:
             raise TeamMoveError("team_move_stale_revision")
-        if not self.running(slug, row["operation_key"]):
-            self.start(slug, row, recover=True)
-        return self.show(slug, operation_id=operation_id)
+        return row
+
+    def _assert_no_runner(self, slug: str) -> None:
+        with self._observations:
+            if any(s == slug for s, _ in self.tasks):
+                raise TeamMoveError("team_move_service_owner_busy")
 
     def start(self, slug, row, *, recover):
-        """Only called after admitted, validated, enabled public operations."""
+        """Loop-only handoff by an already admitted request, even during close.
+
+        Shutdown joins requests before taking its final runner snapshot. No
+        await can strand a successful reservation between return and start.
+        """
+        self._assert_no_runner(slug)
+        key = (slug, row["operation_key"])
+        task = self._owned_task(slug, lambda: self.execute(slug, row, recover=recover),
+            name="team-move:" + row["operation_id"])
         with self._observations:
-            if self.closing:
-                raise TeamMoveError("team_move_service_owner_busy")
-            self.assert_no_owner(slug)
-            key = (slug, row["operation_key"])
             self.errors.pop(key, None)
-            task = asyncio.create_task(self.execute(slug, row, recover=recover),
-                name="team-move:" + row["operation_id"])
             self.tasks[key] = task
-            task.add_done_callback(lambda finished: self.finished(key, finished))
+        task.add_done_callback(lambda finished: self.finished(key, finished))
 
     def finished(self, key, task):
         # Reap every exception; never log bodies, private definitions or tokens.
@@ -410,6 +507,16 @@ class TeamMoveService:
     async def execute(self, slug, row, *, recover):
         restricted = None
         primary = None
+        def opened(pair: tuple) -> None:
+            nonlocal restricted
+            restricted = pair[0]
+            with self._observations:
+                self._restricted[asyncio.current_task()] = restricted
+        def closed(_result: Any) -> None:
+            with self._observations:
+                self._restricted.pop(asyncio.current_task())
+        async def native(callback: Callable) -> Any:
+            return await self.native(slug, callback)
         try:
             # Deadline bounds native awaits (including the <=30s thread drain),
             # never grants TTL takeover, rollback, or a completion-time promise.
@@ -419,7 +526,8 @@ class TeamMoveService:
                     if row["active_slot"] is None:
                         try:
                             attached = await self.state.add_org(slug)
-                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver()
+                            self._hold_attachment(slug, attached)
+                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver(native=native)
                         except Exception as exc:
                             error = TeamMoveError("team_move_reattachment_or_redelivery_failed")
                             error.team_move_secondary_codes = (TeamMoveOperation._diagnostic(exc).code,)
@@ -430,51 +538,59 @@ class TeamMoveService:
                     root = self.diagnostic_root(slug)
                     with self._observations:
                         sessions = self.diagnostic_sessions.setdefault(slug, SessionTracker())
-                    restricted, operation = open_recovery_context(root=root, slug=slug,
+                    restricted, operation = await self.native(slug, lambda: open_recovery_context(root=root, slug=slug,
                         settings=self.state.settings, profiles=self.state.profile_coordinator,
-                        host_supervisor=self.state.host_supervisor, sessions=sessions)
+                        host_supervisor=self.state.host_supervisor, sessions=sessions), publish=opened)
                 else:
                     operation = TeamMoveOperation(org, self.state.profile_coordinator)
                 try:
                     if recover:
-                        result = await operation.recover(operation_key=row["operation_key"], expected_revision=row["state_revision"])
+                        result = await operation.recover(operation_key=row["operation_key"], expected_revision=row["state_revision"], native=native)
                         if restricted is None and row["phase"] in {"waiting", "complete", "refused", "abandoned"} and result["active_slot"] is None:
-                            await operation.redeliver()
+                            await operation.redeliver(native=native)
                     else:
-                        await operation.advance(operation_key=row["operation_key"], expected_revision=row["state_revision"])
+                        await operation.advance(operation_key=row["operation_key"], expected_revision=row["state_revision"], native=native)
                 except TeamMoveError as exc:
                     if restricted is None or exc.code != "team_move_recovery_reattach_for_redelivery":
                         raise
                     # D saved/released the receipt before noticing this context
                     # cannot deliver. Never treat that exception as rollback.
                 if restricted is not None:
-                    result = operation.store.read(operation_key=row["operation_key"])
+                    result = await native(lambda: operation.store.read(operation_key=row["operation_key"]))
                     closing = restricted
-                    restricted = None  # One close attempt; do not replace its failure.
-                    closing.close()
+                    # native() joins actual close before propagating cancellation.
+                    restricted = None  # One attempt; retain the original failure.
+                    await self.native(slug, closing.close, publish=closed)
                     if result["active_slot"] is None:
                         try:
                             attached = await self.state.add_org(slug)
-                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver()
+                            self._hold_attachment(slug, attached)
+                            await TeamMoveOperation(attached, self.state.profile_coordinator).redeliver(native=native)
                         except Exception as exc:
                             error = TeamMoveError("team_move_reattachment_or_redelivery_failed")
                             error.team_move_secondary_codes = (TeamMoveOperation._diagnostic(exc).code,)
                             raise error from exc
         except BaseException as exc:
             primary = exc
+            def observe_failure(error: BaseException = exc) -> None:
+                try:
+                    with self.store(slug) as store:
+                        saved = store.read(operation_key=row["operation_key"])
+                    if saved is not None:
+                        error.team_move_observation = self.observe(slug, saved)
+                except Exception as observation_error:
+                    error.team_move_secondary_codes = (*getattr(error, "team_move_secondary_codes", ()),
+                        TeamMoveOperation._diagnostic(observation_error).code)
             try:
-                with self.store(slug) as store:
-                    saved = store.read(operation_key=row["operation_key"])
-                if saved is not None:
-                    exc.team_move_observation = self.observe(slug, saved)
-            except Exception as observation_error:
+                await self.native(slug, observe_failure, propagate_cancel=False)
+            except BaseException as observation_error:
                 exc.team_move_secondary_codes = (*getattr(exc, "team_move_secondary_codes", ()),
                     TeamMoveOperation._diagnostic(observation_error).code)
             raise
         finally:
             if restricted is not None:
                 try:
-                    restricted.close()
+                    await self.native(slug, restricted.close, publish=closed, propagate_cancel=False)
                 except BaseException as exc:
                     if primary is None:
                         raise
@@ -484,14 +600,20 @@ class TeamMoveService:
             if primary is not None:
                 # Task.cancelled() hides its exception from the done callback;
                 # retain its safe primary/secondary facts before reaping.
-                view = error_view(primary)
-                with self._observations:
-                    self.errors[(slug, row["operation_key"])] = view
+                try:
+                    view = await self.native(slug, lambda: error_view(primary), propagate_cancel=False)
+                except BaseException:
+                    primary.add_note("team move error projection failed; original cause retained")
+                else:
+                    with self._observations:
+                        self.errors[(slug, row["operation_key"])] = view
 
     def assert_no_owner(self, slug=None):
         with self._observations:
             if (any(slug is None or s == slug for s, _ in self.tasks)
-                    or any(slug is None or s == slug for s, _ in self._previews.values())):
+                    or any(slug is None or s == slug for s, _, _ in self._owners.values())
+                    or any(slug is None or s == slug for s, *_ in self._workers.values())
+                    or any(slug is None or s == slug for s in self._unsafe_handles)):
                 raise TeamMoveError("team_move_service_owner_busy")
 
     async def close(self):
@@ -510,13 +632,18 @@ class TeamMoveService:
             raise cancellation
 
     async def _close(self) -> None:
+        # Requests can still publish a previously reserved runner. Join those
+        # handoffs before cancelling/snapshotting the operation runners.
+        with self._observations:
+            runners = set(self.tasks.values())
+            requests = tuple(task for _, task, _ in self._owners.values()
+                if task is not None and task not in runners)
+        if requests:
+            await asyncio.gather(*requests, return_exceptions=True)
         with self._observations:
             tasks = tuple(self.tasks.values())
-            previews = tuple(task for _, task in self._previews.values())
         for task in tasks:
             task.cancel()
-        if tasks or previews:
-            await asyncio.gather(*tasks, *previews, return_exceptions=True)
-        with self._observations:
-            if self._previews or self._preview_workers:
-                raise TeamMoveError("team_move_service_owner_busy")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.assert_no_owner()

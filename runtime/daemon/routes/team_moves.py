@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -107,51 +108,64 @@ def invoke(owner, slug, callback, *, operation_key=None, operation_id=None):
     return JSONResponse(result, status_code=status, headers=headers)
 
 
+async def response(owner: Any, slug: str, action: Callable, **identity: Any) -> JSONResponse:
+    """Keep native readback/error projection/encoding inside the owned request."""
+    async def execute() -> JSONResponse:
+        try:
+            result = await action()
+        except Exception as exc:
+            def refused(error: Exception = exc) -> None:
+                raise error
+            return await owner.native(slug, lambda: invoke(owner, slug, refused, **identity))
+        return await owner.native(slug, lambda: invoke(owner, slug, lambda: result))
+    try:
+        task = owner.start_request(slug, execute)
+    except Exception as exc:
+        # No native work was admitted. This bounded envelope touches no DB or
+        # original org; it cannot certify operation absence or release.
+        def refused(error: Exception = exc) -> None:
+            raise error
+        return invoke(owner, slug, refused)
+    return await asyncio.shield(task)
+
+
 @router.get("/team-moves/capability")
-def capability(slug: str, request: Request):
+async def capability(slug: str, request: Request):
     owner = service(request)
-    return invoke(owner, slug, lambda: owner.capability(slug))
+    return await response(owner, slug, lambda: owner.native(slug, lambda: owner.capability(slug)))
 
 
 @router.post("/team-moves/preview", openapi_extra=body_schema(MoveSelection))
 async def preview(slug: str, request: Request):
     body = await command_body(request, MoveSelection)
     owner = service(request)
-    try:
-        task = owner.start_preview(slug, lambda: invoke(owner, slug, lambda: owner.preview(slug, body)))
-    except Exception as exc:
-        # Admission failed before a worker existed; preview has no operation
-        # key to observe. Preserve the existing closed error envelope.
-        def refused():
-            raise exc
-        return invoke(owner, slug, refused)
-    return await asyncio.shield(task)
+    return await response(owner, slug, lambda: owner.native(slug, lambda: owner.preview(slug, body)))
 
 
 @router.post("/team-moves", openapi_extra=body_schema(ApplyMove), responses={202: {"description": "Accepted/in-flight; not success"}})
 async def apply(slug: str, request: Request):
     body = await command_body(request, ApplyMove)
     owner = service(request)
-    # Both inherited dependencies have completed. Nothing in the request can
-    # choose this actor or turn session/invocation proof into Founder authority.
-    def submit():
-        owner.require_runtime(slug)
+    # Both inherited dependencies completed; actor remains server-derived.
+    async def submit() -> dict:
         admission = FounderAdmission(principal="founder", boundary="_require_human", org_slug=slug,
             admission_id=uuid.uuid4().hex, admitted_at=_now())
-        return owner.apply(slug, body, admission)
-    return invoke(owner, slug, submit, operation_key=body.operation_key)
+        return await owner.apply(slug, body, admission)
+    return await response(owner, slug, submit, operation_key=body.operation_key)
 
 
 @router.get("/team-moves/by-key/{operation_key}", responses={202: {"description": "Accepted/in-flight; not success"}})
-def show_key(slug: str, operation_key: str, request: Request):
+async def show_key(slug: str, operation_key: str, request: Request):
     owner = service(request)
-    return invoke(owner, slug, lambda: owner.show(slug, operation_key=operation_key), operation_key=operation_key)
+    return await response(owner, slug,
+        lambda: owner.native(slug, lambda: owner.show(slug, operation_key=operation_key)), operation_key=operation_key)
 
 
 @router.get("/team-moves/{operation_id}", responses={202: {"description": "Accepted/in-flight; not success"}})
-def show(slug: str, operation_id: str, request: Request):
+async def show(slug: str, operation_id: str, request: Request):
     owner = service(request)
-    return invoke(owner, slug, lambda: owner.show(slug, operation_id=operation_id), operation_id=operation_id)
+    return await response(owner, slug,
+        lambda: owner.native(slug, lambda: owner.show(slug, operation_id=operation_id)), operation_id=operation_id)
 
 
 @router.post("/team-moves/{operation_id}/recover", openapi_extra=body_schema(RecoverMove),
@@ -159,4 +173,4 @@ def show(slug: str, operation_id: str, request: Request):
 async def recover(slug: str, operation_id: str, request: Request):
     body = await command_body(request, RecoverMove)
     owner = service(request)
-    return invoke(owner, slug, lambda: owner.recover(slug, operation_id, body.expected_revision), operation_id=operation_id)
+    return await response(owner, slug, lambda: owner.recover(slug, operation_id, body.expected_revision), operation_id=operation_id)

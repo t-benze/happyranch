@@ -412,20 +412,34 @@ Unknown scope422; stale input/target/source/skill/charter/census or competing mo
 
 ## Approved acceptance and delivery limits
 
-Preview execution after bounded body decoding uses one joined native worker for
-planning, capability readback, error projection and JSON response construction.
-Its service task and original attached OrgState native-user token are admitted
-on the serving loop before a cancellable await. ContextVars cross into the worker;
-canonical/profile/move/DB lock intervals remain synchronous on their acquiring
-thread. Request cancellation/disconnect cannot cancel the worker. Retirement
-requires both actual native return and its task result; uncertain retirement
-retains the DB-close barrier. Service shutdown fences admission and owns a shared
-join across repeated cancellation, while unload/swap refuse active previews.
-This is preview-only source correction: apply/recover admission, runner native
-segments, profile batch entry, captured-thread drain and redelivery still require
-their complete boundary correction. It is no whole-service responsiveness or
-behavioral acceptance, hard filesystem deadline or reduction of native validation.
-The 45-second native-await contract and existing CLI deadlines remain unchanged.
+The execution-boundary correction admits service-owned GET/POST request tasks
+before native submission and retains their actual original attached OrgState
+native-user lease; diagnostic-only requests retain the service's runtime barrier.
+Planning, current observations, error projection and response encoding use joined
+native intervals with ContextVars. Apply/recover's native preparation hands each
+successful reservation to a once-only loop-owned runner before cancellation can
+propagate. That runner shares the admitted original lease, including when shutdown
+has already fenced fresh org admission. Request loss cannot cancel that handoff.
+
+Operation forward/recovery mutation and each profile/canonical/move/DB lock
+interval stay synchronous on their acquiring native thread. Profile input
+preparation and complete drain census are native; the authority async writer
+lock, deadlines/sleeps and thread/producer queue publication stay on-loop. Native
+selection remains notification only; current reserve/claim revalidation grants
+admission. Restricted open results are captured even during cancellation, close
+is joined, failed closes retain original handles and primary failures survive
+cleanup/diagnostic errors. Actual native return plus bridge retirement is required;
+cancelled Futures, timeouts and missing task-map entries prove no retirement.
+Close fences new requests, joins admitted handoffs, then cancels/joins runners;
+a shielded shared join survives repeated close-waiter cancellation.
+
+This source is still partial: `DaemonState.add_org` reattachment and the
+`Orchestrator.redeliver_team_move_tasks` generation-aware publisher still combine
+native work with loop publication and need separately allocated owner splits.
+Existing startup/scheduler entries retain their original behavior. Whole-service
+completion/responsiveness and behavioral acceptance are not established. Native
+validation, the 45-second native-await semantics and CLI deadlines remain; there
+is no hard filesystem completion bound or demonstrated dominant slow stage.
 
 Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligible request; stale/wrong target/third member/concurrent writers; session-only worker refusal; causal pending work; captured threads/pending followups; task/thread/schedule races/retry/fallback; due schedules; file/reset/context/publication failures/timeouts; separately authorized process-loss restart; identical/changed-key replay; permission/skill differences; historical/natural postmove work; unrelated execution/draft staleness. Store/state handoff carries four answers for each applicable case (real seam, expected observation, actual static evidence, missing behavior). It adds no test cases/fixtures/campaign.
 

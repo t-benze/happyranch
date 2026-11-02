@@ -1489,16 +1489,7 @@ class ProfileCoordinator:
                 continue
             self._publish_dependency_change(org)
 
-    @asynccontextmanager
-    async def consumer_batch_writer(self, *, org, operation_id):
-        """ONE D-owned interval for the exact two unchanged executor consumers.
-
-        The operation row itself is the durable native writer: emitting a C3
-        writer whose failed tail becomes immutable unknown would prevent the
-        forward-recovery operation from reconciling its OWN known partial work.
-        No other native writer's history is adopted/cleared. The ordinary C3 hold
-        still refuses every conflicting writer. Empty dependency sets are real.
-        """
+    def _move_batch_inputs(self, org: OrgState, operation_id: str) -> tuple:
         from runtime.infrastructure.team_move_store import MoveRequest, _decode
         move = org.db._team_move_coordinator
         row = move.store.read()
@@ -1510,6 +1501,22 @@ class ProfileCoordinator:
         definitions = tuple(parse_agent_text(base64.b64decode(image.before_base64).decode().replace("\r\n", "\n"),
             expected_name=agent) for agent, image in zip(request.affected_agents, request.files[:2]))
         names = tuple(sorted({name for definition in definitions if (name := _dependency_profile(definition.executor)) is not None}))
+        return definitions, names
+
+    @asynccontextmanager
+    async def consumer_batch_writer(self, *, org, operation_id, native=None):
+        """ONE D-owned interval for the exact two unchanged executor consumers.
+
+        The operation row itself is the durable native writer: emitting a C3
+        writer whose failed tail becomes immutable unknown would prevent the
+        forward-recovery operation from reconciling its OWN known partial work.
+        No other native writer's history is adopted/cleared. The ordinary C3 hold
+        still refuses every conflicting writer. Empty dependency sets are real.
+        """
+        if native is None:
+            definitions, names = self._move_batch_inputs(org, operation_id)
+        else:
+            definitions, names = await native(lambda: self._move_batch_inputs(org, operation_id))
         org.workflow_authority._profile_coordinator = self
         async with org.workflow_authority._async_writer_lock:
             interval = _MoveBatchInterval(self, org, operation_id, definitions, names)

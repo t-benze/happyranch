@@ -271,6 +271,18 @@ deployment/restart, historical clearance, retry allocation or E2E acceptance.
 Behavioral/native/proof results are NOT RUN unless separately attributed; Python
 units remain RETIRED and general integration INCLUDING callback SKIPPED24342.
 
+Team-move GET/POST requests register their service task and original attached
+org native-user lifetime before native submission. An admitted apply/recover
+handoff shares that original lease with its loop-owned runner, including after
+shutdown fences fresh org admission. Request disconnect, repeated cancellation
+or a cancelled bridge never establishes native return. Service close owns one
+shielded join: fence new requests, join admitted request handoffs, then snapshot,
+cancel and join operation runners. Uncertain submission/return or restricted
+context close retains strong owners/handles and refuses remove/swap/DB close.
+This boundary correction remains partial while dynamic reattachment and
+generation-aware task redelivery retain native work on the loop; it establishes
+no behavioral readiness or hard filesystem completion deadline.
+
 The four async runner entrypoints retain a private org lifetime through native
 finish (including failure), beyond the refresh Future. Org unload refuses active
 runners and fences detached instances against late starts. Runtime registration
