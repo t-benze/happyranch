@@ -715,6 +715,14 @@ retain their actual meaning. All retained comparison/shape/source facts, aliases
 and original/safe work consume the same nonrenewing owner. Missing, conflicting,
 unsupported or unresolved facts refuse the whole member before pending/output.
 
+Canonical source-bearing provider_attempts submit/refuse plans retain only closed
+instruction/payload/start/exchange facts, joined once to their exact canonical
+command and original owner/deadline/wire interval before publication. Late plans
+and commands retain full content/types/order; every SOURCE occurrence pays its
+own finite scan/comparison under the SAME remaining C/F/depth/end. Incomplete
+source-bearing plans refuse wholly; ordinary unfinished plans stay unavailable.
+This adds no raw tree, generic script grant, second acquisition or native proof.
+
 The same finite source-owned admission now covers canonical
 observations.provider_commands[*] jobs-submit/jobs-refuse-review only, including
 its exact original prefix. Complete caller/source/start/executable/provider,

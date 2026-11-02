@@ -1219,6 +1219,148 @@ def failure_result_controls() -> dict:
                 assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
                 results['C5-Receipt-refusal-'+case+'-'+boundary] = 'whole prior file/member/full safe tree/FAIL preserved; no selected pending/output; no generic read grant; overlapping guards documented'
 
+    # SAME C5 fixture: the original source-bearing attempt is a separately
+    # owned occurrence, joined to its exact canonical command and full start.
+    def attempt_input(root: Path, form: str = 'exit0', *, late: bool = False, refusal: bool = False) -> dict:
+        image = submission_input(root,submission_sources[form],refusal=refusal,late=late)
+        command = image['provider_commands'][0]
+        payload = {k:v for k,v in command['payload'].items() if k not in ('task_id','session_id')}
+        instruction = dict(action=command['action'],deadline=20.,execution_deadline=19.,payload=payload)
+        attempt = dict(provider=dict(image['starts'][0]),instruction=instruction,entered=9.5,wire_begin=4,
+                       wire_end=4+len(command['wire']),finished=11.,command_index=0)
+        if late:
+            attempt['instruction'] = {k:instruction[k] for k in ('payload','execution_deadline','deadline','action')}
+            attempt = {k:attempt[k] for k in ('instruction','command_index','finished','wire_end','wire_begin','entered','provider')}
+            return dict(provider_attempts=[attempt],**image)
+        image['provider_attempts'] = [attempt]
+        return image
+
+    for form in ('exit0','exit7','timeout','refusal','repeated','ordinary-unfinished'):
+        for late in (False,True) if form in ('exit0','exit7','timeout') else (False,):
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = attempt_input(root,form if form in submission_sources else 'exit0',late=late,refusal=form == 'refusal')
+                    if form == 'repeated':
+                        command = copy.deepcopy(image['provider_commands'][0])
+                        command.update(child_pid=203,child_stat=command['child_stat'].replace('202 (','203 (',1))
+                        command['wire'][0]['response'].update(id='JOB-702',events_url='/api/v1/orgs/alpha/jobs/JOB-702/events')
+                        command['stdout'] = json.dumps(command['wire'][0]['response'],sort_keys=True)+'\n'
+                        image['provider_commands'].append(command)
+                        attempt = copy.deepcopy(image['provider_attempts'][0])
+                        attempt.update(command_index=1,wire_begin=5,wire_end=6)
+                        image['provider_attempts'].append(attempt)
+                    if form == 'ordinary-unfinished':
+                        image['provider_attempts'].append(dict(provider=dict(image['starts'][0]),
+                            instruction=dict(action='jobs-final',deadline=20.,execution_deadline=19.,
+                                             payload=dict(status='completed',confidence=90,summary='ordinary unfinished')),
+                            entered=12.,wire_begin=5))
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                    elif boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        data,parsed = writer._prepare_original_evidence(destination,source_file)
+                        assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                        exact(parsed,image); writer._replace_evidence(destination,data); expected_image = original_image
+                    else: destination.write_bytes(original_image); expected_image = original_image
+                    complete,error = acquire(); drain(); commit()
+                    assert not complete and error is None and not state['fatal'] and not errors, (form,boundary,failures)
+                    assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                    exact(json.loads(expected_image),image)
+                    for attempt in image['provider_attempts']:
+                        if 'command_index' in attempt:
+                            command = image['provider_commands'][attempt['command_index']]
+                            assert attempt['provider'] == image['starts'][0]
+                            for key,value in attempt['instruction']['payload'].items(): exact(value,command['payload'][key])
+                            assert attempt['instruction']['payload']['script'] == submission_sources[form if form in submission_sources else 'exit0']
+                    results[f'C5-Attempt-full-{form}-{int(late)}-{boundary}'] = 'entire original plan/command/start/SOURCE/type/order and outer bytes; original unavailable ordinary attempt retained; native NOT RUN'
+
+    attempt_refusals = ('payload-title','payload-rationale','payload-script','payload-interpreter','payload-cwd_hint',
+        'payload-review_required','payload-persistent','payload-max_runtime_seconds','payload-extra','payload-missing',
+        'missing-command','wrong-index','index-bool','duplicate-index','foreign-action','unsupported-action','missing-action',
+        'provider-task','provider-session','provider-agent','provider-org','provider-pid','provider-start','provider-pgid','provider-extra',
+        'missing-start','missing-manifest','foreign-manifest','deadline','execution-deadline','deadline-bool','entered-bool','late-finished',
+        'wire-begin','wire-end','wire-bool','outer-extra','outer-missing','instruction-extra','wrong-root','wrong-owner',
+        'partial-source','decoded-secret','residual-layer','shared-work','shared-facts','shared-depth')
+    for case in attempt_refusals:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha'] = old_source
+                image = attempt_input(root,late=True)
+                attempt = image['provider_attempts'][0]; instruction = attempt['instruction']; payload = instruction['payload']
+                if case.startswith('payload-') and case[8:] in payload:
+                    key = case[8:]; value = payload[key]
+                    payload[key] = (value+'changed' if type(value) is str else 0 if type(value) is bool else True
+                                    if type(value) is int else 'foreign-cwd')
+                elif case == 'payload-extra': payload['extra'] = None
+                elif case == 'payload-missing': del payload['title']
+                elif case == 'missing-command': image['provider_commands'] = []
+                elif case == 'wrong-index': attempt['command_index'] = 1
+                elif case == 'index-bool': attempt['command_index'] = False
+                elif case == 'duplicate-index': image['provider_attempts'] *= 2
+                elif case == 'foreign-action': instruction['action'] = 'jobs-refuse-review'
+                elif case == 'unsupported-action': instruction['action'] = 'other'
+                elif case == 'missing-action': del instruction['action']
+                elif case.startswith('provider-'):
+                    key = {'start':'pid_start'}.get(case[9:],case[9:])
+                    attempt['provider'][key] = 999 if key in ('pid','pgid') else 'foreign'
+                elif case == 'missing-start': image['starts'] = []
+                elif case == 'missing-manifest': image['durable'] = []
+                elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                elif case == 'deadline': instruction['deadline'] = 21.
+                elif case == 'execution-deadline': instruction['execution_deadline'] = 18.
+                elif case == 'deadline-bool': instruction['deadline'] = True
+                elif case == 'entered-bool': attempt['entered'] = True
+                elif case == 'late-finished': attempt['finished'] = 20.
+                elif case == 'wire-begin': attempt['wire_begin'] = -1
+                elif case == 'wire-end': attempt['wire_end'] = 6
+                elif case == 'wire-bool': attempt['wire_begin'] = True
+                elif case == 'outer-extra': attempt['extra'] = None
+                elif case == 'outer-missing': del attempt['wire_end']
+                elif case == 'instruction-extra': instruction['extra'] = None
+                elif case == 'wrong-root': image = {'holder':image}
+                elif case == 'wrong-owner': pass
+                elif case == 'partial-source':
+                    for key in ('finished','wire_end','command_index'): del attempt[key]
+                elif case == 'decoded-secret': payload['script'] = 'x="\\x53YNTHETIC_TOKEN"'
+                elif case == 'residual-layer': payload['script'] = 'print("public\\\\nline")'
+                elif case == 'shared-work': payload['title'] = 'p'*550000
+                elif case == 'shared-facts': image['provider_attempts'] = [copy.deepcopy(attempt) for _ in range(10000)]
+                elif case == 'shared-depth':
+                    nested = None
+                    for _ in range(62): nested = [nested]
+                    payload['extra'] = nested
+                name = 'e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source_file)
+                    except ValueError: pass
+                    else: raise AssertionError('Attempt unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                    assert staged[name] is old_buffer and not state['fatal']
+                else:
+                    destination.write_bytes(original_image); (root/'raw/eligible-attempt.txt').write_bytes(b'eligible ordinary sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert staged[name] is old_buffer and published[name] is old_buffer
+                    assert (output/name).read_bytes() == prior and name in state['refused_sources']
+                    if case not in ('shared-work','shared-facts'):
+                        assert (output/'eligible-attempt.txt').read_bytes() == b'eligible ordinary sibling\n'
+                exact(state['safe_scenario'],old_tree)
+                for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-Attempt-refusal-'+case+'-'+boundary] = 'whole prior member/output/tree/FAIL exact; no selected pending/publication; identity/safety/capacity guards may overlap'
+
     # C5/C6: required original trees at the two shipping preparation/file
     # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
     originals = {

@@ -1297,7 +1297,7 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                         visit(name, depth + 1, key=True)
                         if selected is not None:
                             selected(selected_path, 'key', name)
-                        if route == 1 and name in ('starts', 'durable', 'provider_commands') and selection is None:
+                        if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') and selection is None:
                             selection = _EvidenceObservations(context, ledger, check, sanitize, depth, submission_identity)
                         if event is not None:
                             event("key", name)
@@ -1308,7 +1308,7 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                               event=(proof.response_event if name == "response" else proof.request_event
                                      if name == "request" else None) if proof is not None else event,
                               encoded=proof is not None and name == "response_text",
-                              selected=selection.event if route == 1 and name in ('starts', 'durable', 'provider_commands') else selected,
+                              selected=selection.event if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') else selected,
                               selected_path=(name,) if route == 1 else selected_path + (name,) if selected is not None else ())
                     else:
                         visit(member, depth + 1, route=3 if route == 2 else 0, event=event,
@@ -1585,6 +1585,7 @@ class _EvidenceSubmission:
               'child_start', 'child_parent', 'child_stat', 'python', 'source_sha', 'callback_sha256', 'wire')
     payload_fields = ('title', 'rationale', 'script', 'interpreter', 'cwd_hint', 'review_required',
                       'persistent', 'max_runtime_seconds', 'task_id', 'session_id')
+    plan_fields = payload_fields[:-2]
     result_fields = ('id', 'status', 'created_at', 'started_at', 'cwd_resolved', 'timeout_seconds',
                      'events_url', 'authentication')
 
@@ -1819,8 +1820,14 @@ class _EvidenceSubmission:
         o.ledger.charge(128, 16, o.check)
         o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
                           self.argv, f['path'], f['sha256'], m['child_pid'], self.response.get('id'), None))
-        # Only owner identities remain outstanding. Source/file/result scratch
-        # is released at the command close, with no spent work/fact refund.
+        # An actual attempt may precede or follow its command. Retain only the
+        # closed submit facts needed for that join, never another command tree.
+        o.ledger.charge(128 + 16 * len(p), 16 + 2 * len(p), o.check)
+        o.submitted[o.command_index] = (provider, p, m['action'], m['entered'], m['finished'],
+                                        m['execution_deadline'], 0 if refusal else 1)
+        self.payload = {}
+        # Only owner identities and closed submit-payload references remain
+        # until root/attempt closure; other command scratch is released now.
         self.provider, self.argv = {}, []
         self.release()
         return True
@@ -2018,6 +2025,9 @@ class _EvidenceObservations:
         self.context, self.ledger, self.check, self.sanitize, self.depth = context, ledger, check, sanitize, depth
         self.identity = identity
         self.starts, self.manifests, self.pending = [], [], []
+        self.attempts, self.submitted = [], {}
+        self.attempt = None
+        self.command_index = None
         self.current = self.start = self.manifest = None
         self.captured = False
 
@@ -2027,11 +2037,112 @@ class _EvidenceObservations:
                 or len(path) == 4 and path[0] == 'provider_commands'
                     and path[2:] in (('payload', 'script'), ('payload_file', 'text'))
                 or len(path) == 7 and path[0] == 'provider_commands' and path[2] == 'wire'
-                    and path[4:] == ('response', 'job', 'script_text'))
+                    and path[4:] == ('response', 'job', 'script_text')
+                or len(path) == 5 and path[0] == 'provider_attempts'
+                    and path[2:] == ('instruction', 'payload', 'script'))
+
+    def attempt_event(self, path: tuple, kind: str, value: object) -> None:
+        """Only source-owned submit-plan facts; no raw attempt value tree."""
+        if len(path) == 1:
+            if kind not in ('array', 'end-array'):
+                raise ValueError('attempt ledger shape withheld')
+            return
+        if len(path) == 2 and kind == 'object':
+            if self.attempt is not None:
+                raise ValueError('attempt overlapping owner withheld')
+            self.ledger.charge(192, 24, self.check)
+            self.attempt = dict(metadata={}, provider={}, instruction={}, payload={}, shapes={}, invalid=False)
+        if self.attempt is None:
+            raise ValueError('attempt record shape withheld')
+        a, local = self.attempt, path[2:]
+        if kind in ('object', 'array'):
+            if local in ((), ('provider',), ('instruction',), ('instruction', 'payload')):
+                self.ledger.charge(24, 3, self.check)
+                a['shapes'][local] = [kind, []]
+            else:
+                a['invalid'] = True
+        elif kind == 'key' and local in a['shapes']:
+            self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+            a['shapes'][local][1].append(value)
+        elif kind == 'scalar':
+            target = None
+            if len(local) == 1 and local[0] in ('entered', 'wire_begin', 'wire_end', 'finished', 'command_index'):
+                target = a['metadata']
+            elif len(local) == 2 and local[0] == 'provider' and local[1] in ('task','session','agent','org','pid','pid_start','pgid'):
+                target = a['provider']
+            elif len(local) == 2 and local[0] == 'instruction' and local[1] in ('action','deadline','execution_deadline'):
+                target = a['instruction']
+            elif len(local) == 3 and local[:2] == ('instruction', 'payload') and local[2] in _EvidenceSubmission.plan_fields:
+                target = a['payload']
+            if target is not None:
+                self.ledger.charge(16 + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                target[local[-1]] = value
+        if len(path) == 2 and kind == 'end-object':
+            if a['instruction'].get('action') in ('jobs-submit', 'jobs-refuse-review'):
+                self.ledger.charge(8, 1, self.check)
+                self.attempts.append(a)
+            elif type(a['payload'].get('script')) is str:
+                # No familiar script key or unsupported action grants a stage.
+                text = a['payload']['script']
+                if '\\' in text:
+                    raise ValueError('attempt ordinary representation withheld')
+                _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+            self.attempt = None
+
+    def close_attempts(self) -> bool:
+        """Resolve every retained attempt once before root publication."""
+        self.ledger.charge(16, 1, self.check)
+        seen = set()
+        for a in self.attempts:
+            self.ledger.charge(2048, 256, self.check)
+            def shape(path: tuple, keys: tuple) -> bool:
+                got = a['shapes'].get(path)
+                return got is not None and got[0] == 'object' and len(got[1]) == len(keys) and set(got[1]) == set(keys)
+            m, p, instruction, payload = (a[k] for k in ('metadata','provider','instruction','payload'))
+            if (a['invalid'] or not shape((), ('provider','instruction','entered','wire_begin','wire_end','finished','command_index'))
+                    or not shape(('provider',), ('task','session','agent','org','pid','pid_start','pgid'))
+                    or not shape(('instruction',), ('action','deadline','execution_deadline','payload'))
+                    or not shape(('instruction','payload'), _EvidenceSubmission.plan_fields)
+                    or type(m.get('command_index')) is not int or m['command_index'] < 0 or m['command_index'] in seen
+                    or m['command_index'] not in self.submitted
+                    or any(type(m.get(k)) is not int or m[k] < 0 for k in ('wire_begin','wire_end'))
+                    or m['wire_end'] < m['wire_begin']
+                    or any(type(m.get(k)) not in (int,float) or not math.isfinite(m[k]) or m[k] < 0 for k in ('entered','finished'))
+                    or any(type(instruction.get(k)) not in (int,float) or not math.isfinite(instruction[k]) or instruction[k] < 0
+                           for k in ('deadline','execution_deadline'))):
+                raise ValueError('attempt producer identity withheld')
+            provider, submitted, action, entered, finished, end, wire_count = self.submitted[m['command_index']]
+            self.ledger.charge(128 + 32 * len(self.starts), 16 + 4 * len(self.starts), self.check)
+            def same(left: object, right: object) -> bool:
+                self.ledger.charge(32 + sum(_evidence_utf8_size(v, self.check) if type(v) is str else 8
+                                          for v in (left,right)), 2, self.check)
+                return type(left) is type(right) and left == right
+            starts = [s for s in self.starts if same(s.get('session'), p.get('session'))]
+            if (len(starts) != 1 or set(p) != set(starts[0])
+                    or any(not same(p[k], starts[0][k]) for k in p)
+                    or any(not same(p.get(k), v) for k,v in provider.items())
+                    or instruction['action'] != action or type(instruction['execution_deadline']) is not type(end)
+                    or instruction['execution_deadline'] != end
+                    or instruction['deadline'] != end + 1
+                    or not m['entered'] <= entered <= finished <= m['finished'] < instruction['deadline']
+                    or m['wire_end'] - m['wire_begin'] != wire_count):
+                raise ValueError('attempt complete owner join withheld')
+            for key in _EvidenceSubmission.plan_fields:
+                expected, actual = submitted[key], payload.get(key)
+                self.ledger.charge(32 + (_evidence_utf8_size(expected, self.check) + _evidence_utf8_size(actual, self.check)
+                                        if type(expected) is str and type(actual) is str else 16), 2, self.check)
+                if type(actual) is not type(expected) or actual != expected:
+                    raise ValueError('attempt complete payload equality withheld')
+            _evidence_python(payload['script'], self.context, self.ledger, self.check, self.sanitize, self.depth + 5)
+            self.ledger.charge(16, 1, self.check)
+            seen.add(m['command_index'])
+        return bool(self.attempts)
 
     def event(self, path: tuple, kind: str, value: object) -> None:
         self.ledger.charge(8, 1, self.check)
-        if path[0] == 'provider_commands':
+        if path[0] == 'provider_attempts':
+            self.attempt_event(path, kind, value)
+        elif path[0] == 'provider_commands':
             if len(path) == 1:
                 if kind not in ('array', 'end-array'):
                     raise ValueError('submission ledger shape withheld')
@@ -2039,6 +2150,7 @@ class _EvidenceObservations:
             if len(path) == 2 and kind == 'object':
                 if self.current is not None:
                     raise ValueError('submission overlapping owner withheld')
+                self.command_index = path[1]
                 self.current = _EvidenceSubmission(self, self.depth + 2)
             if self.current is None:
                 raise ValueError('submission command shape withheld')
@@ -2081,7 +2193,8 @@ class _EvidenceObservations:
 
     def close(self) -> bool:
         try:
-            if not self.captured:
+            attempts = self.close_attempts()
+            if not self.captured and not attempts:
                 return False
             if len(self.manifests) != 1:
                 raise ValueError('submission executable owner withheld')
@@ -2135,6 +2248,7 @@ class _EvidenceObservations:
         if self.current is not None:
             self.current.release(); self.current = None
         self.pending.clear(); self.starts.clear(); self.manifests.clear()
+        self.attempts.clear(); self.submitted.clear(); self.attempt = None
         self.start = self.manifest = None
 
 
@@ -2358,7 +2472,7 @@ class _EvidenceJSON:
                         scalar(key)
                     if selected is not None:
                         selected(selected_path, 'key', key)
-                    if route == 1 and key in ('starts', 'durable', 'provider_commands') and selection is None:
+                    if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') and selection is None:
                         selection = _EvidenceObservations(relay_context, self.ledger, self.check, relay_sanitize, depth, submission_identity)
                     if event is not None:
                         event("key", key)
@@ -2378,7 +2492,7 @@ class _EvidenceJSON:
                         event=(proof.response_event if key == "response" else proof.request_event
                                if key == "request" else None) if proof is not None else event,
                         relay_context=relay_context, relay_sanitize=relay_sanitize,
-                        selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands') else selected,
+                        selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') else selected,
                         selected_path=(key,) if route == 1 else selected_path + (key,) if selected is not None else (),
                         submission_identity=submission_identity)
                     if proof is not None:

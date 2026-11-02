@@ -2489,6 +2489,16 @@ retain their actual meaning. All retained comparison/shape/source facts, aliases
 and original/safe work consume the same nonrenewing owner. Missing, conflicting,
 unsupported or unresolved facts refuse the whole member before pending/output.
 
+Canonical source-bearing provider_attempts submit/refuse plans now retain only
+their closed instruction, payload, complete original start and exchange facts.
+Each plan joins its exact command_index, action, full typed payload, source/start
+identity, original deadline and wire interval before publication, including when
+the plan precedes the command. The separately retained SOURCE occurrence receives
+its own finite lexical scan and comparison charges under the SAME remaining
+C/F/depth/end. No second acquisition, raw value tree or general index is added.
+An incomplete source-bearing plan refuses the whole member; an unfinished ordinary
+plan retains its original unavailable meaning. Other actions gain no script grant.
+
 Other ProviderCommand actions/copies, settled.wire_records/distinct CLI,
 entity/SQL/other source/hex/browser/direct/pair/human-display and cross-member joins
 remain unfinished and conservatively refused, with complete copy obligations
