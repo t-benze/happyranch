@@ -274,8 +274,12 @@ Independent original child joins and an otherwise authorized root tail still run
 failed sweeps suppress the ENTIRE root DB batch. Direct draft/review cancel and
 child/root waiters renew their original org/map/receiver references without a new
 readiness gate. The SAME first cancellation/traceback survives success or later
-failure; already-ended errors retain precedence. Actual later native outcomes
-remain separately retained even after cancellation notes fill. Safe/preserved/
+failure; already-ended errors retain precedence, including when the SAME wrapper
+is cancelled before delivering the native error. The local owner selects at the
+first cancellation observation, before bounded notes, final result consumption
+or outer-catch/finish handling; later native completion cannot reverse that choice.
+Actual later native outcomes remain separately retained even after cancellation
+notes fill. Safe/preserved/
 deferred keep their local meanings; no full host closure follows. These precise
 S1a corrections are SOURCE only: behavior NOT RUN, PROOF NOT RUN.
 

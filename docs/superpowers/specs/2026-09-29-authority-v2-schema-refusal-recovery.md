@@ -91,6 +91,10 @@ existing maintenance barrier BEFORE its sole native submission. The shared
 waiter preserves the SAME first cause/message/traceback and already-ended-error
 race rule, consuming the SAME worker outcome. Actual later native failures and
 tracebacks remain in fixed slots independently of repeated cancellation notes.
+Even an already-cancelled wrapper selects through the local retention callback at
+the first cancellation observation, using the native finished/error snapshot then.
+An earlier native error keeps its SAME object/original traceback; an earlier
+observed cancellation cannot be replaced by later native completion or delivery.
 Cancelled wrappers and enqueue-then-raise or missing handoff/retirement
 acknowledgements retain unknown native custody; no shield spin, inferred no-run
 or resubmission follows. Positive callable completion and successful original-loop

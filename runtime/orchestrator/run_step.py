@@ -1361,8 +1361,13 @@ class _WorktreeCleanupOwner:
     def retain(self, error: BaseException) -> None:
         if not isinstance(error, asyncio.CancelledError):
             self.fail('wrapper', error)
-        elif len(self.notifications) < 8:
-            self.notifications.append(error)
+        else:
+            # The shared waiter retains cancellation at its first observation
+            # even when a cancelled wrapper bypasses its on_cancel callback.
+            # Freeze precedence here, before a later native error can arrive.
+            self.on_cancel(error)
+            if len(self.notifications) < 8:
+                self.notifications.append(error)
 
     def select(self, error: BaseException) -> None:
         # ONLY the original wait selects precedence, never callback order.

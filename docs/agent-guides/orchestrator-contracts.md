@@ -2319,6 +2319,10 @@ The shared finite cleanup waiter registers a local original callable owner under
 the daemon maintenance barrier before submission can enqueue and raise. It
 consumes the SAME wrapper outcome and retains the SAME first cause/message/
 traceback, with an already-ended failure preceding racing waiter cancellation.
+The local retention callback also selects at the first cancellation observation
+when the SAME wrapper is already cancelled and the shared cancellation callback
+is bypassed. It uses the native finished/error snapshot at that observation;
+later result delivery or finish cannot replace an earlier selected cancellation.
 Later actual worker errors/tracebacks occupy fixed slots independently of bounded
 repeated-cancellation notes. A cancelled wrapper never proves native exit or
 no-run and is never shield-spun or resubmitted. Positive callable completion,
