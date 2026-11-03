@@ -34,6 +34,47 @@ describe('Markdown', () => {
     expect(document.querySelector('pre code')).not.toBeNull();
   });
 
+  // THR-337: markup typed on the opening fence line was parsed as lang/meta, leaving an empty block.
+  it('shows markup typed on the opening fence line as literal code', () => {
+    const anchor = '<a href="https://beian.mps.gov.cn/#/query/webSearch?code=44030002018973" rel="noreferrer" target="_blank">粤公网安备44030002018973号</a>';
+    const view = render(<Markdown body={'```' + anchor + '\n```\n\n深圳公安备案已完成，添加到网站山\n\n```ts\nconst x = 1;\n```'} />);
+    const [recovered, ordinary] = view.container.querySelectorAll('pre code');
+    expect(recovered.textContent).toBe(anchor + '\n');
+    expect(recovered.className).not.toMatch(/language-</);
+    expect(view.container.querySelector('a, script, [onclick]')).toBeNull();
+    expect(screen.getByText('深圳公安备案已完成，添加到网站山')).toBeInTheDocument();
+    expect(ordinary.className).toMatch(/language-ts/);
+    expect(ordinary.textContent).toBe('const x = 1;\n');
+  });
+
+  // TASK-13896 F1: the opening line ends at the first LF, CRLF or bare CR; source offsets stay raw.
+  it.each([['LF', '\n'], ['CRLF', '\r\n'], ['CR', '\r']])('recovers only the opening line with %s endings', (_name, nl) => {
+    const view = render(<Markdown body={['```<b>x</b>', 'body', '```', '', 'After @Current'].join(nl)} threadMentions />);
+    const codes = view.container.querySelectorAll('pre code');
+    expect(codes).toHaveLength(1);
+    expect(codes[0].textContent).toBe('<b>x</b>\nbody\n');
+    expect([...view.container.querySelectorAll('.gl-prose > p')].map(p => p.textContent)).toEqual(['After @Current']);
+    expect([...view.container.querySelectorAll('[data-thread-mention]')].map(n => n.textContent)).toEqual(['@Current']);
+    expect(view.container.querySelector('.gl-prose b, script')).toBeNull();
+  });
+
+  it.each([
+    ['~~~<b>x</b>\nbody\n~~~', '<b>x</b>\nbody\n', null],
+    ['```<b>x</b>  \t\n```', '<b>x</b>  \t\n', null],
+    ['``` <b>x</b> \t\nbody\n```', '<b>x</b> \t\nbody\n', null],
+    ['```ts title="<b>"\nlet y\n```', 'let y\n', 'language-ts'],
+    ['```html\n<a href="x">y</a>\n```', '<a href="x">y</a>\n', 'language-html'],
+    ['```ts title="a b"\nlet y\n```', 'let y\n', 'language-ts'],
+    ['```\n```', '', null],
+    ['```\n<a href="x">y</a>\n```', '<a href="x">y</a>\n', null],
+  ])('keeps fence semantics for %j', (body, text, lang) => {
+    const view = render(<Markdown body={body} />);
+    const code = view.container.querySelector('pre code')!;
+    expect(code.textContent).toBe(text);
+    if (lang) expect(code.className).toMatch(lang);
+    expect(view.container.querySelector('.gl-prose a, .gl-prose b')).toBeNull();
+  });
+
   it('renders a GFM table with thead and tbody', () => {
     render(<Markdown body={'| a | b |\n| - | - |\n| 1 | 2 |'} />);
     expect(document.querySelector('table thead')).not.toBeNull();

@@ -133,6 +133,8 @@ export function Markdown({ body }: { body: string }) {
 }
 ```
 
+**Opening-line markup recovery (THR-337).** The configured parser accepts an info string starting with `<` as lang/meta (CommonMark allows it), which left markup typed on the opening fence line (e.g. ```` ```<a href=…>…</a> ````) as an empty block. As a renderer-local recovery convention, when the parsed language begins with `<`, a remark step takes the first physical source line of the fence (ending at LF, CRLF or bare CR; source offsets unchanged), removes the fence run and any leading spaces/tabs, keeps the rest including trailing spaces/tabs, and shows it as the first code line with lang/meta cleared; any following body lines stay below it. It is still literal code text (no `rehypeRaw`), so the markup never becomes a live element. Other info strings (including `<` inside metadata after a valid language), `html` fences, deliberately empty fences and stored message bytes are unchanged.
+
 `rehype-highlight`'s `detect: true` infers the language for unannotated fences using `highlight.js/lib/common` (15+ common languages). Unknown languages render as plain `<pre><code>` with no highlight classes — no error.
 
 ### 4.3 Mermaid
