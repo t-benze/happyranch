@@ -51,6 +51,7 @@ class _CodingReadFrame:
         self.parent = _selected_read.get()
         self.children: list[_CodingReadFrame] = []
         self.primary = self.traceback = None
+        self.primary_occurrence = self.exit_call = None
         self.records: list[dict] = []
         self.last_occurrences: dict[int, dict] = {}
         self.exits: list[dict] = []
@@ -62,17 +63,32 @@ class _CodingReadFrame:
         self.token = _selected_read.set(self)
 
     def record(self, phase: str, error: BaseException, *, later: bool = False,
-               handled: bool = False) -> None:
+               handled: bool = False, exit_record: dict | None = None) -> None:
         # Native capture precedes every attachment, diagnostic or virtual access.
         occurrence = dict(phase=phase, error=error,
             traceback=BaseException.__traceback__.__get__(error),
             arguments=BaseException.args.__get__(error), previous=None, nested=None,
-            previous_occurrence=None, handled=handled, observation='observation' in phase)
+            previous_occurrence=None, handled=handled, observation='observation' in phase,
+            source_occurrence=None)
         self.records.append(occurrence)
+        source = None
+        if exit_record is not None:
+            # An exit's phase/error identity cannot prove child transport. Only
+            # the original child can publish a delivery during THIS exit call.
+            occurrence['observation'] = False
+            child = exit_record.get('read_frame')
+            delivered = exit_record.get('delivery')
+            if (child is not None and child.parent is self and child.exit_call is exit_record
+                    and child.finished and delivered is not None
+                    and delivered is child.primary_occurrence and delivered['error'] is error):
+                source = occurrence['source_occurrence'] = delivered
+                occurrence['observation'] = True
         self.evidence_complete = False
         self.support._coding_read_frame = self
         if self.primary is None and not handled:
-            self.primary, self.traceback = error, occurrence['traceback']
+            self.primary = error
+            self.primary_occurrence = occurrence if source is None else source
+            self.traceback = self.primary_occurrence['traceback']
         self.failed |= later
         values = BaseException.__dict__['__dict__'].__get__(error)
         occurrence['previous'] = values.get('_coding_read_frame')
@@ -120,12 +136,19 @@ class _CodingReadFrame:
             # specifically handled profile refusal owes no outer profile exit.
             return
         exit_record['attempted'] = True
+        child = exit_record.get('read_frame')
+        exit_record['delivery'] = None
+        if child is not None:
+            child.exit_call = exit_record
         try:
             result = exit_record['exit'](exit_record['context'], *self._args(exit_record))
             exit_record['returned'] = True
             exit_record['suppressed'] = bool(result)
         except BaseException as error:
-            self.record(exit_record['phase'], error, later=True)
+            self.record(exit_record['phase'], error, later=True, exit_record=exit_record)
+        finally:
+            if child is not None:
+                child.exit_call = None
 
     async def aclose_one(self) -> None:
         exit_record = self.pending.pop()
@@ -177,7 +200,12 @@ class _CodingReadFrame:
         if self.primary is inbound:
             BaseException.__traceback__.__set__(inbound, traceback)
             return False
-        raise BaseException.with_traceback(self.primary, self.traceback)
+        error = BaseException.with_traceback(self.primary, self.traceback)
+        if self.finished and self.exit_call is not None:
+            # Delivery is provenance, never positive cleanup evidence. Failed
+            # attachments leave this source reachable on the original frames.
+            self.exit_call['delivery'] = self.primary_occurrence
+        raise error
 
 
 def _capture(capture: AuthorityAdmissionCapture, admission_id: str, raw: bytes) -> dict:
@@ -244,6 +272,11 @@ class CodingImportSupport:
 
             def __enter__(self) -> tuple[sqlite3.Connection, AuthorityAdmissionCapture | None]:
                 frame = self.frame = _CodingReadFrame(support)
+                if frame.parent is not None and frame.parent.pending:
+                    original_exit = frame.parent.pending[-1]
+                    if (original_exit['context'] is self and not original_exit['acquired']
+                            and not original_exit['attempted']):
+                        original_exit['read_frame'] = frame
                 current = capture
                 try:
                     if validate_admission is not None:

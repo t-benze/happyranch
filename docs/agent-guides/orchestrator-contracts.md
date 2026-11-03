@@ -5149,8 +5149,11 @@ original exit independently in reverse order. A private profile signal carries t
 captured cause through the unchanged profile generators; actual errors never cross
 selected generator/ExitStack restoration. Repeated thrown occurrences have distinct
 records linked to their previous same-error owner and nested frames; boundary
-re-observations are identified separately. Failed attachment/diagnostic delivery
-retains the raw frame and cannot replace the first cause.
+re-observations are identified separately. A selected child-exit observation links
+to its original occurrence only when that original child frame emits a delivery
+during the same original exit call; equal errors or phase labels do not prove
+transport. This observation never certifies cleanup. Failed attachment/diagnostic
+delivery retains the raw frame and cannot replace the first cause.
 The coordinator's short lease/business transactions preserve the FIRST actual
 error even without an admission validator, with one marked rollback attempt.
 An earlier business E0 stays primary beside release E1 and its rollback E2;
