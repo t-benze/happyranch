@@ -31,7 +31,14 @@ relations through `workflow_task_owner_bindings`. This literal per-layout view
 contains no payload or history reader. It detects selected conflicting/dual
 owners and local task/principal/run/attempt inconsistencies without schema,
 integrity/FK, audit or unrelated-history scans. Errors return
-`reconciliation_required`; enqueue logs the existing refusal. Historical
+`reconciliation_required`; enqueue logs the existing refusal. After authorization
+and org resolution, the completion endpoint first rejects an absent task with
+HTTP404 `detail={"code":"unknown_task","task_id":task_id}`, preserving the
+original task ID, before classifying ownership. An existing task with missing,
+unsupported or conflicting ownership still refuses with HTTP409
+`workflow_reconciliation_required`. This existence-only read supplies no admission
+authority: subsequent replay, active-task and session checks retain their order,
+including fresh ownership/task/session validation at locked writer admission. Historical
 document-only roots/links remain owned and recovery-held. Foreign payload-only
 claims refuse at their own complete boundary (Founder347), without inventing an
 owner for another task. Actual admission, mutation, recovery and compatibility
