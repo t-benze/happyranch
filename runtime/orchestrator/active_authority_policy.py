@@ -328,8 +328,15 @@ def _authenticate_session_selector_supplement(
     pin = supplements[0]["payload"]
     keys = {"session_id", "mode", "selector_id", "selector_epoch", "family",
             "release_id", "activation_id"}
+    legacy_keys = {"session_id", "mode", "release_id", "policy_digest",
+                   "activation_id", "activation_epoch"}
+    modern_keys = legacy_keys | {
+        "self_evaluation_contract_id", "self_evaluation_contract_version",
+        "self_evaluation_contract_digest", "provider_id", "executor_kind", "model_id",
+    }
     if (
         set(pin) != keys
+        or set(payload) not in (legacy_keys, modern_keys)
         or pin["session_id"] != session_id
         or pin["mode"] != "selector_v1" or pin["family"] != "legacy_v1"
         or any(not isinstance(pin[key], str) or not pin[key]
