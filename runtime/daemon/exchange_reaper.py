@@ -33,7 +33,7 @@ async def exchange_reaper_loop(
     while True:
         require_ready(state)
         t0 = _monotonic()
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             try:
                 require_ready(org)
                 arrivals = org.db.reaper_sweep_reply_exchanges()

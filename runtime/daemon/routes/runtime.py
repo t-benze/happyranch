@@ -26,14 +26,19 @@ def _assert_can_swap(state: DaemonState) -> None:
     if state._runner_shutdown:
         raise HTTPException(status_code=409, detail={"code": "daemon_shutting_down"})
     state.team_move_service.assert_no_owner()
+    try:
+        state._assert_attachment_loads_idle()
+        state._assert_attachment_readers_idle(tuple(state.orgs_snapshot().values()))
+    except _OrgBusyError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     from runtime.orchestrator.team_move_startup import refuse_runtime_detach
     refuse_runtime_detach(state.runtime, diagnostics=state.broken_orgs)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         try:
             org._assert_runners_idle()
         except _OrgBusyError as exc:
             raise HTTPException(status_code=409, detail={"code": exc.code, "org": org.slug}) from exc
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         if org.db._team_move_coordinator.store.read() is not None:
             from runtime.infrastructure.team_move_store import TeamMoveError
             raise TeamMoveError("team_move_runtime_detach_held")
@@ -55,11 +60,11 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     # No await separates the all-org admission decision from map replacement.
     _assert_can_swap(state)
     state._revoke_thread_releases()
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         org._assert_thread_releases_idle()
     state._revoke_cleanup_diagnostics()
     # Synchronous callers cannot bypass the asynchronous drain barrier.
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         try:
             org._assert_cleanup_diagnostics_idle()
         except _OrgBusyError as exc:
@@ -67,9 +72,12 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     from runtime.orchestrator.team_move_startup import require_runtime_reader
     diagnostics = dict(move_diagnostics or {})
     diagnostics.update(require_runtime_reader(runtime))
-    for org in state.orgs.values():
+    old_orgs = tuple(state.orgs_snapshot().values())
+    state._begin_attachment_close(old_orgs)
+    for org in old_orgs:
         org.close()
-    new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics)
+    new_state = DaemonState.from_runtime(runtime, state.settings, move_diagnostics=diagnostics,
+                                         defer_coding_registration=False)
     # Move the worker queue and lock instances into the new state so an
     # in-flight worker pool keeps consuming. Old orgs have no nonterminal tasks
     # or active native runners (checked above).
@@ -80,13 +88,17 @@ def _swap(state: DaemonState, runtime: RuntimeDir, *, move_diagnostics=None) -> 
     for org in new_state.orgs.values():
         state._attach_startup_owner(org)
     state.runtime = new_state.runtime
-    state.orgs = new_state.orgs
-    for org in state.orgs.values():
+    with state._org_map_lock:
+        state.orgs = new_state.orgs
+        state._retiring_orgs.difference_update(id(org) for org in old_orgs)
+    for org in state.orgs_snapshot().values():
         org._cleanup_diagnostic_unavailable = "runtime_attachment_unsupported"
     state.broken_orgs = new_state.broken_orgs
     state.profile_coordinator = new_state.profile_coordinator
     from runtime.daemon.direct_connect_projection_sweep import bind_startup_references
     bind_startup_references(state)
+    if state.profile_coordinator is not None:
+        state.profile_coordinator._attachment_capture = state.capture_orgs
     # No live owner can cross the switch (checked above). Keep diagnostic
     # trackers/errors scoped to this runtime rather than the reused org slug.
     from runtime.daemon.team_move_service import TeamMoveService
@@ -129,11 +141,15 @@ async def _drain_before_swap(daemon: DaemonState) -> tuple:
 def _renew_swap_preflight(daemon: DaemonState, captured: tuple) -> None:
     try:
         daemon._assert_attachments_unchanged(captured)
-        for org in daemon.orgs.values():
+        for org in daemon.orgs_snapshot().values():
             org._assert_thread_releases_idle()
     except _OrgBusyError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     _assert_can_swap(daemon)
+    try:
+        daemon._begin_attachment_swap()
+    except _OrgBusyError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
 
 
 @router.get("/runtime")
@@ -153,11 +169,14 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
         # Registration writes the active registry even for the same root.
         # Refuse before those effects, not just before publishing the new map.
         _renew_swap_preflight(daemon, captured)
-        if not path.exists():
-            path.mkdir(parents=True, exist_ok=True)
-        runtime = RuntimeDir.init(path)
-        diagnostics = reg.register(path)
-        _swap(daemon, runtime, move_diagnostics=diagnostics)
+        try:
+            if not path.exists():
+                path.mkdir(parents=True, exist_ok=True)
+            runtime = RuntimeDir.init(path)
+            diagnostics = reg.register(path)
+            _swap(daemon, runtime, move_diagnostics=diagnostics)
+        finally:
+            daemon._finish_attachment_swap()
     import asyncio
     _wire_then_start_workers(daemon, asyncio.get_running_loop())
     return {"runtime": str(path.resolve())}
@@ -172,11 +191,14 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
     captured = await _drain_before_swap(daemon)
     async with daemon.orgs_lock:
         _renew_swap_preflight(daemon, captured)
-        from runtime.orchestrator.team_move_startup import require_runtime_reader
-        runtime = RuntimeDir.load(path)
-        diagnostics = require_runtime_reader(runtime)
-        diagnostics.update(reg.activate(path))
-        _swap(daemon, runtime, move_diagnostics=diagnostics)
+        try:
+            from runtime.orchestrator.team_move_startup import require_runtime_reader
+            runtime = RuntimeDir.load(path)
+            diagnostics = require_runtime_reader(runtime)
+            diagnostics.update(reg.activate(path))
+            _swap(daemon, runtime, move_diagnostics=diagnostics)
+        finally:
+            daemon._finish_attachment_swap()
     import asyncio
     _wire_then_start_workers(daemon, asyncio.get_running_loop())
     return {"runtime": str(path)}

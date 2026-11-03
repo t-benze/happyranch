@@ -164,18 +164,20 @@ class _CleanupDiagnostics:
         self.signalled = False
         self.unavailable: list[tuple[OrgState, dict[str, Any]]] = []
         # MUST precede copying or enumeration, even in the over-limit branch.
-        count = len(state.orgs)
         self.initial_reason = "initial_contexts"
-        if count > 8:
-            self.initial_reason = "initial_population_over_limit"
-            return
+        with state._org_map_lock:
+            count = len(state.orgs)
+            if count > 8:
+                self.initial_reason = "initial_population_over_limit"
+                return
+            initial_orgs = tuple(state.orgs.items())
         if not count:
             self.initial_reason = "no_initial_contexts"
             return
         if state.runtime is None or state.host_supervisor is None:
             self.initial_reason = "serving_context_missing"
             return
-        for slug, org in tuple(state.orgs.items()):
+        for slug, org in initial_orgs:
             try:
                 runtime_root = state.runtime.root.resolve()
                 org_root, db_path = org.root.resolve(), org.db.db_path.resolve()

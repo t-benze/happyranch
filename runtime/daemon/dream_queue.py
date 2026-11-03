@@ -90,7 +90,7 @@ async def dream_worker_loop(state, settings: Settings) -> None:
     validate_service = maintenance_service_validation(state)
     while True:
         validate_service()
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             if not state._worker_org_current(org, validate_service):
                 continue
             if org.dream_queue.size == 0:

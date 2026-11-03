@@ -609,3 +609,18 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 Earlier “unrelated task tree” and proposed cap/path language above records historical
 design. Exclusive keys include same-tree tasks; historical DDL/rulings remain
 unchanged. Legacy burned keys remain readable and cannot be reclaimed.
+
+## 2026-10-28 download-header addendum — THR-332 seq3
+
+`GET /api/v1/orgs/{slug}/tasks/{task_id}/attachments/{storage_key}` shares its
+Content-Disposition formatter with thread-scoped downloads. The exact form is
+`attachment; filename="<safe ASCII fallback>"; filename*=UTF-8''<encoded original>`.
+The fallback replaces non-ASCII characters, double quotes, backslashes and ASCII
+controls (including DEL) with underscores, retaining safe extension characters.
+`urllib.parse.quote(name, safe="")` percent-encodes the original UTF-8 name.
+Stored names/bytes, media types, `StreamingResponse(iter([content]))`, own/ancestor
+resolution, access checks, missing-resource errors and upload validation remain
+unchanged. A downloadable display name does not expand the upload MIME allowlist.
+
+Focused synthetic route/helper regressions, outside retired Python units and
+automatic merge CI: `uv run python scripts/verify_attachment_downloads.py`.

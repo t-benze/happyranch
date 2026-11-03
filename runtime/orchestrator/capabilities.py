@@ -105,19 +105,37 @@ def build_capabilities_prompt(
         '{"action": "delegate", "agent": "<agent_name>", "prompt": "<detailed instructions for the agent>"}',
         "```",
         "",
-        "When re-delegating to an agent that has a FAILED child under this",
-        "parent (e.g., retrying a failed fan-out slice), you MUST also set",
-        '`revisit_of_task_id` to the failed child\'s task id:',
+        "After failure, dispatch a fresh task by default with a complete brief",
+        "and references to prior findings, failures and spent allowances.",
+        "A new manager task can commission independent QA of a saved design",
+        "after an earlier reviewer returned no verdict/output; that design is",
+        "the assessment subject, not partial reviewer work. No cross-root",
+        "ancestry repair is needed just to obtain an independent assessment.",
+        "Use a linked retry only to continue partial work or account for an",
+        "attempt that may still be running. Inspect relevant effects/ownership",
+        "proportionately to prevent conflicting execution, without a universal",
+        "reconciliation or full-census prerequisite for fresh independent work.",
+        "Preserve partial edits/PRs/results, active owners, failed histories,",
+        "genuine uncertainty, authorization, holds and consumed/remaining",
+        "attempt/resource budgets. Fresh numbering cannot conceal failure,",
+        "replenish allowances, revive terminal tasks or permit duplicate work.",
+        "Terminal status or a missing PID alone proves no cleanup. Existing",
+        "review, QA, hooks and guarded-merge requirements remain.",
+        "For an intentional linked retry, set `revisit_of_task_id`:",
         "",
         "```json",
         '{"action": "delegate", "agent": "<agent_name>",',
         ' "prompt": "<retry brief>", "revisit_of_task_id": "<FAILED child task id>"}',
         "```",
         "",
-        "Omitting `revisit_of_task_id` when there is a FAILED child for that",
-        "agent is a HARD REJECT — the delegate will be denied and you will be",
-        "asked to retry with the field set. This preserves durable lineage; "
-        "the manager, not the runtime, decides revised work or any escalation.\n",
+        "This operating rule does not change installed native admission checks.",
+        "A FAILED same-agent child under this parent still makes",
+        "an omitted/invalid `revisit_of_task_id` a HARD REJECT. Report the real",
+        "constraint if the selected route is refused; do not fabricate a link,",
+        "alter history or claim fresh numbering bypasses it. Valid links use a",
+        "FAILED same-agent child of this parent or a predecessor root accepted",
+        "by the bounded recorded-supersession verifier. No deploy/restart or",
+        "live ancestry reconciliation is required by this operating rule.\n",
         "Or, to declare a multi-leg workflow chain (auto-advances without consuming",
         "orchestration steps):",
         "",
@@ -194,13 +212,16 @@ def build_capabilities_prompt(
         "- Integration model (a): each mutating child opens its own PR; "
         "the parent join summarizes outcomes.\n"
         "- Each child may optionally carry `then` / `expect_verdict` (pipeline carrier).\n"
-        "- Retry links (THR-078): a child that re-targets an agent with a "
-        "FAILED child under this parent MUST carry `revisit_of_task_id` "
-        "naming that FAILED child — it must identify a FAILED child of this "
-        "parent assigned to the same agent. Example retry child: "
+        "- Apply the fresh-work default above; choose linked continuation only "
+        "for partial work or a possibly running attempt. Installed retry-link "
+        "checks (THR-078) remain: a FAILED same-agent child under "
+        "this parent requires a valid `revisit_of_task_id`. Intentional linked "
+        "retries use the same verified predecessor rules as delegate. Report "
+        "mechanical refusals; do not invent links or claim a fresh-task bypass. "
+        "Example linked retry child: "
         '{"agent": "dev_agent", "prompt": "<retry brief>", '
         '"revisit_of_task_id": "<FAILED child task id>"}. '
-        "A missing or invalid `revisit_of_task_id` on ANY child rejects the "
+        "A missing or invalid required `revisit_of_task_id` on ANY child rejects the "
         "WHOLE fanout fail-closed before any child is spawned.\n"
         "- Children targeted at a **team manager** are decision-capable "
         "(mutating fan-out): they can return delegate-chain decisions that "

@@ -258,3 +258,20 @@ Web tests:
 ## Rollout
 
 This is a schema and OpenAPI change. Implementation should land with the migration, route updates, CLI changes, web type/API coverage, and protocol skill update in one branch so agents do not receive attachment prompts before the callback shape is supported.
+
+## 2026-10-28 download-header addendum — THR-332 seq3
+
+The implemented thread-scoped download route
+`GET /api/v1/orgs/{slug}/threads/{thread_id}/attachments/{attachment_id}`
+uses the same header formatter as task attachment downloads. It emits
+`attachment; filename="<safe ASCII fallback>"; filename*=UTF-8''<encoded original>`.
+The fallback replaces non-ASCII characters, double quotes, backslashes and ASCII
+controls (including DEL) with underscores, retaining safe extension characters.
+The extended value percent-encodes the original UTF-8 name with
+`urllib.parse.quote(name, safe="")`. Stored names/bytes, content type, buffered
+response, access checks, missing-resource errors and upload validation are
+unchanged. This addendum covers the thread-scoped route; the historical
+artifact-backed design above remains intact.
+
+Focused synthetic route/helper regressions, outside retired Python units and
+automatic merge CI: `uv run python scripts/verify_attachment_downloads.py`.

@@ -23,8 +23,9 @@ from sse_starlette.sse import EventSourceResponse
 from fastapi.responses import JSONResponse
 
 from runtime.daemon.auth import _require_human, require_token
+from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.org_state import OrgState
-from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
@@ -1149,7 +1150,7 @@ def _completion_v2_evidence(
 
 
 @router.get("/tasks/{task_id}/events")
-async def task_events(task_id: str, org: OrgDep):
+async def task_events(task_id: str, org: OrgStreamDep, request: Request):
     # Reject unknown task IDs up front — otherwise EventBus.subscribe() replays
     # no history for a fabricated id and then blocks forever, which makes
     # `happyranch tail <bad-id>` hang instead of surfacing a 404.
@@ -1157,7 +1158,7 @@ async def task_events(task_id: str, org: OrgDep):
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
     async def gen():
-        async for event in org.event_bus.subscribe(task_id):
+        async for event in _stream_org_events(request, org, task_id):
             yield {"data": _json.dumps(event)}
 
     return EventSourceResponse(gen())
@@ -2800,7 +2801,7 @@ def get_task_attachment(
     slug: str,
     task_id: str,
     storage_key: str,
-    org: OrgDep,
+    org: OrgStreamDep,
     request: Request,
 ):
     """Download a task attachment's bytes (THR-109 seq25 org-scoped bearer read).
@@ -2847,8 +2848,7 @@ def get_task_attachment(
         iter([content]),
         media_type=media_type,
         headers={
-            "Content-Disposition":
-                f'attachment; filename="{record.display_name}"',
+            "Content-Disposition": attachment_content_disposition(record.display_name),
         },
     )
 

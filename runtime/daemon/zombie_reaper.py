@@ -476,7 +476,7 @@ async def zombie_reaper_loop(
         now = datetime.now(timezone.utc)
         uptime = t0 - boot_time
 
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             root_tail_failed = False
             try:
                 validate_state()

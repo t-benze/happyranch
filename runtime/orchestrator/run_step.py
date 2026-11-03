@@ -589,13 +589,29 @@ class _RootWorktreeTransitions(list):
 
 @contextmanager
 def _defer_root_worktree_batches(orch, transitions):
-    delivery = dict(orch=orch, events=transitions, active=True, teardown_incomplete=False)
-    token = _ROOT_WORKTREE_OWNER_EVENTS.set(delivery)
+    delivery = dict(orch=orch, events=transitions, active=True, teardown_incomplete=False, consumption_pending=False)
+    token = None
+    errors = _JobTailErrors()
     try:
+        token = _ROOT_WORKTREE_OWNER_EVENTS.set(delivery)
         yield delivery
+    except BaseException as exc:
+        errors.remember('body', exc)
+        if errors._attachment_failed:
+            delivery['teardown_incomplete'] = True
+        raise
     finally:
         delivery['active'] = False
-        _ROOT_WORKTREE_OWNER_EVENTS.reset(token)
+        if token is not None:
+            try:
+                _ROOT_WORKTREE_OWNER_EVENTS.reset(token)
+            except BaseException as secondary:
+                errors.remember('root_owner_reset', secondary)
+                delivery['teardown_incomplete'] = True
+                delivery['_context_incomplete'] = True
+                errors._root_delivery = delivery
+                errors._attach('_root_owner_reset_secondary')
+                errors.raise_first()
 
 
 @dataclass
@@ -1835,10 +1851,13 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
         classification = db.classify_authority_policy_v2_root_dispatch_for_enqueue(
             task_id
         )
-    except Exception:
-        logger.exception(
-            "run_step %s: v2 dispatch classification failed", task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "run_step %s: v2 dispatch classification failed", task_id,
+            )
+        except BaseException:
+            raise primary
         return
     if getattr(classification, "kind", None) != "pending":
         return
@@ -1849,70 +1868,119 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
         publish_authority_policy_v2_notifications(
             orch, queue, root_task_id=task_id,
         )
-    except Exception:
-        # Liveness is best-effort: a publication-request failure must never
-        # turn a correct fail-closed refusal into an admission or a crash.
-        logger.exception(
-            "run_step %s: pending v2 publication request failed", task_id,
-        )
+    except Exception as primary:
+        # Liveness is best-effort when the diagnostic succeeds. If logging
+        # also fails, preserve the publication error without admitting work.
+        try:
+            logger.exception(
+                "run_step %s: pending v2 publication request failed", task_id,
+            )
+        except BaseException:
+            raise primary
 
 
-def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> _HumanFailedRecoveryOperation | str | None:
     orch._require_startup_ready()
-    # Workflow dispatch returns before the ordinary invocation owner exists.
-    # This worker scope also carries its terminal event past tracker teardown,
-    # workflow invocation close/release and the dispatcher's live-claim tail.
+    # Keep the actual exception active through Pause settlement: the SAME
+    # invocation authenticates a held refusal against sys.exception().
     transitions = _RootWorktreeTransitions()
-    from runtime.orchestrator.team_move import _task_tail
     tail = []
-    tail_token = _task_tail.set(tail)
+    tail_token = None
     tail_failed = False
     disposition = None
-    primary = None
+    # Entry can fail before the context manager delivers its own dictionary.
+    delivery = dict(teardown_incomplete=False, consumption_pending=False, _context_incomplete=True)
+    errors = _JobTailErrors()
+    body_error = None
     try:
+        from runtime.orchestrator.team_move import _task_tail
+        from runtime.orchestrator.task_pause import settle_live
+        tail_token = _task_tail.set(tail)
         with _defer_root_worktree_batches(orch, transitions) as delivery:
-            _run_step_owned(orch, task_id, metadata)
-    except BaseException as exc:
-        primary = exc
-        # Only the actual invocation returned by the inner owner may carry
-        # its authenticated no-new-launch refusal through this second tail.
-        tail_failed = not (len(tail) == 1 and not tail[0][1]
-                           and tail[0][0]._held_recovery_refusal(exc))
-        raise
-    finally:
-        tail_failed |= delivery['teardown_incomplete']
-        try:
-            disposition = _root_worktree_batch(orch, transitions, teardown_incomplete=tail_failed)
-            tail_failed |= disposition.kind != 'safe'
-            if tail_failed:
-                logger.warning('task %s outer cleanup retained: %s processes=%s',
-                    task_id, disposition.reason, disposition.processes)
-        except BaseException as secondary:
-            tail_failed = True
-            if primary is None:
+            try:
+                consumption = _run_step_owned(orch, task_id, metadata)
+                errors._completed = consumption
+                if _completion_consumption_pending(consumption):
+                    delivery['consumption_pending'] = True
+                    delivery['teardown_incomplete'] = True
+                return consumption
+            except BaseException as exc:
+                # Context exit is fallible too. Capture E1 before handing its
+                # unwind to that boundary, including the actual body traceback.
+                errors._retain('body', exc)
+                body_error = exc
                 raise
-            primary.add_note(f"Root worktree tail also failed: {type(secondary).__name__}")
-        finally:
-            _task_tail.reset(tail_token)
-            from runtime.orchestrator.task_pause import settle_live
-            settlement_errors = []
-            for invocation, failed in tail:
+    except BaseException as exc:
+        errors.remember('body' if body_error is None else 'context_delivery', exc)
+        try:
+            errors.raise_first()
+        except BaseException as primary:
+            try:
+                clean_held = (len(tail) == 1 and not tail[0][1]
+                              and tail[0][0]._held_recovery_refusal(primary))
+                tail_failed = (not clean_held or errors._attachment_failed
+                               or body_error is not None and exc is not body_error)
+            except BaseException as secondary:
+                errors.remember('held_refusal', secondary)
+                tail_failed = True
+        errors.raise_first()
+    finally:
+        try:
+            tail_failed |= delivery['teardown_incomplete']
+            disposition = (
+                _RootWorktreeBatchDisposition('unknown', 'completion_consumption_pending')
+                if delivery['consumption_pending']
+                else _RootWorktreeBatchDisposition('unknown', 'root_owner_context_incomplete')
+                if delivery.get('_context_incomplete', False)
+                else _root_worktree_batch(orch, transitions, teardown_incomplete=tail_failed)
+            )
+        except BaseException as secondary:
+            errors.remember('root_worktree', secondary)
+            tail_failed = True
+        else:
+            try:
+                tail_failed |= disposition.kind != 'safe'
+                if tail_failed:
+                    logger.warning('task %s outer cleanup retained: %s processes=%s',
+                        task_id, disposition.reason, disposition.processes)
+            except BaseException as secondary:
+                errors.remember('root_worktree_diagnostic', secondary)
+                tail_failed = True
+        if tail_token is not None:
+            try:
+                _task_tail.reset(tail_token)
+            except BaseException as secondary:
+                errors.remember('task_tail_reset', secondary)
+                tail_failed = True
+
+        def settle_original(index, invocation, failed):
+            nonlocal tail_failed
+            try:
+                settle_live(invocation, failed=failed or tail_failed, cleanup=disposition)
+            except BaseException as secondary:
+                errors.remember(('pause_settlement', index), secondary)
+                tail_failed = True
+
+        for index, (invocation, failed) in enumerate(tail):
+            if errors.primary is None:
+                settle_original(index, invocation, failed)
+            else:
+                # A root/reset/earlier-Pause failure can be the first error on
+                # an otherwise successful body. Authenticate and settle EACH
+                # original invocation with that same first cause active too.
                 try:
-                    settle_live(invocation, failed=failed or tail_failed, cleanup=disposition)
-                except BaseException as exc:
-                    settlement_errors.append(exc)
-            if settlement_errors:
-                if primary is None:
-                    raise BaseExceptionGroup("task Pause tail settlement failed", settlement_errors)
-                for secondary in settlement_errors:
-                    primary.add_note(f"Task Pause tail also failed: {type(secondary).__name__}")
+                    errors.raise_first()
+                except BaseException:
+                    settle_original(index, invocation, failed)
+        errors._attach('_run_step_errors')
+        errors.raise_first()
 
 
-def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> _HumanFailedRecoveryOperation | str | None:
     from runtime.daemon.startup_recovery import ordinary_admission_validation
     validate = ordinary_admission_validation(orch)
     from runtime.orchestrator.task_pause import (
-        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation,
+        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation, adopt_deferred_invocation, release_live,
     )
     from runtime.infrastructure.task_pause_controls import PauseControlError
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -1952,26 +2020,47 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                 return
             invocation.prepare()
     except DeferredTeamMove as exc:
-        logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
-        orch._team_moves.defer_task(task_id, metadata)
+        preparation_errors = _JobTailErrors()
+        preparation_errors._retain('prepare_deferral', exc)
+        try:
+            logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
+            orch._team_moves.defer_task(task_id, metadata)
+        except BaseException as secondary:
+            preparation_errors.remember('prepare_deferral_bookkeeping', secondary)
+            preparation_errors._attach('_run_step_prepare_deferral_secondary')
+            preparation_errors.raise_first()
         return
     except DeferredRootPause:
         return
     except Exception as exc:
-        from runtime.daemon.startup_recovery import StartupUnavailable
-        if isinstance(exc, StartupUnavailable):
-            raise
-        if isinstance(exc, PauseControlError) and exc.detail["code"] == "root_paused":
-            return
-        if invocation is not None:
-            from runtime.orchestrator.launch_refusals import settle_refusal
-            if settle_refusal(invocation, exc, prepared=False):
+        preparation_errors = _JobTailErrors()
+        preparation_errors._retain('prepare_refusal', exc)
+        try:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable):
+                pass
+            elif isinstance(exc, PauseControlError) and exc.detail["code"] == "root_paused":
                 return
+            elif invocation is not None:
+                from runtime.orchestrator.launch_refusals import settle_refusal
+                if settle_refusal(invocation, exc, prepared=False):
+                    return
+        except BaseException as secondary:
+            preparation_errors.remember('prepare_refusal_bookkeeping', secondary)
+            preparation_errors._attach('_run_step_prepare_refusal_secondary')
+            preparation_errors.raise_first()
         raise
-    token = _invocation.set(invocation)
-    root_delivery = dict(orch=orch, events=_RootWorktreeTransitions(), active=True, teardown_incomplete=False)
-    root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
+    token = root_token = None
+    parent_delivery = None
+    root_context_incomplete = False
+    root_delivery = dict(orch=orch, events=_RootWorktreeTransitions(), active=True, teardown_incomplete=False, consumption_pending=False)
+    errors = _JobTailErrors()
+    contexts_installed = False
     try:
+        token = _invocation.set(invocation)
+        parent_delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
+        root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
+        contexts_installed = True
         consumer_only = getattr(invocation, "consumer_only", False)
         landed = (orch._db.get_latest_task_result(task_id, invocation.agent,
                     invocation.consumer_session_id if consumer_only else invocation.session_id)
@@ -1983,7 +2072,7 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
             from runtime.orchestrator.orchestrator import completion_report_from_result_row
             report = completion_report_from_result_row(task_id, landed, fallback_agent=invocation.agent)
             orch._audit.log_completion_report(report=report)
-            _consume_completion_report(orch, task_id, report, result_row_id=landed["id"])
+            consumption = _consume_completion_report(orch, task_id, report, result_row_id=landed["id"])
         elif consumer_only:
             raise DeferredRootPause("exact callback no longer available")
         elif getattr(invocation, "deferred_recovery", False):
@@ -1993,76 +2082,153 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
                 proof = invocation._entry(row)["context"]["recovery_return"]
             result = ExecutorResult(success=True, session_id=proof["origin_session_id"],
                                     agent_session_id=proof["provider_session_id"], duration_seconds=proof["duration_seconds"])
-            _finish_step_return(orch, task, invocation.agent, result,
+            consumption = _finish_step_return(orch, task, invocation.agent, result,
                                 orch._read_completion_from_db(task_id, invocation.agent, result.session_id),
                                 usage_already_recorded=True)
         else:
-            _run_step_body(orch, task_id, invocation.metadata)
-    except (DeferredRootPause, DeferredTeamMove) as exc:
-        # A same-owner cleanup refusal is not an intentional move hold. Keep
-        # every other native move/hold disposition and its admission policy.
-        if (isinstance(exc, DeferredTeamMove) and exc.code == "team_move_preparation_unsettled"
-                and invocation.move_reservation is not None and invocation.move_reservation.cleanup_failed
-                and not invocation.launch_observed):
+            consumption = _run_step_body(orch, task_id, invocation.metadata)
+        errors._completed = consumption
+        if _completion_consumption_pending(consumption):
+            root_delivery['consumption_pending'] = True
             root_delivery['teardown_incomplete'] = True
-            from runtime.orchestrator.launch_refusals import settle_refusal
-            if settle_refusal(invocation, exc, prepared=True):
-                return
-        if isinstance(exc, DeferredTeamMove):
-            logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
-            orch._team_moves.defer_task(task_id, metadata)
-        with store.db._lock:
-            row = store.row_uncommitted(store.root_uncommitted(task_id)["id"])
-            entry = invocation._entry(row)
-            recovery_deferred = "recovery_return" in entry["context"] and not invocation.admitted
-        if recovery_deferred:
-            invocation.phase("recovery_deferred")
-        elif invocation.admitted:
-            invocation.phase("retry_deferred", started_at=None, captured_generation=None)
-    except BaseException as exc:
-        root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(exc)
-        from runtime.daemon.startup_recovery import StartupUnavailable
-        if isinstance(exc, StartupUnavailable):
+        return consumption
+    except (DeferredRootPause, DeferredTeamMove) as exc:
+        # Original move/Pause deferral predicates are unchanged. If their
+        # bookkeeping fails, retain the error that selected this unwind first.
+        errors._retain('deferral' if contexts_installed else 'context_setup', exc)
+        if not contexts_installed:
+            root_delivery['teardown_incomplete'] = True
+            root_context_incomplete = True
+            errors._root_delivery = root_delivery
             raise
-        if isinstance(exc, Exception) and not invocation.launch_observed:
-            from runtime.orchestrator.launch_refusals import settle_refusal
-            if settle_refusal(invocation, exc, prepared=True):
-                return
-        if invocation.admitted:
-            invocation.phase("unknown")
+        try:
+            if (isinstance(exc, DeferredTeamMove) and exc.code == "team_move_preparation_unsettled"
+                    and invocation.move_reservation is not None and invocation.move_reservation.cleanup_failed
+                    and not invocation.launch_observed):
+                root_delivery['teardown_incomplete'] = True
+                from runtime.orchestrator.launch_refusals import settle_refusal
+                if settle_refusal(invocation, exc, prepared=True):
+                    errors.primary = errors.traceback = None
+                    return
+            if isinstance(exc, DeferredTeamMove):
+                logger.warning('task %s deferred by move admission: %s operation=%s', task_id, exc.code, exc.operation_id)
+                orch._team_moves.defer_task(task_id, metadata)
+            with store.db._lock:
+                row = store.row_uncommitted(store.root_uncommitted(task_id)["id"])
+                entry = invocation._entry(row)
+                recovery_deferred = "recovery_return" in entry["context"] and not invocation.admitted
+            if recovery_deferred:
+                invocation.phase("recovery_deferred")
+            elif invocation.admitted:
+                invocation.phase("retry_deferred", started_at=None, captured_generation=None)
+        except BaseException as secondary:
+            errors.remember('deferral_bookkeeping', secondary)
+            root_delivery['teardown_incomplete'] = True
+            errors.raise_first()
+        errors.primary = errors.traceback = None
+    except BaseException as exc:
+        errors._retain('body' if contexts_installed else 'context_setup', exc)
+        if not contexts_installed:
+            root_delivery['teardown_incomplete'] = True
+            root_context_incomplete = True
+            errors._root_delivery = root_delivery
+            raise
+        try:
+            root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(exc)
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            if isinstance(exc, StartupUnavailable):
+                pass
+            elif isinstance(exc, Exception) and not invocation.launch_observed:
+                from runtime.orchestrator.launch_refusals import settle_refusal
+                if settle_refusal(invocation, exc, prepared=True):
+                    # A positively handled ordinary refusal keeps its original
+                    # return shape. Actual refusal/persistence errors do not.
+                    errors.primary = errors.traceback = None
+                    return
+            if not isinstance(exc, StartupUnavailable) and invocation.admitted:
+                invocation.phase("unknown")
+        except BaseException as secondary:
+            errors.remember('refusal_or_phase', secondary)
+            root_delivery['teardown_incomplete'] = True
         raise
     finally:
         primary = sys.exception()
         if primary is not None:
-            root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(primary)
-        from runtime.orchestrator.task_pause import release_live
+            if errors.primary is None:
+                errors.remember('body', primary)
+            try:
+                root_delivery['teardown_incomplete'] |= not invocation._held_recovery_refusal(primary)
+            except BaseException as secondary:
+                errors.remember('held_refusal', secondary)
+                root_delivery['teardown_incomplete'] = True
         try:
             release_live(invocation, failed=root_delivery['teardown_incomplete'])
         except BaseException as secondary:
+            errors.remember('release_live', secondary)
             root_delivery['teardown_incomplete'] = True
-            invocation.move_reservation.cleanup_failed = True
+            try:
+                if invocation.move_reservation is not None:
+                    invocation.move_reservation.cleanup_failed = True
+            except BaseException as marker:
+                errors.remember('release_uncertainty_marker', marker)
             try:
                 invocation.failed_cleanup()
             except BaseException as persistence:
-                secondary.add_note(f"Task release uncertainty save failed: {type(persistence).__name__}")
-            if primary is None:
-                raise
-            primary.add_note(f"Task live release also failed: {type(secondary).__name__}")
-        finally:
-            _invocation.reset(token)
-            root_delivery['active'] = False
-            _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+                errors.remember('failed_cleanup', persistence)
+        # Each positively installed context reset and retained root tail is
+        # independently owed, even after release/marker/persistence failure.
+        if token is not None:
+            try:
+                _invocation.reset(token)
+            except BaseException as secondary:
+                errors.remember('invocation_reset', secondary)
+                root_delivery['teardown_incomplete'] = True
+        root_delivery['active'] = False
+        if root_token is not None:
+            try:
+                _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+            except BaseException as secondary:
+                errors.remember('root_owner_reset', secondary)
+                root_delivery['teardown_incomplete'] = True
+                root_context_incomplete = True
+                errors._root_delivery = root_delivery
+        if root_delivery['consumption_pending']:
+            try:
+                outer_delivery = parent_delivery if root_context_incomplete else _ROOT_WORKTREE_OWNER_EVENTS.get()
+                if outer_delivery is not None and outer_delivery['orch'] is orch:
+                    outer_delivery['consumption_pending'] = True
+                    outer_delivery['teardown_incomplete'] = True
+            except BaseException as secondary:
+                errors.remember('pending_forward', secondary)
+                root_delivery['teardown_incomplete'] = True
+        elif root_context_incomplete:
+            # Failed setup/reset cannot select an inactive/replaced context and
+            # accidentally enter cold DB admission/audit/report. Retain the
+            # original capture with its positively captured outer owner only.
+            # No batch/cleanup/retirement success is manufactured here.
+            try:
+                if parent_delivery is not None and parent_delivery['orch'] is orch and parent_delivery['active']:
+                    parent_delivery['teardown_incomplete'] = True
+                    parent_delivery['events'].extend(root_delivery['events'])
+            except BaseException as secondary:
+                errors.remember('root_capture_retention', secondary)
+        else:
             try:
                 _root_worktree_batch(orch, root_delivery['events'],
                     teardown_incomplete=root_delivery['teardown_incomplete'])
             except BaseException as secondary:
-                invocation.move_reservation.cleanup_failed = True
-                if primary is None:
-                    raise
-                primary.add_note(f"Inner root worktree tail also failed: {type(secondary).__name__}")
+                errors.remember('root_worktree', secondary)
+                root_delivery['teardown_incomplete'] = True
+                try:
+                    if invocation.move_reservation is not None:
+                        invocation.move_reservation.cleanup_failed = True
+                except BaseException as marker:
+                    errors.remember('root_uncertainty_marker', marker)
+        errors._attach('_run_step_owned_errors')
+        errors.raise_first()
 
 
-def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> _HumanFailedRecoveryOperation | str | None:
     orch._require_startup_ready()
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
@@ -2332,11 +2498,11 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
         )
         return
 
-    _finish_step_return(orch, task, agent, result, report)
+    return _finish_step_return(orch, task, agent, result, report)
 
 
 def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, result, report,
-                        *, usage_already_recorded: bool = False) -> None:
+                        *, usage_already_recorded: bool = False) -> _HumanFailedRecoveryOperation | str | None:
     db, task_id = orch._db, task.id
     from runtime.orchestrator.task_pause import current_invocation, DeferredRootPause
     from runtime.orchestrator.team_move import DeferredTeamMove
@@ -2604,12 +2770,12 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
             result_row_id = _result_row["id"]
     orch._log_step_result(task_id, result, report, result_row_id=result_row_id)
     if accepted_recovery_callback:
-        _consume_accepted_completion_recovery(
+        return _consume_accepted_completion_recovery(
             orch, task_id, report, agent=agent,
             session_id=recovery_session_id or "", result_row_id=result_row_id,
         )
     else:
-        _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+        return _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
 
 
 @dataclass
@@ -2930,6 +3096,39 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
     return operation
 
 
+class _CompletionConsumerHeld(str):
+    """Private unconsumed marker; lost_owner is the existing reaper skip tag.
+
+    This does not assert an owner-loss event or settle any native/receipt owner.
+    """
+
+    status = "housekeeping_pending"
+    task_disposition = None
+    reason = "caller_transaction_owned"
+
+    def __new__(cls):
+        return super().__new__(cls, "lost_owner")
+
+
+def _completion_consumer_entry_held(db) -> _CompletionConsumerHeld | None:
+    # Original-connection observation before even task/workflow classifiers.
+    # Opaque/closed/replaced connection errors propagate unchanged; no writer,
+    # fallback connection or diagnostic may turn them into autocommit success.
+    with db._lock:
+        conn = db._conn
+        owned = conn.in_transaction
+        if db._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("completion consumer connection ownership unavailable")
+        return _CompletionConsumerHeld() if owned else None
+
+
+def _completion_consumption_pending(outcome) -> bool:
+    # Keep the real human operation and held marker intact for their owners.
+    # All string outcomes of these consumers are existing negative tags.
+    return (isinstance(outcome, (_HumanFailedRecoveryOperation, str))
+            or getattr(outcome, "status", None) == "housekeeping_pending")
+
+
 def _consume_accepted_completion_recovery(
     orch: "Orchestrator", task_id: str, report, *, agent: str, session_id: str,
     result_row_id: int,
@@ -2943,6 +3142,9 @@ def _consume_accepted_completion_recovery(
     a crash after commit leaves ordinary startup to reconstruct queue delivery.
     """
     db = orch._db
+    held = _completion_consumer_entry_held(db)
+    if held is not None:
+        return held
     current = db.get_task(task_id)
     if current is None:
         return
@@ -3136,7 +3338,7 @@ def _consume_accepted_completion_recovery(
             reclaim_terminal_worktree=False,
             pre_final_identity=original_v2_identity,
         )
-        if isinstance(outcome, str):
+        if _completion_consumption_pending(outcome):
             # Accepted transport is not effect settlement. Preserve the actual
             # negative for the cold owner before any consumed-receipt work.
             return outcome
@@ -3369,6 +3571,7 @@ class _V2DecisionDispatchOutcome(NamedTuple):
     manager_agent: str | None = None
     causal_result_id: int | None = None
     pre_final_identity: tuple[str, str, str, int] | None = None
+    consumption_pending: bool = False
 
 
 def _v2_report_binds(db, task_id, spending_result_id, report) -> bool:
@@ -3402,7 +3605,7 @@ def _v2_decision_dispatch_gate(
     original caller, preserving its pending result and cold failure ownership.
     """
     db = orch._db
-    skip = _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP)
+    skip = _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP, consumption_pending=True)
     # Let the original read error reach the caller's existing failure owner.
     context = db.authority_policy_v2_completion_dispatch_context(
         root_task_id=task_id, result_row_id=result_row_id,
@@ -3501,8 +3704,12 @@ def _v2_decision_dispatch_gate(
                     "run_step %s: v2 decision refusal pending (%s)",
                     task_id, getattr(refusal, "reason", None),
                 )
-            return skip
-        # ``applied``/``refused`` are terminal: read-only, never a second consumer.
+                return skip
+            return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP)
+        # Only the authenticated terminal receipt is read-only settlement.
+        # Every other lost/pending/unknown outcome retains consumer ownership.
+        if state in ("applied", "refused"):
+            return _V2DecisionDispatchOutcome(_V2_DECISION_DISPATCH_SKIP)
         return skip
     # ``foreign``/unknown: an unmatched identity on a live lineage is never
     # ordinary permission.
@@ -3530,6 +3737,9 @@ def _consume_completion_report(
     provably ordinary/v1 result is unchanged.
     """
     db = orch._db
+    held = _completion_consumer_entry_held(db)
+    if held is not None:
+        return held
     task = db.get_task(task_id)
     if task is None:
         return
@@ -3553,7 +3763,7 @@ def _consume_completion_report(
         coding = getattr(orch, "_workflow_coding_start", None)
         if coding is None:
             logger.warning("coding start unavailable for %s", task_id)
-            return
+            return "startup_held"
         try:
             coding.consume(RetryClaim.from_task(task, result_row_id=resolved_row_id), decision, report)
         except StartupUnavailable as exc:
@@ -3565,10 +3775,11 @@ def _consume_completion_report(
             return "startup_held"
         except CodingStartError as exc:
             logger.warning("coding start held for %s: %s", task_id, exc.code)
+            return "startup_held"
         return
     outcome = _v2_decision_dispatch_gate(orch, task_id, report, resolved_row_id, agent)
     if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
-        return
+        return "v2_pending" if outcome.consumption_pending else None
     # A reaper/accepted caller's first selection cannot be replaced by this
     # later classification. This tuple selects error custody, never permission.
     if pre_final_identity is None:
@@ -3622,7 +3833,7 @@ def _consume_completion_report(
             except BaseException:
                 pass
         raise
-    if isinstance(body_outcome, str):
+    if _completion_consumption_pending(body_outcome):
         # A retained pending obligation is not an applied decision. Forward the
         # explicit negative to recovery without acknowledging or adding effects.
         return body_outcome
@@ -3643,6 +3854,7 @@ def _consume_completion_report(
             "run_step %s: v2 decision acknowledgement not settled (%s)",
             task_id, getattr(ack, "reason", None),
         )
+        return "v2_pending"
 
 
 def _consume_completion_report_body(
@@ -3898,6 +4110,10 @@ def _consume_completion_report_body(
         if hook_outcome == "v2_refused":
             refusal_status = getattr(hook_outcome, "status", None)
             task_disposition = getattr(hook_outcome, "task_disposition", None)
+            if refusal_status == "housekeeping_pending":
+                # The policy terminal transaction retains J/task/exact-Q.
+                # No ordinary CAS, postcommit tail or success acknowledgement.
+                return hook_outcome
             refused_task = orch._db.get_task(task_id)
             expected_prefix = "authority_v2_refusal:"
             if (
@@ -3958,12 +4174,28 @@ def _consume_completion_report_body(
                 and refused_task.completed_at is None
                 and (refused_task.note or "").startswith(expected_prefix)
             ):
-                # Root refusal retains the pre-existing escalation projection.
+                # Policy surfacing uses the immutable causal result, never a
+                # caller-supplied report/reason or the bounded refusal sentinel.
+                surface_reason = reason
+                surface_summary = getattr(report, "output_summary", "") or ""
+                if refused_task.note == "authority_v2_refusal:policy_no_continue":
+                    causal = db.get_latest_task_result(
+                        task_id, refused_task.assigned_agent,
+                        refused_task.current_session_id,
+                    )
+                    if causal is None or causal.get("id") != result_row_id:
+                        return  # committed terminality supplies no missing tail proof
+                    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                    causal_report = completion_report_from_result_row(
+                        task_id, causal, fallback_agent=agent,
+                    )
+                    surface_reason = orch._parse_next_step(causal_report).reason or "Escalated"
+                    surface_summary = causal_report.output_summary or ""
                 orch.notify_escalated(
-                    task_id=task_id, agent=agent, reason=reason,
-                    last_summary=getattr(report, "output_summary", "") or "",
+                    task_id=task_id, agent=agent, reason=surface_reason,
+                    last_summary=surface_summary,
                 )
-                _maybe_post_thread_escalation(orch, task_id, reason=reason)
+                _maybe_post_thread_escalation(orch, task_id, reason=surface_reason)
             return
         if hook_outcome == "v2_pending":
             # Refusal housekeeping is unresolved, possibly after a genuine
@@ -5426,27 +5658,62 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
 
 
 class _JobTailErrors:
-    """Original terminal-effect cause and fixed, independently owed outcomes."""
+    """Original terminal-effect cause and independently owed actual outcomes."""
 
     def __init__(self):
         self.primary = self.traceback = None
         self.errors = {}
         self.lock = threading.RLock()
+        self._occurrences = []
+        self._previous = []
+        self._attachment_attempts = set()
+        self._attachment_failed = False
+
+    def _retain(self, kind, error, *, attach=False):
+        # Snapshot through the native descriptor before fallible diagnostics or
+        # attachment. The dictionary keeps its original first-per-kind shape;
+        # the private sequence retains EVERY delivered occurrence in order.
+        traceback = BaseException.__traceback__.__get__(error)
+        with self.lock:
+            occurrence = (kind, error, traceback)
+            self._occurrences.append(occurrence)
+            self.errors.setdefault(kind, (error, traceback))
+            if self.primary is None:
+                self.primary, self.traceback = error, traceback
+            if attach:
+                self._attach('_job_tail_errors')
+
+    def _attach(self, name):
+        with self.lock:
+            primary = self.primary
+            key = (id(primary), name)
+            if primary is None or key in self._attachment_attempts:
+                return
+            # A failed attachment is an actual secondary, never an excuse to
+            # retry recursively or to interrupt another owed cleanup operation.
+            self._attachment_attempts.add(key)
+            try:
+                values = BaseException.__getattribute__(primary, '__dict__')
+                previous = values.get(name)
+                if previous is not None and previous is not self:
+                    if isinstance(previous, _JobTailErrors):
+                        # Retain its live occurrence sequence and snapshot its
+                        # older links, without a mutable ledger back-link.
+                        previous = (previous._occurrences, tuple(previous._previous))
+                    self._previous.append((name, previous))
+                BaseException.__setattr__(primary, name, self)
+            except BaseException as secondary:
+                self._retain(('error_attachment', name), secondary)
+                self._attachment_failed = True
 
     def remember(self, kind, error):
-        # Actual errors have their own slots; cancellation diagnostics cannot
-        # evict a later job/root/submission/retirement failure.
-        with self.lock:
-            self.errors.setdefault(kind, (error, error.__traceback__))
-            if self.primary is None:
-                self.primary, self.traceback = error, error.__traceback__
-            BaseException.__setattr__(self.primary, '_job_tail_errors', self)
+        self._retain(kind, error, attach=True)
 
     def raise_first(self):
         with self.lock:
             primary, traceback = self.primary, self.traceback
         if primary is not None:
-            raise primary.with_traceback(traceback)
+            raise BaseException.with_traceback(primary, traceback)
 
 
 @contextmanager
@@ -5474,30 +5741,36 @@ class _JobTerminationTail:
     """ONE ordinary tail, retained before its Task/Thread submission can escape."""
 
     def __init__(self, orch, errors):
-        self.orch, self.db, self.errors = orch, orch._db, errors
-        self.state, self.org = orch._startup_state, orch._startup_org
-        self.gate = orch._startup_recovery
-        self.org_map = None if self.state is None else self.state.orgs
-        self.runtime = None if self.state is None else self.state.runtime
-        self.runtime_root = None if self.runtime is None else self.runtime.root
-        self.org_root = None if self.org is None else self.org.root
-        self.db_path = self.db.db_path
-        self.queue = None if self.state is None else self.state.queue
-        self.refs = None if self.org is None else self.org._startup_admission_refs
-        self.epoch = None if self.gate is None else self.gate.epoch
-        self.loop = None if self.gate is None else self.gate._loop
-        self.thread = self.task = None
-        self.callback_registered = False
-        self.submitted = self.started = self.finished = False
-        self.posted = self.acknowledged = self.observed = False
-        self.retired = self.unknown = False
-        self.completion = Future()
-        self.completion.set_running_or_notify_cancel()
-        self.completion._job_termination_owner = self
-        self.validate()
-        if self.state is not None:
-            with self.state._maintenance_workers_lock:
-                self.state._maintenance_workers.add(self.completion)
+        try:
+            self.orch, self.db, self.errors = orch, orch._db, errors
+            self.state, self.org = orch._startup_state, orch._startup_org
+            self.gate = orch._startup_recovery
+            self.org_map = None if self.state is None else self.state.orgs
+            self.runtime = None if self.state is None else self.state.runtime
+            self.runtime_root = None if self.runtime is None else self.runtime.root
+            self.org_root = None if self.org is None else self.org.root
+            self.db_path = self.db.db_path
+            self.queue = None if self.state is None else self.state.queue
+            self.refs = None if self.org is None else self.org._startup_admission_refs
+            self.epoch = None if self.gate is None else self.gate.epoch
+            self.loop = None if self.gate is None else self.gate._loop
+            self.thread = self.task = None
+            self.callback_registered = False
+            self.submitted = self.started = self.finished = False
+            self.posted = self.acknowledged = self.observed = False
+            self.retired = self.unknown = False
+            self.completion = Future()
+            self.completion.set_running_or_notify_cancel()
+            self.completion._job_termination_owner = self
+            self.validate()
+            if self.state is not None:
+                with self.state._maintenance_workers_lock:
+                    self.state._maintenance_workers.add(self.completion)
+        except BaseException as error:
+            self.unknown = True
+            errors._retain('construction', error)
+            errors._attach('_job_tail_errors')
+            errors.raise_first()
 
     def validate(self):
         # Reference checks only; stop/Pause do not revoke owed cleanup.
@@ -5524,11 +5797,15 @@ class _JobTerminationTail:
             raise RuntimeError('job_termination_attachment_changed')
 
     async def run(self, operation):
-        actual = asyncio.current_task()
-        if self.task is not None and self.task is not actual:
-            raise RuntimeError('job_termination_task_changed')
-        self.task = actual
-        self.started = True
+        try:
+            actual = asyncio.current_task()
+            if self.task is not None and self.task is not actual:
+                raise RuntimeError('job_termination_task_changed')
+            self.task = actual
+            self.started = True
+        except BaseException as error:
+            self.errors.remember('tail_entry', error)
+            self.errors.raise_first()
         try:
             if self.thread is None and not self.callback_registered:
                 actual.add_done_callback(self.task_done)
@@ -5553,11 +5830,19 @@ class _JobTerminationTail:
                 self.task = task
             task.result()
         except BaseException as error:
-            self.errors.remember('task_outcome', error)
+            self.errors._retain('task_outcome', error)
         self.observed = True
         self.acknowledged = True  # This callback runs on that actual Task's loop.
-        self.publish_completion()
-        self.retire()
+        try:
+            self.publish_completion()
+        except BaseException as error:
+            self.unknown = True
+            self.errors._retain('completion_publication', error)
+        finally:
+            # Publication and retirement are independently owed. A completed
+            # Future is not native-exit or registry-retirement evidence.
+            self.retire()
+        self.errors._attach('_job_tail_errors')
 
     def run_thread(self, operation):
         try:
@@ -5565,22 +5850,28 @@ class _JobTerminationTail:
                 raise RuntimeError('job_termination_thread_changed')
             asyncio.run(self.run(operation))
         except BaseException as error:
-            self.errors.remember('thread_outcome', error)
+            self.errors._retain('thread_outcome', error)
         finally:
             # Includes asyncio.run's own loop/pump shutdown, not just coroutine
             # return. Exit is observed separately, never inferred from this flag.
             self.observed = True
-            self.publish_completion()
-            if self.loop is not None:
-                try:
-                    self.loop.call_soon_threadsafe(self.acknowledge)
-                except BaseException as error:
-                    self.errors.remember('handoff', error)
-                    self.unknown = True
+            try:
+                self.publish_completion()
+            except BaseException as error:
+                self.unknown = True
+                self.errors._retain('completion_publication', error)
+            finally:
+                if self.loop is not None:
+                    try:
+                        self.loop.call_soon_threadsafe(self.acknowledge)
+                    except BaseException as error:
+                        self.unknown = True
+                        self.errors._retain('handoff', error)
+                    else:
+                        self.posted = True
                 else:
-                    self.posted = True
-            else:
-                self.acknowledged = self.state is None
+                    self.acknowledged = self.state is None
+            self.errors._attach('_job_tail_errors')
 
     def publish_completion(self):
         if not self.completion.done():
@@ -5605,12 +5896,27 @@ class _JobTerminationTail:
                 and self.task is not None and self.task.done() and not self.task.cancelled())
 
     def maintenance_error(self):
-        if self.retirement_ready():
-            return None
-        error = self.errors.primary or RuntimeError('job_termination_active_or_unknown')
-        error.maintenance_native_unsettled = True
-        BaseException.__setattr__(error, '_job_termination_owner', self)
-        return error
+        try:
+            if self.retirement_ready():
+                return None
+        except BaseException as error:
+            self.unknown = True
+            self.errors._retain('maintenance_validation', error)
+        # Presence, never exception truthiness, selects the original cause.
+        error = (self.errors.primary if self.errors.primary is not None
+                 else RuntimeError('job_termination_active_or_unknown'))
+        try:
+            error.maintenance_native_unsettled = True
+        except BaseException as secondary:
+            self.unknown = True
+            self.errors._retain('maintenance_marker', secondary)
+        try:
+            BaseException.__setattr__(error, '_job_termination_owner', self)
+        except BaseException as secondary:
+            self.unknown = True
+            self.errors._retain('maintenance_owner_attachment', secondary)
+        self.errors._attach('_job_tail_errors')
+        return self.errors.primary if self.errors.primary is not None else error
 
     def retire(self):
         try:
@@ -5618,10 +5924,10 @@ class _JobTerminationTail:
                 self.state._retire_maintenance_worker(self.completion)
         except BaseException as error:
             self.unknown = True
-            self.errors.remember('retirement', error)
-            # Preserve even a partial registry retirement.
-            with self.state._maintenance_workers_lock:
-                self.state._maintenance_workers.add(self.completion)
+            # The state leaf retains this SAME worker after partial retirement;
+            # do not repeat its registry effect or replace E1 with delivery E2.
+            self.errors._retain('retirement_delivery', error)
+        self.errors._attach('_job_tail_errors')
 
     def submit(self, operation):
         self.operation = operation  # Retain the original IDs/closures/root manifest.
@@ -5648,11 +5954,15 @@ class _JobTerminationTail:
                 return self.task
         except BaseException as error:
             self.unknown = True
-            self.errors.remember('submission', error)
             # An enqueue-then-raise may still own this coroutine. Do not close,
             # cancel or resubmit it without positive no-run evidence.
             self.coroutine = coroutine
-            self.publish_completion()
+            self.errors._retain('submission', error)
+            try:
+                self.publish_completion()
+            except BaseException as secondary:
+                self.errors._retain('completion_publication', secondary)
+            self.errors._attach('_job_tail_errors')
             self.errors.raise_first()
 
 
@@ -6319,6 +6629,7 @@ def _advance_chain_for_completed_child(
     orch: "Orchestrator",
     selection: _ChainSelection,
     validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> _ChainAdvanceOutcome:
     """Advance/clear only the original selected chain, never a refreshed owner.
 
@@ -6329,7 +6640,7 @@ def _advance_chain_for_completed_child(
     from runtime.models import TaskRecord
     from runtime.orchestrator.chain import ChainState, build_prior_leg_context, compute_advance_action
 
-    validate = validate_admission or _task_followon_validation(orch)
+    validate = validate_admission or _task_followon_validation(orch, returned_queue=returned_queue)
     validate()
     parent, child, report = selection.parent, selection.child, selection.report
     if parent.active_chain is None or not selection.is_current(orch):
@@ -6396,7 +6707,7 @@ def _advance_chain_for_completed_child(
                 spawned_child_id=next_child_id, triggering_child_id=child.id,
                 triggering_verdict=report.verdict, chain_origin_step_audit_id=chain.step_audit_id,
             )
-        _publish_followon_task(orch, next_child_id, validate)
+        _publish_followon_task(orch, next_child_id, validate, returned_queue=returned_queue)
     except BaseException as exc:
         exc.add_note(f"Original chain child {next_child_id} committed; publication remains pending.")
         raise
@@ -6410,6 +6721,7 @@ def _carrier_fail_on_verdict_mismatch(
     orch: "Orchestrator", parent: "TaskRecord", child_task_id: str,
     outcome: _ChainAdvanceOutcome,
     *, validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> bool:
     """Fail a carrier on an actual aborted advance, with its original cause.
 
@@ -6417,7 +6729,7 @@ def _carrier_fail_on_verdict_mismatch(
     attachment failure and a rolled-back next-child transaction. No recomputed
     matching verdict can turn any of those aborts into chain_complete.
     """
-    validate = validate_admission or _task_followon_validation(orch)
+    validate = validate_admission or _task_followon_validation(orch, returned_queue=returned_queue)
     validate()
     if outcome.kind != "aborted" or not _is_carrier(orch, parent):
         return False
@@ -6432,7 +6744,7 @@ def _carrier_fail_on_verdict_mismatch(
           current_owner=lambda: selection.is_current(orch))
     current = orch._db.get_task(parent.id)
     if current is not None and current.status == TaskStatus.FAILED and current.note == note:
-        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
+        _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate, returned_queue=returned_queue)
     return True
 
 
@@ -6440,11 +6752,12 @@ def _carrier_fail_immediate(
     orch: "Orchestrator", parent: "TaskRecord",
     child_task_id: str,
     *, validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> bool:
     """A carrier's chain leg failed: fail the whole carrier immediately
     (fail-closed at carrier).  Returns True if the carrier was failed,
     False for non-carriers."""
-    validate = validate_admission or _task_followon_validation(orch)
+    validate = validate_admission or _task_followon_validation(orch, returned_queue=returned_queue)
     validate()
     if not _is_carrier(orch, parent):
         return False
@@ -6472,20 +6785,21 @@ def _carrier_fail_immediate(
         ),
     )
     # Feed carrier failure into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
+    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate, returned_queue=returned_queue)
     return True
 
 
 def _carrier_complete_on_chain_complete(
     orch: "Orchestrator", parent: "TaskRecord", outcome: _ChainAdvanceOutcome,
     *, validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> bool:
     """Complete only an authenticated final chain leg, returning the actual CAS.
 
     Sessionless carrier completion creates no provider session/result. A lost
     completion never feeds successful work into the enclosing fan-out barrier.
     """
-    validate = validate_admission or _task_followon_validation(orch)
+    validate = validate_admission or _task_followon_validation(orch, returned_queue=returned_queue)
     validate()
     if outcome.kind != "chain_complete" or not _is_carrier(orch, parent):
         return False
@@ -6495,7 +6809,7 @@ def _carrier_complete_on_chain_complete(
         current_owner=lambda: outcome.selection.is_current(orch),
     ):
         return False
-    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate)
+    _enqueue_parent_if_waiting(orch, parent.id, validate_admission=validate, returned_queue=returned_queue)
     return True
 
 
@@ -6669,25 +6983,40 @@ def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord")
     return _child_landed_terminal_report(orch, child) is not None
 
 
-def _task_followon_validation(orch: "Orchestrator") -> Callable[[], None]:
+def _task_followon_validation(orch: "Orchestrator", *, returned_queue=None) -> Callable[[], None]:
     """Select ordinary admission or the SAME retained P2/P4/P6 native owner."""
     from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
     from runtime.daemon.startup_publication import current_publication
     sweep, publication = _startup_sweep_owner(orch), current_publication(orch)
-    if sweep is None and publication is None:
-        return ordinary_admission_validation(orch)
     state, gate, org = orch._startup_state, orch._startup_recovery, orch._startup_org
     epoch = None if gate is None else gate.epoch
     loop, queue = None if gate is None else gate._loop, orch._queue
     refs = None if org is None else org._startup_admission_refs
+    db, slug, main_loop, threads = orch._db, orch._slug, orch._main_loop, orch._thread_queue
+    org_map = None if state is None else state.orgs
+    runtime = None if state is None else state.runtime
+    ordinary = ordinary_admission_validation(orch) if sweep is None and publication is None else None
+    if returned_queue is not None:
+        from runtime.workflows.coding_progression import _ReturnedCallerQueue
+        if type(returned_queue) is not _ReturnedCallerQueue or ordinary is None:
+            raise StartupUnavailable("startup_returned_transport_owner_unavailable")
+        returned_queue.validate(orch)
 
     def validate() -> None:
-        if (orch._startup_state is not state or orch._startup_recovery is not gate
+        if (orch._db is not db or orch._slug != slug
+                or orch._main_loop is not main_loop or orch._thread_queue is not threads
+                or state is not None and (state.orgs is not org_map or state.runtime is not runtime)
+                or orch._startup_state is not state or orch._startup_recovery is not gate
                 or orch._startup_org is not org
                 or org is not None and org._startup_admission_refs is not refs
                 or gate is not None and (gate.epoch != epoch or gate._loop is not loop)
                 or orch._queue is not queue):
             raise StartupUnavailable("startup_attachment_changed")
+        if returned_queue is not None:
+            returned_queue.validate(orch)
+        if ordinary is not None:
+            ordinary()
+            return
         if gate is not None:
             gate.require_attachment(orch)
         if sweep is not None:
@@ -6725,10 +7054,11 @@ class _FollowonOwnerLost(RuntimeError):
     pass
 
 
-def _publish_followon_task(orch, task_id, validate):
+def _publish_followon_task(orch, task_id, validate, *, returned_queue=None):
     """Original generation-aware publication with exact P2/P4/P6 selection."""
     from runtime.daemon.queue import TaskQueue
     queue = getattr(orch, "_queue", None)
+    transport = queue if returned_queue is None else returned_queue._queue
     with queue._publication_scope(orch._slug, task_id) if isinstance(queue, TaskQueue) else nullcontext():
         validate()
         from runtime.daemon.startup_publication import current_publication, _TaskPublication
@@ -6749,11 +7079,19 @@ def _publish_followon_task(orch, task_id, validate):
                 raise RuntimeError("startup_parent_publication_" + outcome)
         def publish():
             validate()
-            _enqueue_task_generation_aware(orch, task_id,
-                **({"_observe": observe} if selected is not None else {}), **kwargs)
+            if returned_queue is None:
+                _enqueue_task_generation_aware(orch, task_id,
+                    **({"_observe": observe} if selected is not None else {}), **kwargs)
+            else:
+                from runtime.orchestrator.authority import enqueue_task_generation_aware
+                returned_queue.validate(orch)
+                outcome = enqueue_task_generation_aware(orch, transport, orch._slug, task_id,
+                    ordinary_enqueue=lambda: transport.put_nowait(orch._slug, task_id))
+                if outcome not in ("ordinary", "published"):
+                    raise RuntimeError("returned_parent_publication_" + outcome)
         with publication.attempt(orch, "parent_attempted") if publication is not None else nullcontext():
             validate()
-            enqueue_if_absent = getattr(queue, "enqueue_if_absent", None)
+            enqueue_if_absent = getattr(transport, "enqueue_if_absent", None)
             if callable(enqueue_if_absent):
                 inserted = enqueue_if_absent(orch._slug, task_id, publisher=publish, **kwargs)
             else:
@@ -6776,10 +7114,11 @@ def _enqueue_parent_if_waiting(
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
     validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> None:
     from runtime.daemon.startup_publication import current_publication
     publication = current_publication(orch)
-    selected = _task_followon_validation(orch)
+    selected = _task_followon_validation(orch, returned_queue=returned_queue)
     def validate():
         selected()
         if validate_admission is not None:
@@ -6788,7 +7127,7 @@ def _enqueue_parent_if_waiting(
         with _startup_sweep_effect(orch):
             return _enqueue_parent_if_waiting_owned(
                 orch, task_id, root_auto_revisit_spawned=root_auto_revisit_spawned,
-                current_owner=current_owner, validate_admission=validate,
+                current_owner=current_owner, validate_admission=validate, returned_queue=returned_queue,
             )
     except _FollowonOwnerLost as exc:
         if publication is not None:
@@ -6808,6 +7147,7 @@ def _enqueue_parent_if_waiting_owned(
     root_auto_revisit_spawned: bool = False,
     current_owner: Callable[[], bool] | None = None,
     validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> None:
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (in_progress+delegated) AND all its children are now terminal.
@@ -6835,7 +7175,7 @@ def _enqueue_parent_if_waiting_owned(
     to auto-advance as before; on mismatch it clears the chain and wakes
     the parent.
     """
-    selected_validation = validate_admission or _task_followon_validation(orch)
+    selected_validation = validate_admission or _task_followon_validation(orch, returned_queue=returned_queue)
     original_owner = current_owner
     def validate():
         selected_validation()
@@ -6888,7 +7228,7 @@ def _enqueue_parent_if_waiting_owned(
             with orch._db._lock:
                 if not orch._db._task_lifecycle_owner_is_current_uncommitted(parent):
                     raise _FollowonOwnerLost("parent_lifecycle_owner_lost")
-        _publish_followon_task(orch, parent.id, validate_parent)
+        _publish_followon_task(orch, parent.id, validate_parent, returned_queue=returned_queue)
 
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
@@ -6927,18 +7267,18 @@ def _enqueue_parent_if_waiting_owned(
                 # row can never advance or clear the chain.
                 selection = _chain_selection(orch, parent, child)
                 outcome = _advance_chain_for_completed_child(
-                    orch=orch, selection=selection, validate_admission=validate,
+                    orch=orch, selection=selection, validate_admission=validate, returned_queue=returned_queue,
                 )
                 if outcome.kind in ("advance", "lost_owner"):
                     return
                 parent = outcome.selection.parent  # only the committed clear
                 if _carrier_fail_on_verdict_mismatch(
-                    orch, parent, task_id, outcome, validate_admission=validate,
+                    orch, parent, task_id, outcome, validate_admission=validate, returned_queue=returned_queue,
                 ):
                     return
                 if outcome.kind == "chain_complete" and _is_carrier(orch, parent):
                     _carrier_complete_on_chain_complete(
-                        orch, parent, outcome, validate_admission=validate,
+                        orch, parent, outcome, validate_admission=validate, returned_queue=returned_queue,
                     )
                     return  # False is lost completion, never ordinary/success wake
             # Stale re-trigger for a leg the chain already advanced past, or a
@@ -6989,7 +7329,7 @@ def _enqueue_parent_if_waiting_owned(
                     unresolved_leaves[-1],
                 )
                 validate()
-                _carrier_fail_immediate(orch, parent, causal_leaf.id, validate_admission=validate)
+                _carrier_fail_immediate(orch, parent, causal_leaf.id, validate_admission=validate, returned_queue=returned_queue)
                 return  # carrier failure feeds the fan-out parent's barrier
 
             # A linked historical retry remains truthful causal context in the
@@ -7314,6 +7654,8 @@ def _maybe_post_thread_followup(
     auto_revisit_spawned: bool,
     current_owner: Callable[[], bool] | None = None,
     revisit_task_id: str | None = None,
+    validate_admission: Callable[[], None] | None = None,
+    returned_queue=None,
 ) -> None:
     """Post a task-followup system message + mint a re-invocation for the dispatcher.
 
@@ -7348,8 +7690,13 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
-    from runtime.orchestrator.task_thread_posting import _require_thread_producer
-    publication = _require_thread_producer(orch)
+    from runtime.orchestrator.task_thread_posting import _thread_producer_validation
+    publication, selected = _thread_producer_validation(orch, returned_queue=returned_queue)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
+    validate()
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel
     # writes the stored terminal CANCELLED and replays in the task_failed class.
@@ -7363,11 +7710,13 @@ def _maybe_post_thread_followup(
     ):
         return
 
+    validate()
     if current_owner is not None and not current_owner():
         return
     db = orch._db
     audit = orch._audit
     terminal_task = db.get_task(task_id)
+    validate()
     if terminal_task is None:
         if publication is not None:
             raise RuntimeError("startup_thread_terminal_task_missing")
@@ -7403,6 +7752,7 @@ def _maybe_post_thread_followup(
     from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
     try:
         chain = db.walk_revisit_chain(task_id, max_hops=200)
+        validate()
     except LineageTooDeep:
         audit.log_thread_followup_skipped(
             "(unresolved)", original_task_id=task_id, terminal_task_id=task_id,
@@ -7417,6 +7767,7 @@ def _maybe_post_thread_followup(
 
     # Thread-state guard.
     thread = db.get_thread(thread_id)
+    validate()
     if thread is None:
         if publication is not None:
             raise RuntimeError("startup_thread_missing")
@@ -7477,6 +7828,7 @@ def _maybe_post_thread_followup(
         "revisit_task_id": revisit_task_id,
     }
 
+    validate()
     if current_owner is not None and not current_owner():
         return
     _append_followup_system_and_reinvoke(
@@ -7487,6 +7839,7 @@ def _maybe_post_thread_followup(
         source_task_id=task_id,
         system_payload=system_payload,
         reinvoke=not auto_revisit_spawned,
+        validate_admission=validate, returned_queue=returned_queue,
     )
 
 

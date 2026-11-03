@@ -402,3 +402,59 @@ html[class~='dark'] a.hr-cta {
   color: var(--hr-green-deep);
   transform: translate(1px, -1px);
 }
+
+/* ---- Keyboard: skip link and mobile menu ------------------------------ */
+
+/* "Skip to content" (pages/_app.jsx) is the first Tab stop. Off screen for
+   pointer users; on focus it shows over the navbar's logo corner. */
+.hr-skip {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.hr-skip:focus {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  z-index: 50;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-family: var(--hr-sans);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--hr-paper);
+  background-color: var(--hr-green-deep);
+  box-shadow: var(--hr-shadow-sm);
+  text-decoration: none;
+  outline: 2px solid var(--hr-ink);
+  outline-offset: 2px;
+}
+
+/* Nextra drops the navbar scroll padding while anything has focus; keep it
+   while the skip link scrolls to its destination (the page's h1). */
+html:has(.hr-skip:focus) {
+  scroll-padding-top: var(--nextra-navbar-height);
+}
+
+/* Nextra only slides the closed mobile menu off screen, which left its search
+   box and links in the Tab order. Hide it while closed (also before the page's
+   JavaScript runs); it stays visible while sliding shut. */
+@media (max-width: 767px) {
+  .nextra-sidebar-container[class*='translate3d(0,-100%,0)'] {
+    visibility: hidden;
+  }
+}
+@media (max-width: 767px) and (prefers-reduced-motion: no-preference) {
+  body:not(.resizing)
+    .nextra-sidebar-container[class*='translate3d(0,-100%,0)'] {
+    transition-property: transform, visibility;
+  }
+}

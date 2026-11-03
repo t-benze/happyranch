@@ -301,6 +301,9 @@ class AuthorityPolicyStore:
             max_revise_rounds=max_revise_rounds,
         )
 
+    def get_authenticated_v2_consumed_evaluation(self, **identity) -> AuthorityPolicyV2Evaluation | None:
+        return self._db.get_authenticated_authority_policy_v2_consumed_evaluation(**identity)
+
     def get_v2_evaluation(self, candidate_id: str) -> AuthorityPolicyV2Evaluation | None:
         return self._db.get_authority_policy_v2_evaluation(candidate_id)
 
@@ -345,12 +348,14 @@ class AuthorityPolicyStore:
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
         result_id: int, refusal_code: str, owner_attempt_id: str | None = None,
         recovery_session_id: str | None = None,
+        max_revise_rounds: int | None = None,
     ) -> AuthorityPolicyV2HousekeepingOutcome:
         return self._db.finalize_authority_policy_v2_attempt_refusal(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             refusal_code=refusal_code, owner_attempt_id=owner_attempt_id,
             recovery_session_id=recovery_session_id,
+            max_revise_rounds=max_revise_rounds,
         )
 
     def list_v2_unfinalized_attempts(

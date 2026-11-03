@@ -43,6 +43,7 @@ from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.coding_release_import import CodingReleaseImportStore
+from runtime.workflows.coding_builtin import CodingBuiltinStore
 from runtime.workflows.coding_roles import CodingRoleStore
 from runtime.workflows.coding_start import CodingStartStore
 from runtime.workflows.activation import WorkflowActivationStore
@@ -85,6 +86,7 @@ class OrgState:
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_coding_release_import: CodingReleaseImportStore = field(init=False)
+    workflow_coding_builtin: CodingBuiltinStore = field(init=False)
     workflow_coding_roles: CodingRoleStore = field(init=False)
     workflow_coding_start: CodingStartStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
@@ -221,6 +223,30 @@ class OrgState:
             raise _OrgBusyError("native_tasks_in_flight")
         if self._runner_tasks:
             raise _OrgBusyError("active_runners_in_flight")
+        # A failed org-token release may already have removed that token while
+        # the SAME original queue still retains the work. Closing is not fresh
+        # admission: validate the original binding without requiring READY.
+        from runtime.daemon.startup_recovery import StartupRecovery, StartupUnavailable
+        try:
+            state, gate, org = self._startup_state, self._startup_recovery, self._startup_org
+            if state is None:
+                if gate is not None or org is not None or self._startup_admission_refs is not None:
+                    raise _OrgBusyError("native_tasks_in_flight")
+                return  # Explicitly unbound standalone attachment.
+            if not isinstance(gate, StartupRecovery) or org is not self or gate.state is not state:
+                raise _OrgBusyError("native_tasks_in_flight")
+            queue = gate._admission_queue  # Captured before production work.
+            gate.require_attachment(self)
+            gate.require_attachment(self.orchestrator)
+            if queue is not state.queue or queue is not self.orchestrator._queue:
+                raise _OrgBusyError("native_tasks_in_flight")
+            retained = queue._has_native_work_for(self)
+        except (AttributeError, StartupUnavailable) as exc:
+            raise _OrgBusyError("native_tasks_in_flight") from exc
+        # The registry mutex protects observation only; refusal is outside it.
+        # Submission/preflight/close stay synchronous on the original loop.
+        if retained:
+            raise _OrgBusyError("native_tasks_in_flight")
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -260,6 +286,7 @@ class OrgState:
             teams=self.teams,
         )
         self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_coding_builtin = CodingBuiltinStore(self)
         self.workflow_coding_release_import = CodingReleaseImportStore(self)
         self.workflow_coding_roles = CodingRoleStore(self)
         self.workflow_coding_start = CodingStartStore(self)
@@ -411,7 +438,9 @@ class OrgState:
 
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings,
-             observation: BootObservation | None = None) -> "OrgState":
+             observation: BootObservation | None = None,
+             attachment_owner: dict | None = None,
+             defer_coding_registration: bool = False) -> "OrgState":
         with observed(observation, "org_preflight"):
             paths = OrgPaths(root=root)
             from runtime.orchestrator.team_move_startup import before_org_attachment
@@ -419,7 +448,11 @@ class OrgState:
             from runtime.identities.schema import preflight
             naming_preflight = preflight(paths.db_path, org_slug=slug)
         with observed(observation, "database"):
+            if attachment_owner is not None:
+                attachment_owner["db_construction_started"] = True
             db = Database(paths.db_path)
+            if attachment_owner is not None:
+                attachment_owner["load_db"] = db
         try:
             with observed(observation, "workflow_install"):
                 install_or_recover(db, expected_org_slug=slug)
@@ -452,6 +485,8 @@ class OrgState:
             with observed(observation, "workflow_validate"):
                 with db._lock:
                     validate_workflow_schema(db._conn, expected_org_slug=slug)
+            from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+            install_task_ownership(db, org_slug=slug)
             with observed(observation, "roster"):
                 teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
@@ -501,6 +536,8 @@ class OrgState:
                     settings=settings,
                     orchestrator=orchestrator,
                 )
+            if attachment_owner is not None:
+                attachment_owner["org"] = state
             from runtime.identities.registry import read_name_metadata, refresh_names
             # Binding reads current validated org metadata at prompt construction;
             # no cached snapshot, reconciliation or new launch/readiness gate.
@@ -531,29 +568,52 @@ class OrgState:
             # cannot adopt a replacement path while queued on their executor.
             read_file = paths.db_path.stat()
             state._startup_read_file = (db, root, paths.db_path, read_file.st_dev, read_file.st_ino)
+            # Cold serving defers registration until its original P2 tail.
+            # Direct/ready attachment retains the landed post-authority attempt.
+            if not defer_coding_registration:
+                state.workflow_coding_builtin.ensure_registered()
             return state
         except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.
             try:
                 db.close()
+                if attachment_owner is not None:
+                    attachment_owner["load_db_closed"] = True
             except BaseException as cleanup:
-                primary.add_note("unpublished org close failed: " + type(cleanup).__name__)
+                if attachment_owner is not None:
+                    attachment_owner["load_close_error"] = cleanup
+                # Keep the actual later exception attached to the original cause.
+                primary._org_load_close_error = cleanup
+                BaseException.add_note(primary, "unpublished org close failed: " + type(cleanup).__name__)
             raise
 
     def close(self) -> None:
-        # Synchronous direct close cannot cancel/join a native reader. Refuse
-        # before touching any connection unless its actual owner has drained.
+        self._runner_admission_closed = True
+        primary = None
+        traceback = None
+        revokes = [self._revoke_thread_releases, self._revoke_cleanup_diagnostics]
+        if self._startup_reads is not None:
+            revokes.append(lambda: self._startup_reads.revoke(self))
+        for revoke in revokes:
+            try:
+                revoke()
+            except BaseException as exc:
+                if primary is None:
+                    primary, traceback = exc, exc.__traceback__
+                else:
+                    primary._org_close_revoke_error = (exc, exc.__traceback__)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
+        # Direct close cannot cancel/join readers or profiles. Refuse before
+        # touching the connection unless every actual original owner is idle.
         if self._startup_state is not None:
             self._startup_state._assert_startup_idle(self)
+            self._startup_state._assert_attachment_readers_idle((self,))
         if self._startup_recovery is not None:
             self._startup_recovery.assert_native_idle()
         if self._startup_reads is not None:
-            self._startup_reads.revoke(self)
             self._startup_reads.assert_idle(self)
-        self._revoke_thread_releases()
         self._assert_thread_releases_idle()
-        self._revoke_cleanup_diagnostics()
         self._assert_cleanup_diagnostics_idle()
         self._assert_runners_idle()
-        self._runner_admission_closed = True
         self.db.close()

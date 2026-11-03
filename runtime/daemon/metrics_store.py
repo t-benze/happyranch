@@ -352,10 +352,11 @@ def compose_metrics_snapshot(state: DaemonState) -> dict[str, Any]:
     task_count = 0
     job_count = 0
     session_count = 0
-    for org in state.orgs.values():
-        task_count += len(org.db.get_nonterminal_task_ids())
-        job_count += len(org.db.list_jobs_db(status="running"))
-        session_count += org.sessions.count_active()
+    with state.capture_orgs() as orgs:
+        for org in orgs.values():
+            task_count += len(org.db.get_nonterminal_task_ids())
+            job_count += len(org.db.list_jobs_db(status="running"))
+            session_count += org.sessions.count_active()
 
     snap["tasks"] = {"pending_and_in_flight": task_count}
     snap["jobs_in_flight"] = job_count

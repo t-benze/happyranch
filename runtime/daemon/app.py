@@ -76,7 +76,7 @@ def _attach_org_runtime_wiring(state: DaemonState) -> None:
     _bind_task_admission(state.queue, state)
     if state.host_supervisor is not None:
         _bind_task_admission(state.host_supervisor, state)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         state._attach_startup_owner(org)
         org.orchestrator.attach_queue(state.queue)
         org.orchestrator.attach_sessions(org.sessions)
@@ -109,8 +109,8 @@ def _attach_thread_queue_wiring(state: DaemonState, loop: asyncio.AbstractEventL
     ``asyncio.run_coroutine_threadsafe`` when enqueuing task-followup
     invocations. Mirrors ``_attach_org_runtime_wiring``'s decoupled pattern.
     """
-    for org in state.orgs.values():
-        org.orchestrator.attach_thread_queue(org.thread_queue, loop)
+    for org in state.orgs_snapshot().values():
+        org.orchestrator.attach_thread_queue(org.thread_queue, loop, rediscover=False)
 
 
 def _wire_then_start_workers(state: DaemonState, loop: asyncio.AbstractEventLoop) -> None:
@@ -130,7 +130,7 @@ def _wire_then_start_workers(state: DaemonState, loop: asyncio.AbstractEventLoop
     require_ready(state)
     _attach_org_runtime_wiring(state)
     _attach_thread_queue_wiring(state, loop)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         state._notify_attached_returned(org)
     ensure_workers_started(state)
 
@@ -160,7 +160,7 @@ def recover_startup_compatibility(state: DaemonState, *, recovery: StartupRecove
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("happyranch.daemon")
     from runtime.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         check(org)
         # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
         # recovery scan reads any stdout_path/stderr_path. The DB-side
@@ -325,7 +325,7 @@ def recover_startup_dreams(state: DaemonState, *, recovery: StartupRecovery | No
     """Original all-org dream recovery, without starting a consumer."""
     from runtime.daemon.dream_scheduler import recover_running_dreams
     from runtime.daemon.startup_recovery import RecoveryOutcome
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         if recovery is not None:
             recovery.require_producers_owner(org)
         changed = recover_running_dreams(org)
@@ -341,7 +341,7 @@ def recover_startup_dreams(state: DaemonState, *, recovery: StartupRecovery | No
 def recover_startup_wakes(state: DaemonState, *, recovery: StartupRecovery | None = None) -> RecoveryOutcome:
     """Original all-org wake recovery; native-preserved rows stay untouched."""
     from runtime.daemon.startup_recovery import RecoveryOutcome
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         if recovery is not None:
             recovery.require_producers_owner(org)
         changed = org.db.work_hours.recover_running()
@@ -357,7 +357,7 @@ def recover_startup_wakes(state: DaemonState, *, recovery: StartupRecovery | Non
 def recover_startup_schedules(state: DaemonState, *, recovery: StartupRecovery | None = None) -> RecoveryOutcome:
     """Original firing recovery and exact schedule_failed audit publication."""
     from runtime.daemon.startup_recovery import RecoveryOutcome
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         if recovery is not None:
             recovery.require_producers_owner(org)
         recovered = org.db.schedules.recover_firing()
@@ -435,7 +435,7 @@ def _prepare_startup_consumers(state: DaemonState, recovery: StartupRecovery) ->
         # The actual original manager also retains this task for cancel/reap.
         await task
 
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         recovery.prepare_consumer("dashboard-" + org.slug, lambda org=org: dashboard(org))
     recovery.prepared()
 
@@ -494,7 +494,8 @@ async def _shutdown_lifespan(
 
     # Independently owed drains run with the real loop, host and DB alive.
     # Maintenance being active is a reason to JOIN, not to skip these owners.
-    await drain(state._drain_startup(), "startup_drain_incomplete")
+    attachments_closed = await drain(state._drain_attachments(), "startup_attachment_drain_incomplete")
+    startup_closed = await drain(state._drain_startup(), "startup_drain_incomplete")
     releases_closed = await drain(state._drain_thread_releases(), "startup_release_drain_incomplete")
     moves_closed = await drain(state.team_move_service.close(), "startup_move_drain_incomplete")
     host_closed = True
@@ -505,13 +506,13 @@ async def _shutdown_lifespan(
             host_closed = False
             remember("startup_host_shutdown_incomplete", exc)
 
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         try:
             org.dashboard_projection.cancel_scheduler()
         except BaseException as exc:
             remember("startup_dashboard_cancel_incomplete", exc)
     handles = set(recovery._consumers)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         handles.update(org._runner_tasks)
     for task in handles:
         task.cancel()
@@ -530,7 +531,7 @@ async def _shutdown_lifespan(
     except BaseException as exc:
         consumers_closed = False
         remember("startup_consumer_join_incomplete", exc)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         reaped = await drain(org.dashboard_projection.reap_scheduler(), "startup_dashboard_reap_incomplete")
         consumers_closed = consumers_closed and reaped
 
@@ -539,9 +540,9 @@ async def _shutdown_lifespan(
     queue_closed = await drain(state.queue.stop(), "startup_queue_drain_incomplete")
     from runtime.daemon.jobs_runner import terminate_all_inflight
     jobs_closed = await drain(terminate_all_inflight(grace_seconds=5), "startup_jobs_drain_incomplete")
-    await drain(state._drain_maintenance_workers(), "startup_maintenance_drain_incomplete")
+    maintenance_closed = await drain(state._drain_maintenance_workers(), "startup_maintenance_drain_incomplete")
     diagnostics_closed = await drain(state._drain_cleanup_diagnostics(), "startup_diagnostics_drain_incomplete")
-    prerequisites = (revocation_error is None and releases_closed and moves_closed and host_closed
+    prerequisites = (revocation_error is None and attachments_closed and startup_closed and maintenance_closed and releases_closed and moves_closed and host_closed
                      and consumers_closed and queue_closed and jobs_closed and diagnostics_closed)
     try:
         # Destructive close depends on positive barriers, after all owed joins.
@@ -549,7 +550,7 @@ async def _shutdown_lifespan(
         recovery.assert_native_idle()
         state.queue.assert_native_idle()
         state._assert_startup_idle()
-        for org in state.orgs.values():
+        for org in state.orgs_snapshot().values():
             org._assert_runners_idle()
         if not recovery._closed:
             raise RuntimeError("startup_executor_close_incomplete")

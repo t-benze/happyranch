@@ -266,7 +266,7 @@ async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
         require_ready(state)
         t0 = time.monotonic()
         now = datetime.now(timezone.utc)
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             require_producer_admission(org)
             try:
                 schedule_due_dreams(org=org, now=now, startup=startup)

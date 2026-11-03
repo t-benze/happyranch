@@ -99,7 +99,7 @@ def _sweep_enqueue(
 async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
     """Completed source discovery on the existing lifespan loop before workers."""
     import logging
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         try:
             await org.workflow_submissions.discover_completed_handoffs(state.queue)
         except Exception:
@@ -877,6 +877,11 @@ def recover_startup_native(recovery: StartupRecovery) -> RecoveryOutcome:
             if not isinstance(outcome, RecoveryOutcome) or not outcome.positive:
                 raise RuntimeError("startup_v2_outcome_unavailable")
             held |= outcome.disposition == "local_hold"
+            # Landed inert registration belongs after this original org's
+            # positively observed sweep/publication tail, never P0 loading.
+            recovery.require_native_owner()
+            state._assert_attachments_unchanged(recovery._attachments)
+            org.workflow_coding_builtin.ensure_registered()
         settle(RecoveryOutcome("local_hold" if held else "settled"))
     # Each entry reserves/settles its OWN phase. Consume before the next call.
     for operation in (discover_completed_workflow_handoffs_native,
@@ -921,7 +926,7 @@ def _build_state(settings: Settings, *, observation: BootObservation | None = No
         runtime = RuntimeDir.load(reg.active)
     with observed(observation, "daemon_state"):
         state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics, observation=observation)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
         # server-owned permission-surface reader before any startup recovery or

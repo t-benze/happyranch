@@ -5,9 +5,12 @@ import asyncio
 import logging
 import threading
 from concurrent.futures import Future
+from contextlib import contextmanager
+from contextvars import copy_context
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.daemon.team_move_service import TeamMoveService
@@ -92,17 +95,25 @@ class DaemonState:
             try:
                 if not tail.retirement_ready():
                     return
+                with self._maintenance_workers_lock:
+                    if worker not in self._maintenance_workers and not tail.retired:
+                        raise RuntimeError('job_termination_retirement_owner_missing')
+                    self._maintenance_workers.discard(worker)
+                    tail.retired = True
+                return
             except BaseException as error:
                 tail.unknown = True
-                tail.errors.remember('retirement', error)
+                tail.errors._retain('retirement', error)
+                # Retain the original worker even if discard/lock exit partly
+                # succeeded. Absence or the retired flag cannot settle UNKNOWN.
+                try:
+                    with self._maintenance_workers_lock:
+                        self._maintenance_workers.add(worker)
+                except BaseException as secondary:
+                    tail.errors._retain('retirement_retention', secondary)
+                tail.errors._attach('_job_tail_errors')
                 tail.errors.raise_first()
         with self._maintenance_workers_lock:
-            if tail is not None:
-                if worker not in self._maintenance_workers and not tail.retired:
-                    raise RuntimeError('job_termination_retirement_owner_missing')
-                self._maintenance_workers.discard(worker)
-                tail.retired = True
-                return
             cleanup = getattr(worker, '_worktree_cleanup_owner', None)
             if cleanup is not None:
                 if not cleanup.retirement_ready:
@@ -127,11 +138,33 @@ class DaemonState:
     async def _drain_maintenance_workers(self) -> None:
         """Join original operations with the loop/DB alive, after producers stop."""
         from runtime.daemon.startup_recovery import _await_startup_owned
-        primary = None
-        traceback = None
+        from runtime.orchestrator.run_step import _JobTailErrors
+        errors = _JobTailErrors()
+
+        def capture(kind: str, error: BaseException, origin: tuple | None = None) -> None:
+            first = errors.primary is None
+            errors._retain(kind, error)
+            if first and origin is not None:
+                # An owner/helper observation precedes this later delivery.
+                errors.traceback = origin[1]
+
+        def retain_secondary(error: BaseException, tail: Any, *, retirement: bool = False) -> None:
+            try:
+                if retirement and tail is not None:
+                    tail.errors.remember('retirement_delivery', error)
+                elif self._startup_recovery is not None:
+                    self._startup_recovery._retain_secondary(error)
+                elif tail is not None:
+                    tail.errors.remember('maintenance_drain', error)
+            except BaseException as secondary:
+                capture('retirement_retention' if retirement else 'drain_retention', secondary)
+
         with self._maintenance_workers_lock:
             workers = tuple(self._maintenance_workers)
         for worker in workers:
+            tail = None
+            deliveries = []
+            wait_first = None
             try:
                 tail = getattr(worker, '_job_termination_owner', None)
                 if tail is not None:
@@ -139,7 +172,14 @@ class DaemonState:
                     # than waiting for an absent worker or a foreign-loop Task.
                     failure = tail.maintenance_error()
                     if failure is not None:
-                        raise failure
+                        # Consume its original snapshot without a synthetic
+                        # raise/catch that would replace the native traceback.
+                        origin = ((failure, tail.errors.traceback)
+                                  if failure is tail.errors.primary else None)
+                        first = errors.primary is None
+                        capture('maintenance_outcome', failure, origin)
+                        if not first:
+                            retain_secondary(failure, tail)
                     continue
                 cleanup = getattr(worker, '_worktree_cleanup_owner', None)
                 if cleanup is not None:
@@ -147,31 +187,73 @@ class DaemonState:
                     # is retained custody, not an endlessly awaitable operation.
                     failure = cleanup.maintenance_error()
                     if failure is not None:
-                        raise failure
+                        first = errors.primary is None
+                        capture('maintenance_outcome', failure)
+                        if not first:
+                            retain_secondary(failure, tail)
+                        continue
                 if worker is asyncio.current_task():
                     raise _OrgBusyError("maintenance_self_join_refused")
                 completion = asyncio.wrap_future(worker) if isinstance(worker, Future) else worker
-                await _await_startup_owned(completion, self._startup_recovery._retain_secondary)
+                original_retain = self._startup_recovery._retain_secondary
+
+                def retain(error: BaseException) -> None:
+                    nonlocal wait_first
+                    # Keep each helper delivery before its fallible diagnostic
+                    # sink or final rethrow. A cancellation delivery can follow
+                    # an already-ended native error on this SAME completion.
+                    traceback = BaseException.__traceback__.__get__(error)
+                    deliveries.append(('wait_observation', error, traceback))
+                    observation_failure = None
+                    if wait_first is None:
+                        wait_first = (error, traceback)
+                        if isinstance(error, asyncio.CancelledError):
+                            try:
+                                earlier = (None if not completion.done() or completion.cancelled()
+                                           else completion.exception())
+                                if earlier is not None:
+                                    wait_first = (earlier, BaseException.__traceback__.__get__(earlier))
+                            except BaseException as secondary:
+                                observation_failure = (secondary, BaseException.__traceback__.__get__(secondary))
+                        if wait_first[0] is not error:
+                            capture('wait_prior_native', wait_first[0], wait_first)
+                    capture('wait_observation', error, (error, traceback))
+                    if observation_failure is not None:
+                        secondary, traceback = observation_failure
+                        deliveries.append(('wait_observation_failed', secondary, traceback))
+                        capture('wait_observation_failed', secondary, observation_failure)
+                    try:
+                        original_retain(error)
+                    except BaseException as secondary:
+                        deliveries.append(('wait_retention', secondary,
+                                           BaseException.__traceback__.__get__(secondary)))
+                        capture('wait_retention', secondary)
+
+                await _await_startup_owned(completion, retain)
             except BaseException as exc:
-                if primary is None:
-                    primary, traceback = exc, exc.__traceback__
-                else:
-                    if self._startup_recovery is not None:
-                        self._startup_recovery._retain_secondary(exc)
-                    elif getattr(worker, '_job_termination_owner', None) is not None:
-                        worker._job_termination_owner.errors.remember('maintenance_drain', exc)
+                first = errors.primary is None
+                origin = next(((error, traceback) for _, error, traceback in deliveries
+                               if error is exc), None)
+                if tail is not None and exc is tail.errors.primary:
+                    origin = (exc, tail.errors.traceback)
+                capture('maintenance_drain', exc, origin)
+                if not first:
+                    retain_secondary(exc, tail)
             finally:
+                # Callback observations were captured before their diagnostics;
+                # final helper delivery is a separate observation of that error,
+                # not an invented second native incident or a reason to retry.
                 try:
                     self._retire_maintenance_worker(worker)
                 except BaseException as exc:
-                    if primary is None:
-                        primary, traceback = exc, exc.__traceback__
-                    elif getattr(worker, '_job_termination_owner', None) is not None:
-                        worker._job_termination_owner.errors.remember('retirement', exc)
-                    elif self._startup_recovery is not None:
-                        self._startup_recovery._retain_secondary(exc)
-        if primary is not None:
-            raise primary.with_traceback(traceback)
+                    first = errors.primary is None
+                    origin = ((exc, tail.errors.traceback)
+                              if tail is not None and exc is tail.errors.primary else None)
+                    capture('retirement_delivery', exc, origin)
+                    if not first:
+                        retain_secondary(exc, tail, retirement=True)
+        errors._attach('_job_tail_errors')
+        errors.raise_first()
 
     def _bind_startup_owner(self, app) -> None:
         """One boot owner; construction binds references without DB work."""
@@ -197,7 +279,7 @@ class DaemonState:
         from runtime.daemon.startup_recovery import require_ready
         require_ready(self)
 
-    def _notify_attached_returned(self, org: OrgState) -> None:
+    def _notify_attached_returned(self, org: OrgState, *, queue=None) -> None:
         """Explicit original dynamic return obligation; no new boot sweep.
 
         Preserve the original public binder's complete selection and scoped
@@ -211,7 +293,7 @@ class DaemonState:
             import sqlite3
             from runtime.workflows.recovery import rediscover_returned
             try:
-                rediscover_returned(coding)
+                rediscover_returned(coding, queue=queue)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception("coding caller notification rediscovery unavailable")
 
@@ -284,27 +366,137 @@ class DaemonState:
         if self._startup_reads is not None:
             self._startup_reads.assert_idle(org)
 
+    # Only attachment membership and in-memory reader/worker bookkeeping use
+    # this mutex. Never acquire DB/profile locks, await or close under it.
+    _org_map_lock: threading.RLock = field(init=False, default_factory=threading.RLock, repr=False)
+    _attachment_swap_pending: bool = field(init=False, default=False, repr=False)
+    _org_readers: dict[int, int] = field(init=False, default_factory=dict, repr=False)
+    _retiring_orgs: set[int] = field(init=False, default_factory=set, repr=False)
+    _attachment_tasks: set[asyncio.Task] = field(init=False, default_factory=set, repr=False)
+    _attachment_workers: dict[object, dict] = field(init=False, default_factory=dict, repr=False)
+    _attachment_owners: dict[object, dict] = field(init=False, default_factory=dict, repr=False)
+
+    def orgs_snapshot(self) -> dict[str, OrgState]:
+        """Membership only; existing runner admission still owns execution."""
+        with self._org_map_lock:
+            return dict(self.orgs)
+
+    @contextmanager
+    def capture_orgs(self, slugs: tuple[str, ...] | None = None, *, original: OrgState | None = None) -> Iterator[dict[str, OrgState]]:
+        """Retain the actual DB attachments for a native read interval."""
+        with self._org_map_lock:
+            orgs = dict(self.orgs) if slugs is None else {slug: self.orgs[slug] for slug in slugs if slug in self.orgs}
+            if original is not None and orgs.get(original.slug) is not original:
+                raise _OrgBusyError("attachment_changed_during_read")
+            if self._attachment_swap_pending or any(id(org) in self._retiring_orgs for org in orgs.values()):
+                raise _OrgBusyError("attachment_retiring")
+            for org in orgs.values():
+                self._org_readers[id(org)] = self._org_readers.get(id(org), 0) + 1
+        try:
+            yield orgs
+        finally:
+            with self._org_map_lock:
+                for org in orgs.values():
+                    remaining = self._org_readers[id(org)] - 1
+                    if remaining:
+                        self._org_readers[id(org)] = remaining
+                    else:
+                        del self._org_readers[id(org)]
+
+    def _assert_attachment_readers_idle(self, orgs: tuple[OrgState, ...]) -> None:
+        with self._org_map_lock:
+            if any(self._org_readers.get(id(org), 0) for org in orgs):
+                raise _OrgBusyError("attachment_readers_in_flight")
+
+    def _begin_attachment_close(self, orgs: tuple[OrgState, ...]) -> None:
+        # Admission and the idle observation are atomic, but close is outside
+        # this mutex. A failed close remains fenced, with its actual owner.
+        with self._org_map_lock:
+            self._assert_attachment_readers_idle(orgs)
+            self._retiring_orgs.update(id(org) for org in orgs)
+        for org in orgs:
+            org._runner_admission_closed = True
+
+    def _assert_attachment_loads_idle(self) -> None:
+        with self._org_map_lock:
+            if self._attachment_tasks or self._attachment_workers or self._attachment_owners:
+                raise _OrgBusyError("attachment_native_in_flight_or_unsafe")
+
+    def _begin_attachment_swap(self) -> None:
+        # Called at the final loop preflight, before registry/activation effects.
+        # Prevent a new native reader from opening the close race afterward.
+        with self._org_map_lock:
+            self._assert_attachment_readers_idle(tuple(self.orgs.values()))
+            self._attachment_swap_pending = True
+
+    def _finish_attachment_swap(self) -> None:
+        with self._org_map_lock:
+            self._attachment_swap_pending = False
+
+    def _assert_attachment_unpublished_idle(self, slug: str) -> None:
+        """Fresh-org rollback cannot delete a published or uncertain owner."""
+        with self._org_map_lock:
+            if slug in self.orgs or any(o["slug"] == slug for o in self._attachment_owners.values()):
+                raise _OrgBusyError("attachment_published_or_unsafe")
+
+    async def _drain_attachments(self) -> None:
+        # Each original child keeps its own native tickets. A failed child
+        # does not discharge another child's join or the final owner barrier.
+        from runtime.daemon.startup_recovery import _await_startup_owned
+        primary = None
+        traceback = None
+        def retain(error: BaseException) -> None:
+            if self._startup_recovery is not None:
+                self._startup_recovery._retain_secondary(error)
+        for task in tuple(self._attachment_tasks):
+            try:
+                outcome = task._attachment_outcome
+                await _await_startup_owned(task, retain,
+                    on_cancel=lambda cause: outcome.get("primary", cause))
+            except BaseException as exc:
+                if primary is None:
+                    primary, traceback = exc, exc.__traceback__
+                else:
+                    retain(exc)
+        try:
+            self._assert_attachment_loads_idle()
+        except BaseException as exc:
+            if primary is None:
+                primary, traceback = exc, exc.__traceback__
+            else:
+                retain(exc)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
+
     def _revoke_thread_releases(self, org=None) -> None:
         if self._thread_release_service is not None:
             self._thread_release_service.revoke(org)
         else:
-            for current in self.orgs.values() if org is None else (org,):
+            for current in self.orgs_snapshot().values() if org is None else (org,):
                 current._revoke_thread_releases()
 
     async def _drain_thread_releases(self, org=None) -> None:
         if self._thread_release_service is not None:
             await self._thread_release_service.drain(org)
-        for current in self.orgs.values() if org is None else (org,):
+        for current in self.orgs_snapshot().values() if org is None else (org,):
             current._assert_thread_releases_idle()
 
     def _capture_attachments(self) -> tuple:
+        with self._org_map_lock:
+            return self._capture_attachments_locked()
+
+    def _capture_attachments_locked(self) -> tuple:
         # Private two-phase detach identity, captured under orgs_lock. Paths
         # accompany object identity so in-place root/DB changes also refuse.
         return (self.orgs, self.runtime, self.runtime.root if self.runtime else None,
                 self.host_supervisor, self._thread_release_service, tuple((slug, org, org.root, org.db, org.db.db_path, org.sessions, org._thread_release_attachment)
-                                            for slug, org in self.orgs.items()))
+                                            for slug, org in self.orgs_snapshot().items()))
 
     def _assert_attachments_unchanged(self, captured: tuple) -> None:
+        with self._org_map_lock:
+            self._assert_attachments_unchanged_locked(captured)
+
+    def _assert_attachments_unchanged_locked(self, captured: tuple) -> None:
         org_map, runtime, root, supervisor, release_service, orgs = captured
         if (self.orgs is not org_map or self.runtime is not runtime
                 or (self.runtime.root if self.runtime else None) != root
@@ -319,27 +511,40 @@ class DaemonState:
     def _revoke_cleanup_diagnostics(self) -> None:
         if self._cleanup_diagnostics is not None:
             self._cleanup_diagnostics.revoke()
-        for org in self.orgs.values():
+        for org in self.orgs_snapshot().values():
             org._revoke_cleanup_diagnostics()
 
     async def _drain_cleanup_diagnostics(self, org: OrgState | None = None) -> None:
         if self._cleanup_diagnostics is not None:
             await self._cleanup_diagnostics.drain(org)
-        for current in self.orgs.values() if org is None else (org,):
+        for current in self.orgs_snapshot().values() if org is None else (org,):
             current._assert_cleanup_diagnostics_idle()
 
     def _stop_runner_admission(self) -> None:
-        # No await: fence both existing OrgState references and later add_org.
-        if self._startup_recovery is not None:
-            self._startup_recovery.stop()
-        if self._startup_reads is not None:
-            self._startup_reads.revoke()
-        self._runner_shutdown = True
-        self.queue.close_admission()
-        for org in self.orgs.values():
+        # No await: close fresh admission even if another revoke itself fails.
+        with self._org_map_lock:
+            self._runner_shutdown = True
+            orgs = tuple(self.orgs.values())
+        for org in orgs:
             org._runner_admission_closed = True
-        # Finite C revoke; incomplete acquisition raises BEFORE host shutdown.
-        self._revoke_thread_releases()
+        primary = None
+        traceback = None
+        revokes = [self.queue.close_admission]
+        if self._startup_recovery is not None:
+            revokes.append(self._startup_recovery.stop)
+        if self._startup_reads is not None:
+            revokes.append(self._startup_reads.revoke)
+        revokes.append(self._revoke_thread_releases)
+        for revoke in revokes:
+            try:
+                revoke()
+            except BaseException as exc:
+                if primary is None:
+                    primary, traceback = exc, exc.__traceback__
+                elif self._startup_recovery is not None:
+                    self._startup_recovery._retain_secondary(exc)
+        if primary is not None:
+            raise primary.with_traceback(traceback)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -378,7 +583,7 @@ class DaemonState:
             self.direct_connect_authority_store._projection_startup_owner = self
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None, observation: BootObservation | None = None) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, move_diagnostics=None, observation: BootObservation | None = None, defer_coding_registration: bool = True) -> "DaemonState":
         from runtime.orchestrator.team_move_startup import require_runtime_reader
         diagnostics = dict(move_diagnostics or {})
         diagnostics.update(require_runtime_reader(runtime))
@@ -428,6 +633,7 @@ class DaemonState:
         state.profile_coordinator = ProfileCoordinator(
             daemon_home=daemon_home(),
             orgs=state.orgs,
+            capture_orgs=state.capture_orgs,
         )
 
         # Load runtime-level executor profiles into the process-wide registry
@@ -465,9 +671,15 @@ class DaemonState:
                 if observation is not None:
                     observation.count("orgs_skipped_diagnostic")
                 continue
+            token = object()
+            owner = {"slug": slug, "runtime": runtime, "org_map": state.orgs,
+                     "root": root, "org": None, "published": False}
+            state._attachment_owners[token] = owner
             try:
                 with observed(observation, "org_load"):
-                    org = OrgState.load(slug=slug, root=root, settings=settings, observation=observation)
+                    org = OrgState.load(slug=slug, root=root, settings=settings, observation=observation,
+                                        attachment_owner=owner,
+                                        defer_coding_registration=defer_coding_registration)
             except (OrgConsistencyError, ValueError) as exc:
                 # One broken org must not crash the daemon. Record the
                 # error for GET /orgs and skip; the folder stays intact
@@ -475,8 +687,17 @@ class DaemonState:
                 if observation is not None:
                     observation.count("orgs_refused")
                 state.broken_orgs[slug] = str(exc)
+                owner["primary"] = exc
+                if not owner.get("db_construction_started") or owner.get("load_db_closed"):
+                    del state._attachment_owners[token]
+                exc._org_attachment_state = state
                 logger.error("org %r failed consistency check: %s", slug, exc)
                 continue
+            except BaseException as exc:
+                owner["primary"] = exc
+                exc._org_attachment_state = state
+                raise
+            owner["org"] = org
             # U2A: every whole-runtime construction path (normal startup and
             # live register/switch) initializes eligible selectors before the
             # resulting DaemonState is returned or published. Raw
@@ -499,8 +720,16 @@ class DaemonState:
                                 team=team,
                                 publisher="daemon-state-load:selector-initialization",
                             )
-            except Exception:
-                org.close()
+            except BaseException as primary:
+                owner["primary"] = primary
+                primary._org_attachment_state = state
+                try:
+                    org.close()
+                    del state._attachment_owners[token]
+                except BaseException as cleanup:
+                    owner["close_error"] = cleanup
+                    primary._org_attachment_close_error = cleanup
+                    BaseException.add_note(primary, "startup org close also failed: " + type(cleanup).__name__)
                 raise
             # Attach the global queue + per-org sessions + daemon-wide host
             # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
@@ -512,7 +741,10 @@ class DaemonState:
             org.orchestrator.attach_queue(state.queue)
             org.orchestrator.attach_sessions(org.sessions)
             org.orchestrator.attach_host_supervisor(state.host_supervisor)
-            state.orgs[slug] = org
+            with state._org_map_lock:
+                state.orgs[slug] = org
+                owner["published"] = True
+                del state._attachment_owners[token]
             if observation is not None:
                 observation.count("orgs_attached")
         assert state.profile_coordinator is not None
@@ -537,117 +769,224 @@ class DaemonState:
         return self.runtime is None
 
     def get_org(self, slug: str) -> OrgState:
-        try:
-            return self.orgs[slug]
-        except KeyError as exc:
-            raise KeyError(slug) from exc
+        with self._org_map_lock:
+            try:
+                return self.orgs[slug]
+            except KeyError as exc:
+                raise KeyError(slug) from exc
 
     async def add_org(self, slug: str) -> OrgState:
-        """Lazy-load an org's OrgState. Idempotent — returns the existing
-        instance if the slug is already loaded.
-
-        The orchestrator's queue and per-org session tracker are attached
-        here so a freshly-added org is immediately runnable (the lifespan
-        ``_attach_org_runtime_wiring`` only runs over orgs present at boot).
-        """
+        """Own the entire native/loop attachment before the first await."""
         self._require_startup_ready()
+        if self._runner_shutdown:
+            raise _OrgBusyError("daemon_shutting_down")
+        outcome: dict = {}
+        coroutine = self._add_org(slug, outcome=outcome)
+        try:
+            task = asyncio.create_task(coroutine, name="org-attachment:" + slug)
+        except BaseException:
+            coroutine.close()
+            raise
+        task._attachment_outcome = outcome
+        self._attachment_tasks.add(task)
+        def retired(done: asyncio.Task) -> None:
+            self._attachment_tasks.discard(done)
+            if not done.cancelled():
+                error = done.exception()  # consume late errors after disconnect
+                if error is not None and self._startup_recovery is not None:
+                    self._startup_recovery._retain_secondary(error)
+        task.add_done_callback(retired)
+        from runtime.daemon.startup_recovery import _await_startup_owned
+        def retain(error: BaseException) -> None:
+            if self._startup_recovery is not None:
+                self._startup_recovery._retain_secondary(error)
+        return await _await_startup_owned(task, retain,
+            on_cancel=lambda cause: outcome.get("primary", cause))
+
+    async def _attachment_native(self, owner: dict, callback: Callable[[], Any]) -> Any:
+        """Join the original worker; cancellation is no native retirement proof."""
+        from runtime.daemon.startup_recovery import _await_startup_owned
+        ticket = object()
+        work = {"owner": owner, "callback": callback, "returned": threading.Event()}
+        context = copy_context()
+        def run() -> Any:
+            try:
+                return context.run(callback)
+            except BaseException as exc:
+                work["error"] = exc
+                work["traceback"] = exc.__traceback__
+                raise
+            finally:
+                work["returned"].set()
+        with self._org_map_lock:
+            self._attachment_workers[ticket] = work
+        # Submission may enqueue and then raise. Never discard its original
+        # ticket or wait forever for a Future which was never returned.
+        worker = asyncio.get_running_loop().run_in_executor(None, run)
+        work["worker"] = worker
+        primary = None
+        def retain(error: BaseException) -> None:
+            if self._startup_recovery is not None:
+                self._startup_recovery._retain_secondary(error)
+        try:
+            return await _await_startup_owned(worker, retain,
+                on_cancel=lambda cause: work.get("error", cause))
+        except BaseException as exc:
+            primary = exc
+            # Retain the actual operation and its native E1/traceback, including
+            # a genuine later error after an earlier waiter cancellation.
+            exc._attachment_native_work = work
+            raise
+        finally:
+            if worker.done() and not worker.cancelled() and work["returned"].is_set():
+                with self._org_map_lock:
+                    del self._attachment_workers[ticket]
+            elif primary is None:
+                raise _OrgBusyError("attachment_native_return_unknown")
+
+    async def _add_org(self, slug: str, *, outcome: dict) -> OrgState:
         async with self.orgs_lock:
             self._require_startup_ready()
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
-            if slug in self.orgs:
-                return self.orgs[slug]
+            current = self.orgs_snapshot().get(slug)
+            if current is not None:
+                return current
             assert self.runtime is not None
-            root = self.runtime.orgs_dir / slug
-            # OrgConsistencyError propagates — add_org is an explicit
-            # action (init / unload+reload) and must fail loudly so the
-            # founder sees the reason at the HTTP layer.
+            owner = {"slug": slug, "runtime": self.runtime, "org_map": self.orgs,
+                     "root": self.runtime.orgs_dir / slug,
+                     "profiles": self.profile_coordinator, "org": None, "published": False,
+                     "task": asyncio.current_task(), "native_token": None}
+            token = object()
+            with self._org_map_lock:
+                self._attachment_owners[token] = owner
+            primary = None
             try:
-                if "team_move_" in self.broken_orgs.get(slug, ""):
-                    from runtime.infrastructure.team_move_store import inspect_team_move_org
-                    inspect_team_move_org(root, org_slug=slug, require_database=True)
-                org = OrgState.load(slug=slug, root=root, settings=self.settings)
-            except ValueError as exc:
-                if "team_move_" in str(exc):
-                    self.broken_orgs[slug] = str(exc)
-                    if self.profile_coordinator is not None:
-                        diagnostics = getattr(self.profile_coordinator, "_move_diagnostic_orgs", {})
-                        diagnostics[slug] = root
-                        self.profile_coordinator._move_diagnostic_orgs = diagnostics
-                raise
-            # U2A: a dynamically attached org must cross the same coordinated
-            # selector-initialization boundary as daemon startup before it is
-            # wired or made runnable. Every launch reader is deliberately
-            # read-only and fails closed if this boundary did not complete.
-            from runtime.orchestrator.active_authority_policy import (
-                is_eligible_policy_manager,
-            )
-            try:
-                for team in org.teams.teams():
-                    manager = org.teams.executable_manager_for_team(team)
-                    if manager is not None and is_eligible_policy_manager(
-                        root=org.root,
-                        agent_name=manager,
-                        team=team,
-                        teams=org.teams,
-                    ):
-                        org.workflow_authority.ensure_authority_selector(
-                            team=team,
-                            publisher="daemon-dynamic-add:selector-initialization",
-                        )
-            except Exception:
-                org.close()
-                raise
-            try:
-                # Bind the existing boot gate/read domain BEFORE publication
-                # under profile leases; no partially runnable attachment.
+                await self._attachment_native(owner, lambda: self._load_attachment(owner))
+                org = owner["org"]
+                native_token = object()
+                if not org._acquire_native_task(native_token):
+                    raise _OrgBusyError("daemon_shutting_down")
+                owner["native_token"] = native_token
+                # Bind H startup/read identity before M native map publication.
                 self._attach_startup_owner(org)
+                # Actual asyncio references/publication stay on their loop.
                 org.orchestrator.attach_queue(self.queue)
                 org.orchestrator.attach_sessions(org.sessions)
                 org.orchestrator.attach_host_supervisor(self.host_supervisor)
-                if self.profile_coordinator is not None:
-                    org._profile_coordinator = self.profile_coordinator
-                    # Hold every referenced profile lease while synchronizing
-                    # and publishing this org, then insert it into the shared
-                    # map before releasing those leases. A concurrent writer
-                    # therefore completes first or captures the new org; there
-                    # is no visible stale-ready attachment window.
-                    with self.profile_coordinator.dynamic_org_attachment(org):
-                        self.orgs[slug] = org
-                else:
-                    self.orgs[slug] = org
-            except Exception:
-                self.orgs.pop(slug, None)
-                org.close()
-                raise
-            # New/dynamic attachments never inherit a boot diagnostic pass.
-            self._attach_startup_owner(org)
-            org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
-            self.broken_orgs.pop(slug, None)
-            if self.profile_coordinator is not None:
-                # The outside-lease load positively inspected this existing DB;
-                # dynamic attachment revalidated its actual native move owner
-                # under profile leases before synchronization/map insertion.
-                # Failed attachment never reaches this diagnostic clearing.
-                getattr(self.profile_coordinator, "_move_diagnostic_orgs", {}).pop(slug, None)
-            # Wire the thread queue + main loop so run_step workers can
-            # cross the async boundary via run_coroutine_threadsafe when
-            # posting task-followup invocations.
-            try:
+                org._profile_coordinator = owner["profiles"]
+                org._cleanup_diagnostic_unavailable = "dynamic_attachment_unsupported"
                 loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                org.orchestrator.attach_thread_queue(org.thread_queue, loop)
-                self._notify_attached_returned(org)
-            return org
+                await self._attachment_native(owner, lambda: self._publish_attachment(owner))
+                # H's binder authenticates current map membership. No loop
+                # suspension separates the returned publication from binding.
+                org.orchestrator.attach_thread_queue(org.thread_queue, loop, rediscover=False)
+                # Reuse the original returned-notification owner, with its actual
+                # raw queue handoff on this loop, before releasing native lifetime.
+                from runtime.daemon.queue import _AttachmentNotificationQueue
+                queue = _AttachmentNotificationQueue(self.queue, loop, org.thread_queue)
+                owner["notifications"] = queue
+                await self._attachment_native(owner, lambda: self._notify_attached_returned(org, queue=queue))
+                await queue.join_puts()
+                self.broken_orgs.pop(slug, None)
+                if owner["profiles"] is not None:
+                    getattr(owner["profiles"], "_move_diagnostic_orgs", {}).pop(slug, None)
+                return org
+            except BaseException as exc:
+                primary = exc
+                owner["primary"] = exc
+                outcome["primary"] = exc
+                if isinstance(exc, ValueError) and "team_move_" in str(exc):
+                    self.broken_orgs[slug] = str(exc)
+                    if owner["profiles"] is not None:
+                        diagnostics = getattr(owner["profiles"], "_move_diagnostic_orgs", {})
+                        diagnostics[slug] = owner["root"]
+                        owner["profiles"]._move_diagnostic_orgs = diagnostics
+                raise
+            finally:
+                try:
+                    # A successful Future is insufficient if native retirement is
+                    # unknown. The ticket and actual loaded handle stay reachable.
+                    with self._org_map_lock:
+                        uncertain = any(w["owner"] is owner for w in self._attachment_workers.values())
+                    notifications = owner.get("notifications")
+                    if notifications is not None and notifications.has_unretired_puts():
+                        uncertain = True
+                    if owner["org"] is None and owner.get("db_construction_started") and not owner.get("load_db_closed"):
+                        uncertain = True
+                    if not uncertain:
+                        org = owner["org"]
+                        if owner["native_token"] is not None:
+                            org._release_native_task(owner["native_token"])
+                            owner["native_token"] = None
+                        safe = True
+                        if org is not None and not owner["published"] and not owner.get("load_db_closed"):
+                            try:
+                                await self._attachment_native(owner, org.close)
+                            except BaseException as cleanup:
+                                safe = False
+                                owner["close_error"] = cleanup
+                                if primary is None:
+                                    raise
+                                primary._attachment_close_error = cleanup
+                                BaseException.add_note(primary, "unpublished attachment close failed: " + type(cleanup).__name__)
+                        if safe:
+                            with self._org_map_lock:
+                                del self._attachment_owners[token]
+
+                except BaseException as cleanup:
+                    owner["retirement_error"] = cleanup
+                    if primary is None:
+                        outcome["primary"] = cleanup
+                        raise
+                    primary._attachment_retirement_error = cleanup
+                    BaseException.add_note(primary, "attachment retirement also failed: " + type(cleanup).__name__)
+
+    def _load_attachment(self, owner: dict) -> None:
+        self._require_startup_ready()
+        slug, root = owner["slug"], owner["root"]
+        if "team_move_" in self.broken_orgs.get(slug, ""):
+            from runtime.infrastructure.team_move_store import inspect_team_move_org
+            inspect_team_move_org(root, org_slug=slug, require_database=True)
+        org = OrgState.load(slug=slug, root=root, settings=self.settings, attachment_owner=owner)
+        owner["org"] = org  # strong handle before selector validation can fail
+        from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
+        for team in org.teams.teams():
+            manager = org.teams.executable_manager_for_team(team)
+            if manager is not None and is_eligible_policy_manager(
+                root=org.root, agent_name=manager, team=team, teams=org.teams,
+            ):
+                org.workflow_authority.ensure_authority_selector(
+                    team=team, publisher="daemon-dynamic-add:selector-initialization",
+                )
+
+    def _publish_attachment(self, owner: dict) -> None:
+        self._require_startup_ready()
+        org, profiles = owner["org"], owner["profiles"]
+        def insert() -> None:
+            with self._org_map_lock:
+                if (self._runner_shutdown or self.runtime is not owner["runtime"]
+                        or self.orgs is not owner["org_map"]
+                        or self.profile_coordinator is not profiles
+                        or (profiles is not None and profiles.orgs is not self.orgs)
+                        or org.slug in self.orgs):
+                    raise _OrgBusyError("attachment_changed_during_preparation")
+                self.orgs[org.slug] = org
+                owner["published"] = True
+        if profiles is None:
+            insert()
+        else:
+            # Acquire/use/release every native profile/publication lease on
+            # THIS worker, including publication before the leases are released.
+            with profiles.dynamic_org_attachment(org):
+                insert()
 
     def _assert_can_remove_org(self, slug: str) -> OrgState | None:
         self._require_startup_ready()
         if self._runner_shutdown:
             raise _OrgBusyError("daemon_shutting_down")
         self.team_move_service.assert_no_owner(slug)
-        current = self.orgs.get(slug)
+        current = self.orgs_snapshot().get(slug)
         if current is not None:
             self._assert_startup_idle(current)
             current._assert_runners_idle()
@@ -661,6 +1000,8 @@ class DaemonState:
 
     async def remove_org(self, slug: str) -> None:
         self._require_startup_ready()
+        primary = None
+        traceback = None
         async with self.orgs_lock:
             self._require_startup_ready()
             # Local checks only: C may own the DB through a stalled COMMIT.
@@ -668,30 +1009,49 @@ class DaemonState:
             if self._runner_shutdown:
                 raise _OrgBusyError("daemon_shutting_down")
             self.team_move_service.assert_no_owner(slug)
-            current = self.orgs.get(slug)
+            current = self.orgs_snapshot().get(slug)
             if current is not None:
                 current._assert_runners_idle(thread_releases=False)
                 if self._startup_recovery is not None:
                     self._startup_recovery.assert_native_idle()
             captured = self._capture_attachments()
             if current is not None:
+                current._runner_admission_closed = True
+                revokes = [lambda: self._revoke_thread_releases(current),
+                           current._revoke_cleanup_diagnostics]
                 if self._startup_reads is not None:
-                    self._startup_reads.revoke(current)
-                self._revoke_thread_releases(current)
-                current._revoke_cleanup_diagnostics()
+                    revokes.insert(0, lambda: self._startup_reads.revoke(current))
+                for revoke in revokes:
+                    try:
+                        revoke()
+                    except BaseException as exc:
+                        if primary is None:
+                            primary, traceback = exc, exc.__traceback__
+                        elif self._startup_recovery is not None:
+                            self._startup_recovery._retain_secondary(exc)
         # Never await a native scan under orgs/root/move/terminal locks.
         if current is not None:
-            await self._drain_startup(current)
-            await self._drain_thread_releases(current)
-            await self._drain_cleanup_diagnostics(current)
+            for drain in (self._drain_startup, self._drain_thread_releases,
+                          self._drain_cleanup_diagnostics):
+                try:
+                    await drain(current)
+                except BaseException as exc:
+                    if primary is None:
+                        primary, traceback = exc, exc.__traceback__
+                    elif self._startup_recovery is not None:
+                        self._startup_recovery._retain_secondary(exc)
+            if primary is not None:
+                raise primary.with_traceback(traceback)
         async with self.orgs_lock:
             self._assert_attachments_unchanged(captured)
             current = self._assert_can_remove_org(slug)
             if current is not None:
+                self._begin_attachment_close((current,))
                 current.close()
-                self.orgs.pop(slug)
-                # Positive original close AND removal, in one unsuspended segment.
-                # Missing map entries or failed/partial closes supply no evidence.
+                with self._org_map_lock:
+                    self.orgs.pop(slug)
+                    self._retiring_orgs.discard(id(current))
+                # Positive close and removal authenticate only THIS original.
                 gate = self._startup_recovery
                 current._startup_detached = (self, gate, None if gate is None else gate.epoch,
                                              current._startup_admission_refs, slug, current.root)
@@ -720,34 +1080,65 @@ class DaemonState:
         return True
 
     async def close_all(self) -> None:
-        self._stop_runner_admission()
+        primary = None
+        traceback = None
+        def remember(exc: BaseException) -> None:
+            nonlocal primary, traceback
+            if primary is None:
+                primary, traceback = exc, exc.__traceback__
+            elif self._startup_recovery is not None:
+                self._startup_recovery._retain_secondary(exc)
+        # A failed revocation still forbids destruction, but cannot discharge
+        # independently owed original attachment/read/service drains.
+        try:
+            self._stop_runner_admission()
+        except BaseException as exc:
+            remember(exc)
         captured = self._capture_attachments()
-        await self._drain_startup()
+        for drain in (self._drain_attachments, self._drain_startup,
+                      self._drain_thread_releases):
+            try:
+                await drain()
+            except BaseException as exc:
+                remember(exc)
+        try:
+            self._revoke_cleanup_diagnostics()
+        except BaseException as exc:
+            remember(exc)
+        for drain in (self._drain_cleanup_diagnostics, self.team_move_service.close):
+            try:
+                await drain()
+            except BaseException as exc:
+                remember(exc)
+        # Ended errors preserve E1 while every independent join above is owed.
+        # Unknown owners still fail the final positive barriers below.
+        if primary is not None:
+            raise primary.with_traceback(traceback)
         if self._startup_recovery is not None:
             self._startup_recovery.assert_consumers_idle()
         self._assert_attachments_unchanged(captured)
-        await self._drain_thread_releases()
-        self._assert_attachments_unchanged(captured)
-        self._revoke_cleanup_diagnostics()
-        await self._drain_cleanup_diagnostics()
-        # Refuse native users before any service/org closure. The final
-        # all-org preflight below renews this after the service/lock awaits.
         self.queue.assert_native_idle()
-        for org in self.orgs.values():
-            org._assert_runners_idle()
-        await self.team_move_service.close()
         async with self.orgs_lock:
             self._assert_attachments_unchanged(captured)
-            # Fail before any close if an unexpected caller still owns an org.
-            # Lifespan joins the actual runners; cancellation is not that proof.
+            self._assert_attachment_loads_idle()
             self.queue.assert_native_idle()
-            for org in self.orgs.values():
+            orgs = tuple(self.orgs_snapshot().values())
+            for org in orgs:
                 self._assert_startup_idle(org)
                 org._assert_runners_idle()
                 org._assert_cleanup_diagnostics_idle()
-            for org in self.orgs.values():
-                org.close()
-            self.orgs.clear()
+            self._begin_attachment_close(orgs)
+            for org in orgs:
+                try:
+                    org.close()
+                except BaseException as exc:
+                    remember(exc)
+            if primary is not None:
+                # Keep the original map/handles fenced on partial close.
+                raise primary.with_traceback(traceback)
+            with self._org_map_lock:
+                self.orgs.clear()
+                self._retiring_orgs.difference_update(id(org) for org in orgs)
         self._assert_startup_idle()
         if self.direct_connect_authority_store is not None:
             self.direct_connect_authority_store.close()

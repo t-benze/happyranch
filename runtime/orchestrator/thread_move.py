@@ -621,19 +621,23 @@ class ThreadMoveAdmission:
                     result.append(dict(code="thread_open_exchange", thread_id=row["thread_id"], exchange_id=row["exchange_id"]))
             return tuple(result)
 
-    async def bounded_drain(self, operation_id: str, *, timeout_seconds: float = 30.0) -> tuple[dict, ...]:
+    def _drain_blockers(self, operation_id: str) -> tuple[dict, ...]:
+        with self.move.gate, self.db._lock:
+            row = self.move.active_uncommitted()
+            if row is None or row["operation_id"] != operation_id or row["phase"] != "waiting":
+                raise DeferredTeamMove("team_move_thread_drain_owner")
+            if operation_id not in self.captured:
+                raise DeferredTeamMove("team_move_thread_capture_missing")
+            ids = _decode(MoveRequest, row["request_bytes"]).affected_agents
+            return tuple(b for b in self.census(ids) if b["code"] != "thread_pending_obligation")
+
+    async def bounded_drain(self, operation_id: str, *, timeout_seconds: float = 30.0, native=None) -> tuple[dict, ...]:
         if not 0 <= timeout_seconds <= 30:
             raise ValueError("thread drain deadline must be bounded by 30 seconds")
         deadline = time.monotonic() + timeout_seconds
         while True:
-            with self.move.gate, self.db._lock:
-                row = self.move.active_uncommitted()
-                if row is None or row["operation_id"] != operation_id or row["phase"] != "waiting":
-                    raise DeferredTeamMove("team_move_thread_drain_owner")
-                if operation_id not in self.captured:
-                    raise DeferredTeamMove("team_move_thread_capture_missing")
-                ids = _decode(MoveRequest, row["request_bytes"]).affected_agents
-                blockers = tuple(b for b in self.census(ids) if b["code"] != "thread_pending_obligation")
+            blockers = (self._drain_blockers(operation_id) if native is None
+                else await native(lambda: self._drain_blockers(operation_id)))
             if not blockers or time.monotonic() >= deadline:
                 return blockers  # D owns deadline refusal/forward decision.
             await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
@@ -695,32 +699,68 @@ class ThreadMoveAdmission:
                 if self.preserve_recovery_uncommitted(inv))
 
     def select_redelivery_tokens(self, *, _observe=None, validate_admission=None) -> tuple[str, ...]:
-        if validate_admission is not None:
-            validate_admission()
-        with self.move.gate, self.db._lock:
+        move, db, gate, store = self.move, self.db, self.move.gate, self.store
+        def validate():
             if validate_admission is not None:
                 validate_admission()
-            if self.move.active_uncommitted() is not None:
+            if (self.move is not move or self.db is not db or self.store is not store
+                    or store.db is not db or move.gate is not gate
+                    or move.store.db is not db or move.threads is not self):
+                raise DeferredTeamMove("team_move_thread_owner_changed")
+        validate()
+        with gate, db._lock:
+            validate()
+            if move.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
-            return self.runnable_tokens(_observe=_observe)
+            return self.runnable_tokens(_observe=_observe, validate_admission=validate)
 
-    async def redeliver_after_release(self, queue: Any) -> None:
+    def _released_tokens(self, *, validate_admission=None) -> tuple[str, ...]:
+        return self.select_redelivery_tokens(validate_admission=validate_admission)
+
+    async def redeliver_after_release(self, queue: Any, *, native=None, validate_admission=None) -> None:
         from runtime.daemon.thread_queue import ThreadJob
-        from runtime.daemon.startup_recovery import ordinary_admission_validation
-        validate = ordinary_admission_validation(queue)
-        queue._require_ready()
-        for token in self.select_redelivery_tokens(validate_admission=validate):
+        from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
+        move, db, gate, store = self.move, self.db, self.move.gate, self.store
+        state, recovery, org = queue._startup_state, queue._startup_recovery, queue._startup_org
+        orgs = None if state is None else state.orgs
+        epoch = None if recovery is None else recovery.epoch
+        loop = None if recovery is None else recovery._loop
+        def identity():
+            if (self.move is not move or self.db is not db or self.store is not store
+                    or move.gate is not gate or move.store.db is not db or move.threads is not self
+                    or queue._startup_state is not state or queue._startup_recovery is not recovery
+                    or queue._startup_org is not org or state is not None and state.orgs is not orgs
+                    or org is not None and (org.db is not db or org.thread_queue is not queue)
+                    or recovery is not None and (recovery.epoch != epoch or recovery._loop is not loop)):
+                raise StartupUnavailable("startup_attachment_changed")
+        identity()
+        selected = ordinary_admission_validation(queue) if validate_admission is None else validate_admission
+        def validate():
+            identity()
+            selected()
+            identity()
+        validate()
+        if loop is not None:
+            import asyncio
+            if asyncio.get_running_loop() is not loop:
+                raise StartupUnavailable("startup_thread_loop_changed")
+        def discover():
+            return self._released_tokens(validate_admission=validate)
+        tokens = discover() if native is None else await native(discover)
+        for token in tokens:
             validate()
-            await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))
+            await queue.put_once(ThreadJob(org_slug=move.store.org_slug, invocation_token=token))
             validate()
 
-    def runnable_tokens(self, *, _observe=None) -> tuple[str, ...]:
+    def runnable_tokens(self, *, _observe=None, validate_admission=None) -> tuple[str, ...]:
         """Durable release/redelivery census, no process-local defer list.
 
         Safe unstarted/correctly deferred obligations only. Unknown attempts,
         active owners and legacy started rows require their actual recovery owner.
         """
         with self.move.gate, self.db._lock:
+            if validate_admission is not None:
+                validate_admission()
             self.move.active_uncommitted()  # Malformed presence fails closed.
             result = []
             for inv in self.db.list_pending_thread_invocations():

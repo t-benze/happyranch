@@ -102,7 +102,7 @@ class CodingReleaseImportStore:
             replayed=replayed, current=self._current(conn, capture),
             release=coding_release_projection(history.template().definition_bytes))).model_dump()
 
-    def _replay(self, conn, raw: bytes, capture, history: ReleaseImportHistory | None) -> dict | None:
+    def _replay(self, conn, raw: bytes, capture, history: ReleaseImportHistory | None, release=None) -> dict | None:
         command = parse_import_command(raw)
         prior = conn.execute('SELECT template_identity_id FROM workflow_template_publish_operations '
             'WHERE org_slug=? AND principal=? AND operation_key=?',
@@ -112,6 +112,8 @@ class CodingReleaseImportStore:
                     or prior['template_identity_id'] != history.identity_id):
                 raise CodingReleaseImportError('coding_release_import_operation_conflict')
             return self._receipt(conn, history, capture, replayed=True)
+        if release is not None and release.origin == 'system_builtin':
+            raise CodingReleaseImportError('coding_release_builtin_registered')
         if history is not None:
             raise CodingReleaseImportError('coding_release_import_already_imported')
         if command['expected_current_version'] != 0:
@@ -165,7 +167,7 @@ class CodingReleaseImportStore:
                 self._principal(principal, validate_admission=validate)
                 with self._support._read(capture, validate_admission=validate) as (conn, current_capture):
                     inventory = self._support._storage(conn, references)
-                    replay = self._replay(conn, raw, current_capture, inventory.imported)
+                    replay = self._replay(conn, raw, current_capture, inventory.imported, inventory.release)
                     validate()
                     self._principal(principal, validate_admission=validate)
                     if replay is not None:
@@ -180,7 +182,7 @@ class CodingReleaseImportStore:
                         validate()
                         self._principal(principal, validate_admission=validate)
                         inventory = self._support._storage(conn, references, budget=budget)
-                        replay = self._replay(conn, raw, capture, inventory.imported)
+                        replay = self._replay(conn, raw, capture, inventory.imported, inventory.release)
                         if replay is not None:
                             validate()
                             self._principal(principal, validate_admission=validate)

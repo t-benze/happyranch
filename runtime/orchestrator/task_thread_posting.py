@@ -39,13 +39,13 @@ def _require_thread_producer(orch: "Orchestrator") -> Any:
     return None
 
 
-def _thread_producer_validation(orch: "Orchestrator") -> Any:
+def _thread_producer_validation(orch: "Orchestrator", *, returned_queue=None) -> Any:
     """Keep one original ordinary, P2 or P4/P6 choice across writer waits."""
     from runtime.daemon.startup_publication import current_publication
     from runtime.daemon.startup_recovery import ordinary_admission_validation, StartupUnavailable
     from runtime.orchestrator.run_step import _startup_sweep_owner
 
-    publication = _require_thread_producer(orch)
+    publication = current_publication(orch)
     sweep = _startup_sweep_owner(orch)
     state, gate, org = orch._startup_state, orch._startup_recovery, orch._startup_org
     refs = None if org is None else org._startup_admission_refs
@@ -53,11 +53,22 @@ def _thread_producer_validation(orch: "Orchestrator") -> Any:
     phase = None if gate is None else gate._phase
     loop = None if gate is None else gate._loop
     main_loop, queue = orch._main_loop, orch._thread_queue
+    db, slug = orch._db, orch._slug
+    org_map = None if state is None else state.orgs
+    runtime = None if state is None else state.runtime
+    _require_thread_producer(orch)
     ordinary = (ordinary_admission_validation(orch)
                 if publication is None and (sweep is None or state is None) else None)
+    if returned_queue is not None:
+        from runtime.workflows.coding_progression import _ReturnedCallerQueue
+        if type(returned_queue) is not _ReturnedCallerQueue or ordinary is None:
+            raise StartupUnavailable("startup_returned_transport_owner_unavailable")
+        returned_queue.validate(orch)
 
     def validate():
-        if (orch._startup_state is not state or orch._startup_recovery is not gate
+        if (orch._db is not db or orch._slug != slug
+                or state is not None and (state.orgs is not org_map or state.runtime is not runtime)
+                or orch._startup_state is not state or orch._startup_recovery is not gate
                 or orch._startup_org is not org
                 or org is not None and org._startup_admission_refs is not refs
                 or orch._main_loop is not main_loop or orch._thread_queue is not queue
@@ -66,6 +77,8 @@ def _thread_producer_validation(orch: "Orchestrator") -> Any:
                 or _startup_sweep_owner(orch) is not sweep
                 or current_publication(orch) is not publication):
             raise StartupUnavailable("startup_thread_producer_selection_changed")
+        if returned_queue is not None:
+            returned_queue.validate(orch)
         if ordinary is not None:
             ordinary()
         else:
@@ -86,9 +99,17 @@ def _append_followup_system_and_reinvoke(
     source_task_id: str,
     system_payload: dict,
     reinvoke: bool = True,
+    validate_admission=None,
+    returned_queue=None,
 ) -> None:
     """Keep normal posting semantics; a native startup scope owns failures."""
-    publication, validate = _thread_producer_validation(orch)
+    if validate_admission is not None:
+        validate_admission()
+    publication, selected = _thread_producer_validation(orch, returned_queue=returned_queue)
+    def validate():
+        selected()
+        if validate_admission is not None:
+            validate_admission()
     from contextlib import nullcontext
     try:
         with publication.attempt(orch, "thread_attempted") if publication is not None else nullcontext():
@@ -97,6 +118,7 @@ def _append_followup_system_and_reinvoke(
                 original_id=original_id, source_task_id=source_task_id,
                 system_payload=system_payload, reinvoke=reinvoke,
                 validate_admission=validate,
+                returned_queue=returned_queue,
             )
     except BaseException as exc:
         if publication is not None:
@@ -114,6 +136,7 @@ def _append_followup_system_and_reinvoke_owned(
     system_payload: dict,
     reinvoke: bool = True,
     validate_admission=None,
+    returned_queue=None,
 ) -> None:
     """Append a SYSTEM message + optionally mint/enqueue a TASK_FOLLOWUP re-invocation.
 
@@ -138,7 +161,7 @@ def _append_followup_system_and_reinvoke_owned(
     db = orch._db
     audit = orch._audit
     if validate_admission is None:
-        publication, validate_admission = _thread_producer_validation(orch)
+        publication, validate_admission = _thread_producer_validation(orch, returned_queue=returned_queue)
     else:
         validate_admission()
         from runtime.daemon.startup_publication import current_publication
@@ -204,23 +227,41 @@ def _append_followup_system_and_reinvoke_owned(
     from runtime.daemon.thread_queue import ThreadJob as _ThreadJob
     thread_queue = getattr(orch, "_thread_queue", None)
     main_loop = getattr(orch, "_main_loop", None)
+    if returned_queue is not None:
+        returned_queue.validate(orch)
+        thread_queue = returned_queue._thread_queue
     if thread_queue is not None and main_loop is not None:
         try:
+            validate_admission()
             if publication is not None:
                 publication.submit_thread(orch, thread_queue, main_loop, _ThreadJob(
                     org_slug=orch._slug, invocation_token=inv.invocation_token,
                 ))
                 return
-            _asyncio.run_coroutine_threadsafe(
-                thread_queue.put(_ThreadJob(
+            job = _ThreadJob(
                     org_slug=orch._slug,
                     invocation_token=inv.invocation_token,
-                )),
-                main_loop,
             )
+            # The returned transport reserves its actual outcome in put()
+            # BEFORE thread-safe submission and renews its captured attachment
+            # on the real loop. Submission uncertainty retains that SAME owner.
+            _asyncio.run_coroutine_threadsafe(thread_queue.put(job), main_loop)
         except Exception as exc:
             from runtime.daemon.startup_recovery import StartupUnavailable
             if isinstance(exc, StartupUnavailable):
+                raise
+            if returned_queue is not None:
+                # The attachment owner must receive actual submission failure;
+                # its retained per-call outcome is not successful notification.
+                # The stored SYSTEM marker still prevents partial-tail replay.
+                try:
+                    audit.log_thread_followup_skipped(
+                        thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+                        reason="enqueue_failed", detail=str(exc),
+                    )
+                except BaseException as secondary:
+                    BaseException.__setattr__(exc, '_returned_thread_diagnostic_secondary',
+                                              (secondary, secondary.__traceback__))
                 raise
             if publication is not None:
                 publication.fail(exc)

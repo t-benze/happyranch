@@ -227,7 +227,7 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
     after['run'].update(cas_version=entry['run']['cas_version'] + 1, last_event_id=event_id)
     if kind == 'stage_queued':
         _check(task is not None and next_attempt is not None)
-        dispatcher.db._insert_task_row_uncommitted(task)
+        dispatcher.db._insert_task_row_uncommitted(task, ownership=('coding_attempt', next_attempt['id']))
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (now, now, task.id))
         names = ','.join(next_attempt)
         conn.execute(f"INSERT INTO workflow_coding_attempts ({names}) VALUES ({','.join('?' for _ in next_attempt)})", tuple(next_attempt.values()))
@@ -481,7 +481,36 @@ def return_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     _check(changed.rowcount == 1)
 
 
-def notify_returned(dispatcher: Any, instance: str, *,
+class _ReturnedCallerQueue:
+    """Transport for one returned notification; never an Orchestrator proxy."""
+
+    def __init__(self, orchestrator: Any, queue: Any) -> None:
+        from runtime.daemon.queue import _AttachmentNotificationQueue
+        _check(isinstance(queue, _AttachmentNotificationQueue))
+        self._original = orchestrator
+        self._queue = queue
+        self._thread_queue = queue.thread_queue
+        self._loop = orchestrator._main_loop
+        self._task_queue = orchestrator._queue
+        self._original_thread_queue = orchestrator._thread_queue
+        self._selection = queue._publication_selection(orchestrator._slug)
+        self.validate(orchestrator)
+
+    def validate(self, orchestrator: Any) -> None:
+        from runtime.daemon.startup_recovery import StartupUnavailable
+        if (orchestrator is not self._original or orchestrator._queue is not self._task_queue
+                or orchestrator._thread_queue is not self._original_thread_queue
+                or orchestrator._main_loop is not self._loop
+                or self._queue._queue is not self._task_queue
+                or self._queue._loop is not self._loop
+                or self._queue.thread_queue is not self._thread_queue
+                or self._thread_queue._queue is not self._original_thread_queue
+                or self._thread_queue._loop is not self._loop):
+            raise StartupUnavailable("startup_returned_transport_changed")
+        self._selection()
+
+
+def notify_returned(dispatcher: Any, instance: str, *, queue: Any = None,
                     validate_admission: Callable[[], None] | None = None) -> bool:
     """Read the committed return before idempotent native caller notifications."""
     from runtime.daemon.startup_publication import current_publication
@@ -491,22 +520,32 @@ def notify_returned(dispatcher: Any, instance: str, *,
                 if validate_admission is None else validate_admission)
     validate()
     if publication is None:
-        return _notify_returned_native(dispatcher, instance, validate_admission=validate)
+        return _notify_returned_native(dispatcher, instance, queue=queue, validate_admission=validate)
     # Both history writes, original parent wake and serialized SYSTEM marker
     # belong to this selection. Its finally observes actual queue outcomes only
     # after _notify_returned_native has unwound every enclosing DB lock.
     with publication.notification(orch):
-        return _notify_returned_native(dispatcher, instance, validate_admission=validate)
+        return _notify_returned_native(dispatcher, instance, queue=queue, validate_admission=validate)
 
 
-def _notify_returned_native(dispatcher: Any, instance: str, *,
+def _notify_returned_native(dispatcher: Any, instance: str, *, queue: Any = None,
                             validate_admission: Callable[[], None]) -> bool:
     from runtime.daemon.startup_publication import current_publication
     from runtime.models import TaskStatus
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _maybe_post_thread_followup
     orch = dispatcher.org.orchestrator
     publication = current_publication(orch)
-    validate = validate_admission
+    original_validate = validate_admission
+    transport = None if queue is None else _ReturnedCallerQueue(orch, queue)
+    selected_return = publication is not None or transport is not None
+    # Identity and transport are selected before the complete-reader/DB wait.
+    def validate():
+        original_validate()
+        if dispatcher.org.orchestrator is not orch:
+            from runtime.daemon.startup_recovery import StartupUnavailable
+            raise StartupUnavailable("startup_returned_orchestrator_changed")
+        if transport is not None:
+            transport.validate(orch)
     validate()
 
     def current_owner() -> bool:
@@ -522,7 +561,7 @@ def _notify_returned_native(dispatcher: Any, instance: str, *,
             return False
         source_id = entry['source']['task_id']
         carrier_id = entry['tasks'][entry['attempt']['task_id']]['parent_task_id']
-    if publication is not None:
+    if selected_return:
         # The ordinary helper silently skips a missing workspace/assignee.
         # A selected authenticated return must actually publish BOTH histories.
         for history_id in (carrier_id, source_id):
@@ -535,10 +574,11 @@ def _notify_returned_native(dispatcher: Any, instance: str, *,
     for history_id in (carrier_id, source_id):
         validate()
         written = orch._update_task_history(history_id, validate_admission=validate)
-        if publication is not None:
+        if selected_return:
             _check(written is True)
             # Attribute the performed write even if a later observation fails.
-            publication.count('histories_written')
+            if publication is not None:
+                publication.count('histories_written')
             validate()
             history_task = dispatcher.db.get_task(history_id)
             validate()
@@ -547,14 +587,15 @@ def _notify_returned_native(dispatcher: Any, instance: str, *,
             validate()
             _check(history_exists)
     validate()
-    _enqueue_parent_if_waiting(orch, source_id, current_owner=current_owner)
+    _enqueue_parent_if_waiting(orch, source_id, current_owner=current_owner,
+        validate_admission=validate, returned_queue=transport)
     # The ordinary thread tail is not an idempotent API. Serialize its existing
     # stored SYSTEM marker with this coding-only rediscovery producer. A partial
     # native thread tail is retained, never repeated as a second notification.
     with dispatcher.db._lock:
         validate()
         task = dispatcher.db.get_task(source_id)
-        if publication is not None:
+        if selected_return:
             _check(task is not None and task.status == TaskStatus.COMPLETED)
         if task.parent_task_id is None:
             chain = dispatcher.db.walk_revisit_chain(source_id, max_hops=200)
@@ -567,7 +608,7 @@ def _notify_returned_native(dispatcher: Any, instance: str, *,
                         continue
                     payload = _read_json(row['system_payload_json'].encode('utf8'), budget)
                     _check(type(payload) is dict)
-                    if publication is not None and payload.get('task_id') == source_id:
+                    if selected_return and payload.get('task_id') == source_id:
                         _check(payload.get('status') == 'completed')
                     if payload.get('task_id') == source_id and payload.get('status') == 'completed':
                         if publication is not None:
@@ -575,7 +616,8 @@ def _notify_returned_native(dispatcher: Any, instance: str, *,
                         return True
                 validate()
                 _maybe_post_thread_followup(orch, source_id, status=TaskStatus.COMPLETED,
-                    auto_revisit_spawned=False, current_owner=current_owner)
+                    auto_revisit_spawned=False, current_owner=current_owner,
+                    validate_admission=validate, returned_queue=transport)
     return True
 
 

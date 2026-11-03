@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -15,10 +15,9 @@ logger = logging.getLogger("happyranch.daemon.dispatcher")
 class Dispatcher:
     """Resolves ``(slug, task_id)`` to ``OrgState.orchestrator.run_step``.
 
-    Built once per daemon lifetime; not thread-safe except for what
-    DaemonState.orgs guarantees (the dict isn't modified concurrently with
-    reads under normal operation; ``add_org`` / ``remove_org`` hold the
-    orgs_lock).
+    Built once per daemon lifetime. DaemonState captures map membership under
+    its short native fence; queue submission retains the actual OrgState and
+    its existing native-user admission through final worker retirement.
     """
 
     def __init__(self, state: DaemonState) -> None:
@@ -31,7 +30,7 @@ class Dispatcher:
         except KeyError:
             return None
 
-    def run_step(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> None:
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None, *, attachment: OrgState | None = None) -> Any:
         from runtime.daemon.startup_recovery import require_ready
         require_ready(self._state)
         if attachment is not None:
@@ -53,7 +52,7 @@ class Dispatcher:
         from runtime.infrastructure.team_move_store import TeamMoveError
         require_ready(org)
         try:
-            org.orchestrator.run_step(task_id, metadata=metadata)
+            return org.orchestrator.run_step(task_id, metadata=metadata)
         except (DeferredTeamMove, TeamMoveError):
             org.orchestrator._team_moves.defer_task(task_id, metadata)
 

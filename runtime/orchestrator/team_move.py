@@ -537,12 +537,33 @@ class TeamMoveCoordinator:
             # authoritative if this process loses its notification copy.
             self._deferred.setdefault(task_id, metadata)
 
-    def redeliver_tasks(self, enqueue: Any, *, validate_admission=None) -> None:
-        """D calls AFTER durable release; callback is outside gate/DB locks.
+    def _redelivery_validation(self, selected):
+        store, gate, deferred = self.store, self.gate, self._deferred
+        db = store.db
+        def identity():
+            if (self.store is not store or self.gate is not gate or self._deferred is not deferred
+                    or store.db is not db or db._team_move_coordinator is not self):
+                raise DeferredTeamMove("team_move_task_owner_changed")
+        def validate():
+            identity()
+            if selected is not None:
+                selected()
+            identity()
+        validate()
+        return validate
 
-        Existing generation-aware queue owner decides dedup/eligibility. No
-        result token consumption, task allocation or release of the operation.
-        """
+    def redeliver_tasks(self, enqueue: Any, *, validate_admission=None) -> None:
+        """Publish outside locks; only the exact positively published item retires."""
+        validate_admission = self._redelivery_validation(validate_admission)
+        for task_id, metadata in self._released_task_notifications(validate_admission=validate_admission):
+            if validate_admission is not None:
+                validate_admission()
+            if enqueue(task_id, metadata) is not True:
+                continue
+            self._ack_released_task(task_id, metadata, validate_admission=validate_admission)
+
+    def _released_task_notifications(self, *, validate_admission=None) -> tuple:
+        validate_admission = self._redelivery_validation(validate_admission)
         if validate_admission is not None:
             validate_admission()
         with self.gate, self.store.db._lock:
@@ -550,17 +571,28 @@ class TeamMoveCoordinator:
                 validate_admission()
             if self.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
-            deferred = tuple(self._deferred.items())
+            return tuple(self._deferred.items())
+
+    def _ack_released_task(self, task_id: str, metadata: dict | None, *, validate_admission=None) -> None:
+        validate_admission = self._redelivery_validation(validate_admission)
+        # A new move, stop or changed attachment during either real lock wait
+        # retains the original item even if its earlier publication succeeded.
+        with self.gate, self.store.db._lock:
+            if validate_admission is not None:
+                validate_admission()
+            if self.active_uncommitted() is not None:
+                raise DeferredTeamMove("team_move_release_not_committed")
+            if self._deferred.get(task_id) is metadata:
+                self._deferred.pop(task_id, None)
+
+    async def _redeliver_tasks_native(self, enqueue: Any, *, native: Any, validate_admission=None) -> None:
+        validate_admission = self._redelivery_validation(validate_admission)
+        deferred = await native(lambda: self._released_task_notifications(validate_admission=validate_admission))
         for task_id, metadata in deferred:
             if validate_admission is not None:
                 validate_admission()
-            if not enqueue(task_id, metadata):
-                continue  # Refused/pending publication retains its notification.
-            with self.store.db._lock:
-                if validate_admission is not None:
-                    validate_admission()
-                if self._deferred.get(task_id) is metadata:
-                    self._deferred.pop(task_id, None)
+            if await enqueue(task_id, metadata) is True:
+                await native(lambda: self._ack_released_task(task_id, metadata, validate_admission=validate_admission))
 
     def project(self, identity: PermanentAgentIdentity) -> AdmissionProjection:
         if identity.org_slug != self.store.org_slug or not identity.agent_id:

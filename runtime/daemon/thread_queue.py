@@ -103,7 +103,7 @@ async def thread_worker_loop(state, settings: Settings) -> None:
     validate_service = maintenance_service_validation(state)
     while True:
         validate_service()
-        all_orgs = list(state.orgs.values())
+        all_orgs = list(state.orgs_snapshot().values())
         if not all_orgs:
             await asyncio.sleep(0.5)
             continue

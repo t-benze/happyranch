@@ -209,24 +209,30 @@ class Orchestrator:
         currently-executing task without reaching into the private attribute."""
         return self._db
 
-    def redeliver_team_move_tasks(self) -> None:
+    def redeliver_team_move_tasks(self, *, native: Callable | None = None) -> Any:
         """Task-only release seam for D; no operation release or startup owner."""
         from contextlib import nullcontext
         from runtime.daemon.queue import TaskQueue
-        queue = self._queue
+        queue, moves, db = self._queue, self._team_moves, self._db
         selection = queue._publication_selection(self._slug) if isinstance(queue, TaskQueue) else None
         from runtime.orchestrator.authority import enqueue_task_generation_aware
         from runtime.orchestrator.run_step import _task_followon_validation
         selected = _task_followon_validation(self)
-        moves = self._team_moves
         def validate():
+            if selection is not None:
+                selection()
             selected()
-            if self._team_moves is not moves or moves.store.db is not self._db:
+            if (self._queue is not queue or self._team_moves is not moves
+                    or self._db is not db or moves.store.db is not db):
                 from runtime.daemon.startup_recovery import StartupUnavailable
                 raise StartupUnavailable("startup_move_attachment_changed")
         if queue is None:
             from runtime.orchestrator.team_move import DeferredTeamMove
             raise DeferredTeamMove("team_move_task_queue_unavailable")
+        validate()
+        if native is not None:
+            return self._redeliver_team_move_tasks_native(native, queue=queue, moves=moves,
+                                                        selection=selection, validate=validate)
         def publish(task_id: str, metadata: dict | None) -> bool:
             with (queue._publication_scope(self._slug, task_id, _selection=selection)
                   if selection is not None else nullcontext()):
@@ -242,6 +248,41 @@ class Orchestrator:
                 publisher=lambda: enqueue_task_generation_aware(self, queue, self._slug,
                     task_id, metadata=metadata))
         moves.redeliver_tasks(publish, validate_admission=validate)
+
+    async def _redeliver_team_move_tasks_native(
+        self, native: Callable, *, queue: Any, moves: Any,
+        selection: Callable[[], None] | None, validate: Callable[[], None],
+    ) -> None:
+        from runtime.orchestrator.authority import _enqueue_task_generation_aware_native
+
+        async def selected_native(callback: Callable) -> Any:
+            validate()
+            def invoke() -> Any:
+                validate()
+                result = callback()
+                validate()
+                return result
+            result = await native(invoke)
+            validate()
+            return result
+
+        async def publish(task_id: str, metadata: dict | None) -> bool:
+            validate()
+            puts = []
+            return await queue._enqueue_if_absent_native(
+                self._slug, task_id, _queue_validation=validate,
+                _put_outcomes=lambda: tuple(puts),
+                publisher=lambda: _enqueue_task_generation_aware_native(
+                    self, queue, self._slug, task_id, native=selected_native,
+                    metadata=metadata, _queue_validation=validate, _put_outcomes=puts,
+                ),
+            )
+
+        # The SAME owner selected by the synchronous entry precedes deferred
+        # discovery. No ContextVar/queue scope is held across these awaits.
+        validate()
+        await moves._redeliver_tasks_native(publish, native=selected_native, validate_admission=validate)
+        validate()
 
     def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
@@ -297,7 +338,7 @@ class Orchestrator:
         """Wire a notifier (mirrors attach_queue / attach_sessions)."""
         self._notifier = notifier
 
-    def attach_thread_queue(self, thread_queue, main_loop) -> None:
+    def attach_thread_queue(self, thread_queue, main_loop, *, rediscover: bool = True) -> None:
         """Wire the per-org ThreadQueue and the daemon's main event loop.
 
         ``run_step`` runs on a thread-pool worker with no event loop of its
@@ -307,6 +348,8 @@ class Orchestrator:
         and simply get the None-guarded skip path in ``_maybe_post_thread_followup``.
         """
         self.bind_thread_queue_references(thread_queue, main_loop)
+        if rediscover:
+            self._rediscover_returned()
 
     def bind_thread_queue_references(self, thread_queue, main_loop) -> None:
         """References only; native P4 separately owns returned discovery.
@@ -367,6 +410,18 @@ class Orchestrator:
             _bind_task_admission(thread_queue, self._startup_state, org)
         self._thread_queue = thread_queue
         self._main_loop = main_loop
+
+    def _rediscover_returned(self, *, queue=None) -> None:
+        """Original notification owner; dynamic attachment calls it natively."""
+        coding = getattr(self, '_workflow_coding_dispatch', None)
+        if coding is not None:
+            # A terminal source is outside the ordinary nonterminal startup
+            # sweep. Reuse only its independently admitted postcommit return.
+            from runtime.workflows.recovery import rediscover_returned
+            try:
+                rediscover_returned(coding, queue=queue)
+            except (ValueError, TypeError, sqlite3.Error):
+                logger.exception('coding caller notification rediscovery unavailable')
 
     def notify_escalated(
         self, *, task_id: str, agent: str, reason: str, last_summary: str = "",
@@ -823,7 +878,7 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
-    def run_step(self, task_id: str, metadata: dict | None = None) -> None:
+    def run_step(self, task_id: str, metadata: dict | None = None) -> Any:
         """Advance a task one agent-subprocess worth.
 
         Contract: task MUST be pending or in_progress(delegated)-with-all-children-
@@ -836,7 +891,7 @@ class Orchestrator:
         """
         self._require_startup_ready()
         from runtime.orchestrator.run_step import run_step_impl
-        run_step_impl(self, task_id, metadata=metadata)
+        return run_step_impl(self, task_id, metadata=metadata)
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the task owner's decision from its completion report.
@@ -1867,15 +1922,47 @@ class Orchestrator:
                 drafts.reserve_launch(task_id, agent_name, session_id)
 
         def _on_terminal(outcome: Any) -> None:
-            invocation = current_invocation()
-            if invocation is not None:
-                invocation.host_terminal(outcome)
-            from runtime.orchestrator.run_step import (
-                _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch,
-            )
-            root_transitions = _RootWorktreeTransitions()
-            tail_failed = False
+            import sys
+
+            # An active host cause predates this hook, but is not itself a
+            # new hook failure. Preserve ordinary return when the hook succeeds.
+            primary = sys.exception()
+            traceback = (None if primary is None
+                         else BaseException.__traceback__.__get__(primary))
+            occurrences = ([] if primary is None else [('active_host', primary, traceback)])
+            hook_failed = tracker_attempted = root_attempted = False
+            marker_attempted = marker_returned = False
+            marker_result = None
+            invocation = root_transitions = delivery = disposition = None
+            root_unknown = True
+
+            def remember(kind: str, error: BaseException) -> None:
+                nonlocal primary, traceback, hook_failed
+                observed = BaseException.__traceback__.__get__(error)
+                if primary is None:
+                    primary, traceback = error, observed
+                hook_failed = True
+                occurrences.append((kind, error, observed))
+
+            def clear_tracker_once() -> None:
+                nonlocal tracker_attempted
+                if tracker_attempted:
+                    return
+                # A raised clear can follow an effect; never replay it.
+                tracker_attempted = True
+                try:
+                    _clear_tracker()
+                except BaseException as secondary:
+                    remember('tracker', secondary)
+
             try:
+                invocation = current_invocation()
+                if invocation is not None:
+                    invocation.host_terminal(outcome)
+                from runtime.orchestrator.run_step import (
+                    _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch,
+                )
+                root_transitions = _RootWorktreeTransitions()
                 with _defer_root_worktree_batches(self, root_transitions) as delivery:
                     try:
                         if drafts is not None:
@@ -1884,16 +1971,58 @@ class Orchestrator:
                                 submissions = getattr(self, "_workflow_submissions", None)
                                 if submissions is not None:
                                     submissions.completed(task_id)
+                    except BaseException as error:
+                        # Snapshot the workflow cause before tracker/context
+                        # unwind can deliver a different exception.
+                        remember('workflow_terminal', error)
+                        raise
                     finally:
-                        _clear_tracker()
-            except BaseException:
-                tail_failed = True
-                raise
+                        clear_tracker_once()
+            except BaseException as error:
+                remember('terminal_or_context_delivery', error)
             finally:
-                disposition = _root_worktree_batch(self, root_transitions,
-                    teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
-                if disposition.kind == 'unknown' and invocation is not None:
-                    invocation.move_reservation.failed_cleanup()
+                # Also owed after current_invocation/host_terminal/import or
+                # context entry failure, without entering skipped workflow work.
+                clear_tracker_once()
+                try:
+                    if (delivery is not None and root_transitions is not None
+                            and delivery['orch'] is self
+                            and delivery['events'] is root_transitions
+                            and delivery['active'] is False
+                            and not delivery.get('_context_incomplete', False)
+                            and not delivery['consumption_pending']):
+                        # Context uncertainty suppresses the ENTIRE batch,
+                        # including DB admission/audit/report, not just actions.
+                        root_attempted = True
+                        disposition = _root_worktree_batch(self, root_transitions,
+                            teardown_incomplete=hook_failed or delivery['teardown_incomplete'])
+                        root_unknown = disposition.kind == 'unknown'
+                except BaseException as secondary:
+                    remember('root_worktree', secondary)
+                if root_unknown and invocation is not None:
+                    try:
+                        marker_attempted = True
+                        marker_result = invocation.move_reservation.failed_cleanup()
+                        marker_returned = True
+                    except BaseException as secondary:
+                        remember('failed_cleanup_marker', secondary)
+
+            if hook_failed:
+                # One local attachment attempt; preserve nested/prior records.
+                # Failed attachment leaves all actual evidence in this frame.
+                failure = dict(primary=(primary, traceback), occurrences=occurrences,
+                    invocation=invocation, delivery=delivery, transitions=root_transitions,
+                    tracker_attempted=tracker_attempted, root_attempted=root_attempted,
+                    marker_attempted=marker_attempted, marker_returned=marker_returned,
+                    marker_result=marker_result,
+                    disposition=disposition, root_unknown=root_unknown, previous=None)
+                try:
+                    values = BaseException.__getattribute__(primary, '__dict__')
+                    failure['previous'] = values.get('_orchestrator_terminal_failure')
+                    BaseException.__setattr__(primary, '_orchestrator_terminal_failure', failure)
+                except BaseException as secondary:
+                    remember('attachment_failure', secondary)
+                raise BaseException.with_traceback(primary, traceback)
 
         def _launch_body(running: RunningHandle) -> LaunchResult:
             if drafts is not None:

@@ -1184,21 +1184,54 @@ def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
 def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: Any = None) -> None:
     """Close durable attribution only after reconcile and actual outer cleanup."""
     original_error = sys.exception()
-    reservation = invocation.move_reservation
+    # The traceback keeps this per-call record even if exception attachment
+    # fails. Each delivered raise has its own slot, including repeated objects.
+    failure = {
+        "invocation": invocation,
+        "first_error": None if original_error is None else (
+            "active", original_error, BaseException.__traceback__.__get__(original_error)),
+        "later_errors": [],
+        "previous": None,
+    }
+    new_failure = False
+    reservation = None
+    held = None
     native_entry = None
     close_disposition = None
-    held = invocation._held_recovery
-    if held is not None and "error" in held and not failed:
-        failed = (cleanup is None or cleanup.kind != "safe"
-                  or not invocation._held_recovery_refusal(original_error))
-    if failed and reservation is not None:
-        reservation.failed_cleanup()
+    release_disposition = None
+    marking_attempted = False
+
+    def retain(phase: str, error: BaseException) -> None:
+        nonlocal failed, new_failure
+        occurrence = (phase, error, BaseException.__traceback__.__get__(error))
+        failed = new_failure = True
+        if failure["first_error"] is None:
+            failure["first_error"] = occurrence
+        else:
+            failure["later_errors"].append(occurrence)
+
+    def mark_failed() -> None:
+        nonlocal marking_attempted
+        if reservation is not None and not marking_attempted:
+            marking_attempted = True
+            try:
+                reservation.failed_cleanup()
+            except BaseException as secondary:
+                retain("failure marking", secondary)
+
     try:
+        reservation = invocation.move_reservation
+        held = invocation._held_recovery
+        if held is not None and "error" in held and not failed:
+            failed = (cleanup is None or cleanup.kind != "safe"
+                      or not invocation._held_recovery_refusal(original_error))
+        if failed:
+            mark_failed()
         if held is not None and "error" in held and not failed:
             with invocation.store.writer(invocation.task.id) as (_, row):
                 if not invocation._held_recovery_refusal(original_error):
                     failed = True
-                    reservation.failed_cleanup()
+                    mark_failed()
                 else:
                     # Every native preparation interval and the whole outer
                     # batch settled positively. Keep only this SAME unclaimed
@@ -1243,61 +1276,101 @@ def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: An
             close_disposition = invocation.close()
             native_entry = close_disposition["invocation"]
     except BaseException as exc:
-        failed = True
-        if reservation is not None:
-            reservation.failed_cleanup()
-        if original_error is None:
-            raise
-        # Finalization must retain the original launch/reconcile/cleanup
-        # exception. A refused save is a failed retained settlement, never a
-        # successful release; expose it without replacing the original cause.
-        original_error.add_note(f"Pause tail settlement failed for {invocation.identity}: {exc!r}")
-        logging.getLogger(__name__).exception(
-            "task %s session %s owner %s Pause tail settlement failed; original error preserved",
-            invocation.task.id, invocation.session_id, invocation.identity)
+        retain("settlement", exc)
+        mark_failed()
+        if original_error is not None:
+            try:
+                original_error.add_note(f"Pause tail settlement failed for {invocation.identity}: {exc!r}")
+            except BaseException as secondary:
+                retain("settlement note", secondary)
+            try:
+                logging.getLogger(__name__).exception(
+                    "task %s session %s owner %s Pause tail settlement failed; original error preserved",
+                    invocation.task.id, invocation.session_id, invocation.identity)
+            except BaseException as secondary:
+                retain("settlement logging", secondary)
     finally:
-        tail_error = sys.exception() or original_error
-        release_disposition = None
         try:
             # Observe the actual final release, under its native ownership.
-            # Absence alone is insufficient: close must also have committed
-            # the positive removal of this exact original native owner.
+            # A failed pre-release observation cannot skip the original release;
+            # it also cannot supply the positive removal witness.
             with invocation.store.db._lock:
-                owned = (reservation is not None and
-                    invocation.orch._team_moves._reservations.get(reservation.owner_id) is reservation)
+                ownership_observed = False
+                try:
+                    owned = (reservation is not None and
+                        invocation.orch._team_moves._reservations.get(reservation.owner_id) is reservation)
+                    ownership_observed = True
+                except BaseException as secondary:
+                    retain("release ownership observation", secondary)
+                    mark_failed()
                 invocation.orch._team_moves.release_task(invocation, failed=failed)
-                if reservation is not None:
+                if reservation is not None and ownership_observed:
                     release_disposition = dict(owner_id=reservation.owner_id, task_id=reservation.task_id,
                         agent=reservation.identity.agent_id, session_id=reservation.session_id,
                         owner_live=reservation.owner_live, cleanup_failed=reservation.cleanup_failed,
                         possible_launch=reservation.possible_launch, quiescent=reservation.quiescent,
                         removed=owned and invocation.orch._team_moves._reservations.get(reservation.owner_id) is None)
         except BaseException as exc:
-            failed = True
+            retain("release", exc)
             if held is not None and "error" in held:
-                # A genuine final release failure cannot leave this held
-                # recovery looking clean, even if release partly completed.
-                reservation.cleanup_failed = True
+                # Preserve the original uncertainty save without invoking a
+                # helper that would repeat an already attempted failure marker.
                 try:
-                    invocation.failed_cleanup()
+                    reservation.cleanup_failed = True
                 except BaseException as secondary:
-                    exc.add_note(f"Move release uncertainty save failed: {type(secondary).__name__}")
-            if tail_error is None:
-                raise
-            tail_error.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
-            logging.getLogger(__name__).exception("move tail release failed; original error preserved")
-        finally:
-            active_error = sys.exception() or tail_error
-            coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
-            if coding is not None:
+                    retain("release uncertainty latch", secondary)
+                mark_failed()
                 try:
+                    with invocation.store.writer(invocation.task.id) as (_, row):
+                        entry = invocation._entry(row)
+                        entry["context"]["execution_unknown"] = True
+                        entry["phase"] = "unknown"
+                        entry["started_at"] = entry["captured_generation"] = None
+                        invocation.store.save_journal_uncommitted(row)
+                except BaseException as secondary:
+                    retain("release uncertainty save", secondary)
+            primary = failure["first_error"][1]
+            if primary is not exc:
+                try:
+                    primary.add_note(f"Move tail release failed for {invocation.identity}: {exc!r}")
+                except BaseException as secondary:
+                    retain("release note", secondary)
+                try:
+                    logging.getLogger(__name__).exception("move tail release failed; original error preserved")
+                except BaseException as secondary:
+                    retain("release logging", secondary)
+        finally:
+            # Lookup and argument evaluation belong to this original observation
+            # attempt too. Neither a failed release nor diagnostics can skip it.
+            try:
+                coding = getattr(invocation.orch, "_workflow_coding_dispatch", None)
+                if coding is not None:
                     coding.outer_settled(invocation, failed=failed, cleanup=cleanup, native_entry=native_entry,
                         close_disposition=close_disposition, release_disposition=release_disposition)
-                except BaseException as exc:
-                    if active_error is None:
-                        raise
-                    active_error.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
-                    logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
+            except BaseException as exc:
+                retain("coding observation", exc)
+                primary = failure["first_error"][1]
+                if primary is not exc:
+                    try:
+                        primary.add_note(f"Coding tail observation failed for {invocation.identity}: {exc!r}")
+                    except BaseException as secondary:
+                        retain("coding observation note", secondary)
+                    try:
+                        logging.getLogger(__name__).exception("coding tail observation failed; original error preserved")
+                    except BaseException as secondary:
+                        retain("coding observation logging", secondary)
+    if new_failure:
+        _, primary, original_traceback = failure["first_error"]
+        try:
+            values = BaseException.__getattribute__(primary, "__dict__")
+            failure["previous"] = values.get("_pause_settlement_failure")
+            BaseException.__setattr__(primary, "_pause_settlement_failure", failure)
+        except BaseException as secondary:
+            retain("error attachment", secondary)
+        # A new settlement failure must escape even with an active launch or
+        # cancellation error. With no new failure, retain the original None
+        # return and let the caller's original unwind continue unchanged.
+        raise BaseException.with_traceback(primary, original_traceback)
 
 
 def pause_deferred_owner(db: Any, task_id: str) -> bool:

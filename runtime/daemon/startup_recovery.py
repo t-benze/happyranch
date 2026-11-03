@@ -174,39 +174,93 @@ async def _await_startup_owned(
     """
     primary: BaseException | None = None
     traceback = None
+    observations = []
+    wait_returned = result_returned = False
+    wait_result = result = None
+
+    def capture(kind: str, error: BaseException) -> Any:
+        # Bypass exception overrides before any fallible callback/diagnostic.
+        native_traceback = BaseException.__traceback__.__get__(error)
+        observations.append((kind, error, native_traceback))
+        return native_traceback
+
+    def deliver(error: BaseException) -> None:
+        try:
+            retain(error)
+        except BaseException as secondary:
+            # This callback delivered one failure. Never recursively retry it
+            # or let it discharge consumption of the SAME original completion.
+            capture('retain_failure', secondary)
+
     while True:
         try:
-            await asyncio.shield(owned)
+            wait_result = await asyncio.shield(owned)
+            wait_returned = True
             break
         except asyncio.CancelledError as exc:
+            observed_traceback = capture('wait_cancellation', exc)
             if primary is None:
+                primary, traceback = exc, observed_traceback
                 # A done/error race can expose an already-ended operation before
                 # this waiter observes cancellation. Consume that outcome first.
-                earlier = None if not owned.done() or owned.cancelled() else owned.exception()
-                primary = earlier if earlier is not None else exc
-                traceback = primary.__traceback__
-                if on_cancel is not None and not owned.cancelled():
+                try:
+                    earlier = None if not owned.done() or owned.cancelled() else owned.exception()
+                    if earlier is not None:
+                        earlier_traceback = capture('completed_error_observation', earlier)
+                        primary, traceback = earlier, earlier_traceback
+                except BaseException as secondary:
+                    capture('completion_observation_failure', secondary)
+                    deliver(secondary)
+                if on_cancel is not None:
+                    selection_boundary = 'cancelled_wrapper_observation_failure'
                     try:
-                        primary = on_cancel(primary)
-                        traceback = primary.__traceback__
+                        if not owned.cancelled():
+                            selection_boundary = 'on_cancel_failure'
+                            selected = on_cancel(primary)
+                            selection_boundary = 'on_cancel_return_observation_failure'
+                            selected_traceback = capture('on_cancel_return', selected)
+                            if selected is not primary:
+                                primary, traceback = selected, selected_traceback
                     except BaseException as secondary:
-                        retain(secondary)
-            retain(exc)
-            if owned.done():
-                break
+                        capture(selection_boundary, secondary)
+                        deliver(secondary)
+            deliver(exc)
+            try:
+                if owned.done():
+                    break
+            except BaseException as secondary:
+                capture('completion_observation_failure', secondary)
+                deliver(secondary)
         except BaseException as exc:
+            observed_traceback = capture('wait_error', exc)
             if primary is None:
-                primary, traceback = exc, exc.__traceback__
-            retain(exc)
+                primary, traceback = exc, observed_traceback
+            deliver(exc)
             break
     try:
         result = owned.result()
+        result_returned = True
     except BaseException as exc:
+        observed_traceback = capture('result_observation', exc)
         if primary is None:
-            primary, traceback = exc, exc.__traceback__
-        retain(exc)
+            primary, traceback = exc, observed_traceback
+        deliver(exc)
     if primary is not None:
-        raise primary.with_traceback(traceback)
+        # Re-observation/result/final delivery are not new native incidents.
+        # Keep completed values as evidence only when caller delivery fails.
+        failure = dict(primary=(primary, traceback), observations=observations,
+                       wait_returned=wait_returned, wait_result=wait_result,
+                       result_returned=result_returned, result=result, previous=None)
+        try:
+            values = BaseException.__getattribute__(primary, '__dict__')
+            failure['previous'] = values.get('_startup_owned_failure')
+            BaseException.__setattr__(primary, '_startup_owned_failure', failure)
+        except BaseException as secondary:
+            # One attachment attempt. The rethrown frame retains this record,
+            # its earlier/nested links and the actual attachment failure.
+            capture('attachment_failure', secondary)
+        observations.append(('final_delivery', primary, traceback))
+        raise BaseException.with_traceback(primary, traceback)
     return result
 
 

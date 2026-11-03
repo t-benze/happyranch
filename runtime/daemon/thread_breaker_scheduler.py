@@ -174,7 +174,7 @@ async def _native_call(org, validate, function, *args):
 async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0) -> None:
     while True:
         require_ready(state)
-        for org in list(state.orgs.values()):
+        for org in list(state.orgs_snapshot().values()):
             try:
                 require_ready(org)
                 validate = ordinary_admission_validation(org)

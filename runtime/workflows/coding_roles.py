@@ -13,7 +13,7 @@ import sqlite3
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable, Iterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator
 
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
@@ -33,6 +33,11 @@ from runtime.workflows.coding_mapping_history import (
 from runtime.workflows.coding_saved_records import ROLES, _canonical, _check, _hash, _roles
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplatePrincipal
+
+
+if TYPE_CHECKING:
+    from runtime.infrastructure.workflow_coding_schema import _CodingInventory
+    from runtime.workflows._coding_registered_release import RegisteredCodingRelease
 
 
 class CodingRoleError(ValueError):
@@ -139,15 +144,16 @@ class CodingRoleStore:
                 yield conn, current
 
     def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...], *,
-                 budget: _Budget | None = None) -> CodingMappingHistory | None:
+                 budget: _Budget | None = None) -> _CodingInventory:
         inventory = self.support._storage(conn, references, budget=budget)
-        if inventory.imported is None:
+        if inventory.release is None:
             raise CodingRoleError('coding_role_release_import_required')
-        return inventory.mappings
+        return inventory
 
     def _current(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
                  capture: AuthorityAdmissionCapture | None, mapping: dict, *, fresh: bool = False,
                  command: dict | None = None, budget: _Budget | None = None,
+                 release: RegisteredCodingRelease | None = None,
                  validate_admission: Callable[[], None] | None = None) -> None:
         _check(budget is None or type(budget) is _Budget)
         budget = _Budget() if budget is None else budget
@@ -160,6 +166,8 @@ class CodingRoleStore:
         authority._validate_admission_uncommitted(conn, capture)
         if mapping['roles']['agent_manager'] != dict(principal=principal.principal_id, team=principal.team_slug):
             raise CodingRoleError('coding_role_manager_revoked')
+        if fresh and not self.org.workflow_coding_builtin.available(release):
+            raise CodingRoleError('coding_role_release_unavailable')
         if fresh and mapping['authority'] != dict(namespace=capture.ready.namespace,
                 generation=capture.ready.generation, snapshot_digest=capture.ready.snapshot_digest):
             raise CodingRoleError('coding_role_authority_stale')
@@ -226,7 +234,8 @@ class CodingRoleStore:
                     command = None if raw is None else parse_selection(raw)
                 except ValueError:
                     raise CodingRoleError('coding_role_invalid_request') from None
-                history = self._storage(conn, references, budget=budget)
+                inventory = self._storage(conn, references, budget=budget)
+                history = inventory.mappings
                 if history is None:
                     raise CodingRoleError('coding_role_not_found')
                 entry = history.selected
@@ -283,11 +292,12 @@ class CodingRoleStore:
                     command = parse_role_command(raw, org_slug=self.org.slug)
                 except ValueError:
                     raise CodingRoleError('coding_role_invalid_request') from None
-                history = self._storage(conn, references, budget=budget)
+                inventory = self._storage(conn, references, budget=budget)
+                history = inventory.mappings
                 replay = self._replay(conn, principal, current, history, command, raw, budget=budget, validate_admission=validate)
                 if replay is not None:
                     return replay  # Original full bytes before fresh CAS/current pin.
-                self._current(conn, principal, current, command['mapping'], fresh=True, budget=budget, validate_admission=validate)
+                self._current(conn, principal, current, command['mapping'], fresh=True, budget=budget, release=inventory.release, validate_admission=validate)
             if capture is None:
                 raise CodingRoleError('coding_role_authority_unavailable')
             if load_org_config(self.org.orchestrator._paths).max_revise_rounds != revise_limit:
@@ -299,7 +309,8 @@ class CodingRoleStore:
                         self._principal(principal, validate_admission=validate)
                         self._structure(conn, references)
                         native_owner(self.org, principal, conn, budget=budget)
-                        history = self._storage(conn, references, budget=budget)
+                        inventory = self._storage(conn, references, budget=budget)
+                        history = inventory.mappings
                         replay = self._replay(conn, principal, capture, history, command, raw, budget=budget, validate_admission=validate)
                         if replay is not None:
                             return replay
@@ -307,7 +318,7 @@ class CodingRoleStore:
                             budget.step()
                             if entry.principal == 'human:founder':
                                 raise CodingRoleError('coding_settings_human_owned')
-                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, validate_admission=validate)
+                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, release=inventory.release, validate_admission=validate)
                         generation = 0 if history is None else history.selected.generation
                         if generation != command['expected_generation']:
                             raise CodingRoleError('coding_role_generation_stale')
@@ -337,8 +348,9 @@ class CodingRoleStore:
                             record, _hash(record), now))
                         self.db.insert_audit_log_uncommitted(principal.task_id, principal.principal_id,
                             'coding_source_admission', body)
-                        history = self._storage(conn, references, budget=budget)  # Full new cold closure before COMMIT.
-                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, validate_admission=validate)
+                        inventory = self._storage(conn, references, budget=budget)
+                        history = inventory.mappings  # Full new cold closure before COMMIT.
+                        self._current(conn, principal, capture, command['mapping'], fresh=True, budget=budget, release=inventory.release, validate_admission=validate)
                         return self._receipt(conn, principal, capture, history.selected, replayed=False, budget=budget, validate_admission=validate)
                 except sqlite3.IntegrityError:
                     raise CodingRoleError('coding_role_storage_conflict') from None

@@ -209,6 +209,19 @@ _V2_ALL_RESULT_STAGE_KEY_SETS[AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT] = (
 )
 
 
+def _v2_continuation_retain_later_error(
+    primary: BaseException, later: BaseException, slot: str,
+) -> None:
+    """Keep each delivered later object/traceback beside the original cause."""
+    values = BaseException.__getattribute__(primary, "__dict__")
+    evidence = (later, BaseException.__getattribute__(later, "__traceback__"))
+    if slot not in values:
+        BaseException.__setattr__(primary, slot, evidence)
+    else:
+        additional = slot + "_later"
+        BaseException.__setattr__(primary, additional, values.get(additional, ()) + (evidence,))
+
+
 class AuthorityV2ContinuationMixin:
     # -- THR-229 checkpoint C3d2: the ONE final continuation transaction
     # (active E + final audits + N needed + D pending(G) + task Pending + J
@@ -812,142 +825,26 @@ class AuthorityV2ContinuationMixin:
         fresh mechanical-eligibility re-derivation or today's selector equality.
         A legitimate finalized replay/reopen must authenticate without
         restoring a live pre-final owner, re-evaluating or reminting.
+        Acquisition/SQL/JSON/Unicode errors delivered by those readers escape
+        unchanged. Their internally swallowed errors remain reader limitations;
+        this outer owner cannot reconstruct an error it never receives.
         """
-        attempt_id = self._authority_policy_v2_attempt_id_for_identity(
+        code, proof = self._authenticate_v2_committed_policy_evidence_uncommitted(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        row = self._conn.execute(
-            """SELECT * FROM authority_policy_v2_attempts
-               WHERE root_task_id=? AND manager_agent=?
-                 AND manager_session_id=? AND result_id=?""",
-            (root_task_id, manager_agent, manager_session_id, result_id),
-        ).fetchone()
-        if row is None:
-            return "identity_mismatch", None
-        try:
-            attempt = self._authority_policy_v2_attempt_from_row(row)
-        except ValueError:
-            return "identity_mismatch", None
-        if attempt.attempt_id != attempt_id:
-            return "identity_mismatch", None
+        if code is not None:
+            return code, None
+        assert proof is not None
+        attempt = proof["attempt"]
         if attempt.finalization_state != "continued":
             return "identity_mismatch", None
-        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED:
-            return "evidence_drift", None
-        attempt_row = dict(row)
-        # a0 half: the single immutable admission event.  A deleted, mutated,
-        # duplicated or foreign admitted audit is missing evidence.
-        if not self._authenticate_v2_attempt_admission_audit_uncommitted(attempt_row):
-            return "identity_mismatch", None
-        # R: the exact causal result row, its identity AND its persisted
-        # normalized body/decision (including the accepted escalation action and
-        # the assessment digest the attempt was admitted with).
-        result_row = self._conn.execute(
-            "SELECT * FROM task_results WHERE id=?", (result_id,)
-        ).fetchone()
-        if (
-            result_row is None
-            or result_row["task_id"] != root_task_id
-            or result_row["agent"] != manager_agent
-            or result_row["session_id"] != manager_session_id
-        ):
-            return "identity_mismatch", None
-        if not self._authenticate_v2_result_body_uncommitted(result_row, attempt):
-            return "identity_mismatch", None
-        # Authentic immutable launch binding and its pinned release/activation/
-        # selector history (a later legitimate activation never invalidates the
-        # pinned tuple; today's selector equality is never required).
-        binding = self.get_authority_policy_v2_session_binding(
-            root_task_id=root_task_id, manager_agent=manager_agent,
-            manager_session_id=manager_session_id,
-        )
-        if binding is None:
-            return "identity_mismatch", None
-        if not self._v2_session_binding_authenticated_uncommitted(binding):
-            return "identity_mismatch", None
-        if (
-            binding.binding_id != attempt.binding_id
-            or binding.team != attempt.team
-            or binding.contract_id != attempt.contract_id
-            or binding.contract_version != attempt.contract_version
-            or binding.contract_digest != attempt.contract_digest
-            or binding.release_id != attempt.release_id
-            or binding.activation_id != attempt.activation_id
-            or binding.activation_epoch != attempt.activation_epoch
-            or binding.selector_id != attempt.selector_id
-        ):
-            return "identity_mismatch", None
-        release = self.get_authority_policy_v2_release(attempt.release_id)
-        activation = self.get_authority_policy_v2_activation(attempt.activation_id)
-        if release is None or activation is None:
-            return "identity_mismatch", None
-        if (
-            release.team != attempt.team
-            or release.policy_digest != binding.policy_digest
-            or release.version != binding.policy_version
-            or activation.team != attempt.team
-            or activation.release_id != attempt.release_id
-            or activation.release_digest != release.policy_digest
-            or activation.selector_epoch != attempt.activation_epoch
-            or binding.provider_id == "" or binding.executor_kind == ""
-            or binding.model_id == ""
-        ):
-            return "identity_mismatch", None
-        # K/P: the exact consumed candidate and its immutable pin tuple.
-        candidate_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
-            (result_id,),
-        ).fetchone()
-        if candidate_row is None:
-            return "evidence_drift", None
-        try:
-            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
-        except ValueError:
-            return "identity_mismatch", None
-        pin_row = self._conn.execute(
-            "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
-            (candidate.candidate_id,),
-        ).fetchone()
-        if pin_row is None:
-            return "evidence_drift", None
-        try:
-            pin = self._authority_policy_v2_pin_from_row(pin_row)
-        except ValueError:
-            return "identity_mismatch", None
-        if not self._authenticate_v2_candidate_pin_joins_uncommitted(
-            attempt=attempt, candidate=candidate, pin=pin, binding=binding,
-            release=release,
-        ):
-            return "identity_mismatch", None
-        if candidate.lifecycle_stage != "consumed":
-            return "evidence_drift", None
-        # BOTH halves of a1/a2/a3.
-        for event in (
-            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
-            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_EVALUATED,
-            AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CONSUMED,
-        ):
-            if not self._authenticate_v2_candidate_audit_uncommitted(candidate, event):
-                return "evidence_drift", None
-        if not self._authenticate_v2_prior_result_stages_uncommitted(
-            attempt_row,
-            (
-                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
-                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_EVALUATION_AUDITED,
-                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CONSUMED_AUDITED,
-            ),
-            candidate.candidate_id,
-        ):
-            return "evidence_drift", None
-        # V: the persisted outcome is authoritative and is never re-derived.
-        eval_code, eval_ctx = self._authenticate_v2_evaluation_evidence_uncommitted(
-            candidate=candidate, attempt=attempt, binding=binding, release=release,
-        )
-        if eval_code is not None:
-            return "evidence_drift", None
-        assert eval_ctx is not None
-        evaluation = eval_ctx["evaluation"]
+        # The committed reader already authenticates consumed_audited, the
+        # immutable J/R/K/P/V joins and BOTH a0-a3 halves without a live token.
+        # Reuse its actual row/candidate/ONCE evaluation; never reconstruct them.
+        attempt_row = proof["row"]
+        candidate = proof["candidate"]
+        evaluation = proof["evaluation"]
         # E/N/D plus the complete final audit set (candidate ``final`` event,
         # closed ``continued`` result-stage evidence, final task/hook audits).
         code, ctx = self._authenticate_v2_final_rows_uncommitted(
@@ -958,11 +855,7 @@ class AuthorityV2ContinuationMixin:
         if code is not None:
             return code, None
         assert ctx is not None
-        return None, {
-            **ctx, "attempt": attempt, "candidate": candidate, "pin": pin,
-            "binding": binding, "release": release, "activation": activation,
-            "result_row": result_row, "evaluation": evaluation,
-        }
+        return None, {**proof, **ctx}
 
     def _authenticate_v2_post_final_task_uncommitted(
         self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
@@ -1386,31 +1279,41 @@ class AuthorityV2ContinuationMixin:
         changes the task to Pending/null block_kind preserving the causal
         owner/session, and CASes J to ``continued``.  No receipt settlement and
         no queue call happen here.  A genuine failure poisons only the authentic
-        winning owner and selects C3d1 refusal-only housekeeping.
+        winning owner and selects C3d1 refusal-only housekeeping. The captured
+        original connection refuses caller-owned transactions before effects.
+        Owned rollback runs once; mark/forget/rollback/refusal errors delivered
+        here retain their actual objects/tracebacks beside the SAME first cause.
+        Successful COMMIT is a prefix, and a lost COMMIT return stays uncertain;
+        shared synchronizer tails and helper-internal catches remain separate.
         """
         attempt_id = self._authority_policy_v2_attempt_id_for_identity(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
         )
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority finalization connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2FinalizationOutcome(
                 status="finalization_pending", reason="transaction_owned",
                 attempt_id=attempt_id,
             )
         authentic_owner = self._v2_contender_is_authentic_owner(
             attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
-            origin_boot_id=origin_boot_id,
+            origin_boot_id=origin_boot_id, raise_on_read_failure=True,
         )
         now = _now().isoformat()
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._finalize_v2_continuation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -1420,24 +1323,28 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "finalization_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if not rollback_attempted:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if authentic_owner:
+                # Revoke before fallible cleanup/persistence. Each owed action
+                # is independent even when another one fails or is cancelled.
+                try:
+                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_continuation_retain_later_error(primary, later, "_v2_final_mark_secondary")
+                try:
+                    self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+                except BaseException as later:
+                    _v2_continuation_retain_later_error(primary, later, "_v2_final_forget_secondary")
+            if not committed and not rollback_attempted:
                 try:
                     rollback()
-                except BaseException as secondary:
-                    try:
-                        BaseException.__setattr__(primary, "_v2_final_rollback_secondary",
-                                                  (secondary, secondary.__traceback__))
-                    except BaseException:
-                        pass
+                except BaseException as later:
+                    _v2_continuation_retain_later_error(primary, later, "_v2_final_rollback_secondary")
             try:
-                if authentic_owner:
-                    # Safe same-process fallback: the process-local marker keeps
-                    # safely attributable refusal housekeeping possible even when
-                    # the durable obligation diagnostic cannot be written.
-                    self._mark_v2_refusal_failure_authority(attempt_id, owner_attempt_id)
                 self._refuse_v2_stage(
                     attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
                     code="final_commit_failed",
@@ -1445,13 +1352,9 @@ class AuthorityV2ContinuationMixin:
                     origin_boot_id=origin_boot_id if not authentic_owner else None,
                     poison=authentic_owner,
                 )
-            except BaseException as secondary:
-                try:
-                    BaseException.__setattr__(primary, "_v2_final_refusal_secondary",
-                                              (secondary, secondary.__traceback__))
-                except BaseException:
-                    pass
-            raise
+            except BaseException as later:
+                _v2_continuation_retain_later_error(primary, later, "_v2_final_refusal_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     # -- THR-229 checkpoint C3d2: the separate exact post-final receipt
     # settlement transaction/read.  It authenticates the complete final
@@ -1835,8 +1738,17 @@ class AuthorityV2ContinuationMixin:
         have exactly one relevant, well-formed Q matching that asserted tuple.
         Explicit recovery without a matching Q refuses.  Ordinary absence stays
         ordinary and requires real ordinary completion evidence at the accepted
-        completion-consumer seam.  A failed settlement retains Pending/E/N/D/J
-        and callback_accepted and permits ONLY exact settlement retry.
+        completion-consumer seam. Only successful owned PRECOMMIT rollback
+        restores this transaction's pre-state; it never undoes prior Pending/
+        E/N/D/J. A successful COMMIT retains callback_consumed and both audits
+        even if outcome construction or return fails. COMMIT-before-error/lost
+        return and failed cleanup remain uncertain: retry authenticates the
+        exact durable state, never repeats writes from a presumed rollback.
+        The captured original connection never consumes caller BEGIN/SAVEPOINT.
+        Every owned rollback is marked before its sole attempt, including
+        denial/read/replay cleanup; delivered E1/cancellation and its traceback
+        remain primary beside the actual later rollback error. Internal helper
+        catches and the shared synchronizer tail are separate limitations.
         """
         attempt_id = self._authority_policy_v2_attempt_id_for_identity(
             root_task_id=root_task_id, manager_agent=manager_agent,
@@ -1849,19 +1761,24 @@ class AuthorityV2ContinuationMixin:
                 attempt_id=attempt_id, **kw,
             )
 
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority settlement connection ownership unavailable")
+        if owned:
             return _pending("transaction_owned")
         if recovery_session_id is not None and recovery_session_id != manager_session_id:
             return _pending("identity_mismatch")
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             code, ctx = self._authenticate_v2_settlement_final_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -1883,7 +1800,7 @@ class AuthorityV2ContinuationMixin:
                 "notification_id": notification_id,
                 "generation_id": generation_id,
             }
-            receipts = self._conn.execute(
+            receipts = conn.execute(
                 "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
                 (root_task_id, manager_agent),
             ).fetchall()
@@ -1909,6 +1826,8 @@ class AuthorityV2ContinuationMixin:
                 if (
                     not self._v2_receipt_identity_is_well_formed(receipt)
                     or receipt["recovery_session_id"] != manager_session_id
+                    or not self._v2_is_int(result_id)
+                    or not 1 <= result_id <= 9223372036854775807
                     or not self._v2_is_int(accepted_result_id)
                     or accepted_result_id != result_id
                     or accepted_result_session_id != manager_session_id
@@ -1932,7 +1851,7 @@ class AuthorityV2ContinuationMixin:
                         rollback()
                         return _pending("identity_mismatch", **base)
                     now = _now().isoformat()
-                    cursor = self._conn.execute(
+                    cursor = conn.execute(
                         """UPDATE task_completion_recoveries
                               SET state='callback_consumed',
                                   accepted_result_session_id=?, settled_at=?
@@ -1965,7 +1884,8 @@ class AuthorityV2ContinuationMixin:
                             envelope=envelope, notification=notification,
                         ),
                     )
-                    self._conn.commit()
+                    conn.commit()
+                    committed = True
                     return AuthorityPolicyV2SettlementOutcome(
                         status="settled", attempt_id=attempt.attempt_id,
                         recovery=True, receipt_settled=True, **base,
@@ -2015,17 +1935,13 @@ class AuthorityV2ContinuationMixin:
                 recovery=False, receipt_settled=False, **base,
             )
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A denial rollback/late failure is never retried.
-            try:
-                rollback()
-            except BaseException as secondary:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if not committed and not rollback_attempted:
                 try:
-                    BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                              (secondary, secondary.__traceback__))
-                except BaseException:
-                    pass
-            raise
+                    rollback()
+                except BaseException as later:
+                    _v2_continuation_retain_later_error(primary, later, "_v2_completion_rollback_secondary")
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     # -- THR-229 checkpoint C3d4b: read-only recovery-receipt identity discovery
     # used by the real post-final orchestration seams (accepted-completion
@@ -2747,10 +2663,19 @@ class AuthorityV2ContinuationMixin:
         previous state/counter/lease and appends nothing.  COMMIT, rollback or
         late-return failure can retain committed or unknown effects.
         No queue call, task mutation, reevaluation or admission happens here.
-        The selected original completion owner passes _preserve_errors so
-        unavailable evidence retains E1/traceback, distinct from bounded denial.
+        The captured original connection refuses caller BEGIN/SAVEPOINT using
+        a real Boolean ownership observation. Each owned rollback is marked
+        before its sole attempt; successful COMMIT survives later errors.
+        Selected _preserve_errors, cancellation and failed cleanup retain
+        the SAME first error/original traceback, with actual rollback errors
+        retained separately. Default bounded conversion requires successful
+        owned cleanup; helper catches/shared synchronizer tails stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2PublicationClaimOutcome(
                 status="publication_pending", reason="transaction_owned",
             )
@@ -2761,14 +2686,15 @@ class AuthorityV2ContinuationMixin:
             )
         now_dt = _now()
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._claim_v2_notification_publication_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -2777,23 +2703,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "publication_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A denial rollback/late failure is never retried.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
             try:
                 rollback()
             except BaseException as secondary:
                 cleanup_failed = True
-                try:
-                    BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                              (secondary, secondary.__traceback__))
-                except BaseException:
-                    pass
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2PublicationClaimOutcome(
                 status="publication_pending", reason="publication_failed",
             )
@@ -3081,23 +3008,33 @@ class AuthorityV2ContinuationMixin:
         ``published`` audit atomically.  An exact retry authenticates the
         retained evidence read-only.  A stale P/boot never acknowledges or
         resets a newer claim.  No queue call happens here.
-        The selected original completion owner passes _preserve_errors so
-        unavailable evidence retains E1/traceback, distinct from bounded denial.
+        The captured original connection refuses caller BEGIN/SAVEPOINT using
+        a real Boolean ownership observation. Each owned rollback is marked
+        before its sole attempt; successful COMMIT survives later errors.
+        Selected _preserve_errors, cancellation and failed cleanup retain
+        the SAME first error/original traceback, with actual rollback errors
+        retained separately. Default bounded conversion requires successful
+        owned cleanup; helper catches/shared synchronizer tails stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2PublicationAckOutcome(
                 status="ack_pending", reason="transaction_owned",
             )
         now_dt = _now()
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._ack_v2_notification_publication_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3107,23 +3044,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "ack_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A denial rollback/late failure is never retried.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
             try:
                 rollback()
             except BaseException as secondary:
                 cleanup_failed = True
-                try:
-                    BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                              (secondary, secondary.__traceback__))
-                except BaseException:
-                    pass
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2PublicationAckOutcome(
                 status="ack_pending", reason="ack_failed",
             )
@@ -3271,23 +3209,33 @@ class AuthorityV2ContinuationMixin:
         audit atomically.  If recording fails, the prior publishing
         lease/state survives reclaimable by death/expiry.  This method does not
         call the queue, reevaluate or mint.
-        The selected original completion owner passes _preserve_errors so
-        unavailable evidence retains E1/traceback, distinct from bounded denial.
+        The captured original connection refuses caller BEGIN/SAVEPOINT using
+        a real Boolean ownership observation. Each owned rollback is marked
+        before its sole attempt; successful COMMIT survives later errors.
+        Selected _preserve_errors, cancellation and failed cleanup retain
+        the SAME first error/original traceback, with actual rollback errors
+        retained separately. Default bounded conversion requires successful
+        owned cleanup; helper catches/shared synchronizer tails stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2PublicationFailureOutcome(
                 status="failure_pending", reason="transaction_owned",
             )
         now_dt = _now()
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._record_v2_notification_publication_failure_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -3297,23 +3245,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "failure_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A denial rollback/late failure is never retried.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
             try:
                 rollback()
             except BaseException as secondary:
                 cleanup_failed = True
-                try:
-                    BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                              (secondary, secondary.__traceback__))
-                except BaseException:
-                    pass
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2PublicationFailureOutcome(
                 status="failure_pending", reason="failure_failed",
             )
@@ -3550,20 +3499,28 @@ class AuthorityV2ContinuationMixin:
                 status="invalidation_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._invalidate_v2_notification_generation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
                 now_dt=now_dt,
             )
             if outcome.status == "invalidation_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2InvalidationOutcome(
                 status="invalidation_pending", reason="invalidation_failed",
             )
@@ -4078,8 +4035,9 @@ class AuthorityV2ContinuationMixin:
                 status="generation_pending", reason="transaction_owned",
             )
         now_dt = _now()
+        conn = self._conn
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._try_claim_v2_continuation_generation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -4087,12 +4045,19 @@ class AuthorityV2ContinuationMixin:
                 now_dt=now_dt,
             )
             if outcome.status == "generation_pending":
-                self._conn.rollback()
+                conn.rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
             return outcome
-        except Exception:
-            self._conn.rollback()
+        except Exception as primary:
+            try:
+                conn.rollback()
+            except BaseException:
+                try:
+                    primary.add_note("authority transaction rollback also failed; custody remains uncertain")
+                except BaseException:
+                    pass
+                raise primary
             return AuthorityPolicyV2GenerationClaimOutcome(
                 status="generation_pending", reason="generation_failed",
             )
@@ -4259,23 +4224,33 @@ class AuthorityV2ContinuationMixin:
         preparation.  COMMIT or late-return failure can retain a committed or
         unknown settled prefix; failed rollback retains uncertainty.  No failed
         or lost outcome permits fresh admission/launch or clears native duties.
-        The selected original completion owner passes _preserve_errors so
-        unavailable evidence retains E1/traceback, distinct from bounded denial.
+        The captured original connection refuses caller BEGIN/SAVEPOINT using
+        a real Boolean ownership observation. Each owned rollback is marked
+        before its sole attempt; successful COMMIT survives later errors.
+        Selected _preserve_errors, cancellation and failed cleanup retain
+        the SAME first error/original traceback, with actual rollback errors
+        retained separately. Default bounded conversion requires successful
+        owned cleanup; helper catches/shared synchronizer tails stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2AdmissionSettlementOutcome(
                 status="settlement_pending", reason="transaction_owned",
             )
         now_dt = _now()
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._settle_v2_continuation_generation_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -4285,23 +4260,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "settlement_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A denial rollback/late failure is never retried.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
             try:
                 rollback()
             except BaseException as secondary:
                 cleanup_failed = True
-                try:
-                    BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                              (secondary, secondary.__traceback__))
-                except BaseException:
-                    pass
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2AdmissionSettlementOutcome(
                 status="settlement_pending", reason="settlement_failed",
             )
@@ -4888,24 +4864,34 @@ class AuthorityV2ContinuationMixin:
         evidence/transaction errors keep their original object and traceback,
         with an actual rollback failure retained separately. Semantic pending
         stays bounded; the default public outcome and private coding composition
-        retain their existing contracts. Rollback is owned and attempted once.
+        retain their existing contracts. The captured original connection uses
+        real Boolean ownership before BEGIN/SAVEPOINT refusal. Rollback is
+        marked before its sole attempt; failed cleanup is never retried.
+        Successful COMMIT survives later errors; default bounded conversion
+        requires successful owned cleanup. Helper catches/shared tails remain
+        separate limits on delivery of the original error and committed return.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2SpendOutcome(
                 status="spend_pending", reason="transaction_owned",
             )
         now_dt = _now()
         begin_attempted = False
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True  # Mark the sole obligation before invoking it.
-            self._conn.rollback()
+            conn.rollback()
 
         try:
             begin_attempted = True
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._spend_v2_continuation_envelope_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 manager_session_id=manager_session_id, result_id=result_id,
@@ -4915,24 +4901,25 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "spend_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A failed denial rollback is never attempted again.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
             if begin_attempted:
                 try:
                     rollback()
                 except BaseException as secondary:
                     cleanup_failed = True
-                    try:
-                        BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                                  (secondary, secondary.__traceback__))
-                    except BaseException:
-                        pass
+                    _v2_continuation_retain_later_error(
+                        primary, secondary, "_v2_completion_rollback_secondary",
+                    )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2SpendOutcome(
                 status="spend_pending", reason="spend_failed",
             )
@@ -5364,27 +5351,33 @@ class AuthorityV2ContinuationMixin:
         provisional with graph until the ORIGINAL coding ``admission_writer``
         COMMIT.  This method performs NO consumer call, queue call, child
         creation or task-status effect.
-        Selected common completion calls pass ``_preserve_errors``: actual
-        evidence/transaction errors keep their original object and traceback,
-        with an actual rollback failure retained separately. Semantic pending
-        stays bounded; the default public outcome and private coding composition
-        retain their existing contracts. Rollback is owned and attempted once.
+        The captured original connection and real Boolean ownership observation
+        precede effects. Each owned rollback is marked before its sole attempt;
+        successful COMMIT is retained before return, with no postcommit rollback.
+        Selected ``_preserve_errors``, cancellation and failed cleanup deliver
+        the SAME first error/original traceback; actual later rollback errors
+        are retained separately. Default bounded conversion requires successful
+        owned cleanup. Semantic pending and private coding composition remain
+        unchanged; shared tails and helper-internal catches stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2DecisionClaimOutcome(
                 status="decision_pending", reason="transaction_owned",
             )
-        begin_attempted = False
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True  # Mark the sole obligation before invoking it.
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            begin_attempted = True
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._claim_v2_decision_dispatch_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_id=result_id,
@@ -5392,24 +5385,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "decision_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A failed denial rollback is never attempted again.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
-            if begin_attempted:
-                try:
-                    rollback()
-                except BaseException as secondary:
-                    cleanup_failed = True
-                    try:
-                        BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                                  (secondary, secondary.__traceback__))
-                    except BaseException:
-                        pass
+            try:
+                rollback()
+            except BaseException as secondary:
+                cleanup_failed = True
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2DecisionClaimOutcome(
                 status="decision_pending", reason="claim_failed",
             )
@@ -5515,27 +5508,33 @@ class AuthorityV2ContinuationMixin:
         COMMIT-before-error or late synchronized clock/warning/return loss can
         leave applied and its audit durable.  Caller BEGIN/SAVEPOINT returns
         ``transaction_owned`` before owned BEGIN/rollback, preserving caller writes.
-        Selected common completion calls pass ``_preserve_errors``: actual
-        evidence/transaction errors keep their original object and traceback,
-        with an actual rollback failure retained separately. Semantic pending
-        stays bounded; the default public outcome and private coding composition
-        retain their existing contracts. Rollback is owned and attempted once.
+        The captured original connection and real Boolean ownership observation
+        precede effects. Each owned rollback is marked before its sole attempt;
+        successful COMMIT is retained before return, with no postcommit rollback.
+        Selected ``_preserve_errors``, cancellation and failed cleanup deliver
+        the SAME first error/original traceback; actual later rollback errors
+        are retained separately. Default bounded conversion requires successful
+        owned cleanup. Semantic pending and private coding composition remain
+        unchanged; shared tails and helper-internal catches stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2DecisionAckOutcome(
                 status="ack_pending", reason="transaction_owned",
             )
-        begin_attempted = False
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True  # Mark the sole obligation before invoking it.
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            begin_attempted = True
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._acknowledge_v2_decision_dispatch_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_id=result_id,
@@ -5543,24 +5542,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "ack_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A failed denial rollback is never attempted again.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
-            if begin_attempted:
-                try:
-                    rollback()
-                except BaseException as secondary:
-                    cleanup_failed = True
-                    try:
-                        BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                                  (secondary, secondary.__traceback__))
-                    except BaseException:
-                        pass
+            try:
+                rollback()
+            except BaseException as secondary:
+                cleanup_failed = True
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2DecisionAckOutcome(
                 status="ack_pending", reason="ack_failed",
             )
@@ -5697,28 +5696,34 @@ class AuthorityV2ContinuationMixin:
         consumer reentry, replay, repair, remint or new authority.  Caller
         BEGIN/SAVEPOINT returns ``transaction_owned`` before owned BEGIN/rollback,
         preserving caller writes.  An exact refused replay is read-only.
-        Selected common completion calls pass ``_preserve_errors``: actual
-        evidence/transaction errors keep their original object and traceback,
-        with an actual rollback failure retained separately. Semantic pending
-        stays bounded; the default public outcome and private coding composition
-        retain their existing contracts. Rollback is owned and attempted once.
+        The captured original connection and real Boolean ownership observation
+        precede effects. Each owned rollback is marked before its sole attempt;
+        successful COMMIT is retained before return, with no postcommit rollback.
+        Selected ``_preserve_errors``, cancellation and failed cleanup deliver
+        the SAME first error/original traceback; actual later rollback errors
+        are retained separately. Default bounded conversion requires successful
+        owned cleanup. Semantic pending and private coding composition remain
+        unchanged; shared tails and helper-internal catches stay separate.
         """
-        if self._conn.in_transaction:
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
             return AuthorityPolicyV2DecisionRefusalOutcome(
                 status="refusal_pending", reason="transaction_owned",
             )
         now_dt = _now()
-        begin_attempted = False
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True  # Mark the sole obligation before invoking it.
-            self._conn.rollback()
+            conn.rollback()
 
         try:
-            begin_attempted = True
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             outcome = self._refuse_v2_decision_dispatch_uncommitted(
                 root_task_id=root_task_id, manager_agent=manager_agent,
                 result_id=result_id, now_dt=now_dt,
@@ -5726,24 +5731,24 @@ class AuthorityV2ContinuationMixin:
             if outcome.status == "refusal_pending":
                 rollback()
                 return outcome
-            self._conn.commit()
+            conn.commit()
+            committed = True
             return outcome
         except BaseException as primary:
-            if rollback_attempted:
-                raise  # A failed denial rollback is never attempted again.
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if committed or rollback_attempted:
+                # Retain committed prefixes; failed cleanup is never retried.
+                raise BaseException.with_traceback(primary, primary_traceback)
             cleanup_failed = False
-            if begin_attempted:
-                try:
-                    rollback()
-                except BaseException as secondary:
-                    cleanup_failed = True
-                    try:
-                        BaseException.__setattr__(primary, "_v2_completion_rollback_secondary",
-                                                  (secondary, secondary.__traceback__))
-                    except BaseException:
-                        pass
+            try:
+                rollback()
+            except BaseException as secondary:
+                cleanup_failed = True
+                _v2_continuation_retain_later_error(
+                    primary, secondary, "_v2_completion_rollback_secondary",
+                )
             if _preserve_errors or cleanup_failed or not isinstance(primary, Exception):
-                raise
+                raise BaseException.with_traceback(primary, primary_traceback)
             return AuthorityPolicyV2DecisionRefusalOutcome(
                 status="refusal_pending", reason="refusal_failed",
             )
@@ -6701,6 +6706,15 @@ class AuthorityV2ContinuationMixin:
             )
         if attempt.finalization_state != AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_REFUSED:
             return False
+        if attempt.refusal_code == "policy_no_continue":
+            code, proof = self._authenticate_v2_committed_policy_evidence_uncommitted(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id, result_id=result_id,
+            )
+            if code is not None or proof is None or not self._v2_evaluation_is_policy_no_continue(
+                proof["evaluation"],
+            ):
+                return False
         candidate_row = self._conn.execute(
             "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
             (result_id,),
@@ -6728,6 +6742,21 @@ class AuthorityV2ContinuationMixin:
         )
         if not completion_ok:
             return False
+        if attempt.refusal_code == "policy_no_continue":
+            receipt_ok, exact_receipt = self._classify_v2_refusal_receipt_uncommitted(
+                root_task_id=task_id, manager_agent=agent,
+                manager_session_id=session_id, result_id=result_id,
+            )
+            if not receipt_ok:
+                return False
+            if recovery_claimed:
+                if exact_receipt is None or exact_receipt["state"] != "callback_consumed":
+                    return False
+            elif exact_receipt is not None:
+                # Ordinary policy evidence requires ordinary absence, even
+                # when an exact Q would otherwise be a valid consumed receipt.
+                return False
+
         receipts = self._conn.execute(
             "SELECT * FROM task_completion_recoveries WHERE task_id=? AND agent=?",
             (task_id, agent),
@@ -6786,26 +6815,36 @@ class AuthorityV2ContinuationMixin:
         if (
             marker is None or isinstance(result_id, bool)
             or not isinstance(result_id, int) or result_id < 1
-            or self._conn.in_transaction
         ):
             return False
+        conn = self._conn
+        owned = conn.in_transaction
+        if self._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority transaction connection ownership unavailable")
+        if owned:
+            return False
         validate_admission()  # Inside the original synchronized RLock.
+        if self._conn is not conn or conn.in_transaction is not False:
+            raise RuntimeError("authority transaction connection ownership unavailable")
         begin_attempted = False
         rollback_attempted = False
+        committed = False
 
         def rollback() -> None:
             nonlocal rollback_attempted
             rollback_attempted = True  # Mark BEFORE the sole actual attempt.
-            self._conn.rollback()
+            conn.rollback()
 
         try:
             begin_attempted = True
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE")
             validate_admission()
-            task = self._conn.execute(
+            if self._conn is not conn or conn.in_transaction is not True:
+                raise RuntimeError("authority transaction connection ownership unavailable")
+            task = conn.execute(
                 "SELECT * FROM tasks WHERE id=?", (task_id,),
             ).fetchone()
-            result = self._conn.execute(
+            result = conn.execute(
                 "SELECT * FROM task_results WHERE id=?", (result_id,),
             ).fetchone()
             if (
@@ -6830,7 +6869,9 @@ class AuthorityV2ContinuationMixin:
                 rollback()
                 return False
             validate_admission()
-            cursor = self._conn.execute(
+            if self._conn is not conn or conn.in_transaction is not True:
+                raise RuntimeError("authority transaction connection ownership unavailable")
+            cursor = conn.execute(
                 """UPDATE tasks SET zombie_flagged_at=NULL, updated_at=?
                    WHERE id=? AND assigned_agent=? AND current_session_id=?
                      AND cancelled_at IS NULL AND zombie_flagged_at=?""",
@@ -6845,23 +6886,21 @@ class AuthorityV2ContinuationMixin:
                 {"reason": "zombie recovered — flag cleared"},
             )
             validate_admission()
-            self._conn.commit()
+            if self._conn is not conn or conn.in_transaction is not True:
+                raise RuntimeError("authority transaction connection ownership unavailable")
+            conn.commit()
+            committed = True
             return True
         except BaseException as primary:
-            if begin_attempted and not rollback_attempted:
+            primary_traceback = BaseException.__getattribute__(primary, "__traceback__")
+            if begin_attempted and not committed and not rollback_attempted:
                 try:
                     rollback()  # Owed cleanup has no fresh readiness gate.
                 except BaseException as secondary:
-                    try:
-                        BaseException.__setattr__(primary, "_zombie_writer_rollback_secondary",
-                                                  (secondary, secondary.__traceback__))
-                    except BaseException:
-                        pass
-                    try:
-                        BaseException.add_note(primary, f"zombie writer rollback also failed: {secondary!r}"[:1024])
-                    except BaseException:
-                        pass
-            raise
+                    _v2_continuation_retain_later_error(
+                        primary, secondary, "_zombie_writer_rollback_secondary",
+                    )
+            raise BaseException.with_traceback(primary, primary_traceback)
 
     @_synchronized
     def cancel_zombie_without_fingerprint(

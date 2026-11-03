@@ -17,13 +17,13 @@ from pathlib import Path
 from typing import Literal
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from runtime.daemon.auth import optional_bearer, require_token
 from runtime.daemon.event_bus import job_topic
-from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events, _stream_org_reader
 from runtime.daemon.jobs_runner import run_job as _spawn_job
 from runtime.daemon.jobs_runner import _interpreter_binary, fire_resume_check_for_job, require_job_admission
 from runtime.daemon.startup_recovery import StartupUnavailable
@@ -1458,7 +1458,7 @@ def _terminal_frame_from_record(record) -> str:
 
 
 @router.get("/jobs/{job_id}/events")
-async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingResponse:
+async def job_events_stream(slug: str, job_id: str, org: OrgStreamDep, request: Request) -> StreamingResponse:
     record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_job"})
@@ -1474,14 +1474,15 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
         # on the first __anext__), the runner can publish a terminal event and
         # we'd miss it — hanging until disconnect. Mitigate by waking up
         # periodically to re-poll the DB; the row is the authoritative source.
-        sub_iter = org.event_bus.subscribe(job_topic(job_id)).__aiter__()
+        sub_iter = _stream_org_events(request, org, job_topic(job_id)).__aiter__()
         next_task: asyncio.Task | None = asyncio.create_task(sub_iter.__anext__())
         try:
             while True:
                 done, _pending = await asyncio.wait({next_task}, timeout=1.0)
                 if not done:
                     # Timeout: re-check DB in case we raced past a terminal publish.
-                    rec_now = org.db.get_job(job_id)
+                    with _stream_org_reader(request, org):
+                        rec_now = org.db.get_job(job_id)
                     if rec_now is None:
                         return
                     if rec_now.status in _TERMINAL_SR_STATUSES:
@@ -1498,7 +1499,8 @@ async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingRes
                     stream_name = evt.get("stream", "stdout")
                     yield f"event: {stream_name}\ndata: {_json.dumps({'line': evt.get('line', ''), 'ts': evt.get('ts')})}\n\n"
                 elif kind == "terminal":
-                    rec_now = org.db.get_job(job_id)
+                    with _stream_org_reader(request, org):
+                        rec_now = org.db.get_job(job_id)
                     if rec_now is not None and rec_now.status in _TERMINAL_SR_STATUSES:
                         yield _terminal_frame_from_record(rec_now)
                         return

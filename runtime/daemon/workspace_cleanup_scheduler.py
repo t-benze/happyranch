@@ -1513,7 +1513,7 @@ async def workspace_cleanup_scheduler_loop(
         runtime = state.runtime
         validate = maintenance_admission_validation(state)
         if uptime >= warm_up_seconds:
-            for org in list(state.orgs.values()):
+            for org in list(state.orgs_snapshot().values()):
                 try:
                     validate()
                     await _tick_org(
