@@ -338,8 +338,9 @@ handoffs stay UNKNOWN without resubmission, replacement, repair or invented ackn
 CodingDispatcher's local `_writer` captures the actual first body/schema/COMMIT
 exception and native traceback before its one original rollback, retains an actual
 rollback error separately, and delivers that same first object without formatting,
-truth tests or virtual exception methods. Prior attachment records remain linked;
-a failed attachment stays in the original writer frame with both actual errors.
+truth tests or virtual exception methods. Prior owner/attachment records remain linked;
+a failed attachment stays with the same CodingDispatcher owner and both actual
+errors, including when contextlib restores a yielded body's traceback.
 Failed rollback proves no restored transaction, success, no-run, retirement or
 DB-close permission. `_heartbeat` internal catches, other CodingDispatcher
 preparation/terminal and helper/outer/native lifetimes remain ROOT boundaries. The shared OrgState idle guard also checks the original boot-captured

@@ -118,17 +118,21 @@ class CodingDispatcher:
                 conn.commit()
             except BaseException as primary:
                 original_traceback = BaseException.__traceback__.__get__(primary)
-                # Capture before the one original rollback. The rethrown writer
-                # frame retains this owner even when error attachment fails.
+                # Retain on the SAME dispatcher before the one rollback:
+                # contextlib may restore a yielded body's original traceback.
                 failure = dict(connection=conn, first_error=(primary, original_traceback),
-                               rollback_error=None, attachment_error=None, previous=None)
+                               rollback_error=None, attachment_error=None, previous=None,
+                               previous_attachment=None)
+                owner_values = CodingDispatcher.__dict__['__dict__'].__get__(self)
+                failure['previous'] = owner_values.get('_coding_writer_failure')
+                owner_values['_coding_writer_failure'] = failure
                 try:
                     conn.rollback()
                 except BaseException as secondary:
                     failure['rollback_error'] = (secondary, BaseException.__traceback__.__get__(secondary))
                     try:
                         values = BaseException.__dict__['__dict__'].__get__(primary)
-                        failure['previous'] = values.get('_coding_writer_failure')
+                        failure['previous_attachment'] = values.get('_coding_writer_failure')
                         BaseException.__setattr__(primary, '_coding_writer_failure', failure)
                     except BaseException as attachment:
                         failure['attachment_error'] = (attachment, BaseException.__traceback__.__get__(attachment))
