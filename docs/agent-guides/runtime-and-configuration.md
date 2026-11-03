@@ -1374,13 +1374,26 @@ their existing complete validation; no caller flag grants recovery authority.
 Coding source admission separately captures original start/dispatch/roles/import
 owners, their support stores and authority references beside the unchanged task
 and document tuples. Request-created coding settings retain their own operation,
-org/DB/state/epoch/loop references. Ordinary starts, queue preparation, selected
-reads, settings/import/mapping writers, advancement and notifications renew
+org/DB/state/epoch/loop references. The operation pins the original production
+org-map object as well: replacement refuses even when the same org remains,
+while unrelated in-place edits do not invalidate the selection. Ordinary starts,
+queue preparation, selected reads, settings/import/mapping writers, advancement and notifications renew
 startup admission through original awaited and authority/Pause/registry owners.
 Coding settings classifies validation rejection as native no-effect only after
 original rollback and lease release complete: the same validation exception,
 no active transaction and no exception notes are required. Preserved cleanup
 secondaries retain native uncertainty and their primary; cleanup stays ungated.
+Legacy start callback and consume readiness reads hold the captured Database's
+SAME native RLock across the original connection/read transaction, renewing the
+same validator after waiting and BEGIN. Selected settings refusal or an opaque
+BaseException precedes the single owned rollback; caller transactions are never
+rolled back. Short authority transactions retain first-error/native-traceback
+custody without requiring fresh readiness on lease release. Admission ownership
+retains business, release, rollback, fence-exit and diagnostic/attachment errors
+as separate occurrences, with prior nested records and original owner/frame
+fallback. Completed start results remain exact through original exits; failed
+release after COMMIT is failed delivery with a committed prefix, not replay or
+native-retirement proof. This local custody cannot recover hidden outer errors.
 Shared complete schema/source-readiness helpers remain available to P0.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery

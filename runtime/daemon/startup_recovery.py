@@ -1354,13 +1354,14 @@ def coding_settlement_validation(owner: Any) -> Callable[[], None]:
     """Reference capture only; callers still prove original native ownership."""
     gate = require_coding_attachment(owner)
     org, db, state = owner.org, owner.db, owner._startup_state
+    org_map = state.orgs
     refs, tasks, epoch, loop = _coding_references(org), org._startup_admission_refs, gate.epoch, gate._loop
 
     def validate() -> None:
         if (owner.org is not org or owner.db is not db or owner._startup_state is not state
                 or owner._startup_recovery is not gate or gate.epoch != epoch
                 or org._startup_coding_refs is not refs or org._startup_admission_refs is not tasks
-                or gate._loop is not loop):
+                or gate._loop is not loop or state.orgs is not org_map):
             raise StartupUnavailable("startup_coding_attachment_changed")
         require_coding_attachment(owner)
 

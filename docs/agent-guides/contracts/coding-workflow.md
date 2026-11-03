@@ -171,6 +171,20 @@ or allocation. Disabled remains the default; ordinary routing remains legacy.
 Literal start@1 stays readable but is not a fresh-start path. Admitted start@2
 work retains its original pins across later disable/default changes and still
 requires current selected-role/repository authority, Pause/move and native proof.
+Fresh callback and consume preflights retain the original connection and coding
+validator under the SAME Database native RLock for the entire readiness read.
+Selection renews after native-lock and BEGIN waits. The operation also pins the
+original production org-map object: replacement refuses even with the same org;
+unrelated in-place map edits retain their ordinary meaning. Identity-only owed
+callback validation remains separate from fresh readiness, and cleanup stays owed
+after stop. Readiness preserves its selected settings error through one owned
+rollback, retaining any actual cleanup error separately. Short authority lease
+transactions retain the first error even without an admission validator.
+The original start body result is captured before existing context exits and
+returned only after they succeed. A release failure after business COMMIT keeps
+that exact value as failure-frame evidence and the committed prefix; it grants
+neither successful delivery nor consume/replay or native retirement. These local
+contracts do not repair unedited outer error or cancellation transport.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.

@@ -470,6 +470,22 @@ obligation before its at-most-once attempt. Only successful owned PRECOMMIT
 rollback proves restoration of that transaction; COMMIT/rollback/release or late
 clock/warning/return failure retains committed or unknown prefixes, not a no-effect
 or successful-return assertion. Independently owed cleanup stays ungated.
+Legacy `workflow_start` preflight captures the original validator, Database,
+connection and native RLock; that SAME lock spans its complete readiness read
+transaction, with selection renewed after waiting and BEGIN. Caller BEGIN or
+SAVEPOINT receives no owned rollback. The selected settings-refusal mapping or
+unnormalized BaseException is retained before the one marked rollback attempt;
+actual rollback and attachment failures remain separate native-traceback evidence.
+Coordinator short transactions likewise retain their first error independently
+of fresh admission, including the separately owed lease-release transaction.
+Admission ownership keeps an earlier business error primary beside release,
+rollback and each original fence-exit failure. Local transport avoids virtual
+traceback restoration inside these helpers; diagnostics use no error formatting.
+Nested records link prior records and remain on the original coordinator/frame
+if exception attachment fails. A completed start body keeps its exact result
+through original context exits; failed release after COMMIT is failed delivery
+with a committed prefix, never replay or native-retirement permission. Unedited
+outer helpers and the draft-dispatch cancellation bridge remain separate limits.
 Pause's `settle_live` captures the actual active cause by presence, preserving
 that SAME object and original traceback for held-refusal authentication. Its
 private per-call `_pause_settlement_failure` record links prior records and

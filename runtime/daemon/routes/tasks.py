@@ -1492,9 +1492,15 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                             and decision_payload.get('action') == 'workflow_start'):
                         from runtime.workflows.coding_start import CodingStartError, require_start_ready
                         from runtime.daemon.startup_recovery import coding_admission_validation
-                        coding_admission_validation(org.workflow_coding_start)()
+                        start = org.workflow_coding_start
+                        validate_start = coding_admission_validation(start)
+                        start_db, start_conn = start.db, start.db._conn
+                        start_lock = start_db._lock
                         try:
-                            require_start_ready(org.db._conn, org, decision_payload['workflow'])
+                            with start_lock:
+                                validate_start()
+                                require_start_ready(start_conn, org, decision_payload['workflow'],
+                                                    validate_admission=validate_start)
                         except CodingStartError as exc:
                             # Refuse before persisting a fresh unsupported start result,
                             # including on I; never poison old/native history or spend

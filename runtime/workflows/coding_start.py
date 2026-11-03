@@ -50,26 +50,56 @@ def require_ready(org: Any) -> None:
         raise CodingStartError('coding_downstream_unavailable')
 
 
-def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> None:
+def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict, *,
+                        validate_admission: Callable[[], None] | None = None) -> None:
     # Fresh starts alone require current explicit settings. Admitted callbacks
     # and continuations keep their original pins when new admission is disabled.
     require_ready(org)
     from runtime.workflows._coding_settings_execution import _settings_family
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
+    if validate_admission is not None:
+        validate_admission()
     owned = not conn.in_transaction
+    failure = dict(connection=conn, transaction_owned=owned, first_error=None,
+                   rollback_attempted=False, rollback_returned=False,
+                   rollback_error=None, attachment_error=None, previous=None)
     if owned:
         conn.execute('BEGIN')
     try:
-        _check(_settings_family(command))
-        budget = _Budget()
-        layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
-        _check(inventory is not None and org.workflow_coding_builtin.available(inventory.release))
-        _resolve_start(command, inventory.mappings, inventory.release, budget, fresh=True)
-    except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
-        raise CodingStartError('coding_start_settings_unavailable') from None
+        try:
+            if validate_admission is not None:
+                validate_admission()
+            _check(_settings_family(command))
+            budget = _Budget()
+            layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
+            _check(inventory is not None and org.workflow_coding_builtin.available(inventory.release))
+            _resolve_start(command, inventory.mappings, inventory.release, budget, fresh=True)
+            if validate_admission is not None:
+                validate_admission()
+        except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
+            raise CodingStartError('coding_start_settings_unavailable') from None
+    except BaseException as primary:
+        failure['first_error'] = (primary, BaseException.__traceback__.__get__(primary))
     finally:
         if owned:
-            conn.rollback()
+            failure['rollback_attempted'] = True
+            try:
+                conn.rollback()
+                failure['rollback_returned'] = True
+            except BaseException as secondary:
+                failure['rollback_error'] = (secondary, BaseException.__traceback__.__get__(secondary))
+                if failure['first_error'] is None:
+                    failure['first_error'] = failure['rollback_error']
+    if failure['first_error'] is not None:
+        primary, original_traceback = failure['first_error']
+        try:
+            values = BaseException.__dict__['__dict__'].__get__(primary)
+            failure['previous'] = values.get('_coding_start_readiness_failure')
+            BaseException.__setattr__(primary, '_coding_start_readiness_failure', failure)
+        except BaseException as attachment:
+            failure['attachment_error'] = (attachment, BaseException.__traceback__.__get__(attachment))
+        # Keep the local record in this frame even if exception attachment fails.
+        raise BaseException.with_traceback(primary, original_traceback)
 
 
 class CodingStartStore:
@@ -191,9 +221,10 @@ class CodingStartStore:
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
         validate = coding_admission_validation(self)
-        with self.db._lock:
+        db, conn = self.db, self.db._conn
+        with db._lock:
             validate()
-            require_start_ready(self.db._conn, self.org, decision.workflow)
+            require_start_ready(conn, self.org, decision.workflow, validate_admission=validate)
         # BEFORE v2 action spending, result claim, or allocation.
         owner = current_invocation()
         validate()
@@ -242,9 +273,12 @@ class CodingStartStore:
                     sessions = tuple(self.org.sessions.iter_active())
                     validate()
                     with authority.admission_writer(capture, validate_admission=validate) as conn:
-                        return self.start_in_writer(conn, claim=claim, decision=decision, report=report, invocation=invocation,
+                        result = self.start_in_writer(conn, claim=claim, decision=decision, report=report, invocation=invocation,
                             capture=capture, references=references, revise_limit=revise_limit, active_sessions=sessions,
                             checkpoints=checkpoints, validate_admission=validate)
+        # A failed original exit retains this exact value in the failure frame;
+        # completed business work is not successful delivery or replay authority.
+        return result
 
     def start_in_writer(self, conn: sqlite3.Connection, *, claim: RetryClaim, decision: NextStep,
                         report: CompletionReport, invocation: Any, capture: AuthorityAdmissionCapture,

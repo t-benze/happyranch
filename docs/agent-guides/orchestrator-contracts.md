@@ -5096,8 +5096,10 @@ their existing complete validation; no caller flag grants recovery authority.
 Coding source admission separately captures original start/dispatch/roles/import
 owners, their support stores and authority references beside the unchanged task
 and document tuples. Request-created coding settings retain their own operation,
-org/DB/state/epoch/loop references. Ordinary starts, queue preparation, selected
-reads, settings/import/mapping writers, advancement and notifications retain
+org/DB/state/epoch/loop references. Coding operation identity also pins the original
+production org-map object at existing renewal edges, refusing a replacement map
+even with the same org while permitting unrelated in-place edits. Ordinary starts,
+queue preparation, selected reads, settings/import/mapping writers, advancement and notifications retain
 ONE original coding validator from their independent operation entry. Continuing
 callers forward that SAME callable through loop scheduling, policy/discovery,
 binding/profile/read waits and authority/Pause writers; they never recapture a
@@ -5140,13 +5142,29 @@ or reference drift there rolls back only original uncommitted work. A successful
 COMMIT followed by refusal retains its committed prefix and native ownership.
 Selected metadata reads preserve the exact original BaseException and traceback
 through their once-only rollback and every independently owed outer fence exit;
-actual cleanup failures/tracebacks remain guarded bounded secondary evidence.
-Diagnostic formatting cannot replace the first cause. Cleanup-only failure still
-fails, while no-validator reader/writer precedence remains unchanged and cleanup
-never rechecks admission. Settings validation-only no-effect classification needs
+actual cleanup failures/tracebacks remain separately retained evidence.
+The coordinator's short lease/business transactions preserve the FIRST actual
+error even without an admission validator, with one marked rollback attempt.
+An earlier business E0 stays primary beside release E1 and its rollback E2;
+without E0, E1 remains primary. Release never demands fresh readiness. Each
+original profile/publisher exit is attempted once and its actual error is retained
+before the next exit. Native traceback access/local transport and constant guarded
+notes avoid virtual formatting or traceback replacement inside these helpers;
+diagnostic/attachment failures remain separate, with prior nested records and
+original coordinator/frame fallback. Other no-validator reader contracts remain
+unchanged. Settings validation-only no-effect classification needs
 positive original rollback AND positive lease release, the exact selected body
 exception, no active transaction and no secondary cleanup evidence. Exception
 identity or an ended transaction alone proves neither closure nor no effect.
+Legacy `workflow_start` preflight holds the SAME captured Database native RLock
+through its complete original-connection readiness transaction and renews the
+original validator after waiting and BEGIN. It never rolls back caller BEGIN or
+SAVEPOINT. Its selected settings-refusal mapping or unnormalized BaseException
+survives the one owned rollback. `_start` retains its exact original business
+result before existing context exits and delivers it only after successful exits;
+failed release after COMMIT keeps that value in the failure frame and the committed
+prefix, without delivery, replay, consume/apply or native-retirement permission.
+Local helper custody does not certify unedited outer error/cancellation transport.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery
 keep their actual native owners; no new stage or session exception follows.
