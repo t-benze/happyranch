@@ -2056,7 +2056,11 @@ def failure_result_controls() -> dict:
             complete,error = acquire(); drain()
             assert not complete and error is not None and not state['fatal'] and not errors, case
             refusal = next(f for f in failures if f[0] is error[0])
-            assert refusal[4][0] == ('TEXT_READ' if case == 'utf8' else 'TEXT_UTF8' if case == 'candidate-work' else 'REDACT'), (case,refusal[4])
+            assert refusal[4][0] == ('TEXT_READ' if case in ('utf8','candidate-work') else 'REDACT'), (case,refusal[4])
+            if case == 'candidate-work':
+                # Both original byte/decode images refuse before acquisition;
+                # annotations still describe the last returned scenario.
+                exact(list(refusal[4]),['TEXT_READ','CAPACITY',500,500])
             if case in ('int-spelling','float-spelling','depth','facts','line-facts','scalar-work','candidate-work'):
                 assert refusal[4][1] == 'CAPACITY', (case,refusal[4])
             if case == 'duplicate':
