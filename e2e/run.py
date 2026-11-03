@@ -1895,6 +1895,11 @@ class _EvidenceSubmission:
                          script_text=p['script'], interpreter=p['interpreter'], cwd_hint=p['cwd_hint'],
                          review_required=p['review_required'], persistent=p['persistent'], max_runtime_seconds=p['max_runtime_seconds'])
             o.job_proofs.append((provider['task'], self.response['id'], proof))
+            # Case rows need the actual submit/start facts as well as SOURCE.
+            # Retain only these indispensable original references until close.
+            o.ledger.charge(96, 12, o.check)
+            o.case_submits.append((provider, self.response['id'], proof,
+                {k: self.response[k] for k in ('created_at', 'started_at', 'cwd_resolved')}))
         self.payload = {}
         # Only owner identities and closed submit-payload references remain
         # until root/attempt closure; other command scratch is released now.
@@ -2260,6 +2265,8 @@ class _EvidenceObservations:
         self.starts, self.manifests, self.pending = [], [], []
         self.attempts, self.submitted = [], {}
         self.job_proofs, self.read_jobs = [], []
+        self.cases, self.case_submits = [], []
+        self.case = None
         self.attempt = None
         self.command_index = None
         self.current = self.start = self.manifest = None
@@ -2267,7 +2274,7 @@ class _EvidenceObservations:
         self.snapshots = False
         self.captured = False
 
-    # Only the complete Store.snapshot arrays in the SAME final-org record.
+    # Complete Store.snapshot arrays in the named original holders only.
     # These are parser policies, not product schema definitions or row rewrites.
     sql_columns = {
         'audit': (('payload', '{'),),
@@ -2283,9 +2290,58 @@ class _EvidenceObservations:
                   ('task_type', str), ('revision_count', int), ('created_at', str), ('updated_at', str)),
     }
 
+    case_variants = ('E04.approve-exit0', 'E04.review-required-refused', 'E04.completed-exit7',
+                     'E04.failed-timeout', 'E04.two-jobs-A-first', 'E04.two-jobs-B-first')
+    job_columns = ('id', 'task_id', 'agent_name', 'title', 'rationale', 'script_text', 'interpreter',
+                   'cwd_hint', 'status', 'exit_code', 'reason', 'stdout_head', 'stderr_head',
+                   'stdout_path', 'stderr_path', 'duration_ms', 'started_at', 'finished_at',
+                   'reviewed_at', 'reviewed_by', 'reject_reason', 'cwd_resolved',
+                   'max_runtime_seconds', 'max_output_bytes', 'review_required', 'persistent', 'created_at')
+
+    @staticmethod
+    def case_row(local: tuple) -> tuple | None:
+        """Finite source paths, including the owning job slot; no key search."""
+        base = None
+        if local[:1] in (('parked',), ('final_snapshot',)):
+            base = local[:1]
+        elif local[:2] == ('live_s2', 'snapshot'):
+            base = local[:2]
+        if base is not None and len(local) >= len(base) + 2:
+            table, index = local[len(base):len(base) + 2]
+            if table in ('tasks', 'results', 'audit', 'jobs') and type(index) is int:
+                return base + (table, index), table, None, base[0]
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int:
+            if local[2] == 'running':
+                return local[:3], 'jobs', local[1], 'running'
+            if len(local) >= 5 and local[2] == 'pending' and type(local[3]) is int:
+                if local[4] == 'row':
+                    return local[:5], 'jobs', local[1], 'pending'
+                if len(local) >= 6 and local[4] == 'audit' and type(local[5]) is int:
+                    return local[:6], 'audit', local[1], 'pending'
+            if local[2] in ('oracle', 'rejection_drain') and len(local) >= 4:
+                if local[3] == 'row':
+                    return local[:4], 'jobs', local[1], local[2]
+                if len(local) >= 5 and local[3] == 'audits' and type(local[4]) is int:
+                    return local[:5], 'audit', local[1], local[2]
+        return None
+
+    @staticmethod
+    def case_encoded(path: tuple) -> bool:
+        if (len(path) < 4 or path[0] != 'durable' or type(path[1]) is not int
+                or path[2] != 'jobs_cases' or type(path[3]) is not int):
+            return False
+        local = path[4:]
+        if len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'script':
+            return True
+        slot = _EvidenceObservations.case_row(local)
+        return (slot is not None and len(local) == len(slot[0]) + 1
+                and (slot[1] == 'jobs' and local[-1] == 'script_text'
+                     or any(local[-1] == column for column, _ in _EvidenceObservations.sql_columns.get(slot[1], ()))))
+
     @staticmethod
     def encoded(path: tuple) -> bool:
-        return (len(path) == 6 and path[0] == 'durable' and type(path[1]) is int
+        return (_EvidenceObservations.case_encoded(path)
+                or len(path) == 6 and path[0] == 'durable' and type(path[1]) is int
                     and path[2] == 'snapshot' and path[3] in _EvidenceObservations.sql_columns
                     and type(path[4]) is int
                     and any(path[5] == column for column, _ in _EvidenceObservations.sql_columns[path[3]])
@@ -2298,6 +2354,280 @@ class _EvidenceObservations:
                     and path[4:] == ('response', 'script_text')
                 or len(path) == 5 and path[0] == 'provider_attempts'
                     and path[2:] == ('instruction', 'payload', 'script'))
+
+    def case_event(self, path: tuple, kind: str, value: object) -> None:
+        if len(path) < 3 or path[2] != 'jobs_cases':
+            return
+        if len(path) == 3:
+            if kind not in ('array', 'end-array'):
+                raise ValueError('Case ledger shape withheld')
+            return
+        local = path[4:]
+        if not local and kind == 'object':
+            self.ledger.charge(160, 20, self.check)
+            self.case = dict(meta={}, starts=[], jobs=[], rows=[], snapshots={}, used=False,
+                             entry=self.snapshot_entry, jobs_shape=False)
+        c = self.case
+        if c is None:
+            raise ValueError('Case record shape withheld')
+        def retain(target: dict, key: str, item: object) -> None:
+            self.ledger.charge(32 + _evidence_utf8_size(key, self.check)
+                + (_evidence_utf8_size(item, self.check) if type(item) is str else 8), 4, self.check)
+            target[key] = item
+        if len(local) == 1 and local[0] in ('method', 'variant', 'index', 'source_sha', 'task'):
+            if kind != 'scalar':
+                raise ValueError('Case selector type withheld')
+            retain(c['meta'], local[0], value)
+        if local[:1] == ('starts',):
+            if len(local) == 1 and kind not in ('array', 'end-array'):
+                raise ValueError('Case starts shape withheld')
+            if len(local) == 2 and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                c['starts'].append({})
+            elif len(local) == 3 and kind == 'scalar' and type(local[1]) is int and local[1] < len(c['starts']):
+                retain(c['starts'][local[1]], local[2], value)
+            elif kind not in ('key', 'end-object', 'end-array', 'array'):
+                raise ValueError('Case start fact withheld')
+        if local[:1] == ('jobs',):
+            if len(local) == 1:
+                if kind not in ('array', 'end-array'):
+                    raise ValueError('Case jobs shape withheld')
+                c['jobs_shape'] = True
+            if len(local) == 2:
+                if kind == 'object':
+                    self.ledger.charge(64, 8, self.check)
+                    c['jobs'].append({})
+                elif kind not in ('key', 'end-object'):
+                    raise ValueError('Case job shape withheld')
+            if len(local) == 3 and local[2] in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'):
+                if kind != 'scalar' or type(local[1]) is not int or local[1] >= len(c['jobs']):
+                    raise ValueError('Case job selector withheld')
+                retain(c['jobs'][local[1]], local[2], value)
+                if local[2] in ('out','err') and type(value) is not str:
+                    raise ValueError('Case literal output type withheld')
+                if local[2] == 'script':
+                    c['used'] = True
+                    if type(value) is not str:
+                        raise ValueError('Case SOURCE type withheld')
+                    _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                                     self.depth + len(path) + 1)
+            if ((len(local) == 3 and local[2] == 'pending'
+                 or len(local) == 5 and local[2] == 'pending' and local[4] == 'audit'
+                 or len(local) == 4 and local[2] in ('oracle','rejection_drain') and local[3] == 'audits')
+                    and kind not in ('array','end-array')):
+                raise ValueError('Case row collection shape withheld')
+            if (len(local) == 6 and local[2] in ('oracle','rejection_drain') and local[3] == 'outputs'
+                    and type(local[4]) is int and local[5] == 'text' and (kind != 'scalar' or type(value) is not str)):
+                raise ValueError('Case literal stream type withheld')
+        base = (local[:1] if local[:1] in (('parked',), ('final_snapshot',)) else
+                local[:2] if local[:2] == ('live_s2', 'snapshot') else None)
+        if base is not None:
+            c['used'] = True
+            if local == base and kind == 'object':
+                self.ledger.charge(64, 8, self.check)
+                c['snapshots'][base] = []
+            elif local == base and kind == 'key':
+                self.ledger.charge(24, 3, self.check)
+                c['snapshots'][base].append(value)
+            elif len(local) == len(base) + 1:
+                if local[-1] not in ('tasks', 'results', 'audit', 'jobs') or kind not in ('array', 'end-array'):
+                    raise ValueError('Case snapshot table withheld')
+            elif local == base and kind not in ('end-object',):
+                raise ValueError('Case snapshot shape withheld')
+        slot = self.case_row(local)
+        if slot is not None:
+            row_path, table, job_index, holder = slot
+            c['used'] = True
+            if local == row_path and kind == 'object':
+                self.ledger.charge(80, 10, self.check)
+                c['rows'].append((row_path, table, job_index, holder, {}, {}))
+            elif local == row_path and kind not in ('key', 'end-object'):
+                raise ValueError('Case SQL row shape withheld')
+            elif len(local) > len(row_path):
+                if (len(local) != len(row_path) + 1 or kind != 'scalar'
+                        or type(value) not in (str, int, float, type(None))):
+                    raise ValueError('Case SQL scalar withheld')
+                if not c['rows'] or c['rows'][-1][0] != row_path:
+                    raise ValueError('Case SQL row owner withheld')
+                row, links = c['rows'][-1][4:]
+                # Only indispensable owner/content facts are retained. All
+                # unknown original fields still traverse the ordinary scanner.
+                required = self.job_columns if table == 'jobs' else tuple(k for k, _ in self.sql_identity[table]) + (
+                    ('assigned_agent', 'current_session_id') if table == 'tasks' else ())
+                if table == 'jobs' or local[-1] in required or any(local[-1] == k for k, _ in self.sql_columns.get(table, ())):
+                    retain(row, local[-1], value)
+                if table == 'jobs' and local[-1] == 'script_text':
+                    if type(value) is not str:
+                        raise ValueError('Case row SOURCE type withheld')
+                    _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                                     self.depth + len(path) + 1)
+                for column, top in self.sql_columns.get(table, ()):
+                    if local[-1] != column or value is None:
+                        continue
+                    if type(value) is not str:
+                        raise ValueError('Case SQL column type withheld')
+                    def scalar(text: str) -> None:
+                        if '\\' in text:
+                            raise ValueError('Case decoded representation withheld')
+                        _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+                    self.ledger.charge(32, 4, self.check)
+                    audit_state = [0, None]
+                    def event(event_kind: str, item: object) -> None:
+                        # The existing scan callback is syntax-only. Retain
+                        # just the direct job discriminator, never a JSON tree.
+                        if event_kind == 'key' and audit_state[0] == 1:
+                            audit_state[1] = item
+                        elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
+                              and event_kind not in ('key', 'end-object', 'end-array')):
+                            retain(links, 'job', item if event_kind == 'scalar' else None)
+                        if event_kind in ('object', 'array'):
+                            audit_state[0] += 1
+                        elif event_kind in ('end-object', 'end-array'):
+                            audit_state[0] -= 1
+                    _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
+                    _EvidenceJSON(value, self.ledger, self.check).scan(top, scalar, event=event,
+                        depth=self.depth + len(path) + 1, context=self.context, sanitize=self.sanitize)
+        if not local and kind == 'end-object':
+            self.ledger.charge(8, 1, self.check)
+            self.cases.append(c)
+            self.case = None
+
+    def close_cases(self, manifest: dict) -> None:
+        def same(left: object, right: object) -> bool:
+            self.ledger.charge(32 + sum(_evidence_utf8_size(v, self.check) if type(v) is str else 8
+                                      for v in (left, right)), 4, self.check)
+            return type(left) is type(right) and left == right
+        for c in self.cases:
+            self.ledger.charge(8, 1, self.check)
+            if not c['used']:
+                continue  # An authentic partial Case gains no absent edges.
+            self.ledger.charge(256, 32, self.check)
+            m, starts, jobs = c['meta'], c['starts'], c['jobs']
+            index = m.get('index')
+            if (c['entry'] is None or c['entry']['keys'] != ['jobs_cases'] or not c['jobs_shape']
+                    or m.get('method') != 'serial-public-metrics-window-causal-v1'
+                    or type(index) is not int or not 0 <= index < 6 or m.get('variant') != self.case_variants[index]
+                    or not same(m.get('source_sha'), manifest['revision'])
+                    or type(m.get('task')) is not str or not m['task'] or not 1 <= len(starts) <= 2):
+                raise ValueError('Case complete original owner withheld')
+            sessions = set()
+            for start in starts:
+                self.ledger.charge(128 + 32 * len(self.starts), 16 + 4 * len(self.starts), self.check)
+                matches = [s for s in self.starts if same(s.get('session'), start.get('session'))]
+                if (set(start) != {'task','session','agent','org','pid','pid_start','pgid'}
+                        or len(matches) != 1 or any(not same(start[k], matches[0].get(k)) for k in start)
+                        or not same(start['task'], m['task']) or start['agent'] != 'case_manager' or start['org'] != 'alpha'
+                        or type(start['session']) is not str or not start['session'] or start['session'] in sessions
+                        or type(start['pid']) is not int or start['pid'] <= 0 or type(start['pgid']) is not int
+                        or start['pgid'] != start['pid'] or type(start['pid_start']) is not str or not start['pid_start'].isdigit()):
+                    raise ValueError('Case original start join withheld')
+                self.ledger.charge(16, 2, self.check)
+                sessions.add(start['session'])
+            plan = ((('OK',0),), (), (('EXIT7',7),), (('TIMEOUT',-9),), (('A',0),('B',7)), (('B',7),('A',0)))[index]
+            if len(jobs) > len(plan):
+                raise ValueError('Case submitted job count withheld')
+            owners, ids = [], set()
+            for number, job in enumerate(jobs):
+                self.ledger.charge(128 + 32 * len(self.case_submits), 16 + 4 * len(self.case_submits), self.check)
+                candidates = [s for s in self.case_submits if same(s[1], job.get('id'))]
+                if (len(candidates) != 1 or type(job.get('script')) is not str or type(job.get('script_sha256')) is not str
+                        or type(job.get('code')) is not int or job['code'] != plan[number][1]
+                        or job.get('label') != plan[number][0] or type(job.get('cap')) is not int
+                        or job['cap'] != (5 if job['code'] == -9 else 30) or job.get('id') in ids):
+                    raise ValueError('Case actual submit identity withheld')
+                provider, jid, proof, submitted = candidates[0]
+                _, digest = _evidence_digest(job['script'], self.ledger, self.check)
+                self.ledger.charge(256 + 3 * sum(_evidence_utf8_size(v, self.check)
+                    for v in (m['source_sha'], starts[0]['session'], job['label'])), 12, self.check)
+                token = hashlib.sha256((m['source_sha'] + starts[0]['session'] + job['label']).encode()).hexdigest()[:24]
+                if (not same(digest, job['script_sha256']) or not same(job.get('token'), token)
+                        or any(not same(provider.get(k), starts[0].get(k)) for k in provider)
+                        or not same(proof['script_text'], job['script']) or proof['task_id'] != m['task']
+                        or proof['agent_name'] != 'case_manager' or proof['interpreter'] != 'python3'
+                        or not same(proof['title'], m['variant'] + '/' + token)
+                        or proof['review_required'] is not False or proof['persistent'] is not False
+                        or not same(proof['max_runtime_seconds'], job['cap'])):
+                    raise ValueError('Case full submitted SOURCE join withheld')
+                self.ledger.charge(24, 3, self.check)
+                owners.append((jid, proof, submitted)); ids.add(jid)
+            for base, keys in c['snapshots'].items():
+                self.ledger.charge(64 + 32 * len(c['rows']), 8 + 4 * len(c['rows']), self.check)
+                if len(keys) != 4 or set(keys) != {'tasks','results','audit','jobs'}:
+                    raise ValueError('Case complete Store.jobs holder withheld')
+                task_count, previous = 0, None
+                for path, table, _, _, row, _ in c['rows']:
+                    if path[:len(base)] != base:
+                        continue
+                    if table == 'tasks':
+                        task_count += 1
+                    if table == 'jobs':
+                        jid = row.get('id')
+                        if type(jid) is not str or previous is not None and jid <= previous:
+                            raise ValueError('Case original Store.jobs order withheld')
+                        previous = jid
+                if task_count != 1:
+                    raise ValueError('Case snapshot original task unavailable')
+            for path, table, number, holder, row, links in c['rows']:
+                self.ledger.charge(128 + 32 * len(owners), 16 + 4 * len(owners), self.check)
+                if table != 'jobs':
+                    required = self.sql_identity[table]
+                    if (any(type(row.get(k)) is not typ or typ is str and not row[k]
+                            or k == 'id' and typ is int and row[k] <= 0 for k,typ in required)
+                            or any(k not in row for k,_ in self.sql_columns[table])
+                            or not same(row['id'] if table == 'tasks' else row['task_id'], m['task'])
+                            or table == 'tasks' and (row.get('assigned_agent') != 'case_manager'
+                                or row.get('current_session_id') not in sessions)
+                            or table == 'results' and (row['agent'] != 'case_manager' or row['session_id'] not in sessions)
+                            or 'job' in links and (type(links['job']) is not str or links['job'] not in ids
+                                or number is not None and not same(links['job'], jobs[number].get('id')))):
+                        raise ValueError('Case SQL complete owner join withheld')
+                    continue
+                found = [o for o in owners if same(o[0], row.get('id'))]
+                if len(found) != 1 or number is not None and not same(row.get('id'), jobs[number].get('id')):
+                    raise ValueError('Case SQL actual job withheld')
+                jid, proof, submitted = found[0]
+                if (any(k not in row for k in self.job_columns)
+                        or any(type(row.get(k)) is not str or not row[k] for k in
+                               ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
+                        or any(type(row.get(k)) not in (str,type(None)) for k in
+                               ('cwd_hint','reason','stdout_head','stderr_head','stdout_path','stderr_path','started_at','finished_at',
+                                'reviewed_at','reviewed_by','reject_reason','cwd_resolved'))
+                        or any(type(row.get(k)) not in (int,type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds'))
+                        or any(type(row.get(k)) is not int for k in ('review_required','persistent','max_output_bytes'))
+                        or row['max_output_bytes'] <= 0
+                        or any(not same(row.get(k), int(v) if k in ('review_required','persistent') else v) for k,v in proof.items())
+                        or any(not same(row.get(k), v) for k,v in submitted.items())):
+                    raise ValueError('Case SQL full submitted row withheld')
+                self.ledger.charge(256 + 4 * (_evidence_utf8_size(manifest['root'], self.check)
+                    + _evidence_utf8_size(jid, self.check)), 8, self.check)
+                if (row['reviewed_by'] != 'case_manager' or not row['reviewed_at'] or not row['cwd_resolved']
+                        or any(not same(row[k + '_path'], manifest['root'] + '/runtime/orgs/alpha/jobs/' + jid + suffix)
+                               for k,suffix in (('stdout','.out'),('stderr','.err')))):
+                    raise ValueError('Case SQL original execution owner withheld')
+                running = holder in ('running','pending','parked')
+                job = next(j for j in jobs if same(j.get('id'), jid))
+                code = job['code']
+                if running:
+                    if row['status'] != 'running' or any(row[k] is not None for k in
+                            ('exit_code','reason','stdout_head','stderr_head','duration_ms','finished_at')):
+                        raise ValueError('Case SQL original running state withheld')
+                elif (row['status'] != ('failed' if code == -9 else 'completed') or not same(row['exit_code'], code)
+                        or row['reason'] != ('timeout' if code == -9 else None)
+                        or not row['finished_at'] or type(row['duration_ms']) is not int or row['duration_ms'] < 0
+                        or any(k in job and not same(row[stream + '_head'], job[k]) for k,stream in (('out','stdout'),('err','stderr')))):
+                    raise ValueError('Case SQL original terminal state withheld')
+                # When present, the SAME original running/oracle row owns each
+                # snapshot/pending/drain copy in that state. Compare every
+                # original scalar, including unknown columns, without rewriting
+                # either occurrence's own key order or requiring absent stages.
+                self.ledger.charge(32 * len(c['rows']), 4 * len(c['rows']), self.check)
+                for _, other_table, _, other_holder, original, _ in c['rows']:
+                    if (other_table != 'jobs' or other_holder != ('running' if running else 'oracle')
+                            or not same(original.get('id'), jid)):
+                        continue
+                    self.ledger.charge(32 * (len(row) + len(original)), 4 * (len(row) + len(original)), self.check)
+                    if len(row) != len(original) or any(k not in original or not same(v, original[k]) for k,v in row.items()):
+                        raise ValueError('Case complete original row equality withheld')
 
     def snapshot_event(self, path: tuple, kind: str, value: object) -> None:
         """Active entry/row facts only; late selectors close before publication.
@@ -2522,6 +2852,7 @@ class _EvidenceObservations:
         self.ledger.charge(8, 1, self.check)
         if path[0] == 'durable':
             self.snapshot_event(path, kind, value)
+            self.case_event(path, kind, value)
         if path[0] == 'provider_attempts':
             self.attempt_event(path, kind, value)
         elif path[0] == 'provider_commands':
@@ -2576,7 +2907,9 @@ class _EvidenceObservations:
     def close(self) -> bool:
         try:
             attempts = self.close_attempts()
-            if not self.captured and not attempts and not self.snapshots:
+            self.ledger.charge(8 * len(self.cases), len(self.cases), self.check)
+            case_used = any(c['used'] for c in self.cases)
+            if not self.captured and not attempts and not self.snapshots and not case_used:
                 return False
             if len(self.manifests) != 1:
                 raise ValueError('submission executable owner withheld')
@@ -2594,7 +2927,7 @@ class _EvidenceObservations:
                     or type(manifest['source']) is not str or not manifest['source'].startswith('/')
                     or not _failure_source(manifest['revision'])):
                 raise ValueError('submission executable identity withheld')
-            if self.snapshots and (type(manifest['callback_sha256']) is not str
+            if (self.snapshots or case_used) and (type(manifest['callback_sha256']) is not str
                     or len(manifest['callback_sha256']) != 64
                     or any(c not in '0123456789abcdef' for c in manifest['callback_sha256'])
                     or manifest['source'].endswith(('/', '/.', '/..'))
@@ -2639,6 +2972,7 @@ class _EvidenceObservations:
                         or argv != expected_argv
                         or any(type(v) is not str for v in argv)):
                     raise ValueError('submission complete owner join withheld')
+            self.close_cases(manifest)
             for task, job_id, detail in self.read_jobs:
                 found = False
                 for proof_task, proof_job, proof in self.job_proofs:
@@ -2665,6 +2999,7 @@ class _EvidenceObservations:
         self.pending.clear(); self.starts.clear(); self.manifests.clear()
         self.attempts.clear(); self.submitted.clear(); self.attempt = None
         self.job_proofs.clear(); self.read_jobs.clear()
+        self.cases.clear(); self.case_submits.clear(); self.case = None
         self.start = self.manifest = None
         self.snapshot_entry = self.snapshot_row = None
 

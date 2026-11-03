@@ -2568,8 +2568,28 @@ writer/raw/raw-prefix/required-prefix file boundaries; the additive PR1260 recor
 names every case, four answers, keepers, full-row/prior-state oracles and proof
 limits. These source fixtures observe no SQL transaction or native behavior.
 
+Canonical observations.durable[*].jobs_cases[*] now selects the E04 Case
+job SOURCE and complete Store.jobs rows in parked, live_s2.snapshot and
+final_snapshot, plus jobs[*].running, pending[*].row/audit and
+oracle/rejection_drain.row/audits. The same observations-form prefix uses these
+exact paths. Original method, six index/variant mappings, source, task, starts,
+manifest and actual canonical submit/id facts close privately before publication.
+Each complete script is scanned once per occurrence and compared with its
+original hash AND full submitted content; each full SQL JobRow retains exact
+INTEGER flags, nulls, unknown scalars and original key/list order. Same-state
+copies compare every scalar against an original running/oracle row when present.
+The eight SQL JSON-column policies apply only to full owning rows in these
+holders. Missing or foreign late owners refuse the whole member. Partial Cases
+retain only their actual fields; index1 gains no submitted/rejected job.
+Job out/err and oracle output text remain ordinary literal UTF8/R1. The existing
+C5-Case-* controls compare full independent accepted SQL/SOURCE inputs and prior
+files/output/result/FAIL at four distinct shipping boundaries; absent baseline
+artifacts still produce TWO REQUIRED-MISSING records. They supply no native,
+allocation, timing, individual-negative sensitivity or full pair/browser proof.
+
 Other Case ProviderCommand copies/human show, settled.wire_records/distinct CLI,
-entity/SQL/other source/hex/browser/direct/pair/human-display and cross-member joins
+first_terminal/refusal/marked/scenario, remaining entity/SQL/other source/hex,
+browser/direct/pair/human-display and cross-member joins
 remain unfinished and conservatively refused, with complete copy obligations
 intact. A member containing one such obligation refuses entirely.
 Ordinary _atomic_text retains whole-backslash refusal at every filename. File

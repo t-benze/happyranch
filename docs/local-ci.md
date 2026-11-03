@@ -763,8 +763,23 @@ tree parse retains full original bytes. Existing aggregate --controls adds the
 finite C5-SQL-* table at writer/raw/raw-prefix/required-prefix file boundaries;
 PR1260's additive case record records actual results and proof limits. No SQL,
 runtime, browser or Product observation follows from these source fixtures.
-Case/live/parked/cancellation/thread-frame/script/human/other-copy and compound
-SQL obligations remain unfinished whole-member refusals until separately scoped.
+Canonical observations.durable[*].jobs_cases[*] additionally admits original
+Case job scripts and complete Store.jobs/SQL rows at parked, live_s2.snapshot,
+final_snapshot, running, pending.row/audit and oracle/rejection_drain.row/audits.
+The exact six index/variant mappings, method, source/task, original starts and
+manifest, actual canonical submit/id and full script/hash/row comparisons close
+before publication, including late selectors. Each occurrence retains its own
+charged scan and full values/types/key/list order; no second raw tree or decode.
+Null stays null and SQL integer flags stay integers. Actual partial Cases gain
+no absent fields, and index1 has no submitted job. Output text/out/err retain
+ordinary literal/R1 policy. C5-Case-* extends the SAME four-boundary fixture with
+complete independent literal expectations and prior file/output/result/FAIL
+preservation. Missing baseline artifacts remain incomplete/TWO REQUIRED-MISSING.
+Receipts in PR1260's case record distinguish actual controls/static results from
+individual-negative/temporal/allocation/native PROOF NOT RUN. First-terminal,
+refusal/positive-oracle, copied commands, marked/scenario/cross-member/human,
+cancellation/thread-frame/remaining columns/browser/direct/pair/E05/E07/hex and
+compound obligations remain unfinished whole-member refusals until scoped.
 
 The same finite source-owned admission now covers canonical
 observations.provider_commands[*] jobs-submit/jobs-refuse-review only, including
