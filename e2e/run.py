@@ -1460,7 +1460,7 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
         # A failed read/returned prefix cannot refund its reserved work.
         ledger.settle(reserved, reserved)
         if binary:
-            text = None  # Never retain a refused original image in this frame.
+            data = text = None  # Never retain a refused original image in this frame.
         raise
     ledger.settle(reserved, size if binary else 2 * size)
     return text
