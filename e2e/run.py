@@ -2302,7 +2302,7 @@ class _EvidenceObservations:
     def case_row(local: tuple) -> tuple | None:
         """Finite source paths, including the owning job slot; no key search."""
         base = None
-        if local[:1] in (('parked',), ('final_snapshot',)):
+        if local[:1] in (('parked',), ('first_terminal',), ('final_snapshot',)):
             base = local[:1]
         elif local[:2] == ('live_s2', 'snapshot'):
             base = local[:2]
@@ -2311,8 +2311,8 @@ class _EvidenceObservations:
             if table in ('tasks', 'results', 'audit', 'jobs') and type(index) is int:
                 return base + (table, index), table, None, base[0]
         if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int:
-            if local[2] == 'running':
-                return local[:3], 'jobs', local[1], 'running'
+            if local[2] in ('running', 'terminal'):
+                return local[:3], 'jobs', local[1], local[2]
             if len(local) >= 5 and local[2] == 'pending' and type(local[3]) is int:
                 if local[4] == 'row':
                     return local[:5], 'jobs', local[1], 'pending'
@@ -2416,10 +2416,12 @@ class _EvidenceObservations:
                  or len(local) == 4 and local[2] in ('oracle','rejection_drain') and local[3] == 'audits')
                     and kind not in ('array','end-array')):
                 raise ValueError('Case row collection shape withheld')
+            if len(local) == 4 and local[2] == 'pending' and kind == 'object':
+                retain(c['jobs'][local[1]], 'last_pending', local[3])
             if (len(local) == 6 and local[2] in ('oracle','rejection_drain') and local[3] == 'outputs'
                     and type(local[4]) is int and local[5] == 'text' and (kind != 'scalar' or type(value) is not str)):
                 raise ValueError('Case literal stream type withheld')
-        base = (local[:1] if local[:1] in (('parked',), ('final_snapshot',)) else
+        base = (local[:1] if local[:1] in (('parked',), ('first_terminal',), ('final_snapshot',)) else
                 local[:2] if local[:2] == ('live_s2', 'snapshot') else None)
         if base is not None:
             c['used'] = True
@@ -2450,11 +2452,12 @@ class _EvidenceObservations:
                 if not c['rows'] or c['rows'][-1][0] != row_path:
                     raise ValueError('Case SQL row owner withheld')
                 row, links = c['rows'][-1][4:]
-                # Only indispensable owner/content facts are retained. All
-                # unknown original fields still traverse the ordinary scanner.
+                # Pair task/results compare the complete original parked
+                # rows, including unknown scalar columns, after late closure.
                 required = self.job_columns if table == 'jobs' else tuple(k for k, _ in self.sql_identity[table]) + (
                     ('assigned_agent', 'current_session_id') if table == 'tasks' else ())
-                if table == 'jobs' or local[-1] in required or any(local[-1] == k for k, _ in self.sql_columns.get(table, ())):
+                if (table == 'jobs' or table in ('tasks', 'results') and holder in ('parked', 'first_terminal')
+                        or local[-1] in required or any(local[-1] == k for k, _ in self.sql_columns.get(table, ()))):
                     retain(row, local[-1], value)
                 if table == 'jobs' and local[-1] == 'script_text':
                     if type(value) is not str:
@@ -2472,14 +2475,26 @@ class _EvidenceObservations:
                         _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
                     self.ledger.charge(32, 4, self.check)
                     audit_state = [0, None]
+                    if table == 'tasks' and holder in ('parked', 'first_terminal') and column == 'blocked_on_job_ids':
+                        self.ledger.charge(32, 4, self.check)
+                        links['blocked'] = []
                     def event(event_kind: str, item: object) -> None:
                         # The existing scan callback is syntax-only. Retain
-                        # just the direct job discriminator, never a JSON tree.
+                        # direct job discriminators/blocked IDs, never a JSON tree.
                         if event_kind == 'key' and audit_state[0] == 1:
                             audit_state[1] = item
                         elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
                               and event_kind not in ('key', 'end-object', 'end-array')):
                             retain(links, 'job', item if event_kind == 'scalar' else None)
+                        if (table == 'tasks' and holder in ('parked', 'first_terminal')
+                                and column == 'blocked_on_job_ids' and audit_state[0] == 1):
+                            if event_kind == 'scalar':
+                                if type(item) is not str:
+                                    raise ValueError('Case blocked job type withheld')
+                                self.ledger.charge(16 + _evidence_utf8_size(item, self.check), 2, self.check)
+                                links['blocked'].append(item)
+                            elif event_kind in ('object', 'array'):
+                                raise ValueError('Case blocked job shape withheld')
                         if event_kind in ('object', 'array'):
                             audit_state[0] += 1
                         elif event_kind in ('end-object', 'end-array'):
@@ -2497,6 +2512,9 @@ class _EvidenceObservations:
             self.ledger.charge(32 + sum(_evidence_utf8_size(v, self.check) if type(v) is str else 8
                                       for v in (left, right)), 4, self.check)
             return type(left) is type(right) and left == right
+        def full_row(left: dict, right: dict) -> bool:
+            self.ledger.charge(32 * (len(left) + len(right)), 4 * (len(left) + len(right)), self.check)
+            return len(left) == len(right) and all(k in right and same(v, right[k]) for k,v in left.items())
         for c in self.cases:
             self.ledger.charge(8, 1, self.check)
             if not c['used']:
@@ -2550,6 +2568,44 @@ class _EvidenceObservations:
                     raise ValueError('Case full submitted SOURCE join withheld')
                 self.ledger.charge(24, 3, self.check)
                 owners.append((jid, proof, submitted)); ids.add(jid)
+            # A genuine partial keeps absent stages absent. An oracle is
+            # recorded only after run_script's terminal row; S2 follows the
+            # pair first-terminal barrier. Missing those direct edges is not
+            # an earlier partial input.
+            for number, job in enumerate(jobs):
+                self.ledger.charge(32 * len(c['rows']), 4 * len(c['rows']), self.check)
+                terminal_count = sum(t == 'jobs' and n == number and h == 'terminal'
+                                     for _,t,n,h,_,_ in c['rows'])
+                if (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
+                        or any(t == 'jobs' and n == number and h == 'oracle' for _,t,n,h,_,_ in c['rows'])) and terminal_count != 1:
+                    raise ValueError('Case required terminal row unavailable')
+            early = ('first_terminal',) in c['snapshots']
+            if index >= 4 and (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
+                    or any(t == 'jobs' and n == 1 and h == 'oracle' for _,t,n,h,_,_ in c['rows'])) and not early:
+                raise ValueError('Case required first-terminal holder unavailable')
+            if early:
+                self.ledger.charge(128 + 64 * len(c['rows']), 16 + 8 * len(c['rows']), self.check)
+                if index < 4 or len(jobs) != 2 or ('parked',) not in c['snapshots']:
+                    raise ValueError('Case first-terminal pair owner withheld')
+                self.ledger.charge(64 + 4 * sum(_evidence_utf8_size(jid, self.check) for jid in ids), 8, self.check)
+                ordered_ids = sorted(ids)
+                for table in ('tasks', 'results'):
+                    parked = [r for r in c['rows'] if r[1] == table and r[3] == 'parked']
+                    current = [r for r in c['rows'] if r[1] == table and r[3] == 'first_terminal']
+                    if len(parked) != 1 or len(current) != 1 or not full_row(parked[0][4], current[0][4]):
+                        raise ValueError('Case complete parked row equality withheld')
+                    row, links = current[0][4:]
+                    if table == 'tasks':
+                        if (row.get('status') != 'in_progress' or row.get('current_session_id') != starts[0]['session']
+                                or row.get('block_kind') != 'blocked_on_job'
+                                or not same(row.get('orchestration_step_count'), 1)
+                                or links.get('blocked') != ordered_ids):
+                            raise ValueError('Case original parked task withheld')
+                    elif row.get('status') != 'blocked' or row.get('session_id') != starts[0]['session']:
+                        raise ValueError('Case original parked S1 result withheld')
+                if any(t == 'audit' and h == 'first_terminal' and r.get('action') == 'task_resumed_from_jobs'
+                       for _,t,_,h,r,_ in c['rows']):
+                    raise ValueError('Case first-terminal premature resume withheld')
             for base, keys in c['snapshots'].items():
                 self.ledger.charge(64 + 32 * len(c['rows']), 8 + 4 * len(c['rows']), self.check)
                 if len(keys) != 4 or set(keys) != {'tasks','results','audit','jobs'}:
@@ -2613,7 +2669,7 @@ class _EvidenceObservations:
                         or any(not same(row[k + '_path'], manifest['root'] + '/runtime/orgs/alpha/jobs/' + jid + suffix)
                                for k,suffix in (('stdout','.out'),('stderr','.err')))):
                     raise ValueError('Case SQL original execution owner withheld')
-                running = holder in ('running','pending','parked')
+                running = holder in ('running','pending','parked') or holder == 'first_terminal' and same(jid, jobs[1].get('id'))
                 job = next(j for j in jobs if same(j.get('id'), jid))
                 code = job['code']
                 if running:
@@ -2629,13 +2685,25 @@ class _EvidenceObservations:
                 # snapshot/pending/drain copy in that state. Compare every
                 # original scalar, including unknown columns, without rewriting
                 # either occurrence's own key order or requiring absent stages.
-                self.ledger.charge(32 * len(c['rows']), 4 * len(c['rows']), self.check)
+                self.ledger.charge(64 * len(c['rows']), 8 * len(c['rows']), self.check)
+                if holder == 'first_terminal':
+                    # Role comes from the actual submitted ID, independently
+                    # of the original strict Store ORDER BY id array order.
+                    originals = [r for r in c['rows'] if r[1] == 'jobs' and r[2] == (1 if running else 0)
+                                 and r[3] == ('pending' if running else 'oracle')]
+                    if not originals:
+                        raise ValueError('Case first-terminal original row unavailable')
+                    if running and originals[-1][0][3] != jobs[1].get('last_pending'):
+                        raise ValueError('Case first-terminal last pending row unavailable')
+                    original = originals[-1][4]
+                    if not full_row(row, original):
+                        raise ValueError('Case first-terminal complete original row equality withheld')
+                    continue
                 for _, other_table, _, other_holder, original, _ in c['rows']:
                     if (other_table != 'jobs' or other_holder != ('running' if running else 'oracle')
                             or not same(original.get('id'), jid)):
                         continue
-                    self.ledger.charge(32 * (len(row) + len(original)), 4 * (len(row) + len(original)), self.check)
-                    if len(row) != len(original) or any(k not in original or not same(v, original[k]) for k,v in row.items()):
+                    if not full_row(row, original):
                         raise ValueError('Case complete original row equality withheld')
 
     def snapshot_event(self, path: tuple, kind: str, value: object) -> None:

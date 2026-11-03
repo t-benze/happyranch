@@ -2570,7 +2570,7 @@ limits. These source fixtures observe no SQL transaction or native behavior.
 
 Canonical observations.durable[*].jobs_cases[*] now selects the E04 Case
 job SOURCE and complete Store.jobs rows in parked, live_s2.snapshot and
-final_snapshot, plus jobs[*].running, pending[*].row/audit and
+final_snapshot, plus jobs[*].running/terminal, pending[*].row/audit and
 oracle/rejection_drain.row/audits. The same observations-form prefix uses these
 exact paths. Original method, six index/variant mappings, source, task, starts,
 manifest and actual canonical submit/id facts close privately before publication.
@@ -2588,15 +2588,27 @@ pending.audit/oracle.audits/rejection_drain.audits payloads require a direct
 string script_request_id equal to their enclosing submitted job. Approved SQL
 nulls and task-wide snapshot audit payloads keep their separate semantics. Both
 checks use charged private first-scan facts and existing late closure.
+Each terminal SQL row separately joins its original full oracle row, including
+unknown columns and exact builtin types; a later oracle cannot repair a changed
+terminal copy. Both pair plans select the complete first_terminal Store holder.
+Its two jobs retain strict original Store ID order, while actual submitted IDs
+identify the first terminal oracle and the second job's LAST recorded pending
+RUNNING row. Full original parked task/results remain unchanged: original S1,
+blocked_on_job/in_progress, INTEGER step1 and exact blocked IDs, one blocked S1
+result. Audit can append actual terminal rows but cannot resume the task. All
+eight SQL-column policies retain their strength. Late Case-jobs-last/source
+facts close privately before publication. Genuine partials gain no fields;
+an oracle missing its prior terminal, or a later pair missing its first-terminal
+barrier, refuses as an incomplete direct contract.
 Job out/err and oracle output text remain ordinary literal UTF8/R1. The existing
 C5-Case-* controls compare full independent accepted SQL/SOURCE inputs and prior
 files/output/result/FAIL at four distinct shipping boundaries; absent baseline
 artifacts still produce TWO REQUIRED-MISSING records. They supply no native,
-allocation, timing, individual-negative sensitivity or full pair/browser proof.
+allocation, timing, individual-negative sensitivity or native pair/browser proof.
 
 Other Case ProviderCommand copies/human show, settled.wire_records/distinct CLI,
-first_terminal/refusal/marked/scenario, remaining entity/SQL/other source/hex,
-browser/direct/pair/human-display and cross-member joins
+refusal/marked/scenario, remaining entity/SQL/other source/hex,
+browser/direct/human-display and cross-member joins
 remain unfinished and conservatively refused, with complete copy obligations
 intact. A member containing one such obligation refuses entirely.
 Ordinary _atomic_text retains whole-backslash refusal at every filename. File

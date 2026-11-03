@@ -765,7 +765,7 @@ PR1260's additive case record records actual results and proof limits. No SQL,
 runtime, browser or Product observation follows from these source fixtures.
 Canonical observations.durable[*].jobs_cases[*] additionally admits original
 Case job scripts and complete Store.jobs/SQL rows at parked, live_s2.snapshot,
-final_snapshot, running, pending.row/audit and oracle/rejection_drain.row/audits.
+final_snapshot, running/terminal, pending.row/audit and oracle/rejection_drain.row/audits.
 The exact six index/variant mappings, method, source/task, original starts and
 manifest, actual canonical submit/id and full script/hash/row comparisons close
 before publication, including late selectors. Each occurrence retains its own
@@ -778,15 +778,25 @@ full rows; empty/subset holders refuse, while absent stages remain partial.
 Non-null per-job pending.audit/oracle.audits/rejection_drain.audits payloads require
 direct string script_request_id equal to the enclosing submitted job; approved
 SQL-null and task-wide snapshot audit semantics remain. Existing first-scan
-private facts and charged late comparisons close both omission cases. Output
+private facts and charged late comparisons close both omission cases. Terminal
+SQL rows also compare every original scalar/type with their full oracle,
+including unknown columns. Both pair first_terminal holders retain exactly two
+submitted jobs in strict Store ID order; roles join actual submitted IDs, with
+first oracle terminal and second LAST recorded pending RUNNING. Their complete
+parked task/results preserve original blocked S1, INTEGER step1 and exact blocked
+IDs; original audit rows may append actual terminal events but no resume event.
+The same eight SQL-column policies apply. Missing required terminal or later-pair
+first-terminal edges refuse; genuinely earlier partials gain no invented stage.
+All joins use charged private facts from the original scan, including jobs-last
+and late canonical identities. Output
 text/out/err retain ordinary literal/R1 policy. C5-Case-* extends the SAME
 four-boundary fixture with
 complete independent literal expectations and prior file/output/result/FAIL
 preservation. Missing baseline artifacts remain incomplete/TWO REQUIRED-MISSING.
 Receipts in PR1260's case record distinguish actual controls/static results from
-individual-negative/temporal/allocation/native PROOF NOT RUN. First-terminal,
+individual-negative/temporal/allocation/native PROOF NOT RUN. Case
 refusal/positive-oracle, copied commands, marked/scenario/cross-member/human,
-cancellation/thread-frame/remaining columns/browser/direct/pair/E05/E07/hex and
+cancellation/thread-frame/remaining columns/browser/direct/E05/E07/hex and
 compound obligations remain unfinished whole-member refusals until scoped.
 
 The same finite source-owned admission now covers canonical

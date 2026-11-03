@@ -3821,6 +3821,7 @@ def failure_result_controls() -> dict:
                 oracle=dict(row=terminal,audits=[copy.deepcopy(audit)],outputs=outputs),
                 rejection_drain=dict(row=copy.deepcopy(terminal),audits=[copy.deepcopy(audit)],outputs=copy.deepcopy(outputs)),
                 out=terminal['stdout_head'],err=terminal['stderr_head'])
+            job['terminal'] = copy.deepcopy(terminal)
             jobs.append(job)
         def snapshot(terminal: bool, session: str) -> dict:
             value = copy.deepcopy(sql_rows)
@@ -3838,6 +3839,14 @@ def failure_result_controls() -> dict:
         if index != 1:
             case['parked'] = snapshot(False,first['session'])
             case['live_s2'] = dict(snapshot=snapshot(True,starts[1]['session']))
+        if index >= 4:
+            parked = case['parked']
+            parked['tasks'][0].update(status='in_progress',completed_at=None,block_kind='blocked_on_job',
+                blocked_on_job_ids=json.dumps(sorted(j['id'] for j in jobs)))
+            parked['results'][0].update(status='blocked',decision_json=None,
+                waiting_on_job_ids=json.dumps([j['id'] for j in jobs]))
+            case['first_terminal'] = copy.deepcopy(parked)
+            case['first_terminal']['jobs'] = [copy.deepcopy(jobs[0]['oracle']['row']),copy.deepcopy(jobs[1]['pending'][-1]['row'])]
         case['final_snapshot'] = snapshot(True,starts[-1]['session'])
         image['starts'],image['provider_commands'] = starts,commands
         image['durable'].append(dict(jobs_cases=[case]))
@@ -3845,10 +3854,10 @@ def failure_result_controls() -> dict:
             # Selected full rows can precede all selectors, with each original
             # order retained; no normalization of nested objects is expected.
             case = {k:case[k] for k in reversed(case)}
-            rows = [r for holder in (case.get('parked'),case.get('live_s2',{}).get('snapshot'),case['final_snapshot'])
+            rows = [r for holder in (case.get('parked'),case.get('first_terminal'),case.get('live_s2',{}).get('snapshot'),case['final_snapshot'])
                     if holder is not None for table in holder.values() for r in table]
             for job in jobs:
-                rows += [job['running'],job['pending'][0]['row'],job['pending'][0]['audit'][0],
+                rows += [job['running'],job['terminal'],job['pending'][0]['row'],job['pending'][0]['audit'][0],
                     job['oracle']['row'],job['oracle']['audits'][0],job['rejection_drain']['row'],job['rejection_drain']['audits'][0]]
                 job_items = list(job.items()); job.clear(); job.update(reversed(job_items))
             for row_image in rows:
@@ -3859,7 +3868,10 @@ def failure_result_controls() -> dict:
 
     case_full = [(i,late,mode) for i in range(6) for late in (False,True) for mode in ('ordinary','null','encoded')]
     case_partials = ('script-only','running-only','empty','refusal-no-job')
-    for spec in case_full + list(case_partials) + ['repeated']:
+    case_stages = {f'terminal-index{i}-{order}': (i,order) for i in (0,2,3) for order in ('early','late')}
+    case_stages.update({f'pair-index{i}-{order}': (i,order) for i in (4,5)
+                       for order in ('early','late','jobs-last','store-id-order','audit-append')})
+    for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages):
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
@@ -3867,6 +3879,35 @@ def failure_result_controls() -> dict:
                     index,late,mode = spec
                     image = case_input(root,index,late=late,mode=mode)
                     label = f'C5-Case-full-index{index}-'+('late' if late else 'early')+'-'+mode+'-'+boundary
+                elif spec in case_stages:
+                    index,order = case_stages[spec]
+                    image = case_input(root,index,late=order == 'late')
+                    case = image['durable'][0 if order == 'late' else -1]['jobs_cases'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    elif order == 'audit-append':
+                        audit = copy.deepcopy(case['jobs'][0]['oracle']['audits'][0])
+                        audit.update(id=703,action='job_completed')
+                        case['first_terminal']['audit'].append(audit)
+                    elif order == 'store-id-order':
+                        # Actual IDs can sort opposite to submission order.
+                        # Change only the finite fixture IDs and their direct
+                        # copies, retaining original SOURCE/token/title facts.
+                        first_id,second_id = [j['id'] for j in case['jobs']]
+                        replacements = {first_id:second_id,second_id:first_id}
+                        def exchange(value: object) -> object:
+                            if type(value) is dict:
+                                return {k:exchange(v) for k,v in value.items()}
+                            if type(value) is list: return [exchange(v) for v in value]
+                            if type(value) is str:
+                                return value.replace(first_id,'JOB-TEMP').replace(second_id,first_id).replace('JOB-TEMP',second_id)
+                            return value
+                        image = exchange(image)
+                        case = image['durable'][-1]['jobs_cases'][0]
+                        for holder in (case['parked'],case['first_terminal'],case['live_s2']['snapshot'],case['final_snapshot']):
+                            holder['jobs'].reverse()
+                        for holder in (case['parked'],case['first_terminal']):
+                            holder['tasks'][0]['blocked_on_job_ids'] = json.dumps(sorted(replacements))
+                    label = 'C5-Case-stage-positive-'+spec+'-'+boundary
                 else:
                     image = case_input(root,1 if spec == 'refusal-no-job' else 0,late=True)
                     case = image['durable'][0]['jobs_cases'][0]
@@ -3877,7 +3918,7 @@ def failure_result_controls() -> dict:
                         if spec in ('empty','refusal-no-job'): case['jobs'] = []; image['provider_commands'] = []
                         else:
                             job = case['jobs'][0]
-                            for field in ('pending','oracle','rejection_drain','out','err'): job.pop(field)
+                            for field in ('pending','oracle','rejection_drain','out','err','terminal'): job.pop(field)
                             if spec == 'script-only': job.pop('running')
                     label = 'C5-Case-'+('repeated' if spec == 'repeated' else 'partial-'+spec)+'-'+boundary
                 acquire(); drain(); commit()
@@ -3932,15 +3973,86 @@ def failure_result_controls() -> dict:
                      for form in ('bool','number','container','wrong-top','missing')]
     case_refusals += ['sql-'+k for k in sql_bad]
     case_refusals += ['task-owner','result-owner','audit-owner','result-session','audit-job','pending-audit-job','oracle-audit-job','drain-audit-job']
+    case_stage_terminal = ('owner','source','hash-only','flag-bool','exit-bool','state','reason','head','path','time',
+                          'unknown-content','unknown-type','unknown-missing','unknown-extra','missing')
+    case_stage_pair = ('missing-job','extra-job','duplicate-job','foreign-job','reverse-order','first-running',
+        'second-terminal','second-last-pending','job-source','job-flag-bool','missing-task','extra-task',
+        'task-owner','task-session','task-cleared','task-status','task-step-bool','task-step','task-block-ids',
+        'task-full-content','task-full-type','missing-result','extra-result','result-content','result-s2',
+        'result-state','result-full-type','resumed-audit','missing-stage','missing-parked','missing-pending')
+    case_stage_refusals = {f'stage-terminal-{key}-index{i}': (i,'terminal',key)
+                           for key in case_stage_terminal for i in (0,2,3)}
+    case_stage_refusals.update({f'stage-pair-{key}-index{i}': (i,'pair',key)
+                               for key in case_stage_pair for i in (4,5)})
+    case_refusals += list(case_stage_refusals)
     for case_name in case_refusals:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
-                image = case_input(root,case_missing_jobs[case_name][1] if case_name in case_missing_jobs else 0,late=True)
+                image = case_input(root,case_stage_refusals[case_name][0] if case_name in case_stage_refusals else
+                                   case_missing_jobs[case_name][1] if case_name in case_missing_jobs else 0,late=True)
                 case = image['durable'][0]['jobs_cases'][0]; job = case['jobs'][0]
                 snapshot = case['final_snapshot']; sql_job = job['oracle']['row']
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
-                if case_name in case_missing_jobs:
+                if case_name in case_stage_refusals:
+                    _,family,key = case_stage_refusals[case_name]
+                    if family == 'terminal':
+                        selected = job['terminal']
+                        if key == 'owner': selected['task_id'] = 'TASK-foreign'
+                        elif key in ('source','hash-only'):
+                            selected['script_text'] += '# contradictory full terminal SOURCE\n'
+                            if key == 'hash-only': job['script_sha256'] = hashlib.sha256(selected['script_text'].encode()).hexdigest()
+                        elif key == 'flag-bool': selected['persistent'] = False
+                        elif key == 'exit-bool': selected['exit_code'] = False
+                        elif key == 'state': selected['status'] = 'running'
+                        elif key == 'reason': selected['reason'] = None if job['code'] == -9 else 'timeout'
+                        elif key == 'head': selected['stdout_head'] += 'changed'
+                        elif key == 'path': selected['stdout_path'] += '.changed'
+                        elif key == 'time': selected['finished_at'] += '-changed'
+                        elif key == 'unknown-content': selected['unknown_sql_text'] = 'changed full original scalar'
+                        elif key == 'unknown-type': selected['unknown_sql_integer'] = 0.0
+                        elif key == 'unknown-missing': del selected['unknown_sql_null']
+                        elif key == 'unknown-extra': selected['another_original_column'] = None
+                        elif key == 'missing': del job['terminal']
+                        else: raise AssertionError(key)
+                    else:
+                        early = case['first_terminal']; task_row = early['tasks'][0]; result_row = early['results'][0]
+                        if key == 'missing-job': early['jobs'].pop()
+                        elif key == 'extra-job': early['jobs'].append(copy.deepcopy(early['jobs'][1]))
+                        elif key == 'duplicate-job': early['jobs'][1] = copy.deepcopy(early['jobs'][0])
+                        elif key == 'foreign-job': early['jobs'][1]['id'] = 'JOB-foreign'
+                        elif key == 'reverse-order': early['jobs'].reverse()
+                        elif key == 'first-running': early['jobs'][0] = copy.deepcopy(job['running'])
+                        elif key == 'second-terminal': early['jobs'][1] = copy.deepcopy(case['jobs'][1]['oracle']['row'])
+                        elif key == 'second-last-pending':
+                            later = copy.deepcopy(case['jobs'][1]['pending'][-1])
+                            later['row']['unknown_sql_text'] = 'different actual last pending row'
+                            case['jobs'][1]['pending'].append(later)
+                        elif key == 'job-source': early['jobs'][1]['script_text'] += '# contradictory pair source\n'
+                        elif key == 'job-flag-bool': early['jobs'][1]['review_required'] = False
+                        elif key == 'missing-task': early['tasks'] = []
+                        elif key == 'extra-task': early['tasks'].append(copy.deepcopy(task_row))
+                        elif key == 'task-owner': task_row['id'] = 'TASK-foreign'
+                        elif key == 'task-session': task_row['current_session_id'] = case['starts'][1]['session']
+                        elif key == 'task-cleared': task_row['block_kind'] = None
+                        elif key == 'task-status': task_row['status'] = 'completed'
+                        elif key == 'task-step-bool': task_row['orchestration_step_count'] = True
+                        elif key == 'task-step': task_row['orchestration_step_count'] = 2
+                        elif key == 'task-block-ids': task_row['blocked_on_job_ids'] = json.dumps([job['id']])
+                        elif key == 'task-full-content': task_row['note'] = 'changed original parked field'
+                        elif key == 'task-full-type': task_row['future_integer'] = 0.0
+                        elif key == 'missing-result': early['results'] = []
+                        elif key == 'extra-result': early['results'].append(copy.deepcopy(result_row))
+                        elif key == 'result-content': result_row['output_summary'] = 'changed full parked result'
+                        elif key == 'result-s2': result_row['session_id'] = case['starts'][1]['session']
+                        elif key == 'result-state': result_row['status'] = 'completed'
+                        elif key == 'result-full-type': result_row['duration_seconds'] = 1.0
+                        elif key == 'resumed-audit': early['audit'][0]['action'] = 'task_resumed_from_jobs'
+                        elif key == 'missing-stage': del case['first_terminal']
+                        elif key == 'missing-parked': del case['parked']
+                        elif key == 'missing-pending': case['jobs'][1]['pending'][-1].pop('row')
+                        else: raise AssertionError(key)
+                elif case_name in case_missing_jobs:
                     holder,_ = case_missing_jobs[case_name]
                     selected = case['live_s2']['snapshot'] if holder == 'live_s2' else case[holder]
                     selected['jobs'].pop()
@@ -4016,7 +4128,7 @@ def failure_result_controls() -> dict:
                     changed['task_id'] = 'TASK-foreign'
                 elif case_name == 'lookalike-root': image['durable'][0] = dict(cases=[case])
                 elif case_name == 'first-terminal': case['first_terminal'] = copy.deepcopy(case['parked'])
-                elif case_name == 'terminal': job['terminal'] = copy.deepcopy(sql_job)
+                elif case_name == 'terminal': job['terminal']['script_text'] += '# contradictory earlier terminal copy\n'
                 elif case_name == 'refusal-script': case['refusal'] = dict(script=job['script'])
                 elif case_name == 'task-owner': snapshot['tasks'][0]['id'] = 'TASK-foreign'
                 elif case_name == 'result-owner': snapshot['results'][0]['task_id'] = 'TASK-foreign'
@@ -4057,7 +4169,9 @@ def failure_result_controls() -> dict:
                 assert (root/'scenario.json').read_bytes() == scenario
                 for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
                 assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
-                results['C5-Case-refusal-'+case_name+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; no selected pending/publication; overlapping owner/strict/R1/capacity guards; specific sensitivity PROOF NOT RUN'
+                result_name = ('C5-Case-stage-refusal-'+case_name.removeprefix('stage-') if case_name in case_stage_refusals
+                               else 'C5-Case-refusal-'+case_name)
+                results[result_name+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; no selected pending/publication; overlapping owner/strict/R1/capacity guards; specific sensitivity PROOF NOT RUN'
 
     return results
 
