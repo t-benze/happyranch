@@ -2208,8 +2208,9 @@ def failure_result_controls() -> dict:
         results['C6-C7-raw-no-retry'] = 'new refused member never staged, second opportunity never retries repaired source; first cause and eligible sibling preserved'
 
     # SAME remaining scenario owner across registered raw siblings. Each 1M
-    # scalar costs input1M + decoded/chunk/join2M + two safe passes2M +
-    # candidate1M plus positive facts/keys. Scenario100k costs about600k.
+    # scalar costs byte read/decode2M + decoded/chunk/join2M + two safe
+    # passes2M + candidate1M plus positive facts/keys. Later sources cannot
+    # reserve their read/decode images after the first entire sibling stages.
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
         acquire(); drain(); commit()
         prior_result = (output/'result.json').read_bytes()
@@ -2226,13 +2227,15 @@ def failure_result_controls() -> dict:
                 assert staged[name] == (output/name).read_bytes() == image
             else:
                 assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
-        assert any(f[4][:2] == ('REDACT','CAPACITY') for f in failures)
+        exact([list(f[4]) for f in failures if f[4][1] == 'CAPACITY'],
+              [['TEXT_READ','CAPACITY',100027,100027],['TEXT_READ','CAPACITY',100027,100027]])
         assert (output/'result.json').read_bytes() == prior_result
         exact(state['safe_scenario'],{'variants':{},'groups':'a'*100000})
         results['C1-C6-C7-raw-shared-owner'] = 'one exact full registered sibling, shared original scenario work and no refund; later parser capacity preserves prior FAIL'
 
     # One owner's nonrefundable scenario work continues into the SAME raw
     # enumeration. Each raw scalar fits alone; together only one can stage.
+    # Byte read plus strict decode is reserved before either later acquisition.
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
         acquire(); drain(); commit()
         prior_result = (output/'result.json').read_bytes()
@@ -2249,7 +2252,8 @@ def failure_result_controls() -> dict:
             else: assert not (output/name).exists() and not (output/(name+'.tmp')).exists()
         exact(state['safe_scenario'],{'variants':{},'groups':{'value':'a'*600000}})
         assert (output/'result.json').read_bytes() == prior_result
-        assert {'REDACT','TEXT_READ'} <= {f[4][0] for f in failures if f[4][1] == 'CAPACITY'}
+        exact([list(f[4]) for f in failures if f[4][1] == 'CAPACITY'],
+              [['TEXT_READ','CAPACITY',600037,600037],['TEXT_READ','CAPACITY',600037,600037]])
         results['F3-shared-nonrefundable-siblings'] = 'same scenario/raw owner exhausts; one full sibling and prior complete result retained'
 
     with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
