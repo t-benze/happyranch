@@ -189,8 +189,18 @@ The original start body result is captured before existing context exits and
 returned only after they succeed. A release failure after business COMMIT keeps
 that exact value as failure-frame evidence and the committed prefix; it grants
 neither successful delivery nor consume/replay or native retirement. These local
-contracts leave other publisher/profile interiors and the draft-dispatch
-cancellation bridge separately owned.
+contracts leave other publisher/profile interiors separately owned. Consume still
+hands the SAME original `_start` coroutine to the draft-dispatch loop bridge. A
+wrapper awaits it once and captures its actual exception/object/native traceback
+before Task-to-Future cancellation conversion. That early observation joins the
+SAME queue work/invocation lock order, so native-before-waiter and
+waiter-before-native causes remain distinct before delayed Future delivery. The
+failed outer join consumes that selection and retains later actual errors; handled
+holds and successful suppressed cancellation preserve exact return values. Missing
+or cancelled acknowledgements and ambiguous submission retain the original
+coroutine/wrapper/Future/observed Task and UNKNOWN custody, without closing,
+cancelling, resubmitting, replaying or inferring retirement. No standalone call
+creates a queue owner.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.

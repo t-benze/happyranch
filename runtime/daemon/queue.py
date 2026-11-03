@@ -33,6 +33,10 @@ logger = logging.getLogger("happyranch.daemon.queue")
 # audit DB with unrelated writes.
 HEARTBEAT_INTERVAL_SECONDS = 30
 
+# Only the current executor invocation binds this thread. A loop bridge may
+# observe that SAME work; absence supplies no substitute queue owner.
+_native_loop_invocation = threading.local()
+
 
 class _Dispatcher(Protocol):
     def task_attachment(self, slug: str) -> OrgState | None: ...
@@ -84,7 +88,8 @@ class _NativeWork:
 
     def _remember_error(self, phase: str, error: BaseException, *, delivery: str = "raised",
                         invocation: dict[str, Any] | None = None,
-                        deferred: bool = False) -> dict[str, Any]:
+                        deferred: bool = False,
+                        bridge: dict[str, Any] | None = None) -> dict[str, Any]:
         # Native threads publish ONLY raw same-work evidence. The loop later
         # owns collection/formatting/delivery. This short lock orders original
         # observations, not historical exception times or independent owners.
@@ -93,6 +98,11 @@ class _NativeWork:
                         delivery=delivery, kind=type(error), message=None, message_observed=False,
                         description_attempted=False)
         with self.capture_lock:
+            if bridge is not None:
+                observed['bridge_previous'] = bridge['error_capture']
+                bridge['error_capture'] = observed
+                if bridge['first_error'] is None:
+                    bridge['first_error'] = observed
             forwarded = None if deferred else self.join_delivery
             if forwarded is not None and forwarded['error'] is error:
                 observed.update(delivery="context_delivery", join_cause=forwarded,
@@ -834,6 +844,9 @@ class TaskQueue:
         with work.capture_lock:
             if work.first_error is None:
                 work.first_error = first
+            else:
+                first = work.first_error
+            join['first_error'] = first
             work.join_delivery = first
         try:
             primary = first['error']
@@ -925,7 +938,7 @@ class TaskQueue:
                 callable=callback, owner=work.owner, stage=stage, submission_attempted=False,
                 submission_returned=False, future=None, entered=False, returned=False,
                 result=None, error_capture=None, exited=False, caller_returned=False,
-                caller_result=None, first_observation=None)
+                caller_result=None, first_observation=None, loop_bridge=None)
             invocation = work.invocations[stage] = original
 
             def invoke() -> object:
@@ -940,9 +953,16 @@ class TaskQueue:
                     original['repeated_entry'] = work._remember_error(stage, error,
                         delivery="repeated_entry", invocation=original, deferred=True)
                     raise error
+                primary = None
+                binding_attempted = False
                 try:
+                    previous = getattr(_native_loop_invocation, 'value', None)
+                    original['binding_previous'] = previous
+                    binding_attempted = True
+                    _native_loop_invocation.value = (work, original)
                     value = callback()  # Original bound callable/arguments, outside lock.
                 except BaseException as error:
+                    primary = error
                     work._remember_error(stage, error, delivery="native_error",
                                          invocation=original, deferred=True)
                     raise
@@ -952,8 +972,17 @@ class TaskQueue:
                         original['returned'] = True
                     return value
                 finally:
-                    with work.capture_lock:
-                        original['exited'] = True
+                    try:
+                        if binding_attempted:
+                            _native_loop_invocation.value = previous
+                    except BaseException as error:
+                        work._remember_error(stage + "_binding_reset", error,
+                            delivery="native_error", invocation=original, deferred=True)
+                        if primary is None:
+                            raise
+                    finally:
+                        with work.capture_lock:
+                            original['exited'] = True
 
             original['wrapper'] = invoke
             original['submission_attempted'] = True

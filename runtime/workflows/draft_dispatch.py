@@ -219,12 +219,91 @@ class WorkflowDraftDispatcher:
                     return claim
 
     def _on_loop(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
-        loop = self.org.orchestrator._main_loop
-        if loop is None or not loop.is_running():
-            coroutine.close()
-            raise DraftOwnershipError("workflow_host_unavailable")
-        # The worker owns no lease or SQLite transaction across this wait.
-        return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
+        # Import only at the real handoff, without a lower-layer module-time
+        # dependency or a second registry/operation owner.
+        from runtime.daemon.queue import _native_loop_invocation
+        binding = getattr(_native_loop_invocation, 'value', None)
+        work, invocation = (None, None) if binding is None else binding
+        bridge = dict(coroutine=coroutine, wrapper=None, future=None, task=None,
+                      entered=False, returned=False, result=None, exited=False,
+                      submission_attempted=False, submission_returned=False,
+                      acknowledgement="UNKNOWN", first_error=None, error_capture=None,
+                      work=work, invocation=invocation, previous=None)
+        lock = threading.Lock() if work is None else work.capture_lock
+        if work is not None:
+            with lock:
+                bridge['previous'] = invocation['loop_bridge']
+                invocation['loop_bridge'] = bridge
+
+        def capture(phase: str, error: BaseException) -> dict[str, Any]:
+            if work is not None:
+                # Early evidence is an invocation observation, not a failure
+                # marker for a refusal legitimately handled by the real caller.
+                return work._remember_error("loop_bridge_" + phase, error,
+                    delivery="loop_error", invocation=invocation, deferred=True,
+                    bridge=bridge)
+            observed = dict(phase=phase, error=error,
+                            traceback=BaseException.__traceback__.__get__(error))
+            with lock:
+                observed['bridge_previous'] = bridge['error_capture']
+                bridge['error_capture'] = observed
+                if bridge['first_error'] is None:
+                    bridge['first_error'] = observed
+            return observed
+
+        async def observe() -> Any:
+            try:
+                try:
+                    bridge['task'] = asyncio.current_task()
+                    bridge['entered'] = True
+                except BaseException as error:
+                    capture("wrapper", error)
+                    raise
+                try:
+                    value = await coroutine  # SAME original business coroutine, once.
+                except BaseException as error:
+                    # Before Task cancellation is converted to a new concurrent
+                    # CancelledError, and before any fallible diagnostics.
+                    capture("inner", error)
+                    raise
+                bridge['result'] = value
+                bridge['returned'] = True
+                return value
+            finally:
+                bridge['exited'] = True
+
+        try:
+            loop = self.org.orchestrator._main_loop
+            bridge['loop'] = loop
+            if loop is None or not loop.is_running():
+                raise DraftOwnershipError("workflow_host_unavailable")
+            # Retain both coroutines before the uncertain submission. Neither
+            # loop loss nor a missing/cancelled wrapper proves no-run or exit.
+            bridge['wrapper'] = observe()
+            bridge['submission_attempted'] = True
+            bridge['future'] = asyncio.run_coroutine_threadsafe(bridge['wrapper'], loop)
+            bridge['submission_returned'] = True
+            # The worker owns no lease or SQLite transaction across this wait.
+            value = bridge['future'].result()
+            bridge['acknowledgement'] = "returned_value"
+            return value
+        except BaseException as error:
+            capture("delivery", error)
+            first = bridge['first_error']
+            primary = first['error']
+            try:
+                owner_values = WorkflowDraftDispatcher.__dict__['__dict__'].__get__(self)
+                bridge['previous_owner'] = owner_values.get('_loop_bridge_failure')
+                owner_values['_loop_bridge_failure'] = bridge
+                values = BaseException.__dict__['__dict__'].__get__(primary)
+                bridge['previous_attachment'] = values.get('_workflow_loop_bridge_failure')
+                BaseException.__setattr__(primary, '_workflow_loop_bridge_failure', bridge)
+            except BaseException as attachment:
+                capture("attachment", attachment)
+            # SAME native error/message/traceback, even when Future.result()
+            # constructed a different cancellation. Frame/work retains every
+            # occurrence if attachment failed; no virtual setter or retry.
+            raise BaseException.with_traceback(primary, first['traceback'])
 
     def dispatch(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
         validate = document_admission_validation(self) if validate_admission is None else validate_admission

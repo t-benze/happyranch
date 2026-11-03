@@ -490,8 +490,18 @@ succeed; a missing attachment never proves no secondary error. A completed start
 body keeps its exact result
 through original context exits; failed release after COMMIT is failed delivery
 with a committed prefix, never replay or native-retirement permission. Unedited
-publisher/profile interiors and the draft-dispatch cancellation bridge remain
-separate limits.
+publisher/profile interiors remain separate limits. The draft-dispatch loop bridge
+awaits the SAME original coroutine once, capturing its actual BaseException and
+native traceback before concurrent-Future cancellation conversion. Its original
+queue invocation, when present, orders that raw observation against waiter
+cancellation under the SAME short capture lock, before diagnostics or delivery.
+The failed outer join consumes that original observation; earlier selected owner
+causes stay selected and later actual errors remain separately linked. Legitimately
+handled holds and successful suppressed waiter cancellation keep exact caller
+values. Original coroutine, wrapper, Future and observed native Task remain
+retained through ambiguous submission or missing/cancelled acknowledgement, which
+stays UNKNOWN. No close/cancel/replay, new wait or retirement permission follows.
+Standalone bridge use creates no substitute queue owner.
 Pause's `settle_live` captures the actual active cause by presence, preserving
 that SAME object and original traceback for held-refusal authentication. Its
 private per-call `_pause_settlement_failure` record links prior records and
@@ -587,8 +597,14 @@ and real exit separately from submission return, Future delivery and caller retu
 A short same-work lock orders only the original raw native-error and waiter-error/
 cancellation observations before diagnostics: earlier captured native E1 survives
 later submission/wait E2, while earlier waiter cancellation survives later native E1.
-No final-state inference supplies missing chronology. The heartbeat gather keeps its
-existing Future observation contract; this capture cannot recover heartbeat-internal
+No final-state inference supplies missing chronology. The draft loop bridge also
+records its inner error on this SAME invocation before concurrent-Future callback
+or executor delivery. That ordering candidate alone adds no failure marker for a
+refusal handled by the original caller; successful held/pending values still
+return. A failed original join consumes the candidate and preserves any prior
+selected owner cause. The original coroutine/wrapper/Future/observed Task stay
+linked; a missing Task or acknowledgement stays UNKNOWN without retirement or
+replacement. The heartbeat gather keeps its existing Future observation contract; this capture cannot recover heartbeat-internal
 errors. Native callbacks, formatting and all loop/DB/registry effects run outside
 the capture lock. Presence and native BaseException traceback access preserve the
 selected object and forwarded provenance before fallible retention or attachment. Actual later occurrences
