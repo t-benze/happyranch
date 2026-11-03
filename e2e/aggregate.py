@@ -1453,6 +1453,291 @@ def failure_result_controls() -> dict:
                 assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
                 results['C5-Attempt-refusal-'+case+'-'+boundary] = 'whole prior member/output/tree/FAIL exact; no selected pending/publication; identity/safety/capacity guards may overlap'
 
+    # C5 completion/wait/tail primitives. The independently authored payload
+    # and wire trees below extend this fixture, never execute a producer.
+    completion_summary = 'public "quote"\n中 repeated repeated'
+    completion_texts = {
+        'block': r'{"agent": "case_manager", "confidence": 90, "session_id": "sess-e04-first", "status": "blocked", "summary": "public \"quote\"\n\u4e2d repeated repeated", "task_id": "TASK-701", "waiting_on_job_ids": ["JOB-702", "JOB-701"]}',
+        'final': r'{"agent": "case_manager", "confidence": 90, "decision": {"action": "done", "summary": "public \"quote\"\n\u4e2d repeated repeated"}, "session_id": "sess-e04-first", "status": "completed", "summary": "public \"quote\"\n\u4e2d repeated repeated", "task_id": "TASK-701"}',
+    }
+
+    def finite_input(root: Path, family: str, form: str, *, late: bool) -> dict:
+        if family == 'completion':
+            image = submission_input(root, submission_sources['exit0'], late=late)
+            command = image['provider_commands'][0]
+            blocked = form.startswith('block')
+            plan = dict(status='blocked' if blocked else 'completed', confidence=90, summary=completion_summary)
+            if blocked: plan['waiting_on_job_ids'] = ['JOB-702','JOB-701']
+            else: plan['decision'] = dict(action='done', summary=completion_summary)
+            if form.endswith('nulls'):
+                plan['verdict'] = None
+                if blocked: plan['decision'] = None
+            payload = dict(plan, task_id='TASK-701', session_id='sess-e04-first', agent='case_manager')
+            text = json.dumps(payload, sort_keys=True) if form.endswith('nulls') else completion_texts['block' if blocked else 'final']
+            assert text == json.dumps(payload, sort_keys=True)  # Literal bytes independently own this producer spelling.
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            path = str(root/'coord'/(digest+'.json'))
+            body = dict(session_id='sess-e04-first',agent='case_manager',status='blocked' if blocked else 'completed',
+                confidence=90,output_summary=completion_summary,risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+            if blocked: body['waiting_on_job_ids'] = ['JOB-702','JOB-701']
+            else: body['decision'] = dict(action='done',summary=completion_summary)
+            wire = dict(path='/api/v1/orgs/alpha/tasks/TASK-701/completion',method='POST',
+                body_sha256=hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+                status=200,response=dict(ok=True),dropped=False)
+            command.update(action='jobs-block' if blocked else 'jobs-final',operation=None,
+                argv=[str(root/'bin/happyranch'),'report-completion','--org','alpha','--from-file',path],
+                payload=payload,payload_file=dict(path=path,text=text,bytes=len(text.encode()),sha256=digest),
+                stdout='',stderr='',wire=[wire])
+            instruction = dict(action=command['action'],deadline=20.,execution_deadline=19.,payload=copy.deepcopy(plan))
+            attempt = dict(provider=dict(image['starts'][0]),instruction=instruction,entered=9.5,wire_begin=4,wire_end=5,finished=11.,command_index=0)
+        else:
+            nonterminal = form in ('running','pending')
+            image = (submission_input(root, source_forms['F4-one-backslash'], late=late) if nonterminal
+                     else receipt_input(root, form if form in receipt_jobs else 'exit0', late=late,
+                         source=source_forms['F4-one-backslash']))
+            template = image['provider_commands'][-1]
+            provider = dict(template['provider'])
+            job = dict(receipt_jobs[form if form in receipt_jobs else 'exit0'])
+            job['script_text'] = source_forms['F4-one-backslash']
+            if form == 'rejected':
+                job.update(status='rejected',exit_code=None,duration_ms=None,started_at=None,cwd_resolved=None)
+                for prior in image['provider_commands']:
+                    prior['wire'][1]['response']['job'].update(job)
+                    prior['stdout'] = json.dumps(prior['wire'][1]['response'],sort_keys=True)+'\n'
+            if nonterminal:
+                job.update(title='E04 source fixture',rationale='Full original submission',status=form,exit_code=None,
+                    duration_ms=None,started_at=None if form == 'pending' else '2026-01-01T00:00:01+00:00',finished_at=None,
+                    cwd_resolved=None if form == 'pending' else str(root/'runtime/orgs/alpha/workspaces/case_manager'))
+            detail = dict(id=job['id'],task_id=job['task_id'],agent_name='case_manager',title=job['title'],rationale=job['rationale'],
+                script_text=job['script_text'],interpreter='python3',cwd_hint=None,status=job['status'],exit_code=job['exit_code'],
+                stdout_head=None,stderr_head=None,stdout_path=None,stderr_path=None,duration_ms=job['duration_ms'],
+                started_at=job['started_at'],finished_at=job['finished_at'],reviewed_at=None,reviewed_by=None,reject_reason=None,
+                cwd_resolved=job['cwd_resolved'],max_runtime_seconds=5 if form == 'timeout' else 30,max_output_bytes=52428800,
+                review_required=form == 'rejected',persistent=False,reason=job['reason'],created_at=job['created_at'],timed_out=nonterminal)
+            operation = 'tail' if family == 'tail' else 'wait'
+            response = dict(stream='stdout',lines=['public "quote"','中 repeated repeated']) if operation == 'tail' else detail
+            stdout = 'public "quote"\n中 repeated repeated\n' if operation == 'tail' else (
+                '{"status": "'+job['status']+'", "timed_out": '+('true' if nonterminal else 'false')+'}\n')
+            discovery = dict(path='/api/v1/orgs',method='GET',body_sha256=hashlib.sha256(b'').hexdigest(),status=200,
+                response=dict(orgs=[dict(slug='alpha',root=str(root/'runtime/orgs/alpha')),
+                                    dict(slug='beta',root=str(root/'runtime/orgs/beta'))],broken=[]),dropped=False)
+            query = ('stream=stdout&lines=50' if operation == 'tail' else 'timeout_seconds=1')+'&task_id='+provider['task']+'&session_id='+provider['session']
+            wire = dict(path='/api/v1/orgs/alpha/jobs/'+job['id']+'/'+operation+'?'+query,method='GET' if operation == 'tail' else 'POST',
+                body_sha256=hashlib.sha256(b'').hexdigest(),status=200,response=response,dropped=False)
+            argv = [str(root/'bin/happyranch'),'jobs',operation,job['id'],'--org','alpha']
+            if operation == 'wait': argv += ['--timeout-seconds','1']
+            argv += ['--task-id',provider['task'],'--session-id',provider['session']]
+            command = dict(template)
+            command.update(action='jobs-read',operation=operation,argv=argv,payload=None,payload_file=None,stdout=stdout,stderr='',
+                wire=[discovery,wire],entered=35.,finished=35.5,execution_deadline=39.,child_pid=406,
+                child_start='902',child_parent=provider['pid'],child_stat='406 (python) S '+str(provider['pid'])+' '+'0 '*17+'902\n')
+            index = len(image['provider_commands']); image['provider_commands'].append(command)
+            instruction = dict(action='jobs-read',deadline=40.,execution_deadline=39.,operation=operation,job=job['id'])
+            start = next(s for s in image['starts'] if s['session'] == provider['session'])
+            attempt = dict(provider=dict(start),instruction=instruction,entered=34.5,wire_begin=8,wire_end=10,finished=36.,command_index=index)
+        if late:
+            command_order = ('stdout','payload_file','payload','wire','provider','argv','stderr','exit','child_stat','child_start','child_parent',
+                'child_pid','python','callback_sha256','source_sha','finished','entered','execution_deadline','timed_out','operation','action')
+            image['provider_commands'][-1] = {k:command[k] for k in command_order}
+            attempt['instruction'] = dict(reversed(list(instruction.items())))
+            attempt = dict(reversed(list(attempt.items())))
+            image = dict(provider_attempts=[attempt],provider_commands=image['provider_commands'],durable=image['durable'],starts=image['starts'])
+        else: image['provider_attempts'] = [attempt]
+        if form == 'repeated':
+            # Same borrowed wire/line/argv references, independently owned CLI.
+            second = dict(image['provider_commands'][-1])
+            second.update(child_pid=407,child_start='903',child_stat='407 (python) S '+str(second['provider']['pid'])+' '+'0 '*17+'903\n',
+                entered=36.,finished=36.5)
+            another = dict(attempt,command_index=len(image['provider_commands']),entered=35.9,finished=37.,wire_begin=10,wire_end=12)
+            image['provider_commands'].append(second); image['provider_attempts'].append(another)
+        return image
+
+    finite_forms = [('completion',f) for f in ('block','final','block-nulls','final-nulls')]
+    finite_forms += [('wait',f) for f in ('exit0','exit7','timeout','rejected','running','pending')]
+    finite_forms += [('tail','exit0'),('tail','repeated')]
+    for family,form in finite_forms:
+        for late in (False,True):
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = finite_input(root,family,form,late=late)
+                    wanted = copy.deepcopy(image)
+                    original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                    compact = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image); expected_image = compact
+                        elif boundary == 'prefix':
+                            source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                            data,parsed = writer._prepare_original_evidence(destination,source_file)
+                            assert data == original_image and not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                            exact(parsed,wanted); writer._replace_evidence(destination,data); expected_image = original_image
+                        else: destination.write_bytes(original_image); expected_image = original_image
+                        complete,error = acquire(); drain(); commit()
+                        assert not complete and error is None and not state['fatal'] and not errors, (family,form,late,boundary,failures)
+                        assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                        exact(json.loads(expected_image),wanted); exact(image,wanted)
+                    except Exception as exc:
+                        raise AssertionError(f'C5-Finite-full-{family}-{form}-{int(late)}-{boundary}') from exc
+                    results[f'C5-Finite-full-{family}-{form}-{int(late)}-{boundary}'] = 'complete literal payload/wire/plan trees, bytes/types/order, original ownership and publication preserved; Case/native NOT RUN'
+
+    finite_refusals = ('action','operation','argv','argv-job','argv-task','argv-session','exit-bool','timed-out','child','child-start','child-parent',
+        'provider-task','provider-session','provider-agent','provider-org','provider-pid','source','python','callback','missing-start','duplicate-start',
+        'missing-manifest','foreign-manifest','wrong-root','wrong-owner','command-extra','command-missing','wire-status','wire-status-bool','wire-path',
+        'wire-method','wire-body','wire-dropped','wire-extra','wire-duplicate','wire-missing','response-extra','response-bool',
+        'attempt-index','attempt-index-bool','attempt-duplicate','attempt-provider','attempt-start','attempt-operation','attempt-job',
+        'attempt-deadline','attempt-wire','attempt-extra','attempt-missing','attempt-index-missing','stdout-layer','stderr-layer','literal-secret','escaped-secret',
+        'shared-work','shared-facts','shared-depth','unsupported-wire-script')
+    completion_refusals = ('file-bytes','file-hash','file-path','file-disagreement','file-duplicate','file-extra','file-missing','file-reordered',
+        'file-trailing','file-second-JSON','payload-type','payload-waits','payload-wait-order','payload-wait-bool','payload-decision','payload-extra',
+        'attempt-payload','attempt-payload-type','unsupported-script','done-action','done-summary','done-type','done-extra','done-missing')
+    read_refusals = ('missing-discovery','discovery-path','response-missing','response-reordered','job-identity','job-proof','job-script',
+        'job-bool','wait-stdout-disagreement','wait-stdout-duplicate','wait-stdout-reordered','wait-stdout-null','unknown-stdout-slot','tail-disagreement')
+    for family in ('completion','wait','tail'):
+        cases = finite_refusals + (completion_refusals if family == 'completion' else read_refusals)
+        for case in cases:
+            for boundary in ('writer','raw','raw-prefix','prefix'):
+                with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                    writer.revision = row['source_sha'] = old_source
+                    image = finite_input(root,family,('final' if case.startswith('done-') else 'block') if family == 'completion' else 'exit0',late=True)
+                    command = image['provider_commands'][-1]; payload = command['payload']; file = command['payload_file']
+                    attempt = image['provider_attempts'][0]; instruction = attempt['instruction']; wire = command['wire'][-1]; response = wire['response']
+                    if case == 'action': command['action'] = 'other'
+                    elif case == 'operation': command['operation'] = 'output'
+                    elif case.startswith('argv'):
+                        position = {'argv':0,'argv-job':3,'argv-task':-3,'argv-session':-1}[case]; command['argv'][position] = 'foreign'
+                    elif case == 'exit-bool': command['exit'] = False
+                    elif case == 'timed-out': command['timed_out'] = True
+                    elif case == 'child': command['child_pid'] = True
+                    elif case == 'child-start': command['child_start'] = 'wrong'
+                    elif case == 'child-parent': command['child_parent'] = 999
+                    elif case.startswith('provider-'): command['provider'][case[9:]] = 999 if case == 'provider-pid' else 'foreign'
+                    elif case == 'source': command['source_sha'] = 'f'*40
+                    elif case == 'python': command['python'] += 'foreign'
+                    elif case == 'callback': command['callback_sha256'] = 'f'*64
+                    elif case == 'missing-start': image['starts'] = []
+                    elif case == 'duplicate-start': image['starts'] *= 2
+                    elif case == 'missing-manifest': image['durable'] = []
+                    elif case == 'foreign-manifest': image['durable'][0]['executable_manifest']['revision'] = 'f'*40
+                    elif case == 'wrong-root': image = dict(holder=image)
+                    elif case == 'wrong-owner': pass
+                    elif case == 'command-extra': command['extra'] = None
+                    elif case == 'command-missing': del command['child_start']
+                    elif case == 'wire-status': wire['status'] = 201
+                    elif case == 'wire-status-bool': wire['status'] = True
+                    elif case == 'wire-path': wire['path'] += 'foreign'
+                    elif case == 'wire-method': wire['method'] = 'DELETE'
+                    elif case == 'wire-body': wire['body_sha256'] = 'f'*64
+                    elif case == 'wire-dropped': wire['dropped'] = True
+                    elif case == 'wire-extra': wire['extra'] = None
+                    elif case == 'wire-duplicate': command['wire'].append(copy.deepcopy(wire))
+                    elif case == 'wire-missing': command['wire'].pop()
+                    elif case == 'response-extra': response['extra'] = None
+                    elif case == 'response-bool': response['ok' if family == 'completion' else 'timed_out' if family == 'wait' else 'stream'] = 1
+                    elif case == 'attempt-index': attempt['command_index'] = 999
+                    elif case == 'attempt-index-bool': attempt['command_index'] = True
+                    elif case == 'attempt-duplicate': image['provider_attempts'] *= 2
+                    elif case == 'attempt-provider': attempt['provider']['session'] = 'foreign'
+                    elif case == 'attempt-start': attempt['provider']['pid_start'] = 'foreign'
+                    elif case == 'attempt-operation': instruction['operation'] = 'other'
+                    elif case == 'attempt-job': instruction['job'] = 'JOB-999'
+                    elif case == 'attempt-deadline': instruction['deadline'] = True
+                    elif case == 'attempt-wire': attempt['wire_end'] += 1
+                    elif case == 'attempt-extra': attempt['extra'] = None
+                    elif case == 'attempt-missing': del attempt['wire_end']
+                    elif case == 'attempt-index-missing': del attempt['command_index']
+                    elif case in ('stdout-layer','stderr-layer'): command[case.split('-')[0]] = r'{"public":"second\nlayer"}'
+                    elif case == 'literal-secret': command['stderr'] = 'SYNTHETIC_TOKEN'
+                    elif case == 'escaped-secret': command['stdout'] = r'{"status":"\u0053YNTHETIC_TOKEN","timed_out":false}'+'\n'
+                    elif case == 'shared-work': command['stderr'] = 'p'*3000000
+                    elif case == 'shared-facts': image['provider_attempts'] = [copy.deepcopy(attempt) for _ in range(10000)]
+                    elif case == 'shared-depth':
+                        nested = None
+                        for _ in range(65): nested = [nested]
+                        command['extra'] = nested
+                    elif case == 'unsupported-wire-script':
+                        command.update(action='other',operation=None,payload=None,payload_file=None,stdout='',stderr='')
+                        for entry in command['wire']: entry['response'] = dict(sample='public')
+                        while len(command['wire']) < 3:
+                            command['wire'].append(dict(path='/ordinary',method='GET',body_sha256=hashlib.sha256(b'').hexdigest(),
+                                status=200,response=dict(sample='public'),dropped=False))
+                        command['wire'][2]['response'] = dict(script_text=source_forms['F4-one-backslash'])
+                        image['provider_attempts'] = []
+                    elif case.startswith('file-'):
+                        if case == 'file-bytes': file['bytes'] += 1
+                        elif case == 'file-hash': file['sha256'] = 'f'*64
+                        elif case == 'file-path': file['path'] += 'foreign'
+                        elif case == 'file-disagreement': file['text'] = file['text'].replace('repeated repeated','changed changed')
+                        elif case == 'file-duplicate': file['text'] = file['text'][:-1]+',"confidence":90}'
+                        elif case == 'file-extra': file['text'] = file['text'][:-1]+',"extra":null}'
+                        elif case == 'file-missing': file['text'] = file['text'].replace('"confidence": 90, ','')
+                        elif case == 'file-reordered': file['text'] = json.dumps(dict(reversed(list(payload.items()))))
+                        elif case == 'file-trailing': file['text'] += '\n'
+                        elif case == 'file-second-JSON': file['text'] = json.dumps(file['text'])
+                        if case not in ('file-bytes','file-hash','file-path'):
+                            file['bytes'] = len(file['text'].encode()); file['sha256'] = hashlib.sha256(file['text'].encode()).hexdigest()
+                            file['path'] = str(root/'coord'/(file['sha256']+'.json')); command['argv'][-1] = file['path']
+                    elif case == 'payload-type': payload['confidence'] = True
+                    elif case == 'payload-waits': payload['waiting_on_job_ids'] = None
+                    elif case == 'payload-wait-order': payload['waiting_on_job_ids'].reverse()
+                    elif case == 'payload-wait-bool': payload['waiting_on_job_ids'][0] = True
+                    elif case == 'payload-decision': payload['decision'] = dict(action='done',summary=completion_summary)
+                    elif case == 'payload-extra': payload['extra'] = None
+                    elif case == 'attempt-payload': instruction['payload']['summary'] += 'foreign'
+                    elif case == 'attempt-payload-type': instruction['payload']['confidence'] = True
+                    elif case == 'unsupported-script': payload['script'] = source_forms['F4-one-backslash']
+                    elif case == 'done-action': payload['decision']['action'] = 'delegate'
+                    elif case == 'done-summary': payload['decision']['summary'] += 'foreign'
+                    elif case == 'done-type': payload['decision'] = []
+                    elif case == 'done-extra': payload['decision']['extra'] = None
+                    elif case == 'done-missing': del payload['decision']['action']
+                    elif case == 'missing-discovery': command['wire'].pop(0)
+                    elif case == 'discovery-path': command['wire'][0]['path'] = '/api/v1/orgs/foreign'
+                    elif case == 'response-missing': del response[next(iter(response))]
+                    elif case == 'response-reordered': wire['response'] = dict(reversed(list(response.items())))
+                    elif case == 'job-identity': response['id'] = 'JOB-999'
+                    elif case == 'job-proof': image['provider_commands'] = [command]; attempt['command_index'] = 0
+                    elif case == 'job-script': response['script_text'] = 'print("changed")'
+                    elif case == 'job-bool': response['exit_code'] = False
+                    elif case == 'wait-stdout-disagreement': command['stdout'] = '{"status":"failed","timed_out":false}\n'
+                    elif case == 'wait-stdout-duplicate': command['stdout'] = '{"status":"completed","status":"completed","timed_out":false}\n'
+                    elif case == 'wait-stdout-reordered': command['stdout'] = '{"timed_out":false,"status":"completed"}\n'
+                    elif case == 'wait-stdout-null': command['stdout'] = '{"status":null,"timed_out":false}\n'
+                    elif case == 'unknown-stdout-slot': command.update(action='jobs-read',operation='show',stdout=r'{"script_text":"print(\"public\\nline\")"}')
+                    elif case == 'tail-disagreement': command['stdout'] += 'foreign\n'
+                    else: raise AssertionError(case)
+                    name = 'e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                    destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                    acquire(); drain(); commit()
+                    earlier = {p.name:p.read_bytes() for p in output.iterdir()}; old_tree = copy.deepcopy(state['safe_scenario']); old_buffer = staged[name]
+                    original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                    if boundary in ('writer','prefix'):
+                        if boundary == 'prefix':
+                            source_file = root/'raw/observations.json'; source_file.write_bytes(original_image)
+                        try:
+                            if boundary == 'writer': writer._atomic_json(destination,image)
+                            else: writer._prepare_original_evidence(destination,source_file)
+                        except ValueError: pass
+                        except AssertionError as exc:
+                            assert case == 'wrong-owner' and boundary == 'prefix'
+                            assert str(exc) == 'original evidence owner/path unavailable; observed=None'
+                        else: raise AssertionError('finite unsafe member admitted: '+family+'/'+case+'/'+boundary)
+                        assert destination.read_bytes() == prior and not destination.with_name(name+'.tmp').exists()
+                        assert staged[name] is old_buffer and not state['fatal']
+                    else:
+                        destination.write_bytes(original_image); (root/'raw/eligible-finite.txt').write_bytes(b'eligible ordinary sibling\n')
+                        complete,error = acquire(); drain()
+                        assert not complete and error is not None and not state['fatal'] and not errors, (family,case,boundary,failures)
+                        assert staged[name] is old_buffer and published[name] is old_buffer and (output/name).read_bytes() == prior
+                        assert name in state['refused_sources']
+                        if case not in ('shared-work','shared-facts'):
+                            assert (output/'eligible-finite.txt').read_bytes() == b'eligible ordinary sibling\n'
+                    exact(state['safe_scenario'],old_tree)
+                    for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
+                    assert not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                    results[f'C5-Finite-refusal-{family}-{case}-{boundary}'] = 'entire original candidate withheld; all prior member/result/FAIL/tree bytes exact; ordinary sibling eligibility and shared accounting retained; overlapping guards limit proof'
+
     # C5/C6: required original trees at the two shipping preparation/file
     # boundaries. Full Controller.evidence / E07 admission are NOT RUN here.
     originals = {

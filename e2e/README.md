@@ -2480,8 +2480,8 @@ refund at record/root close; raw scanning has no full tree or general token
 index. The required prefix keeps its ONE existing tree. Closure completes before
 candidate/pending/publication, and every copied occurrence pays its own work.
 
-Canonical observations.provider_commands jobs-read admits only receipt/output
-with null payload/file, complete original command/start/executable/caller joins,
+Canonical observations.provider_commands receipt/output admission requires
+null payload/file, complete original command/start/executable/caller joins,
 and distinct child identities. The genuine later S2 reader is authenticated;
 it is not required to equal the earlier S1 submit session. Both reads of the
 same job remain distinct commands. Org discovery stays complete ordinary evidence,
@@ -2510,7 +2510,44 @@ C/F/depth/end. No second acquisition, raw value tree or general index is added.
 An incomplete source-bearing plan refuses the whole member; an unfinished ordinary
 plan retains its original unavailable meaning. Other actions gain no script grant.
 
-Other ProviderCommand actions/copies, settled.wire_records/distinct CLI,
+Canonical jobs-block/jobs-final commands now close operation=null, the complete
+original completion payload/file and actual report-completion argv under the
+same provider/start/child/source/executable joins. ONE strict sorted JSON stage
+compares the entire blocked ordered wait array or completed compact done decision,
+including only the producer-declared null verdict/blocked decision. It preserves
+the original text, UTF8 length, digest and hash-derived path. The actual CLI maps
+summary to output_summary and inserts its empty default lists; the compact UTF8
+wire digest includes that complete request. This CLI makes no org-discovery GET:
+its complete legacy wire is the owned POST completion, HTTP200/Boolean ok=true.
+Completion stdout and every stderr remain ordinary literal UTF8/R1.
+
+Canonical wait/tail reads retain the full original discovery GET and owned job
+request. Wait uses the actual timeout_seconds=1 argv/query, full public JobRecord
+wire response and ONE strict status/timed_out stdout object in CLI field order.
+Pending/running timed_out=true, completed nonzero, failed and rejected outcomes
+keep their original types/nulls; no completed-only exit contract is inferred.
+Only this named wait wire's script_text uses Python admission. Closed existing
+submit/receipt facts join the actual task/job and every shared field, even when
+facts arrive later. Tail response lines equal the entire ordinary literal stdout;
+tail stdout gains no JSON or Python edge. Distinct children and once-only final
+session closure remain. Completed completion/read attempts retain the full closed
+plan, original provider/start, action/operation/payload/job, deadline, wire interval
+and command-index equality before any assignment/publication. An ordinary attempt
+with no finish/wire-end/index stays unavailable, as in the original keeper.
+
+The SAME failure_result_controls fixture/table adds C5-Finite-full-* and
+C5-Finite-refusal-* rows at writer/raw/raw-prefix/required-prefix boundaries.
+They compare complete independent literal trees/types/order/bytes or preserve
+every prior member/tree/result/FAIL and withhold new pending/staging/publication.
+The four answers and nearest keepers are in PR1260's additive case record and
+TASK-13903 native-impact.md. Existing Submit/Receipt/Attempt rows miss these new
+families; writer, raw scan, checkpoint scan and required original-tree preparation
+have distinct admission/copy risks. Regression examples remove a family dispatch
+or weaken full owner/argv/typed equality. No production test-only seam is added.
+Overlapping guards limit causal attribution. Own durable verification receipts
+record actual execution/proof; this description supplies no native/temporal/Product claims.
+
+Other Case ProviderCommand copies/human show, settled.wire_records/distinct CLI,
 entity/SQL/other source/hex/browser/direct/pair/human-display and cross-member joins
 remain unfinished and conservatively refused, with complete copy obligations
 intact. A member containing one such obligation refuses entirely.

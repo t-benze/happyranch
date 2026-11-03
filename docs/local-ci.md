@@ -702,8 +702,8 @@ Existing controls supply file/preparation evidence only, with temporal, allocati
 and native gaps recorded as NOT RUN / PROOF NOT RUN. This source slice
 changes no required checks, E2E trigger, acceptance or execution allowance.
 
-Canonical observations.provider_commands jobs-read admits only receipt/output
-with null payload/file, complete original command/start/executable/caller joins,
+Canonical observations.provider_commands receipt/output admission requires
+null payload/file, complete original command/start/executable/caller joins,
 and distinct child identities. The genuine later S2 reader is authenticated;
 it is not required to equal the earlier S1 submit session. Both reads of the
 same job remain distinct commands. Org discovery stays complete ordinary evidence,
@@ -729,6 +729,25 @@ and commands retain full content/types/order; every SOURCE occurrence pays its
 own finite scan/comparison under the SAME remaining C/F/depth/end. Incomplete
 source-bearing plans refuse wholly; ordinary unfinished plans stay unavailable.
 This adds no raw tree, generic script grant, second acquisition or native proof.
+
+TASK-13903 extends those canonical facts to jobs-block/jobs-final and wait/tail,
+with their actual closed instruction/command-index plans. Completion's sorted
+payload_file JSON retains full blocked waits/done decision/nullable defaults,
+text/bytes/hash/path and the complete CLI-mapped compact request digest. The
+report-completion CLI emits its owned POST/200/Boolean ok response without org
+discovery; its stdout/stderr stay ordinary literal/R1. Wait/tail preserve discovery
+PLUS the owned exact query/argv, including wait timeout1. Wait stdout owns only
+strict status/timed_out JSON; its full JobRecord wire script is separately admitted
+under existing submit/receipt job facts. Pending/running timeout and terminal
+nonzero/failed/rejected/null shapes stay distinct. Tail stdout remains literal and
+equals all returned lines. Late owner joins and final session closure precede
+assignment/publication under the same C8388608/F200000/depth64/end, without refund.
+The existing aggregate --controls fixture covers typed writer, raw observations,
+raw prefix and required-prefix preparation with full original/prior-file oracles.
+The additive PR1260 case record carries four answers/keepers and proof limits;
+own durable receipts record actual execution. Case copies, human show and later
+families remain unfinished whole-member refusals. No Product/native/temporal proof,
+new execution allowance, test-only production seam or CI/trigger change follows.
 
 The same finite source-owned admission now covers canonical
 observations.provider_commands[*] jobs-submit/jobs-refuse-review only, including
