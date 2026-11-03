@@ -2341,10 +2341,11 @@ remaining-capacity refusal before read has no returned-slice/input-cap witness.
 The strict indexed JSON grammar materializes only the original context list and one required
 scenario tree; duplicate decoded keys, malformed/trailing/nonfinite/surrogate or
 out-of-bounds numeric input refuses. JSON scalars use fixed bounded fragment
-slots instead of repeated growing-string reconstruction. Original literal spans,
-escaped characters, slot storage/writes/clearing and join reference reads are
-charged before construction, in addition to retained chunks/final join and
-temporary scratch. Honest cumulative debits can
+slots instead of repeated growing-string reconstruction. A literal-only chunk
+is one direct original slice, paid with its final join; it creates no intermediate
+fragment or per-chunk join. Mixed/escaped fragments, slot storage/writes/clearing
+and join reference reads are charged before construction, in addition to retained
+chunks/final join and temporary scratch. Honest cumulative debits can
 expose capacity refusals; storage can refuse before acquisition or projection.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;

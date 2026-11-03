@@ -3184,18 +3184,25 @@ class _EvidenceJSON:
 
             def finish(end: int) -> None:
                 nonlocal count, previous, span_size, part_count
-                if span_size:
-                    self.ledger.charge(span_size + 8, 0, self.check)
-                    fragments[count] = self.text[span_start:end]
-                    count += 1
-                # Shorter chunks must not carry a previous chunk's fragments.
-                self.ledger.charge(8 * max(0, previous - count), 0, self.check)
-                for position in range(count, previous):
-                    fragments[position] = ""
-                self.ledger.charge(8 * slots + 8, 0, self.check)
-                parts[part_count] = "".join(fragments)
+                if not count:
+                    # One literal slice IS the retained chunk, already paid
+                    # with its final join. No intermediate fragment or join.
+                    self.ledger.charge(8, 0, self.check)
+                    parts[part_count] = self.text[span_start:end]
+                else:
+                    if span_size:
+                        self.ledger.charge(span_size + 8, 0, self.check)
+                        fragments[count] = self.text[span_start:end]
+                        count += 1
+                    # Shorter chunks must not carry previous mixed fragments.
+                    self.ledger.charge(8 * max(0, previous - count), 0, self.check)
+                    for position in range(count, previous):
+                        fragments[position] = ""
+                    self.ledger.charge(8 * slots + 8, 0, self.check)
+                    parts[part_count] = "".join(fragments)
+                    previous = count
                 part_count += 1
-                previous, count, span_size = count, 0, 0
+                count = span_size = 0
                 self.check()
 
             index = start
