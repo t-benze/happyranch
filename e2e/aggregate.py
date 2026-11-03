@@ -1595,7 +1595,12 @@ def failure_result_controls() -> dict:
     read_refusals = ('missing-discovery','discovery-path','response-missing','response-reordered','job-identity','job-proof','job-script',
         'job-bool','wait-stdout-disagreement','wait-stdout-duplicate','wait-stdout-reordered','wait-stdout-null','unknown-stdout-slot','tail-disagreement')
     for family in ('completion','wait','tail'):
-        cases = finite_refusals + (completion_refusals if family == 'completion' else read_refusals)
+        cases = finite_refusals
+        if family == 'completion':
+            # Completion carries org and payload-file argv values, not job/task/session slots.
+            cases = tuple('argv-org' if case == 'argv-job' else 'argv-payload-file' if case == 'argv-session' else case
+                          for case in cases if case != 'argv-task')
+        cases += completion_refusals if family == 'completion' else read_refusals
         for case in cases:
             for boundary in ('writer','raw','raw-prefix','prefix'):
                 with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
@@ -1606,7 +1611,7 @@ def failure_result_controls() -> dict:
                     if case == 'action': command['action'] = 'other'
                     elif case == 'operation': command['operation'] = 'output'
                     elif case.startswith('argv'):
-                        position = {'argv':0,'argv-job':3,'argv-task':-3,'argv-session':-1}[case]; command['argv'][position] = 'foreign'
+                        position = {'argv':0,'argv-org':3,'argv-payload-file':-1,'argv-job':3,'argv-task':-3,'argv-session':-1}[case]; command['argv'][position] = 'foreign'
                     elif case == 'exit-bool': command['exit'] = False
                     elif case == 'timed-out': command['timed_out'] = True
                     elif case == 'child': command['child_pid'] = True
