@@ -1166,6 +1166,11 @@ async def task_events(task_id: str, org: OrgStreamDep, request: Request):
 
 @router.post("/tasks/{task_id}/completion")
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
+    if org.db.get_task(task_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_task", "task_id": task_id},
+        )
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
     workflow_draft = ownership.kind in {"draft", "f5", "coding_attempt"}
