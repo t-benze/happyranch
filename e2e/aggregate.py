@@ -791,6 +791,208 @@ def failure_result_controls() -> dict:
             for old_name,old_bytes in earlier.items(): assert (output/old_name).read_bytes() == old_bytes
             results['C5-Relay-wrong-owner-'+name] = 'same spelling at unselected real writer/raw owner refuses wholly; earlier complete state exact'
 
+    # Canonical Store.snapshot final-org records ONLY. The complete literal SQL
+    # rows below are independent inputs/oracles, not product DB observations.
+    sql_rows = {
+        'tasks': [dict(id='TASK-701', status='completed', assigned_agent='case_manager', team='engineering',
+            brief='literal public task', task_type='task', revision_count=0, created_at='2026-01-01', updated_at='2026-01-02',
+            completed_at='2026-01-02', parent_task_id=None, final_output_summary='ordinary summary', final_output_dir=None,
+            executor_pid=101, block_kind=None, note='ordinary note', orchestration_step_count=1, cancelled_at=None,
+            revisit_of_task_id=None, last_heartbeat=None, session_timeout_seconds=None, blocked_on_job_ids='["JOB-701","quote\\\" LF\\n \\u4e2d"]',
+            dispatched_from_thread_id=None, active_chain='{"legs":[],"text":"quote\\\" LF\\n \\u4e2d"}',
+            active_fanout='{"children":[],"text":"quote\\\" LF\\n \\u4e2d"}', current_session_id='sess-sql', zombie_flagged_at=None,
+            future_scalar='public 中 extension', future_integer=0, future_real=1.5)],
+        'results': [dict(id=701, task_id='TASK-701', agent='case_manager', session_id='sess-sql', status='completed',
+            output_summary='ordinary result', decision_json='{"action":"done","text":"quote\\\" LF\\n \\u4e2d"}', confidence_score=90,
+            learnings=None, risks_flagged='["quote\\\" LF\\n \\u4e2d"]', duration_seconds=1, token_count=None, estimated_cost=0.5,
+            output_dir=None, created_at='2026-01-02', waiting_on_job_ids='["JOB-701","quote\\\" LF\\n \\u4e2d"]', verdict=None,
+            local_ci='{"exit_code":0,"text":"quote\\\" LF\\n \\u4e2d"}', future_scalar=None)],
+        'audit': [dict(id=702, task_id='TASK-701', agent='case_manager', action='completion_report',
+            payload=' {"ok":true,"empty":null,"n":7,"f":1.5,"text":"quote\\\" LF\\n \\u4e2d","literal":"中"} \n', timestamp='2026-01-02', future_scalar='ordinary')],
+    }
+    sql_columns = (('audit','payload','{'), ('results','decision_json','{'), ('results','local_ci','{'),
+        ('results','risks_flagged','['), ('results','waiting_on_job_ids','['), ('tasks','blocked_on_job_ids','['),
+        ('tasks','active_chain','{'), ('tasks','active_fanout','{'))
+
+    def sql_input(root: Path, tag: str = 'jobs', org: str = 'alpha', *, late: bool = False, null: bool = False) -> dict:
+        snapshot = copy.deepcopy(sql_rows)
+        if null:
+            for table,column,_ in sql_columns:
+                snapshot[table][0][column] = None
+        entry = {tag+'_final_org':org, 'snapshot':snapshot}
+        manifest = dict(root=str(root), source='/original/source-fixture', revision='1'*40,
+            python=str(root/'venv/bin/python'), callback=str(root/'bin/happyranch'), callback_sha256='a'*64,
+            stubs={p:dict(path=str(root/'bin'/p),sha256='b'*64) for p in ('claude','codex','opencode')})
+        if late:
+            for table,rows in snapshot.items():
+                snapshot[table] = [{key:r[key] for key in reversed(r)} for r in rows]
+            manifest = {key:manifest[key] for key in reversed(manifest)}
+            entry = {'snapshot':snapshot, tag+'_final_org':org}
+            return {'durable':[entry, {'executable_manifest':manifest}]}
+        return {'durable':[{'executable_manifest':manifest},entry]}
+
+    for tag in ('jobs','threads'):
+        for org in ('alpha','beta'):
+            for late in (False,True):
+                for null in (False,True):
+                    for boundary in ('writer','raw','raw-prefix','prefix'):
+                        label = f'C5-SQL-full-{tag}-{org}-'+('late' if late else 'early')+'-'+('null' if null else 'encoded')+'-'+boundary
+                        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                            writer.revision = row['source_sha']
+                            acquire(); drain(); commit()
+                            previous = {p.name:p.read_bytes() for p in output.iterdir()}
+                            tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+                            image = sql_input(root,tag,org,late=late,null=null)
+                            wanted = copy.deepcopy(image)
+                            original_image = b' '+json.dumps(image,ensure_ascii=False,indent=2).encode()+b'\r\n'
+                            compact = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
+                            name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                            destination = root/'raw'/name
+                            try:
+                                if boundary == 'writer':
+                                    writer._atomic_json(destination,image); expected_image = compact
+                                elif boundary == 'prefix':
+                                    source = root/'raw/observations.json'; source.write_bytes(original_image)
+                                    content,parsed = writer._prepare_original_evidence(destination,source)
+                                    assert content == source.read_bytes() == original_image
+                                    exact(parsed,wanted)
+                                    assert not destination.exists() and not destination.with_name(name+'.tmp').exists()
+                                    writer._replace_evidence(destination,content); expected_image = original_image
+                                else:
+                                    destination.write_bytes(original_image); expected_image = original_image
+                                complete,error = acquire(); drain()
+                                assert complete and error is None and not failures and not errors
+                            except (ValueError,AssertionError) as error:
+                                raise AssertionError('SQL canonical full member failed: '+label) from error
+                            assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
+                            exact(json.loads(expected_image),wanted); exact(image,wanted); exact(state['safe_scenario'],tree)
+                            assert (root/'scenario.json').read_bytes() == scenario
+                            for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                            assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
+                            results[label] = 'entire independent full SQL rows/nulls/column text/types/order and exact compact or original outer bytes; prior full files/tree/FAIL retained; SQL/native NOT RUN'
+    for boundary in ('writer','raw','raw-prefix','prefix'):
+        with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            writer.revision = row['source_sha']; image = sql_input(root,late=True)
+            acquire(); drain(); commit()
+            previous = {p.name:p.read_bytes() for p in output.iterdir()}
+            tree = copy.deepcopy(state['safe_scenario']); scenario = (root/'scenario.json').read_bytes()
+            image['durable'].insert(1,image['durable'][0])  # Same object, TWO original occurrences.
+            wanted = copy.deepcopy(image)
+            original_image = json.dumps(wanted,ensure_ascii=False,separators=(',',':')).encode()
+            name = 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'; destination = root/'raw'/name
+            if boundary == 'writer': writer._atomic_json(destination,image)
+            elif boundary == 'prefix':
+                source = root/'raw/observations.json'; source.write_bytes(original_image)
+                content,parsed = writer._prepare_original_evidence(destination,source); exact(parsed,wanted)
+                assert content == original_image and not destination.exists()
+                writer._replace_evidence(destination,content)
+            else: destination.write_bytes(original_image)
+            complete,error = acquire(); drain()
+            assert complete and error is None and not failures and not errors
+            exact(image,wanted); exact(json.loads((output/name).read_bytes()),wanted)
+            assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == original_image
+            exact(state['safe_scenario'],tree)
+            assert (root/'scenario.json').read_bytes() == scenario
+            for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+            assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists()
+            results['C5-SQL-full-shared-occurrences-'+boundary] = 'full repeated original occurrences/aliases preserved; each traversal/decode charged; isolated debit sensitivity NOT RUN'
+
+    sql_bad = {'malformed':'{"x":', 'duplicate':'{"x":0,"x":1}', 'escaped-equal':'{"x":0,"\\u0078":1}',
+        'trailing':'{} []', 'nonfinite':'{"x":1e999}', 'surrogate':'{"x":"\\ud800"}',
+        'second-layer':'{"x":"second\\\\nlayer"}', 'secret-value':'{"x":"SYNTHETIC_TOKEN"}',
+        'secret-key':'{"SYNTHETIC_TOKEN":0}', 'escaped-secret-value':'{"x":"\\u0053YNTHETIC_TOKEN"}',
+        'escaped-secret-key':'{"\\u0053YNTHETIC_TOKEN":0}', 'secret-original':'{"x":"'+secret.replace('"','\\"').replace('\n','\\n')+'"}',
+        'primitive':'7', 'null-text':'null', 'empty-text':''}
+    sql_refusals = [f'{table}.{column}-{form}' for table,column,_ in sql_columns
+        for form in ('wrong-top','sql-bool','sql-number','sql-container','missing-column')]
+    sql_refusals += list(sql_bad) + ['missing-tag','foreign-tag','contradictory-tag','foreign-org','boolean-org','extra-entry',
+        'missing-snapshot','snapshot-type','missing-table','foreign-table','table-type','row-type','row-id-bool','row-id-missing',
+        'row-id-text','result-owner-bool','audit-scope-bool','ordinary-nested','ordinary-bool','missing-manifest','duplicate-manifest',
+        'foreign-root','foreign-source','foreign-revision','foreign-python','foreign-callback','callback-hash','manifest-shape',
+        'lookalike-column','output-summary','final-output-summary','lookalike-root','case-snapshot','decoded-json-lookalike','wrong-owner',
+        'shared-work','shared-facts','shared-depth']
+    for case in sql_refusals:
+        for boundary in ('writer','raw','raw-prefix','prefix'):
+            with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+                writer.revision = row['source_sha']; image = sql_input(root,late=True)
+                entry = image['durable'][0]; snapshot = entry['snapshot']; manifest = image['durable'][1]['executable_manifest']
+                column_case = next(((t,c,top,case[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case.startswith(t+'.'+c+'-')),None)
+                if column_case:
+                    table,column,top,form = column_case
+                    if form == 'missing-column': del snapshot[table][0][column]
+                    else: snapshot[table][0][column] = {'wrong-top':'[]' if top == '{' else '{}', 'sql-bool':True, 'sql-number':0, 'sql-container':{}}[form]
+                elif case in sql_bad: snapshot['audit'][0]['payload'] = sql_bad[case]
+                elif case == 'missing-tag': del entry['jobs_final_org']
+                elif case == 'foreign-tag': entry['final_org'] = entry.pop('jobs_final_org')
+                elif case == 'contradictory-tag': entry['threads_final_org'] = 'beta'
+                elif case == 'foreign-org': entry['jobs_final_org'] = 'foreign'
+                elif case == 'boolean-org': entry['jobs_final_org'] = True
+                elif case == 'extra-entry': entry['extra'] = 'public'
+                elif case == 'missing-snapshot': del entry['snapshot']
+                elif case == 'snapshot-type': entry['snapshot'] = []
+                elif case == 'missing-table': del snapshot['tasks']
+                elif case == 'foreign-table': snapshot['other'] = snapshot.pop('tasks')
+                elif case == 'table-type': snapshot['audit'] = {}
+                elif case == 'row-type': snapshot['audit'] = [0]
+                elif case == 'row-id-bool': snapshot['audit'][0]['id'] = True
+                elif case == 'row-id-missing': del snapshot['audit'][0]['id']
+                elif case == 'row-id-text': snapshot['results'][0]['id'] = '701'
+                elif case == 'result-owner-bool': snapshot['results'][0]['task_id'] = True
+                elif case == 'audit-scope-bool': snapshot['audit'][0]['task_id'] = True
+                elif case == 'ordinary-nested': snapshot['audit'][0]['future_scalar'] = {'x':0}
+                elif case == 'ordinary-bool': snapshot['tasks'][0]['future_integer'] = True
+                elif case == 'missing-manifest': image['durable'].pop()
+                elif case == 'duplicate-manifest': image['durable'].append(copy.deepcopy(image['durable'][1]))
+                elif case == 'foreign-root': manifest['root'] += '/foreign'
+                elif case == 'foreign-source': manifest['source'] = '/original/../foreign'
+                elif case == 'foreign-revision': manifest['revision'] = '2'*40
+                elif case == 'foreign-python': manifest['python'] += '-foreign'
+                elif case == 'foreign-callback': manifest['callback'] += '-foreign'
+                elif case == 'callback-hash': manifest['callback_sha256'] = True
+                elif case == 'manifest-shape': del manifest['stubs']
+                elif case == 'lookalike-column': snapshot['audit'][0]['payload_lookalike'] = snapshot['audit'][0]['payload']
+                elif case == 'output-summary': snapshot['results'][0]['output_summary'] = snapshot['results'][0]['decision_json']
+                elif case == 'final-output-summary': snapshot['tasks'][0]['final_output_summary'] = snapshot['tasks'][0]['active_chain']
+                elif case == 'lookalike-root': image['lookalike'] = image.pop('durable')
+                elif case == 'case-snapshot': image['durable'][0] = {'case':{'final_snapshot':snapshot}}
+                elif case == 'decoded-json-lookalike': snapshot['audit'][0]['payload'] = json.dumps(
+                    {'snapshot':{'tasks':[{'active_chain':'{"x":"second\\nlayer"}'}]}})
+                elif case == 'wrong-owner': pass
+                elif case == 'shared-work': snapshot['audit'][0]['payload'] = '{"value":"'+'p'*2800000+'"}'
+                elif case == 'shared-facts': snapshot['audit'][0]['payload'] = '{"values":['+','.join('0' for _ in range(70000))+']}'
+                elif case == 'shared-depth': snapshot['audit'][0]['payload'] = '{"value":'+'['*60+'0'+']'*60+'}'
+                else: raise AssertionError('unhandled SQL case '+case)
+                wanted = copy.deepcopy(image)
+                original_image = json.dumps(image,ensure_ascii=False,separators=(',',':')).encode()
+                name = 'e07.json' if case == 'wrong-owner' else 'e07-prefix.json' if boundary in ('raw-prefix','prefix') else 'observations.json'
+                destination = root/'raw'/name; prior = b'{"prior":"safe"}'; destination.write_bytes(prior)
+                acquire(); drain(); commit()
+                previous = {p.name:p.read_bytes() for p in output.iterdir()}; tree = copy.deepcopy(state['safe_scenario'])
+                scenario = (root/'scenario.json').read_bytes(); old_buffer = staged[name]
+                if boundary in ('writer','prefix'):
+                    if boundary == 'prefix':
+                        source = root/'raw/observations.json'; source.write_bytes(original_image)
+                    try:
+                        if boundary == 'writer': writer._atomic_json(destination,image)
+                        else: writer._prepare_original_evidence(destination,source)
+                    except (ValueError,AssertionError): pass
+                    else: raise AssertionError('SQL unsafe member admitted: '+case+'/'+boundary)
+                    assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
+                    if boundary == 'prefix': assert source.read_bytes() == original_image
+                else:
+                    destination.write_bytes(original_image)
+                    (root/'raw/eligible-sql.txt').write_bytes(b'eligible ordinary SQL sibling\n')
+                    complete,error = acquire(); drain()
+                    assert not complete and error is not None and not state['fatal'] and not errors, (case,boundary,failures)
+                    assert destination.read_bytes() == original_image and staged[name] is old_buffer and published[name] is old_buffer
+                    assert name in state['refused_sources'] and (output/name).read_bytes() == prior
+                    if case not in ('shared-work','shared-facts'): assert (output/'eligible-sql.txt').read_bytes() == b'eligible ordinary SQL sibling\n'
+                exact(image,wanted); exact(state['safe_scenario'],tree)
+                assert (root/'scenario.json').read_bytes() == scenario
+                for prior_name,prior_bytes in previous.items(): assert (output/prior_name).read_bytes() == prior_bytes
+                assert not destination.with_name(name+'.tmp').exists() and not (output/(name+'.tmp')).exists() and not (output/'result.tmp').exists()
+                results['C5-SQL-refusal-'+case+'-'+boundary] = 'whole original input/prior member/output/result/FAIL/tree exact; selected pending/staging withheld; overlapping guards and resource/venue limits in case record'
+
     # SAME fixture/table, canonical submission edges. Original SOURCE strings
     # are copied literally; their source/SID/token identity is never rebound.
     submission_sources = {'exit0': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/e08eba4596159ebe63677c14.started\').write_text(json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())))\nsys.stdout.write(\'E04_OK_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_OK_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'e08eba4596159ebe63677c14\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if False:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(0)\n', 'exit7': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif False:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/df5f1abd9fb56d8c669f17e2.started\').write_text(json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())))\nsys.stdout.write(\'E04_EXIT7_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_EXIT7_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'df5f1abd9fb56d8c669f17e2\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if False:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(7)\n', 'timeout': 'import json, os, signal, socket, sys, time\nfrom pathlib import Path\nif True:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\nPath(\'/tmp/e04-show/coord/effc58d0f834d9ba4fc7c83e.started\').write_text(json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())))\nsys.stdout.write(\'E04_TIMEOUT_OUT\\n\'); sys.stdout.flush()\nsys.stderr.write(\'E04_TIMEOUT_ERR\\n\'); sys.stderr.flush()\nend = 40.0\ndef remaining():\n    value = end - time.monotonic()\n    if value <= 0:\n        raise TimeoutError("E04 script absolute deadline")\n    return min(20, value)\nwith socket.socket(socket.AF_UNIX) as peer:\n    peer.settimeout(remaining())\n    peer.connect(\'/tmp/e04-show/coord/jobs.sock\')\n    peer.settimeout(remaining())\n    peer.sendall((json.dumps(dict(token=\'effc58d0f834d9ba4fc7c83e\', pid=os.getpid())) + "\\n").encode())\n    remaining()\n    if True:\n        while True:\n            signal.pause()\n    peer.settimeout(remaining())\n    released = peer.recv(1)\n    remaining()\n    if released != b"R":\n        raise RuntimeError("missing external release")\nraise SystemExit(-9)\n'}

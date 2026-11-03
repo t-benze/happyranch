@@ -2547,6 +2547,27 @@ or weaken full owner/argv/typed equality. No production test-only seam is added.
 Overlapping guards limit causal attribution. Own durable verification receipts
 record actual execution/proof; this description supplies no native/temporal/Product claims.
 
+Canonical observations.durable[*].snapshot now admits the eight named SQL JSON
+columns only inside the SAME exact jobs_final_org or threads_final_org record
+for alpha/beta. The enclosing entry, complete tasks/results/audit array and row
+shape, and original caller root/revision/executable manifest close before any
+publication, including when tags, row identity and manifest arrive late. SQL
+INTEGER identities reject Boolean values; overloaded audit task_id stays literal.
+audit.payload, results.decision_json/local_ci and tasks.active_chain/active_fanout
+require null or one strict JSON object; results.risks_flagged/waiting_on_job_ids
+and tasks.blocked_on_job_ids require null or one strict JSON array. Null stays
+null. Every original column string and complete row survives unchanged, including
+unknown ordinary scalar columns, key/list order and outer framing. Decoded
+keys/strings retain original-secret and residual-backslash checks, with no further
+JSON permission. output_summary/final_output_summary remain ordinary literal/R1.
+The observations-form E07 prefix uses the identical paths and its single existing
+required tree parse copies the complete original bytes. Repeated occurrences pay
+each original/safe/decode/comparison/carry/final-buffer debit on the same owner.
+SAME failure_result_controls adds C5-SQL-full-* and C5-SQL-refusal-* at typed
+writer/raw/raw-prefix/required-prefix file boundaries; the additive PR1260 record
+names every case, four answers, keepers, full-row/prior-state oracles and proof
+limits. These source fixtures observe no SQL transaction or native behavior.
+
 Other Case ProviderCommand copies/human show, settled.wire_records/distinct CLI,
 entity/SQL/other source/hex/browser/direct/pair/human-display and cross-member joins
 remain unfinished and conservatively refused, with complete copy obligations

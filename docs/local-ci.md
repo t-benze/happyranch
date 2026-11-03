@@ -749,6 +749,23 @@ own durable receipts record actual execution. Case copies, human show and later
 families remain unfinished whole-member refusals. No Product/native/temporal proof,
 new execution allowance, test-only production seam or CI/trigger change follows.
 
+Canonical final Store.snapshot columns are selected only at
+observations.durable[*].snapshot under the SAME exact jobs_final_org or
+threads_final_org alpha/beta entry and its original manifest/caller identity.
+Complete tasks/results/audit arrays and row identities close before publication;
+late selectors are private until closure. The eight named JSON columns retain
+actual null or their exact original strings after one strict object/array stage,
+with decoded-key/value secret and residual-backslash checks and no recursive
+grant. All ordinary/unknown row columns, types, order and full outer bytes remain;
+output_summary/final_output_summary gain no JSON stage. SQL INTEGER is never
+Boolean. The observations-form prefix shares the paths and its one existing
+tree parse retains full original bytes. Existing aggregate --controls adds the
+finite C5-SQL-* table at writer/raw/raw-prefix/required-prefix file boundaries;
+PR1260's additive case record records actual results and proof limits. No SQL,
+runtime, browser or Product observation follows from these source fixtures.
+Case/live/parked/cancellation/thread-frame/script/human/other-copy and compound
+SQL obligations remain unfinished whole-member refusals until separately scoped.
+
 The same finite source-owned admission now covers canonical
 observations.provider_commands[*] jobs-submit/jobs-refuse-review only, including
 its exact original prefix. Complete caller/source/start/executable/provider,

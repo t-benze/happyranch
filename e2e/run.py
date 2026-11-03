@@ -2263,11 +2263,33 @@ class _EvidenceObservations:
         self.attempt = None
         self.command_index = None
         self.current = self.start = self.manifest = None
+        self.snapshot_entry = self.snapshot_row = None
+        self.snapshots = False
         self.captured = False
+
+    # Only the complete Store.snapshot arrays in the SAME final-org record.
+    # These are parser policies, not product schema definitions or row rewrites.
+    sql_columns = {
+        'audit': (('payload', '{'),),
+        'results': (('decision_json', '{'), ('local_ci', '{'),
+                    ('risks_flagged', '['), ('waiting_on_job_ids', '[')),
+        'tasks': (('blocked_on_job_ids', '['), ('active_chain', '{'), ('active_fanout', '{')),
+    }
+    sql_identity = {
+        'audit': (('id', int), ('task_id', str), ('agent', str), ('action', str), ('timestamp', str)),
+        'results': (('id', int), ('task_id', str), ('agent', str), ('session_id', str),
+                    ('status', str), ('created_at', str)),
+        'tasks': (('id', str), ('status', str), ('team', str), ('brief', str),
+                  ('task_type', str), ('revision_count', int), ('created_at', str), ('updated_at', str)),
+    }
 
     @staticmethod
     def encoded(path: tuple) -> bool:
-        return (len(path) == 3 and path[0] == 'provider_commands' and path[2] == 'stdout'
+        return (len(path) == 6 and path[0] == 'durable' and type(path[1]) is int
+                    and path[2] == 'snapshot' and path[3] in _EvidenceObservations.sql_columns
+                    and type(path[4]) is int
+                    and any(path[5] == column for column, _ in _EvidenceObservations.sql_columns[path[3]])
+                or len(path) == 3 and path[0] == 'provider_commands' and path[2] == 'stdout'
                 or len(path) == 4 and path[0] == 'provider_commands'
                     and path[2:] in (('payload', 'script'), ('payload_file', 'text'))
                 or len(path) == 7 and path[0] == 'provider_commands' and path[2] == 'wire'
@@ -2276,6 +2298,92 @@ class _EvidenceObservations:
                     and path[4:] == ('response', 'script_text')
                 or len(path) == 5 and path[0] == 'provider_attempts'
                     and path[2:] == ('instruction', 'payload', 'script'))
+
+    def snapshot_event(self, path: tuple, kind: str, value: object) -> None:
+        """Active entry/row facts only; late selectors close before publication.
+
+        Each selected scalar is decoded once in scan mode on the original
+        allowance. No decoded tree, row index, cross-member cache or new read.
+        """
+        if len(path) == 1:
+            return
+        if len(path) == 2 and kind == 'object':
+            self.ledger.charge(64, 8, self.check)
+            self.snapshot_entry = dict(keys=[], tags=[], tables=[], used=False, shaped=False)
+        entry = self.snapshot_entry
+        if entry is None:
+            return  # Ordinary non-record durable values gain no selected edge.
+        if len(path) == 2 and kind == 'key':
+            self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+            entry['keys'].append(value)
+        if len(path) == 3 and path[2] in ('jobs_final_org', 'threads_final_org') and kind not in ('key', 'end-object', 'end-array'):
+            if kind != 'scalar' or type(value) is not str or value not in ('alpha', 'beta'):
+                raise ValueError('snapshot org selector withheld')
+            self.ledger.charge(24, 3, self.check)
+            entry['tags'].append(path[2])
+        if len(path) >= 3 and path[2] == 'snapshot':
+            if len(path) == 3:
+                if kind == 'object':
+                    entry['shaped'] = True
+                elif kind == 'key':
+                    self.ledger.charge(16 + _evidence_utf8_size(value, self.check), 2, self.check)
+                    entry['tables'].append(value)
+            elif path[3] in self.sql_columns:
+                entry['used'] = True
+                if len(path) == 4:
+                    if kind not in ('array', 'end-array'):
+                        raise ValueError('snapshot table shape withheld')
+                elif len(path) == 5:
+                    if kind == 'object':
+                        self.ledger.charge(32, 4, self.check)
+                        self.snapshot_row = 0  # Fixed required-field bitset, no row value map.
+                    elif kind == 'end-object':
+                        count = len(self.sql_identity[path[3]]) + len(self.sql_columns[path[3]])
+                        if self.snapshot_row != (1 << count) - 1:
+                            raise ValueError('snapshot complete row identity withheld')
+                        self.snapshot_row = None
+                    elif kind != 'key':
+                        raise ValueError('snapshot row shape withheld')
+                elif len(path) == 6:
+                    if kind != 'scalar' or type(value) not in (str, int, float, type(None)):
+                        raise ValueError('snapshot SQL scalar withheld')
+                    if self.snapshot_row is None:
+                        raise ValueError('snapshot row owner withheld')
+                    comparisons = len(self.sql_identity[path[3]]) + len(self.sql_columns[path[3]])
+                    self.ledger.charge(16 * comparisons, comparisons, self.check)
+                    for index, (name, expected) in enumerate(self.sql_identity[path[3]]):
+                        if path[5] == name:
+                            if type(value) is not expected or expected is str and not value or name == 'id' and expected is int and value <= 0:
+                                raise ValueError('snapshot SQL identity type withheld')
+                            self.snapshot_row |= 1 << index
+                    for index, (name, top) in enumerate(self.sql_columns[path[3]], len(self.sql_identity[path[3]])):
+                        if path[5] != name:
+                            continue
+                        self.snapshot_row |= 1 << index
+                        if value is not None:
+                            if type(value) is not str:
+                                raise ValueError('snapshot SQL column type withheld')
+                            def scalar(text: str) -> None:
+                                if '\\' in text:
+                                    raise ValueError('snapshot decoded representation withheld')
+                                _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+                            _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
+                            _EvidenceJSON(value, self.ledger, self.check).scan(
+                                top, scalar, depth=self.depth + len(path) + 1,
+                                context=self.context, sanitize=self.sanitize)
+                else:
+                    raise ValueError('snapshot nested SQL row withheld')
+        if len(path) == 2 and kind == 'end-object':
+            if entry['used'] or entry['tags']:
+                self.ledger.charge(32 * (len(entry['keys']) + len(entry['tables'])),
+                                   2 * (len(entry['keys']) + len(entry['tables'])), self.check)
+                if (type(path[1]) is not int or len(entry['tags']) != 1 or len(entry['keys']) != 2
+                        or set(entry['keys']) != {entry['tags'][0], 'snapshot'}
+                        or not entry['shaped'] or len(entry['tables']) != 3
+                        or set(entry['tables']) != set(self.sql_columns)):
+                    raise ValueError('snapshot enclosing owner withheld')
+                self.snapshots = True
+            self.snapshot_entry = self.snapshot_row = None
 
     def attempt_event(self, path: tuple, kind: str, value: object) -> None:
         """Only source-owned submit-plan facts; no raw attempt value tree."""
@@ -2412,6 +2520,8 @@ class _EvidenceObservations:
 
     def event(self, path: tuple, kind: str, value: object) -> None:
         self.ledger.charge(8, 1, self.check)
+        if path[0] == 'durable':
+            self.snapshot_event(path, kind, value)
         if path[0] == 'provider_attempts':
             self.attempt_event(path, kind, value)
         elif path[0] == 'provider_commands':
@@ -2466,7 +2576,7 @@ class _EvidenceObservations:
     def close(self) -> bool:
         try:
             attempts = self.close_attempts()
-            if not self.captured and not attempts:
+            if not self.captured and not attempts and not self.snapshots:
                 return False
             if len(self.manifests) != 1:
                 raise ValueError('submission executable owner withheld')
@@ -2484,6 +2594,13 @@ class _EvidenceObservations:
                     or type(manifest['source']) is not str or not manifest['source'].startswith('/')
                     or not _failure_source(manifest['revision'])):
                 raise ValueError('submission executable identity withheld')
+            if self.snapshots and (type(manifest['callback_sha256']) is not str
+                    or len(manifest['callback_sha256']) != 64
+                    or any(c not in '0123456789abcdef' for c in manifest['callback_sha256'])
+                    or manifest['source'].endswith(('/', '/.', '/..'))
+                    or any(part in manifest['source'] for part in ('//', '/./', '/../'))
+                    or '\\' in manifest['source'] or '\x00' in manifest['source']):
+                raise ValueError('snapshot executable source withheld')
             children, jobs, closed = set(), set(), set()
             for p, source_sha, python, callback_sha256, argv, path, sha256, child_pid, job_id, read in self.pending:
                 self.ledger.charge(32, 4, self.check)
@@ -2549,6 +2666,7 @@ class _EvidenceObservations:
         self.attempts.clear(); self.submitted.clear(); self.attempt = None
         self.job_proofs.clear(); self.read_jobs.clear()
         self.start = self.manifest = None
+        self.snapshot_entry = self.snapshot_row = None
 
 
 class _EvidenceJSON:
