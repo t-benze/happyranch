@@ -67,7 +67,8 @@ function stableCode(code: string | null): string | null {
 
 const UNKNOWN: StartupView = { phase: 'unknown', admitted: false, errorCode: null };
 
-export function deriveStartupView(observation: HealthObservation | undefined, now = Date.now()): StartupView {
+export function deriveStartupView(observation: HealthObservation | undefined): StartupView {
+  const now = Date.now();
   if (!observation || (observation.status === 'pending' && observation.data === undefined)) {
     return { phase: 'checking', admitted: false, errorCode: null };
   }

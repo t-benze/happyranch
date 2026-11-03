@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HealthResponse } from '@/lib/api/types';
 import { startupHealth } from '@/test/startup';
 import {
@@ -10,6 +10,8 @@ import {
 const NOW = 1_800_000_000_000;
 
 describe('startup observation admission', () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it.each([
     ['ready', startupHealth(), 'success', NOW, 'ready', true, null],
     ['recovering', startupHealth('recovering'), 'success', NOW, 'recovering', false, 'daemon_recovering'],
@@ -21,7 +23,8 @@ describe('startup observation admission', () => {
     ['stale ready', startupHealth(), 'success', NOW - STARTUP_MAX_AGE_MS - 1, 'unknown', false, null],
     ['pending', undefined, 'pending', 0, 'checking', false, null],
   ] as const)('%s yields %s admission', (_name, data, status, dataUpdatedAt, phase, admitted, errorCode) => {
-    expect(deriveStartupView({ data, status, dataUpdatedAt }, NOW)).toEqual({
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    expect(deriveStartupView({ data, status, dataUpdatedAt })).toEqual({
       phase, admitted, errorCode,
     });
   });
@@ -33,18 +36,20 @@ describe('startup observation admission', () => {
     ['numeric ready', { ...startupHealth().startup, recovery_ready: 1 }],
     ['missing error code', { state: 'ready', serving: true, recovery_ready: true, stopping: false }],
   ])('malformed %s stays closed', (_name, startup) => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
     expect(parseStartupStatus(startup)).toBeNull();
     expect(deriveStartupView({
       status: 'success', data: { status: 'ok', active_runtime: null, startup } as HealthResponse,
       dataUpdatedAt: NOW,
-    }, NOW).admitted).toBe(false);
+    }).admitted).toBe(false);
   });
 
   it('requires both serving and recovery_ready and refuses stopping even with a ready state', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
     for (const changes of [{ serving: false }, { recovery_ready: false }, { stopping: true }]) {
       const data = startupHealth();
       data.startup = { ...data.startup!, ...changes };
-      expect(deriveStartupView({ data, status: 'success', dataUpdatedAt: NOW }, NOW).admitted).toBe(false);
+      expect(deriveStartupView({ data, status: 'success', dataUpdatedAt: NOW }).admitted).toBe(false);
     }
   });
 
