@@ -861,7 +861,12 @@ def failure_result_controls() -> dict:
                                 else:
                                     destination.write_bytes(original_image); expected_image = original_image
                                 complete,error = acquire(); drain()
-                                assert complete and error is None and not failures and not errors
+                                # SAME fixture omits real baseline artifacts; this
+                                # member must ship while baseline stays incomplete.
+                                assert not complete and error is None and not state['fatal'] and not errors
+                                assert len(failures) == 2 and all(cause is None and traceback is None
+                                    and category == 'other' and annotation[:2] == ('REQUIRED','MISSING')
+                                    for cause,traceback,category,window,annotation in failures)
                             except (ValueError,AssertionError) as error:
                                 raise AssertionError('SQL canonical full member failed: '+label) from error
                             assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == expected_image
@@ -888,7 +893,10 @@ def failure_result_controls() -> dict:
                 writer._replace_evidence(destination,content)
             else: destination.write_bytes(original_image)
             complete,error = acquire(); drain()
-            assert complete and error is None and not failures and not errors
+            assert not complete and error is None and not state['fatal'] and not errors
+            assert len(failures) == 2 and all(cause is None and traceback is None
+                and category == 'other' and annotation[:2] == ('REQUIRED','MISSING')
+                for cause,traceback,category,window,annotation in failures)
             exact(image,wanted); exact(json.loads((output/name).read_bytes()),wanted)
             assert destination.read_bytes() == staged[name] == published[name] == (output/name).read_bytes() == original_image
             exact(state['safe_scenario'],tree)
