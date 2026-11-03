@@ -133,6 +133,8 @@ export function Markdown({ body }: { body: string }) {
 }
 ```
 
+**Opening-line markup recovery (THR-337).** A fence info string cannot start with `<`. When the parsed language begins with `<` (markup typed on the opening fence line, e.g. ```` ```<a href=…>…</a> ````), a renderer-local remark step shows that raw opening-line text, verbatim from the source bytes, as the first code line and clears lang/meta; any following body lines stay below it. It is still literal code text (no `rehypeRaw`), so the markup never becomes a live element. Valid language/metadata fences, `html` fences, deliberately empty fences and stored message bytes are unchanged.
+
 `rehype-highlight`'s `detect: true` infers the language for unannotated fences using `highlight.js/lib/common` (15+ common languages). Unknown languages render as plain `<pre><code>` with no highlight classes — no error.
 
 ### 4.3 Mermaid

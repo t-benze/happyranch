@@ -36,10 +36,35 @@ function CodeOrMermaid(props: ComponentProps<'code'>): JSX.Element {
 interface SourceNode {
   type: string;
   value?: string;
+  lang?: string | null;
+  meta?: string | null;
   tagName?: string;
   children?: SourceNode[];
   properties?: Record<string, unknown>;
   position?: { start: { offset?: number }; end: { offset?: number } };
+}
+
+/**
+ * A fence info string starting with `<` is markup typed on the opening line
+ * (```<a href…>…</a>), never a language: show that raw line as the first code
+ * line instead of dropping it into lang/meta. Rendered as text, never HTML.
+ */
+function remarkOpeningLineMarkup() {
+  return (tree: SourceNode, file: { value: unknown }) => {
+    const source = String(file.value);
+    const visit = (node: SourceNode) => {
+      if (node.type === 'code' && node.lang?.startsWith('<')) {
+        const start = node.position?.start.offset;
+        const line = start === undefined ? undefined : source.slice(start).split('\n', 1)[0];
+        const info = line?.replace(/^[ \t]*(`{3,}|~{3,})[ \t]*/, '').trimEnd() ?? [node.lang, node.meta].filter(Boolean).join(' ');
+        node.value = node.value ? `${info}\n${node.value}` : info;
+        node.lang = null;
+        node.meta = null;
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
 }
 
 /** Syntax only: decorate proven raw intervals, never decoded text or identities. */
@@ -81,7 +106,7 @@ export function Markdown({ body, threadMentions = false, mermaidLoadingLabel = '
     <div className="gl-prose">
       <MermaidLoadingLabel.Provider value={mermaidLoadingLabel}>
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkBreaks]}
+          remarkPlugins={[remarkGfm, remarkBreaks, remarkOpeningLineMarkup]}
           rehypePlugins={[...(threadMentions ? [sourceMentions(body)] : []), [rehypeHighlight, { ignoreMissing: true, detect: true }]]}
           components={{ code: CodeOrMermaid }}
         >
