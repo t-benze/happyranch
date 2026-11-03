@@ -1244,7 +1244,7 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
     first; no sanitation/emission chooses a policy before a later identity key.
     """
     tokens, ancestors = [], set()
-    authenticated = changed = relay_captured = False
+    authenticated = changed = False
     def retain(kind: str, content: object) -> None:
         ledger.charge(24, 3, check)
         tokens.append((kind, content))
@@ -1255,7 +1255,7 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
     def visit(item: object, depth: int = 0, *, key: bool = False, route: int = 0,
               event: Callable | None = None, encoded: bool = False,
               selected: Callable | None = None, selected_path: tuple = ()) -> None:
-        nonlocal authenticated, changed, relay_captured
+        nonlocal authenticated, changed
         if depth > 64:
             raise _EvidenceCapacity("evidence depth capacity refused")
         ledger.charge(0, 1, check)
@@ -1320,11 +1320,9 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                     selected(selected_path, 'end-object' if type(item) is dict else 'end-array', None)
                 if selection is not None:
                     capture = selection.close()
-                    relay_captured = relay_captured or capture
                     authenticated = authenticated or capture
                 if proof is not None:
                     capture = proof.close()
-                    relay_captured = relay_captured or capture
                     authenticated = authenticated or capture
             finally:
                 if selection is not None:
@@ -1380,12 +1378,32 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
         size += count
     check()
     candidate = _evidence_buffer(tokens, size, ledger, check)
-    if relay_captured:
-        for secret in context:
-            count = _evidence_utf8_size(secret, check)
-            ledger.charge(count + len(candidate), 1, check)
-            if secret.encode("utf8") in candidate:
+    # Scalar sanitation cannot see a secret spanning the encoded punctuation.
+    # Match EVERY detailed candidate, without a whole encoded-secret temporary.
+    for secret in context:
+        count = _evidence_utf8_size(secret, check)
+        ledger.charge(count + len(candidate) + 64, 8, check)
+        stop = min(1024, len(secret))
+        ledger.charge(8 * stop, 2, check)  # Slice and <=4096-byte conversion.
+        prefix = secret[:stop].encode("utf8")
+        position = candidate.find(prefix)
+        while position >= 0:
+            check()
+            cursor = position + len(prefix)
+            for begin in range(stop, len(secret), 1024):
+                end = min(begin + 1024, len(secret))
+                ledger.charge(8 * (end - begin), 2, check)
+                chunk = secret[begin:end].encode("utf8")
+                ledger.charge(len(chunk), 1, check)
+                if not candidate.startswith(chunk, cursor):
+                    break
+                cursor += len(chunk)
+            else:
                 raise ValueError("original literal content withheld")
+            # Each additional prefix search spends work; no failed work refund.
+            ledger.charge(len(candidate) - position, 1, check)
+            position = candidate.find(prefix, position + 1)
+    check()
     return candidate
 
 
@@ -2583,15 +2601,25 @@ class _EvidenceJSON:
                     self.error()
                 self.check()
                 if not jsonl:
-                    if self.relay_captured:
-                        _evidence_original(self.text, context, self.ledger, self.check, sanitize)
-                    return result
+                    break
                 if tree:
                     self.ledger.charge(8, 1, self.check)
                     records.append(result)
                 self.index = self.end + 1  # Preserve the original full LF image.
                 if self.index == len(self.text):
-                    return records
+                    break
+            if self.relay_captured:
+                _evidence_original(self.text, context, self.ledger, self.check, sanitize)
+            else:
+                # All decoded scalars have closed. Also check the SAME complete
+                # original, including punctuation and every JSONL record/LF join.
+                # No context is required by the unrelated syntax-only callers.
+                for secret in context:
+                    self.ledger.charge(8, 1, self.check)
+                    if secret in self.text:
+                        raise ValueError("original evidence content withheld")
+            self.check()
+            return records if jsonl else result
         except BaseException:
             if records is not None:
                 records.clear()

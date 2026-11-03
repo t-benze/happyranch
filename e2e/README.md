@@ -2385,6 +2385,17 @@ JSONL record boundaries are indices in the SAME returned image, never line copie
 or a new allowance. Later malformed/unfinished records withhold the whole image;
 previous full commits survive. Scenario-only returned-slice annotations stay truthful.
 
+Whole-original secret matching also covers ordinary members without a selected
+captured family, after strict syntax closes. It spans JSON punctuation and the
+entire JSONL stream, including LF joins. Every detailed typed candidate receives
+the corresponding complete encoded-byte check before pending creation; context
+conversion uses charged chunks of at most4096 bytes, without a whole encoded
+secret copy. Existing scalar sanitation remains unchanged. Syntax-only nested
+validation and the separately selected closed FAIL retain their existing context
+contracts. The same aggregate fixture covers all six registered ordinary files,
+cross-record LF, and raw/typed conversion-spanning secrets with complete prior
+file/tree/FAIL preservation; these controls supply no native coverage.
+
 Initial closed FAIL and final detailed FAIL/PASS now use the same finite typed
 compact UTF8 encoder, including final metadata. Each original result attempt
 charges original PLUS safe strings, aliases, context/order scratch, keys, facts,

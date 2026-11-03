@@ -633,6 +633,13 @@ precede one complete candidate, transferred to the atomic writer without another
 parse or encoding. Plain text retains whole-backslash refusal. Retained facts,
 every pass, candidate and bounded scratch share the persistent preparation owner;
 spent work never refunds. No hard RSS or syscall-time guarantee follows.
+Complete original/candidate secret checks cover ordinary registered members as
+well as selected captured families, including JSON punctuation and JSONL LF joins.
+Typed checking converts context in charged <=4096-byte chunks; no whole encoded
+secret copy or second raw parse is introduced. Existing scalar sanitation,
+syntax-only validation and the closed FAIL context contract remain. The finite
+aggregate fixture checks ordinary file/typed refusal and complete previous
+bytes/tree/FAIL preservation; it is not Product or native evidence.
 The action convenience scenario read is removed; ordinary refusal preserves prior
 complete bytes/snapshots and spent work, without retrying failed sources. Complete
 producer/copy registry and nested/browser/direct/pair/human-display joins remain

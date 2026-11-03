@@ -204,7 +204,7 @@ def failure_result_controls() -> dict:
                      _result_json, _collection_line, _ordinary_evidence_error, _failure_error)
 
     @contextmanager
-    def fixture() -> Iterator[tuple]:
+    def fixture(*, additional_secret: str | None = None) -> Iterator[tuple]:
         with tempfile.TemporaryDirectory(prefix="e2e-failure-result-") as temporary:
             base = Path(temporary)
             root, output = base / "source", base / "output"
@@ -213,11 +213,11 @@ def failure_result_controls() -> dict:
             for name in ("raw", "coord", "daemon"):
                 (root / name).mkdir(mode=0o700)
             token = 'SYNTHETIC_TOKEN'
-            context = [token, secret]
+            context = [token, secret] + ([additional_secret] if additional_secret is not None else [])
             (root / 'daemon/daemon.token').write_text(token)
             (root / 'coord/redaction-context.json').write_text(json.dumps(context))
             controller = Controller.__new__(Controller)
-            controller.root, controller.token, controller.secrets = root, token, {secret}
+            controller.root, controller.token, controller.secrets = root, token, set(context[1:])
             controller.threads_active = False
             controller.deadline = time.monotonic() + 30
             controller.local_bounds, controller.inherited_alarm = threading.local(), float('inf')
@@ -464,6 +464,95 @@ def failure_result_controls() -> dict:
             exact(decoded,wanted)
             assert not (output/(name+'.tmp')).exists()
             results['C3-C5-raw-positive-'+name] = 'entire literal original source/staged/published bytes, independent full type/key/list order; no raw tree'
+
+    # Review13872 F1: ordinary full-image matching, no selected captured edge.
+    # Literal originals/typed inputs precede execution; one table attributes ALL
+    # missed file boundaries on the pre-fix source, rather than stopping at one.
+    syntax_secret = '1,"b"'
+    conversion_secret = '中' * 1023 + '","b"'
+    conversion_image = (b'{"a":"' + ('中' * 1023).encode('utf8')
+                        + b'","c":"' + ('中' * 1023).encode('utf8') + b'","b":2}')
+    whole_images = [
+        (name, name, b'[{"a":1,"b":2}]' if name in ('browser-events.json','e05-browser-events.json')
+         else b'{"a":1,"b":2}\n' if name.endswith('.jsonl') else b'{"a":1,"b":2}', syntax_secret)
+        for name in raw_positives
+    ]
+    whole_images.extend([
+        ('jsonl-cross-LF','launch-witnesses.jsonl',b'{"a":1}\n{"b":2}\n','1}\n{"b"'),
+        ('raw-conversion','e07.json',conversion_image,conversion_secret),
+    ])
+    unsafe_admissions = []
+    for label,name,image,original_secret in whole_images:
+        with fixture(additional_secret=original_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            prior = b'{"prior":"safe"}\n' if name.endswith('.jsonl') else b'[]' if name in ('browser-events.json','e05-browser-events.json') else b'{"prior":"safe"}'
+            destination = root/'raw'/name
+            destination.write_bytes(prior)
+            acquire(); drain(); commit()
+            old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+            old_tree, old_buffer, first = copy.deepcopy(state['safe_scenario']), staged[name], failures[0]
+            scenario_image = (root/'scenario.json').read_bytes()
+            destination.write_bytes(image)
+            (root/'raw/eligible.txt').write_bytes(b'eligible ordinary sibling\n')
+            complete,error = acquire(); drain()
+            if name not in state['refused_sources']:
+                unsafe_admissions.append('raw/'+label)
+                continue  # Aggregate the actual missed boundaries for ONE proof.
+            assert not complete and error is not None and not state['fatal'] and not errors, label
+            assert str(error[0]) == 'original evidence content withheld', (label,error[0])
+            refusal = next(f for f in failures if f[0] is error[0])
+            assert refusal[4][0:2] == ('REDACT','VALUE') and failures[0] is first, (label,refusal[4])
+            assert staged[name] is old_buffer and published[name] is old_buffer
+            assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files | {'eligible.txt':b'eligible ordinary sibling\n'}
+            exact(state['safe_scenario'],old_tree)
+            assert destination.read_bytes() == image and (root/'scenario.json').read_bytes() == scenario_image
+            assert not list((root/'raw').glob('*.tmp')) and not list(output.glob('*.tmp'))
+            results['C5-F1-whole-raw-'+label] = 'ordinary complete original syntax/LF secret refused; entire prior files/tree/FAIL/first cause exact; eligible sibling retained'
+    for label,value,original_secret in (
+        ('syntax',{'a':1,'b':2},syntax_secret),
+        ('conversion',{'a':'中'*1023,'c':'中'*1023,'b':2},conversion_secret),
+    ):
+        with fixture(additional_secret=original_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+            destination = root/'raw/e07.json'
+            writer._atomic_json(destination,{'prior':'safe'})
+            acquire(); drain(); commit()
+            old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+            old_raw = {p.name:p.read_bytes() for p in (root/'raw').iterdir()}
+            old_tree, original_value = copy.deepcopy(state['safe_scenario']), copy.deepcopy(value)
+            scenario_image = (root/'scenario.json').read_bytes()
+            try:
+                writer._atomic_json(destination,value)
+            except ValueError as error:
+                assert str(error) == 'original literal content withheld', (label,error)
+            else:
+                unsafe_admissions.append('writer/'+label)
+                continue
+            assert writer._evidence_fatal is None
+            assert {p.name:p.read_bytes() for p in (root/'raw').iterdir()} == old_raw
+            assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files
+            exact(state['safe_scenario'],old_tree); exact(value,original_value)
+            assert (root/'scenario.json').read_bytes() == scenario_image
+            assert not list((root/'raw').glob('*.tmp')) and not list(output.glob('*.tmp'))
+            results['C5-F1-whole-writer-'+label] = 'ordinary entire encoded candidate secret refused before pending; complete prior source/output/tree/FAIL and original ordered typed input exact'
+    # A prefix match alone grants no refusal: all original bytes must match.
+    with fixture(additional_secret=conversion_secret) as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
+        acquire(); drain(); commit()
+        old_files = {p.name:p.read_bytes() for p in output.iterdir()}
+        old_tree = copy.deepcopy(state['safe_scenario'])
+        value = {'a':'中'*1023,'c':2}
+        wanted = b'{"a":"' + ('中'*1023).encode('utf8') + b'","c":2}'
+        try:
+            writer._atomic_json(root/'raw/e07.json',value)
+        except ValueError as error:
+            raise AssertionError('ordinary encoded prefix-only wrongly refused') from error
+        assert (root/'raw/e07.json').read_bytes() == wanted
+        complete,error = acquire(); drain()
+        assert not complete and error is None and not state['fatal'] and not errors
+        assert {p.name:p.read_bytes() for p in output.iterdir()} == old_files | {'e07.json':wanted}
+        exact(json.loads((output/'e07.json').read_bytes()),{'a':'中'*1023,'c':2})
+        exact(state['safe_scenario'],old_tree)
+        assert not list((root/'raw').glob('*.tmp')) and not list(output.glob('*.tmp'))
+        results['C5-F1-whole-writer-prefix-only'] = 'partial encoded context prefix remains safe; entire independent literal bytes/types/order and prior files/tree/FAIL retained'
+    assert not unsafe_admissions, ('ordinary whole-image unsafe admissions',unsafe_admissions)
 
     # SAME C5/C6/C7 table: full accepted E05 P/S/Q, canonical Relay edge only.
     # S and Q are copied literal bytes from the accepted subject, not a writer
