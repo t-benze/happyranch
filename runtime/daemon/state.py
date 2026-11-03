@@ -315,6 +315,7 @@ class DaemonState:
         from runtime.daemon.startup_recovery import _document_references
         for owner in _document_references(org)[:5]:
             _bind_task_admission(owner, self, org)
+        _bind_task_admission(_document_references(org)[6], self, org)
         from runtime.daemon.startup_recovery import _coding_references
         for owner in _coding_references(org)[:4]:
             _bind_task_admission(owner, self, org)

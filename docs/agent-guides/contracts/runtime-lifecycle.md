@@ -432,6 +432,15 @@ in [Runtime and configuration](../runtime-and-configuration.md#actual-owner-star
 [orchestrator contracts](../orchestrator-contracts.md#http-startup-admission-and-native-read-ownership--root13137)
 and [Web and CLI](../web-and-cli.md#startup-clock-limits).
 
+Fresh workflow activation captures its own original bound activation store,
+org, Database, state and org-map object after authenticated historical replay.
+The existing document admission predicate retains the original service/task
+references, gate, loop and epoch. That SAME validator renews after each awaited
+authority/DB lock and through profile/publisher/native ownership, BEGIN and
+before COMMIT. Stop or replacement refuses fresh work; rollback and release
+remain independently owed. A successful COMMIT followed by failed delivery
+retains its committed prefix.
+
 Private Database-owned
 startup reads share complete ordered root history in discovery and exact getters
 only within one exact Database/connection/invocation and stable coherent epochs.

@@ -1396,12 +1396,12 @@ def _document_attachment(owner: Any) -> StartupRecovery:
     try:
         org, state, gate = owner.org, owner._startup_state, owner._startup_recovery
         refs = _document_references(org)
-        valid = (any(owner is original for original in refs[:5])
+        valid = (any(owner is original for original in (*refs[:5], refs[6]))
                  and owner._startup_org is org and org._startup_state is state
                  and isinstance(gate, StartupRecovery) and org._startup_recovery is gate
                  and gate.state is state
                  and all(original._startup_state is state and original._startup_org is org
-                         and original._startup_recovery is gate for original in refs[:5]))
+                         and original._startup_recovery is gate for original in (*refs[:5], refs[6])))
     except AttributeError as exc:
         raise StartupUnavailable("startup_gate_unbound") from exc
     if not valid:

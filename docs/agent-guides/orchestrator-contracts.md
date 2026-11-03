@@ -5067,7 +5067,14 @@ it supplies no delivery acknowledgement or synthetic execution failure.
 
 Selected document admission now carries the same authenticated store/org/gate/
 epoch and captured references from original operation entry, before authority
-capture or the first binding/async/DB/profile wait. Wrappers, synchronous cores
+capture or the first binding/async/DB/profile wait. Fresh activation selects its
+own original bound activation member after authenticated historical replay and
+also pins the original Database, state and org-map object across waits. It uses
+the existing document admission predicate, renews after each awaited authority/DB
+lock and passes that SAME validator into the existing writer for profile/publisher/
+native-lock, BEGIN and before-COMMIT checks. Stop or replacement refuses fresh
+effects; owed rollback/release and committed-prefix delivery retain their original
+contracts. Wrappers, synchronous cores
 and original writers renew that SAME closure without adopting replacement owners.
 Draft/F5 dispatch retains it on the exact original invocation before preparation;
 the continuing host FIFO/final launch writer consumes that selection and refuses
