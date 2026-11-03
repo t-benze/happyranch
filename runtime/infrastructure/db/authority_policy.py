@@ -1253,12 +1253,29 @@ class AuthorityPolicyMixin:
         )
 
     @staticmethod
+    def _authority_control_receipt_payload(row) -> dict:
+        def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            value: dict[str, object] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("authority control receipt has duplicate fields")
+                value[key] = item
+            return value
+
+        payload = json.loads(row["payload_json"], object_pairs_hook=unique_fields)
+        if not isinstance(payload, dict) or set(payload) != {"receipt"}:
+            raise ValueError("authority control receipt wrapper is malformed")
+        if not isinstance(payload["receipt"], dict):
+            raise ValueError("authority control receipt is not an object")
+        return payload["receipt"]
+
+    @staticmethod
     def _authority_policy_v2_receipt_from_audit_row(
         row,
     ) -> AuthorityPolicyV2ControlReceipt:
         try:
-            payload = json.loads(row["payload_json"])
-            receipt = AuthorityPolicyV2ControlReceipt.model_validate(payload["receipt"])
+            receipt = AuthorityPolicyV2ControlReceipt.model_validate(
+                AuthorityPolicyMixin._authority_control_receipt_payload(row))
         except Exception as exc:
             raise ValueError("authority v2 control receipt is corrupt") from exc
         return receipt
@@ -1268,8 +1285,8 @@ class AuthorityPolicyMixin:
         row,
     ) -> AuthorityPolicyLegacyControlReceipt:
         try:
-            payload = json.loads(row["payload_json"])
-            receipt = AuthorityPolicyLegacyControlReceipt.model_validate(payload["receipt"])
+            receipt = AuthorityPolicyLegacyControlReceipt.model_validate(
+                AuthorityPolicyMixin._authority_control_receipt_payload(row))
         except Exception as exc:
             raise ValueError("authority legacy control receipt is corrupt") from exc
         return receipt
@@ -1291,6 +1308,12 @@ class AuthorityPolicyMixin:
             raise ValueError("authority v2 control receipt activation is not authenticated")
         if selector.previous_selector_id != receipt.previous_selector_id:
             raise ValueError("authority v2 control receipt predecessor mismatch")
+        if selector.created_at != receipt.created_at:
+            raise ValueError("authority v2 control receipt selection time mismatch")
+        if receipt.kind == "v2_activate" and receipt.create_request_id is not None:
+            raise ValueError("authority activation-only receipt has a create request")
+        if receipt.kind == "v2_create_activate" and receipt.action == "reactivate_rollback":
+            raise ValueError("authority paired receipt has a rollback action")
         activation = self.get_authority_policy_v2_activation(receipt.activation_id)
         if activation is None or activation.team != team:
             raise ValueError("authority v2 control receipt activation is not durable")
@@ -1303,6 +1326,7 @@ class AuthorityPolicyMixin:
             or activation.activation_digest != receipt.activation_digest
             or activation.request_id != receipt.activation_request_id
             or activation.request_digest != receipt.activation_request_digest
+            or activation.created_at != receipt.created_at
         ):
             raise ValueError("authority v2 control receipt does not match its durable activation")
         release = self.get_authority_policy_v2_release(receipt.release_id)
@@ -1331,6 +1355,8 @@ class AuthorityPolicyMixin:
             raise ValueError("authority legacy control receipt activation is not authenticated")
         if selector.previous_selector_id != receipt.previous_selector_id:
             raise ValueError("authority legacy control receipt predecessor mismatch")
+        if selector.created_at != receipt.created_at:
+            raise ValueError("authority legacy control receipt selection time mismatch")
         activation = self.get_authority_policy_activation(receipt.activation_id)
         if activation is None or activation.team != team:
             raise ValueError("authority legacy control receipt activation is not durable")
@@ -1440,6 +1466,7 @@ class AuthorityPolicyMixin:
             or initializer_row["release_id"] != expected_release_id
             or initializer_row["activation_id"] != expected_activation_id
             or initializer_row["action"] is not None
+            or initializer_row["created_at"] != first.created_at
             or initializer_row["payload_json"]
             != authority_policy_v2_canonical_json_bytes(preimage).decode("utf-8")
         ):
@@ -1471,7 +1498,10 @@ class AuthorityPolicyMixin:
                 ):
                     raise ValueError("authority selector selection audit is corrupt")
                 receipt = self._authority_policy_v2_receipt_from_audit_row(row)
-                self._authenticate_authority_v2_control_receipt(receipt, team, selectors)
+                if self._authenticate_authority_v2_control_receipt(
+                    receipt, team, selectors,
+                ) != selector or row["created_at"] != receipt.created_at:
+                    raise ValueError("authority selection audit receipt names another selection")
                 if receipt.create_request_id is not None:
                     paired = created.get(receipt.create_request_id, [])
                     if len(paired) != 1:
@@ -1479,9 +1509,12 @@ class AuthorityPolicyMixin:
                     paired_row = paired[0]
                     if (
                         paired_row["release_id"] != receipt.release_id
+                        or paired_row["request_id"] != receipt.create_request_id
                         or paired_row["request_digest"] != receipt.create_request_digest
                         or paired_row["selector_id"] is not None
                         or paired_row["activation_id"] is not None
+                        or paired_row["action"] is not None
+                        or paired_row["created_at"] != receipt.created_at
                         or self._authority_policy_v2_receipt_from_audit_row(paired_row)
                         != receipt
                     ):
@@ -1500,7 +1533,16 @@ class AuthorityPolicyMixin:
                 ):
                     raise ValueError("authority selector selection audit is corrupt")
                 receipt = self._authority_policy_legacy_receipt_from_audit_row(row)
-                self._authenticate_authority_legacy_control_receipt(receipt, team, selectors)
+                if (
+                    self._authenticate_authority_legacy_control_receipt(
+                        receipt, team, selectors,
+                    ) != selector
+                    or row["request_id"] != receipt.request_id
+                    or row["request_digest"] != receipt.request_digest
+                    or row["action"] != receipt.action
+                    or row["created_at"] != receipt.created_at
+                ):
+                    raise ValueError("authority legacy selection audit receipt is corrupt")
 
         if bounded:
             created = {key: value for key, value in created.items()
@@ -1697,17 +1739,36 @@ class AuthorityPolicyMixin:
         create_digest = request.create_request_digest()
         self._conn.execute("BEGIN IMMEDIATE")
         try:
-            row = self._conn.execute(
+            rows = self._conn.execute(
                 "SELECT * FROM authority_policy_v2_control_audit "
-                "WHERE team=? AND request_id=? ORDER BY id DESC LIMIT 1",
-                (team, request.create_request_id),
-            ).fetchone()
-            if row is not None:
-                if row["kind"] != "release_created" or row["request_digest"] != create_digest:
+                "WHERE team=? AND request_id IN (?,?) ORDER BY id",
+                (team, request.create_request_id, request.activation_request_id),
+            ).fetchall()
+            if rows:
+                # Both event kinds may legitimately share one request ID. Find
+                # the original pair, never promote an activation-only collision
+                # into a create or select whichever event happened to be last.
+                creates = [row for row in rows if row["kind"] == "release_created"
+                           and row["request_id"] == request.create_request_id]
+                selections = [row for row in rows if row["kind"] == "activation_selected"
+                              and row["request_id"] == request.activation_request_id]
+                if len(rows) != 2 or len(creates) != 1 or len(selections) != 1:
                     raise sqlite3.IntegrityError(
                         "v2 authority create request conflicts with an existing control write"
                     )
-                receipt = self._authority_policy_v2_receipt_from_audit_row(row)
+                receipt = self._authority_policy_v2_receipt_from_audit_row(creates[0])
+                if (
+                    receipt.kind != "v2_create_activate"
+                    or receipt.create_request_id != request.create_request_id
+                    or receipt.activation_request_id != request.activation_request_id
+                    or receipt.create_request_digest != create_digest
+                    or creates[0]["request_digest"] != create_digest
+                    or selections[0]["selector_id"] != receipt.selector_id
+                    or self._authority_policy_v2_receipt_from_audit_row(selections[0]) != receipt
+                ):
+                    raise sqlite3.IntegrityError(
+                        "v2 authority create replay conflicts with its original pair"
+                    )
                 incoming_activation = authority_policy_v2_sha256(
                     request.activation_request_preimage(receipt.release_id)
                 )
@@ -1719,14 +1780,6 @@ class AuthorityPolicyMixin:
                 self._authenticate_authority_v2_control_receipt(receipt, team, selectors)
                 self._conn.commit()
                 return receipt
-            if self._conn.execute(
-                "SELECT 1 FROM authority_policy_v2_control_audit "
-                "WHERE team=? AND request_id=? LIMIT 1",
-                (team, request.activation_request_id),
-            ).fetchone() is not None:
-                raise sqlite3.IntegrityError(
-                    "v2 authority activation request id is already used"
-                )
             selector = self._get_authority_selector_uncommitted(team)
             if selector is None:
                 raise sqlite3.IntegrityError("authority selector is not initialized")

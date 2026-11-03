@@ -2837,7 +2837,16 @@ as a second HTTP schema.
 `authority_policy_store.py` owns immutable releases, activation history, candidate
 pins, and their transactional linkage. Every uniquely registered live team-manager
 launch binds the exact rendered policy to the session; the hook consumes that
-binding, never a newly selected current activation. Task, fresh/resumed thread,
+binding, never a newly selected current activation. Both saved-session readers
+validate a present selected-legacy supplement against its original bounded
+selector and the same team/family/epoch/release/activation. Duplicate, malformed,
+orphan and mixed evidence refuses; supported historical absence stays absent,
+without reconstructing a pin or distinguishing deleted evidence from history.
+Each accepted control receipt authenticates its own selection audit and paired
+create evidence, rather than any other selector in the chain. An accepted paired
+request with equal create/activation IDs replays its original authenticated
+receipt without new writes; changed inputs and unrelated cross-kind reuse refuse.
+Task, fresh/resumed thread,
 wake, dream, and schedule entry points independently revalidate the live AgentDef
 and exact single `teams.yaml` registration before selector access or binding. The
 bound team, not current registry state or caller input, is carried through attempt,
