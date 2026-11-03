@@ -161,7 +161,7 @@ class _NativeWork:
                 secondary_capture("_message", secondary)
         return observed
 
-    def _observe_failure(self) -> dict[str, Any] | None:
+    def _observe_failure(self, *, outer_error: bool = False) -> dict[str, Any] | None:
         # Freeze only this work's original captured failure at THIS reader's
         # observation, before its collection/diagnostics or another observation.
         # A successful suppressed join cancellation is not a failure marker.
@@ -172,6 +172,16 @@ class _NativeWork:
             if self.raw_failure is not None:
                 return (self.first_error if self.first_error is not None else
                         self.raw_failure.get('invocation_first', self.raw_failure))
+            if outer_error:
+                # A bridge/waiter can observe E1 before executor delivery.
+                # Freeze that candidate only for an actual outer error; it
+                # neither confirms failure nor changes retirement predicates.
+                for invocation in self.invocations.values():
+                    if invocation['returned'] or invocation['caller_returned']:
+                        continue  # A handled candidate cannot poison a later stage.
+                    cause = invocation['first_observation']
+                    if cause is not None:
+                        return self.first_error if self.first_error is not None else cause
             return None
 
     def call(self, method: str, *args: object) -> Callable[[], object]:
@@ -899,7 +909,7 @@ class TaskQueue:
         except BaseException as error:
             submission['first_observation'] = dict(phase=submission['phase'], error=error,
                 traceback=BaseException.__traceback__.__get__(error))
-            cause = submission['work_observation'] = work._observe_failure()
+            cause = submission['work_observation'] = work._observe_failure(outer_error=True)
             if submission['first_error'] is None and cause is not None:
                 submission['first_error'] = cause
             observed = self._capture_queue_error(submission, submission['phase'], error, describe=False)
@@ -1327,8 +1337,22 @@ class TaskQueue:
                            raw: bool = False) -> dict[str, Any] | None:
             work = record.get('work')
             if work is None:
-                return None
-            cause = work._observe_failure()
+                # A failing consumer/join belongs to this original drain too.
+                # Snapshot its existing native records before error collection;
+                # their iteration order is not a chronology across owners.
+                selected = None
+                for original in owner.get('native', ()) if outer_error or raw else ():
+                    cause = native_failure(original, raw=True)
+                    if selected is None and cause is not None:
+                        selected = cause
+                if selected is not None and outer_error:
+                    if record['first_error'] is None:
+                        record['first_error'] = selected
+                    if owner.get('first_error') is None:
+                        candidate = owner.get('cancellation_candidate')
+                        owner['first_error'] = record['first_error'] if candidate is None else candidate
+                return selected
+            cause = work._observe_failure(outer_error=outer_error or raw)
             record['work_observation'] = dict(work=work, cause=cause,
                                              previous=record.get('work_observation'))
             confirmed = bool(work.failures) or work.failure_pending
@@ -1351,11 +1375,9 @@ class TaskQueue:
             if not owner.get('cancellation_observed'):
                 owner['cancellation_observed'] = True
                 selected = None
-                observed_failure = False
                 descriptions = []
-                # Sample original stored outcomes at THIS first cancellation,
-                # before formatting any new error. Observation failure on one
-                # actual owner cannot skip the other original observations.
+                # Consume only the raw snapshots frozen before collection of
+                # THIS cancellation. Later Task outcomes cannot backdate E1.
                 originals = owner.get('native', ())
                 if not any(original is record for original in originals):
                     originals = (*originals, record)
@@ -1364,16 +1386,6 @@ class TaskQueue:
                         # Frozen before the ORIGINAL cancellation's collection,
                         # never reconstructed from later completed work.
                         cause = original.get('cancellation_work_cause')
-                        actual = original['task']
-                        if cause is None and actual is not None and actual.done() and not actual.cancelled():
-                            error = actual.exception()
-                            if error is not None:
-                                observed_failure = True
-                                cause = self._capture_queue_error(original, "native_at_cancellation", error,
-                                                                  describe=False)
-                                cause['delivery'] = "stored_outcome_observation"
-                                original['stored_error'] = cause
-                                descriptions.append((original, cause))
                         if selected is None and cause is not None:
                             selected = cause
                     except BaseException as error:
@@ -1381,8 +1393,6 @@ class TaskQueue:
                         later = self._capture_queue_error(record, "cancellation_observation", error, describe=False)
                         descriptions.append((record, later))
                 if selected is not None:
-                    if observed_failure and owner.get('first_error') is None:
-                        owner['first_error'] = selected
                     if previous is None and record['first_error'] is observed:
                         record['first_error'] = selected
                     if owner.get('first_error') is not None:
@@ -1403,14 +1413,16 @@ class TaskQueue:
                     record['done_before'] = True
                     error = task.exception()
                     if error is not None:
+                        native_failure(record, outer_error=True)
                         record['stored_error'] = self._capture_queue_error(record, "worker_stored_error", error)
                         record['stored_error']['delivery'] = "stored_outcome_observation"
                         promote(record, "worker_stored_error")
                 record['cancelling_before'] = task.cancelling()
             except asyncio.CancelledError as error:
-                if not owner.get('cancellation_observed'):
-                    for original in owner.get('native', ()):
-                        original['cancellation_work_cause'] = native_failure(original, raw=True)
+                for original in owner.get('native', ()):
+                    cause = native_failure(original, raw=True)
+                    if not owner.get('cancellation_observed'):
+                        original['cancellation_work_cause'] = cause
                 observed = self._capture_queue_error(record, "worker_observation", error, describe=False)
                 try:
                     cancelled = task.cancelled()
@@ -1428,6 +1440,7 @@ class TaskQueue:
                         promote(record, "worker_observation")
                 self._capture_queue_error(record, "worker_observation", error, captured=observed)
             except BaseException as error:
+                native_failure(record, outer_error=True)
                 self._capture_queue_error(record, "worker_observation", error)
                 promote(record, "worker_observation")
         for record in owner.get('native', ()):
@@ -1439,6 +1452,7 @@ class TaskQueue:
                 record['cancel_attempted'] = True
                 record['cancel_returned'] = record['task'].cancel()
             except BaseException as error:
+                native_failure(record, outer_error=True)
                 self._capture_queue_error(record, "worker_cancel", error)
                 promote(record, "worker_cancel")
 
@@ -1470,9 +1484,10 @@ class TaskQueue:
                     record['wait_outcome'] = await asyncio.wait((task,))
                 except asyncio.CancelledError as error:
                     previous = record['first_error']
-                    if not owner.get('cancellation_observed'):
-                        for original in owner.get('native', ()):
-                            original['cancellation_work_cause'] = native_failure(original, raw=True)
+                    for original in owner.get('native', ()):
+                        cause = native_failure(original, raw=True)
+                        if not owner.get('cancellation_observed'):
+                            original['cancellation_work_cause'] = cause
                     observed_cancel = self._capture_queue_error(record, "drain_cancellation", error,
                                                                  describe=False)
                     cancellation(record, observed_cancel, previous)
@@ -1490,10 +1505,13 @@ class TaskQueue:
             except BaseException as error:
                 # Only this drain's positively accepted worker cancellation is
                 # expected. A missing/cancelled native Task remains UNKNOWN.
-                native_cause = native_failure(record, outer_error=True)
-                if isinstance(error, asyncio.CancelledError) and not owner.get('cancellation_observed'):
+                previous = record['first_error']
+                native_cause = native_failure(record, raw=True)
+                if isinstance(error, asyncio.CancelledError):
                     for original in owner.get('native', ()):
-                        original['cancellation_work_cause'] = native_failure(original, raw=True)
+                        cause = native_failure(original, raw=True)
+                        if not owner.get('cancellation_observed'):
+                            original['cancellation_work_cause'] = cause
                 cause = record.get('stored_error')
                 if cause is None:
                     cause = native_cause
@@ -1508,6 +1526,8 @@ class TaskQueue:
                                 and record.get('cancelling_before') == 0 and cancelled)
                 except BaseException as secondary:
                     self._capture_queue_error(record, "cancel_ack_observation", secondary)
+                if not expected and previous is None and native_cause is not None:
+                    record['first_error'] = native_cause
                 if expected:
                     observed['delivery'] = "own_worker_cancellation"
                     record['acknowledgement'] = "own_worker_cancellation"
@@ -1535,6 +1555,7 @@ class TaskQueue:
             try:
                 await join(record, worker=True)
             except BaseException as error:
+                native_failure(record, outer_error=True)
                 self._capture_queue_error(owner, "worker_join_delivery", error)
         # A failed cancellation/join/diagnostic above cannot skip these actual
         # original native-work joins. No gather(None), replacement or retirement.
@@ -1588,22 +1609,24 @@ class TaskQueue:
                 target['first_observation'] = dict(phase=phase, error=error,
                     traceback=BaseException.__traceback__.__get__(error), owner_cause=stored,
                     cause=None)
-                if stored is None and self._submission_failure is not None:
-                    stored = self._submission_failure['first_failure']['first_error']
-                # Same-work raw snapshots, in the original registry's observed
-                # order, before E2 collection or Task/result/diagnostic calls.
-                # This is no total chronology between independent owners.
-                with self._admission_lock:
-                    works = tuple(self._native_work)
-                for work in works:
-                    native_cause = work._observe_failure()
-                    target['work_observation'] = dict(work=work, cause=native_cause,
-                        previous=target.get('work_observation'))
-                    if stored is None and native_cause is not None:
-                        stored = native_cause
+            if stored is None and self._submission_failure is not None:
+                stored = self._submission_failure['first_failure']['first_error']
+            # Freeze each actual failure/cancellation, including repeated ones,
+            # before collection, diagnostics or later Task/outcome observation.
+            # This registry order is not chronology between independent owners.
+            with self._admission_lock:
+                works = tuple(self._native_work)
+            for work in works:
+                native_cause = work._observe_failure(outer_error=True)
+                target['work_observation'] = dict(work=work, cause=native_cause,
+                    previous=target.get('work_observation'))
+                if stored is None and native_cause is not None:
+                    stored = native_cause
+            if previous is None:
                 target['first_observation']['cause'] = stored
                 if stored is not None:
                     target['first_error'] = stored
+            frozen = stored
             observed = self._capture_queue_error(target, phase, error, cause=cause, describe=False)
             if previous is not None:
                 self._capture_queue_error(target, phase, error, cause=cause, captured=observed)
@@ -1635,9 +1658,9 @@ class TaskQueue:
             if newly_stored is not None:
                 self._capture_queue_error(owner, newly_stored['phase'], newly_stored['error'],
                                           cause=newly_stored.get('cause'), captured=newly_stored)
-            if stored is not None:
-                target['first_error'] = stored
-                self._capture_queue_error(target, "earlier_drain_error", stored['error'], cause=stored)
+            if frozen is not None:
+                target['first_error'] = frozen
+                self._capture_queue_error(target, "earlier_drain_error", frozen['error'], cause=frozen)
             self._capture_queue_error(target, phase, error, cause=cause, captured=observed)
 
         try:

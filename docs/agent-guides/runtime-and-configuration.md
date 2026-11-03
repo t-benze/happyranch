@@ -1411,9 +1411,13 @@ The draft-dispatch loop bridge awaits the SAME original coroutine once and
 captures its actual error/object/native traceback before Task cancellation
 conversion. Its original queue invocation, when bound, orders this raw capture
 against waiter cancellation under the SAME short lock before diagnostics or
-delayed Future delivery; the failed outer join consumes that selection, preserving
-any prior owner cause and separately retaining later actual errors. Handled holds
-and successful suppressed waiter cancellation retain exact values. Original
+delayed Future delivery. The failed outer join and original submission/drain/stop
+failure readers freeze that live-invocation selection before collection or later
+outcome reads, preserving prior owner causes and separately retaining later actual
+errors. Later outcomes cannot replace an earlier reader cancellation. Handled holds
+and successful suppressed waiter cancellation retain exact values; a successfully
+returned invocation's handled candidate adds no failure marker or later-stage
+blocker. Original
 coroutine/wrapper/Future/observed Task remain retained when submission or
 acknowledgement is ambiguous or cancelled: UNKNOWN grants no close/cancel/replay,
 new wait or retirement inference. Standalone calls create no queue owner.

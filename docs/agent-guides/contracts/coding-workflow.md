@@ -195,8 +195,12 @@ wrapper awaits it once and captures its actual exception/object/native traceback
 before Task-to-Future cancellation conversion. That early observation joins the
 SAME queue work/invocation lock order, so native-before-waiter and
 waiter-before-native causes remain distinct before delayed Future delivery. The
-failed outer join consumes that selection and retains later actual errors; handled
-holds and successful suppressed cancellation preserve exact return values. Missing
+failed outer join and original submission/drain/stop failure readers freeze that
+live-invocation selection before collection or later outcome reads, retaining prior
+selected causes and later actual errors. Later outcomes cannot replace an earlier
+reader cancellation. Handled holds and successful suppressed cancellation preserve
+exact return values; a successfully returned invocation's handled candidate adds no
+failure marker or later-stage blocker. Missing
 or cancelled acknowledgements and ambiguous submission retain the original
 coroutine/wrapper/Future/observed Task and UNKNOWN custody, without closing,
 cancelling, resubmitting, replaying or inferring retirement. No standalone call

@@ -495,10 +495,14 @@ awaits the SAME original coroutine once, capturing its actual BaseException and
 native traceback before concurrent-Future cancellation conversion. Its original
 queue invocation, when present, orders that raw observation against waiter
 cancellation under the SAME short capture lock, before diagnostics or delivery.
-The failed outer join consumes that original observation; earlier selected owner
-causes stay selected and later actual errors remain separately linked. Legitimately
-handled holds and successful suppressed waiter cancellation keep exact caller
-values. Original coroutine, wrapper, Future and observed native Task remain
+The failed outer join and original submission/drain/stop failure readers consume
+that original live-invocation observation before collection or later outcome reads;
+earlier selected owner causes stay selected and later actual errors remain separately
+linked. A later Task outcome cannot backdate a cause before an earlier reader
+cancellation. Legitimately handled holds and successful suppressed waiter cancellation
+keep exact caller values; a successfully returned invocation's handled candidate
+cannot become a later stage's failure. Original coroutine, wrapper, Future and
+observed native Task remain
 retained through ambiguous submission or missing/cancelled acknowledgement, which
 stays UNKNOWN. No close/cancel/replay, new wait or retirement permission follows.
 Standalone bridge use creates no substitute queue owner.
@@ -630,9 +634,12 @@ cancellation is wrapper evidence only. Other cancelled consumers remain separate
 recorded; suppression requires positive original native joins and the idle guard.
 It never settles cancelled/unknown native handles. No None handle enters a gather,
 and no done cancelled handle is polled indefinitely. Original submission, drain and stop
-readers freeze the SAME work's raw or delivered failure at their original observation,
-before fallible error collection, diagnostics or further outcome observation. The raw
-native-failure anchor preserves its original per-invocation first-observation snapshot;
+readers freeze the SAME work's raw or delivered failure, or its still-live invocation's
+earlier bridge/waiter candidate, at their original failure/cancellation observation,
+before fallible error collection, diagnostics or further outcome observation. Confirmed
+failure and raw native-failure anchors retain precedence; candidate-only selection
+does not publish either marker. A successfully returned invocation's handled candidate
+is excluded from later-stage selection. The original per-invocation snapshot remains;
 an earlier captured native E1 survives later submission, cancellation or missing-handle
 E2 even before Future delivery. A genuine earlier outer cancellation remains selected
 when native E1 is first captured later. Prior selected owner causes stay selected.
