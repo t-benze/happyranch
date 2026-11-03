@@ -1381,8 +1381,12 @@ queue preparation, selected reads, settings/import/mapping writers, advancement 
 startup admission through original awaited and authority/Pause/registry owners.
 Coding settings classifies validation rejection as native no-effect only after
 original rollback and lease release complete: the same validation exception,
-no active transaction and no exception notes are required. Preserved cleanup
-secondaries retain native uncertainty and their primary; cleanup stays ungated.
+no active transaction and no exception notes or secondary cleanup evidence are
+required. Each positive marker publishes last, after the original cleanup and
+all required diagnostic/record attachments succeed. A failed attachment retains
+its actual occurrence on the original owner/frame and withholds certification;
+absence of attached evidence never proves no error. Preserved cleanup secondaries
+retain native uncertainty and their primary; cleanup stays ungated.
 Legacy start callback and consume readiness reads hold the captured Database's
 SAME native RLock across the original connection/read transaction, renewing the
 same validator after waiting and BEGIN. Selected settings refusal or an opaque
@@ -1391,9 +1395,13 @@ rolled back. Short authority transactions retain first-error/native-traceback
 custody without requiring fresh readiness on lease release. Admission ownership
 retains business, release, rollback, fence-exit and diagnostic/attachment errors
 as separate occurrences, with prior nested records and original owner/frame
-fallback. Completed start results remain exact through original exits; failed
+fallback. The public admission writer's actual enter/exit also delivers the SAME
+original error and native traceback without invoking a virtual traceback setter,
+including for default callers. Completed start results remain exact through
+original exits; failed
 release after COMMIT is failed delivery with a committed prefix, not replay or
-native-retirement proof. This local custody cannot recover hidden outer errors.
+native-retirement proof. Other publisher/profile interiors and the draft-dispatch
+cancellation bridge remain separate limits.
 Shared complete schema/source-readiness helpers remain available to P0.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery

@@ -5148,14 +5148,20 @@ error even without an admission validator, with one marked rollback attempt.
 An earlier business E0 stays primary beside release E1 and its rollback E2;
 without E0, E1 remains primary. Release never demands fresh readiness. Each
 original profile/publisher exit is attempted once and its actual error is retained
-before the next exit. Native traceback access/local transport and constant guarded
-notes avoid virtual formatting or traceback replacement inside these helpers;
+before the next exit. Native traceback access/local transport includes the public
+admission writer's actual enter/exit, preserving the SAME original error and its
+native traceback without invoking virtual traceback setters for selected or
+default callers. Constant guarded notes avoid error formatting;
 diagnostic/attachment failures remain separate, with prior nested records and
 original coordinator/frame fallback. Other no-validator reader contracts remain
 unchanged. Settings validation-only no-effect classification needs
 positive original rollback AND positive lease release, the exact selected body
-exception, no active transaction and no secondary cleanup evidence. Exception
-identity or an ended transaction alone proves neither closure nor no effect.
+exception, no active transaction and no secondary cleanup evidence. Each owner's
+positive marker is its final publication, after all required diagnostics and
+record attachments succeed. A failed exception attachment retains each actual
+occurrence/native traceback on the same owner/frame and withholds that marker;
+missing attached evidence never proves no later error. Exception identity or an
+ended transaction alone proves neither closure nor no effect.
 Legacy `workflow_start` preflight holds the SAME captured Database native RLock
 through its complete original-connection readiness transaction and renews the
 original validator after waiting and BEGIN. It never rolls back caller BEGIN or
@@ -5164,7 +5170,8 @@ survives the one owned rollback. `_start` retains its exact original business
 result before existing context exits and delivers it only after successful exits;
 failed release after COMMIT keeps that value in the failure frame and the committed
 prefix, without delivery, replay, consume/apply or native-retirement permission.
-Local helper custody does not certify unedited outer error/cancellation transport.
+Other publisher/profile interiors and the draft-dispatch cancellation bridge
+remain separately owned limits.
 
 Original P2 selected task publication and P4/P6 acknowledged return/redelivery
 keep their actual native owners; no new stage or session exception follows.

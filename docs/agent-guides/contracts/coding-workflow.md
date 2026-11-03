@@ -179,12 +179,18 @@ unrelated in-place map edits retain their ordinary meaning. Identity-only owed
 callback validation remains separate from fresh readiness, and cleanup stays owed
 after stop. Readiness preserves its selected settings error through one owned
 rollback, retaining any actual cleanup error separately. Short authority lease
-transactions retain the first error even without an admission validator.
+transactions retain the first error even without an admission validator. The public
+admission writer also preserves the SAME original error and native traceback at
+its actual outer exit without a virtual traceback setter. Positive rollback and
+release evidence publishes only after cleanup and required diagnostics/record
+attachments succeed; any genuine later failure withholds that owner's marker,
+including a failed exception attachment retained on the original owner/frame.
 The original start body result is captured before existing context exits and
 returned only after they succeed. A release failure after business COMMIT keeps
 that exact value as failure-frame evidence and the committed prefix; it grants
 neither successful delivery nor consume/replay or native retirement. These local
-contracts do not repair unedited outer error or cancellation transport.
+contracts leave other publisher/profile interiors and the draft-dispatch
+cancellation bridge separately owned.
 
 Source capability projects readiness `{enabled:true,reason:coding_engine_available}`;
 this is neither per-org admission nor installed/loaded/operational acceptance.

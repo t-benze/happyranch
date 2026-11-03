@@ -1365,6 +1365,9 @@ class WorkflowAuthorityCoordinator:
             failure['errors'].append(occurrence)
             if failure['first_error'] is None:
                 failure['first_error'] = occurrence
+                # Old evidence on a reused exception cannot certify this owner.
+                evidence = BaseException.__dict__['__dict__'].__get__(error)
+                evidence.pop('_admission_rollback_complete', None)
                 values = WorkflowAuthorityCoordinator.__dict__['__dict__'].__get__(self)
                 failure['previous_owner'] = values.get('_workflow_authority_failure')
                 values['_workflow_authority_failure'] = failure
@@ -1406,23 +1409,30 @@ class WorkflowAuthorityCoordinator:
                     try:
                         if failure['rollback_error'] is not None:
                             BaseException.__setattr__(primary, '_admission_rollback_secondary', failure['rollback_error'])
-                        elif failure['rollback_returned'] and len(failure['errors']) == 1:
-                            BaseException.__setattr__(primary, '_admission_rollback_complete', True)
                         if any(phase == 'native context' for phase, _, _ in failure['errors']):
                             BaseException.__setattr__(primary, '_admission_fence_secondary', failure['errors'][-1][1:])
                     except BaseException as later:
                         record('completion marker attachment', later)
-                if len(failure['errors']) > 1:
-                    try:
-                        BaseException.add_note(primary, 'admission transaction cleanup also failed; original errors retained')
-                    except BaseException as later:
-                        record('diagnostic', later)
                 try:
                     values = BaseException.__dict__['__dict__'].__get__(primary)
                     failure['previous'] = values.get('_workflow_authority_failure')
                     BaseException.__setattr__(primary, '_workflow_authority_failure', failure)
                 except BaseException as later:
                     record('attachment', later)
+                if len(failure['errors']) > 1:
+                    try:
+                        BaseException.add_note(primary, 'admission transaction cleanup also failed; original errors retained')
+                    except BaseException as later:
+                        record('diagnostic', later)
+                if (validate_admission is not None and failure['rollback_returned']
+                        and len(failure['errors']) == 1):
+                    # Native dictionary publication is last: no virtual marker
+                    # setter or later diagnostic/attachment can leave a false
+                    # positive certificate for the settings/native consumer.
+                    try:
+                        values['_admission_rollback_complete'] = True
+                    except BaseException as later:
+                        record('completion marker publication', later)
                 raise _FailureTransport from None
 
         # The generator context transports only this local marker. It never
@@ -1442,6 +1452,9 @@ class WorkflowAuthorityCoordinator:
                 except _FailureTransport:
                     pass
                 _, primary, original_traceback = failure['first_error']
+                if primary is error:
+                    BaseException.__traceback__.__set__(primary, traceback)
+                    return False
                 raise BaseException.with_traceback(primary, original_traceback)
 
         context = owned()
@@ -1464,6 +1477,9 @@ class WorkflowAuthorityCoordinator:
             failure['errors'].append(occurrence)
             if failure['first_error'] is None:
                 failure['first_error'] = occurrence
+                # Old evidence on a reused exception cannot certify this owner.
+                evidence = BaseException.__dict__['__dict__'].__get__(error)
+                evidence.pop('_admission_release_complete', None)
                 values = WorkflowAuthorityCoordinator.__dict__['__dict__'].__get__(self)
                 failure['previous_owner'] = values.get('_workflow_authority_failure')
                 values['_workflow_authority_failure'] = failure
@@ -1545,23 +1561,30 @@ class WorkflowAuthorityCoordinator:
                     try:
                         if failure['release_error'] is not None:
                             BaseException.__setattr__(primary, '_admission_release_secondary', failure['release_error'])
-                        elif failure['release_returned']:
-                            BaseException.__setattr__(primary, '_admission_release_complete', True)
                         if failure['fence_errors']:
                             BaseException.__setattr__(primary, '_admission_fence_secondary', failure['fence_errors'][0])
                     except BaseException as later:
                         record('completion marker attachment', later)
-                if len(failure['errors']) > 1:
-                    try:
-                        BaseException.add_note(primary, 'admission ownership cleanup also failed; original errors retained')
-                    except BaseException as later:
-                        record('diagnostic', later)
                 try:
                     values = BaseException.__dict__['__dict__'].__get__(primary)
                     failure['previous'] = values.get('_workflow_authority_failure')
                     BaseException.__setattr__(primary, '_workflow_authority_failure', failure)
                 except BaseException as later:
                     record('attachment', later)
+                if len(failure['errors']) > 1:
+                    try:
+                        BaseException.add_note(primary, 'admission ownership cleanup also failed; original errors retained')
+                    except BaseException as later:
+                        record('diagnostic', later)
+                if (validate_admission is not None and failure['release_returned']
+                        and len(failure['errors']) == 1):
+                    # Native dictionary publication is last: no virtual marker
+                    # setter or later diagnostic/attachment can leave a false
+                    # positive certificate for the settings/native consumer.
+                    try:
+                        values['_admission_release_complete'] = True
+                    except BaseException as later:
+                        record('completion marker publication', later)
                 raise _FailureTransport from None
 
         # The generator context transports only this local marker. It never
@@ -1581,6 +1604,9 @@ class WorkflowAuthorityCoordinator:
                 except _FailureTransport:
                     pass
                 _, primary, original_traceback = failure['first_error']
+                if primary is error:
+                    BaseException.__traceback__.__set__(primary, traceback)
+                    return False
                 raise BaseException.with_traceback(primary, original_traceback)
 
         context = owned()
@@ -1620,9 +1646,8 @@ class WorkflowAuthorityCoordinator:
                        for item in profiles)):
             raise WorkflowAuthorityError("workflow_activation_authority_stale")
 
-    @contextmanager
     def admission_writer(self, capture: AuthorityAdmissionCapture, *,
-                         validate_admission: Callable[[], None] | None = None) -> Iterator[sqlite3.Connection]:
+                         validate_admission: Callable[[], None] | None = None) -> AbstractContextManager[sqlite3.Connection]:
         """Consume captured bytes under the original admission ownership.
 
         Async consumers acquire their coroutine locks before entering. All
@@ -1630,10 +1655,54 @@ class WorkflowAuthorityCoordinator:
         connection is the sole admission transaction; no await or host work
         may occur until this context exits.
         """
-        with self._admission_ownership(capture, validate_admission=validate_admission):
-            with self._admission_transaction(validate_admission=validate_admission) as conn:
-                self._validate_admission_uncommitted(conn, capture)
-                yield conn
+        failure = dict(first_error=None, errors=[], previous_owner=None)
+
+        class _FailureTransport(BaseException):
+            pass
+
+        @contextmanager
+        def owned() -> Iterator[sqlite3.Connection]:
+            try:
+                with self._admission_ownership(capture, validate_admission=validate_admission):
+                    with self._admission_transaction(validate_admission=validate_admission) as conn:
+                        self._validate_admission_uncommitted(conn, capture)
+                        yield conn
+            except BaseException as primary:
+                occurrence = ('writer context', primary, BaseException.__traceback__.__get__(primary))
+                failure['first_error'] = occurrence
+                failure['errors'].append(occurrence)
+                # Keep the entire earlier owner chain without another fallible
+                # exception attachment after cleanup certification.
+                values = WorkflowAuthorityCoordinator.__dict__['__dict__'].__get__(self)
+                failure['previous_owner'] = values.get('_workflow_authority_failure')
+                values['_workflow_authority_failure'] = failure
+                raise _FailureTransport from None
+
+        class _Context:
+            def __enter__(self) -> sqlite3.Connection:
+                try:
+                    return context.__enter__()
+                except _FailureTransport:
+                    pass
+                _, primary, original_traceback = failure['first_error']
+                raise BaseException.with_traceback(primary, original_traceback)
+
+            def __exit__(self, exc_type: object, error: object, traceback: object) -> bool:
+                try:
+                    return context.__exit__(exc_type, error, traceback)
+                except _FailureTransport:
+                    pass
+                _, primary, original_traceback = failure['first_error']
+                if primary is error:
+                    # contextlib sees only the private transport; the real E0
+                    # leaves with its original native traceback and no virtual
+                    # __traceback__ setter, including for default callers.
+                    BaseException.__traceback__.__set__(primary, traceback)
+                    return False
+                raise BaseException.with_traceback(primary, original_traceback)
+
+        context = owned()
+        return _Context()
 
     def recover(self, *, move_invocation: str | None = None) -> str:
         """Reconcile one interrupted publisher using only durable ownership."""

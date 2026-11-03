@@ -479,13 +479,19 @@ actual rollback and attachment failures remain separate native-traceback evidenc
 Coordinator short transactions likewise retain their first error independently
 of fresh admission, including the separately owed lease-release transaction.
 Admission ownership keeps an earlier business error primary beside release,
-rollback and each original fence-exit failure. Local transport avoids virtual
-traceback restoration inside these helpers; diagnostics use no error formatting.
-Nested records link prior records and remain on the original coordinator/frame
-if exception attachment fails. A completed start body keeps its exact result
+rollback and each original fence-exit failure. Local transport includes the public
+admission writer's actual enter/exit: the SAME inbound error leaves with its
+original native traceback, without invoking its virtual traceback setter, for
+selected and default callers. Diagnostics use no error formatting. Nested records
+link prior records and remain on the original coordinator/frame if exception
+attachment fails. Positive rollback/release markers publish last, only after the
+original cleanup and all required secondary, diagnostic and record publications
+succeed; a missing attachment never proves no secondary error. A completed start
+body keeps its exact result
 through original context exits; failed release after COMMIT is failed delivery
 with a committed prefix, never replay or native-retirement permission. Unedited
-outer helpers and the draft-dispatch cancellation bridge remain separate limits.
+publisher/profile interiors and the draft-dispatch cancellation bridge remain
+separate limits.
 Pause's `settle_live` captures the actual active cause by presence, preserving
 that SAME object and original traceback for held-refusal authentication. Its
 private per-call `_pause_settlement_failure` record links prior records and
