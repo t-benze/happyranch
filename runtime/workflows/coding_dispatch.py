@@ -116,9 +116,25 @@ class CodingDispatcher:
                 from runtime.infrastructure.workflow_schema import _read_workflow_schema
                 _read_workflow_schema(conn, expected_org_slug=self.org.slug, budget=budget)
                 conn.commit()
-            except BaseException:
-                conn.rollback()
-                raise
+            except BaseException as primary:
+                original_traceback = BaseException.__traceback__.__get__(primary)
+                # Capture before the one original rollback. The rethrown writer
+                # frame retains this owner even when error attachment fails.
+                failure = dict(connection=conn, first_error=(primary, original_traceback),
+                               rollback_error=None, attachment_error=None, previous=None)
+                try:
+                    conn.rollback()
+                except BaseException as secondary:
+                    failure['rollback_error'] = (secondary, BaseException.__traceback__.__get__(secondary))
+                    try:
+                        values = BaseException.__dict__['__dict__'].__get__(primary)
+                        failure['previous'] = values.get('_coding_writer_failure')
+                        BaseException.__setattr__(primary, '_coding_writer_failure', failure)
+                    except BaseException as attachment:
+                        failure['attachment_error'] = (attachment, BaseException.__traceback__.__get__(attachment))
+                # No exception truth test, formatting or virtual rethrow can
+                # replace the original object or its captured native traceback.
+                raise BaseException.with_traceback(primary, original_traceback)
 
     def require_task_ready(self, task_id: str, *, validate_admission: Callable[[], None] | None = None) -> None:
         validate = coding_admission_validation(self) if validate_admission is None else validate_admission

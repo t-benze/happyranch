@@ -5672,8 +5672,14 @@ caller delivery supplies evidence, not close permission. A recorded native body 
 or exit never fills a missing/cancelled Future or submission acknowledgement, retires
 an owner, permits replay or releases the original queue/org close barriers. Uncertain
 handoffs stay UNKNOWN without resubmission, replacement, repair or invented acknowledgement.
-`_heartbeat` internal catches, CodingDispatcher and helper/outer error and lifetime
-delivery remain ROOT boundaries. The shared OrgState idle guard also checks the original boot-captured
+CodingDispatcher's local `_writer` captures the actual first body/schema/COMMIT
+exception and native traceback before its one original rollback, retains an actual
+rollback error separately, and delivers that same first object without formatting,
+truth tests or virtual exception methods. Prior attachment records remain linked;
+a failed attachment stays in the original writer frame with both actual errors.
+Failed rollback proves no restored transaction, success, no-run, retirement or
+DB-close permission. `_heartbeat` internal catches, other CodingDispatcher
+preparation/terminal and helper/outer/native lifetimes remain ROOT boundaries. The shared OrgState idle guard also checks the original boot-captured
 task queue after its existing thread-release, org-token and runner checks. Retained
 work whose captured attachment is that exact OrgState refuses direct close/remove/
 swap with native_tasks_in_flight, even after token release effects-then-raises,
