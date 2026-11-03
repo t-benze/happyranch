@@ -619,6 +619,12 @@ def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlemen
                     for frame in disposition.lock_frames for record in frame.history))
             if disposition.primary is error:
                 if error is not None:
+                    if not disposition._retention_complete:
+                        # If the exception rejected its attachment, returning
+                        # would discard this raw context owner. A native raise
+                        # keeps this SAME disposition/frame reachable without
+                        # invoking a virtual traceback setter or retrying notes.
+                        raise BaseException.with_traceback(error, disposition.primary_traceback)
                     BaseException.__traceback__.__set__(error, traceback)
                 return False
             if disposition.primary is not None:
