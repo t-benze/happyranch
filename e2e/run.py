@@ -3147,37 +3147,81 @@ class _EvidenceJSON:
             self.error()
         start = self.index + 1
         cursor, size = start, 0
+        chunk_size = slots = pieces = 0
+        literal = False
         while cursor < self.end and self.text[cursor] != '"':
             if cursor % 4096 == 0:
                 self.check()
+            escaped = self.text[cursor] == "\\"
             code, cursor = self.codepoint(cursor)
-            size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if chunk_size + width > 1024:
+                slots = max(slots, pieces)
+                chunk_size = pieces = 0
+                literal = False
+            if escaped or not literal:
+                pieces += 1
+            literal = not escaped
+            chunk_size += width
+            size += width
             if size > 8388608:
                 raise _EvidenceCapacity("JSON scalar capacity refused")
         if cursor >= self.end:
             self.error()
+        slots = max(slots, pieces)
         # Charge decoded storage, chunk references, and join BEFORE decoding.
         chunks = (size + 1020) // 1021
         self.ledger.charge(8 + 2 * size + 8 * chunks, 1 + chunks, self.check)
-        scratch = min(4096, 2 * size)
+        # Fixed local slots avoid growing string/list reconstruction. Pay the
+        # reference storage and initialization independently of retained output.
+        self.ledger.charge(16 * slots + 16 * chunks, 0, self.check)
+        scratch = min(4096, 2 * size) + 8 * slots
         self.ledger.reserve(scratch, 0, self.check)
         try:
-            parts, chunk, chunk_size = [], "", 0
+            parts, fragments = [""] * chunks, [""] * slots
+            count = previous = chunk_size = span_size = part_count = 0
+            span_start = start
+
+            def finish(end: int) -> None:
+                nonlocal count, previous, span_size, part_count
+                if span_size:
+                    self.ledger.charge(span_size + 8, 0, self.check)
+                    fragments[count] = self.text[span_start:end]
+                    count += 1
+                # Shorter chunks must not carry a previous chunk's fragments.
+                self.ledger.charge(8 * max(0, previous - count), 0, self.check)
+                for position in range(count, previous):
+                    fragments[position] = ""
+                self.ledger.charge(8 * slots + 8, 0, self.check)
+                parts[part_count] = "".join(fragments)
+                part_count += 1
+                previous, count, span_size = count, 0, 0
+                self.check()
+
             index = start
             while index < cursor:
+                original = index
                 code, index = self.codepoint(index)
                 width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
                 if chunk_size + width > 1024:
-                    parts.append(chunk)
-                    chunk, chunk_size = "", 0
-                    self.check()
-                # chr storage plus the entire newly reconstructed carry, not
-                # merely the retained chunks/join charged above.
-                self.ledger.charge(chunk_size + 2 * width, 0, self.check)
-                chunk += chr(code)
+                    finish(original)
+                    chunk_size = 0
+                    span_start = original
+                if self.text[original] == "\\":
+                    if span_size:
+                        self.ledger.charge(span_size + 8, 0, self.check)
+                        fragments[count] = self.text[span_start:original]
+                        count += 1
+                        span_size = 0
+                    self.ledger.charge(width + 8, 0, self.check)
+                    fragments[count] = chr(code)
+                    count += 1
+                    span_start = index
+                else:
+                    span_size += width
                 chunk_size += width
-            if chunk:
-                parts.append(chunk)
+            if chunk_size:
+                finish(cursor)
             value = "".join(parts)
             self.index = cursor + 1
         finally:

@@ -384,7 +384,8 @@ def failure_result_controls() -> dict:
     json_cases = {
         'positive': b'{"variants":{},"groups":{"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad","pair":"\\ud83d\\ude00","order":{"b":2,"a":1}}}',
         'byte-bound-positive': b'{\r\n"variants":{},"groups":{"mixed":"'+b'a\xe4\xb8\xad\xf0\x9f\x98\x80\\u00e9'*140+b'","order":{"b":2,"a":1}}\r\n}',
-        'carry-capacity': b'{"variants":{},"groups":{"value":"'+b'a'*16384+b'"}}',
+        'bounded-construction-positive': b'{"variants":{},"groups":{"value":"'+b'a'*16384+b'"}}',
+        'carry-capacity': b'{"variants":{},"groups":{"value":"'+b'\\u0061'*300000+b'"}}',
         'numeric-positive': b'{"variants":{},"groups":[18446744073709551615,-18446744073709551615,-0.0,0.'+b'1'*126+b']}',
         'duplicates': b'{"variants":{},"groups":{"x":1,"x":2}}',
         'escaped-equal': b'{"variants":{},"groups":{"x":1,"\\u0078":2}}',
@@ -416,11 +417,12 @@ def failure_result_controls() -> dict:
             assert not complete and not state['fatal'] and not errors
             assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
             assert not (output/'result.tmp').exists()
-            if case in ('positive','numeric-positive','byte-bound-positive'):
+            if case in ('positive','numeric-positive','byte-bound-positive','bounded-construction-positive'):
                 assert error is None
                 wanted = (json_expected if case == 'positive' else
                           {'variants':{},'groups':{'mixed':'a中😀é'*140,'order':{'b':2,'a':1}}}
-                          if case == 'byte-bound-positive' else {'variants':{},'groups':[
+                          if case == 'byte-bound-positive' else {'variants':{},'groups':{'value':'a'*16384}}
+                          if case == 'bounded-construction-positive' else {'variants':{},'groups':[
                               18446744073709551615,-18446744073709551615,-0.0,0.1111111111111111]})
                 exact(state['safe_scenario'],wanted)
                 for key in wanted: exact(value[key],wanted[key])
