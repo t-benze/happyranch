@@ -2581,6 +2581,13 @@ copies compare every scalar against an original running/oracle row when present.
 The eight SQL JSON-column policies apply only to full owning rows in these
 holders. Missing or foreign late owners refuse the whole member. Partial Cases
 retain only their actual fields; index1 gains no submitted/rejected job.
+Each present parked/live_s2.snapshot/final_snapshot holder contains exactly the
+actual submitted Case jobs in its original Store order; an empty/subset holder
+refuses the whole member. Genuinely absent stages remain partial. Non-null
+pending.audit/oracle.audits/rejection_drain.audits payloads require a direct
+string script_request_id equal to their enclosing submitted job. Approved SQL
+nulls and task-wide snapshot audit payloads keep their separate semantics. Both
+checks use charged private first-scan facts and existing late closure.
 Job out/err and oracle output text remain ordinary literal UTF8/R1. The existing
 C5-Case-* controls compare full independent accepted SQL/SOURCE inputs and prior
 files/output/result/FAIL at four distinct shipping boundaries; absent baseline

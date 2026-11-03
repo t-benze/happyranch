@@ -2554,19 +2554,26 @@ class _EvidenceObservations:
                 self.ledger.charge(64 + 32 * len(c['rows']), 8 + 4 * len(c['rows']), self.check)
                 if len(keys) != 4 or set(keys) != {'tasks','results','audit','jobs'}:
                     raise ValueError('Case complete Store.jobs holder withheld')
-                task_count, previous = 0, None
+                task_count, job_count, previous = 0, 0, None
                 for path, table, _, _, row, _ in c['rows']:
                     if path[:len(base)] != base:
                         continue
                     if table == 'tasks':
                         task_count += 1
                     if table == 'jobs':
+                        self.ledger.charge(8, 1, self.check)
+                        job_count += 1
                         jid = row.get('id')
                         if type(jid) is not str or previous is not None and jid <= previous:
                             raise ValueError('Case original Store.jobs order withheld')
                         previous = jid
                 if task_count != 1:
                     raise ValueError('Case snapshot original task unavailable')
+                # Strict original order excludes duplicates; each row below
+                # must join an actual submitted owner. Equal counts therefore
+                # close the complete membership without rebuilding the array.
+                if job_count != len(owners):
+                    raise ValueError('Case complete Store.jobs membership withheld')
             for path, table, number, holder, row, links in c['rows']:
                 self.ledger.charge(128 + 32 * len(owners), 16 + 4 * len(owners), self.check)
                 if table != 'jobs':
@@ -2578,6 +2585,8 @@ class _EvidenceObservations:
                             or table == 'tasks' and (row.get('assigned_agent') != 'case_manager'
                                 or row.get('current_session_id') not in sessions)
                             or table == 'results' and (row['agent'] != 'case_manager' or row['session_id'] not in sessions)
+                            or table == 'audit' and number is not None and row['payload'] is not None
+                                and 'job' not in links
                             or 'job' in links and (type(links['job']) is not str or links['job'] not in ids
                                 or number is not None and not same(links['job'], jobs[number].get('id')))):
                         raise ValueError('Case SQL complete owner join withheld')

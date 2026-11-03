@@ -771,8 +771,16 @@ manifest, actual canonical submit/id and full script/hash/row comparisons close
 before publication, including late selectors. Each occurrence retains its own
 charged scan and full values/types/key/list order; no second raw tree or decode.
 Null stays null and SQL integer flags stay integers. Actual partial Cases gain
-no absent fields, and index1 has no submitted job. Output text/out/err retain
-ordinary literal/R1 policy. C5-Case-* extends the SAME four-boundary fixture with
+no absent fields, and index1 has no submitted job. Present complete
+parked/live_s2.snapshot/final_snapshot holders require exactly the actual
+submitted jobs, retaining original order and
+full rows; empty/subset holders refuse, while absent stages remain partial.
+Non-null per-job pending.audit/oracle.audits/rejection_drain.audits payloads require
+direct string script_request_id equal to the enclosing submitted job; approved
+SQL-null and task-wide snapshot audit semantics remain. Existing first-scan
+private facts and charged late comparisons close both omission cases. Output
+text/out/err retain ordinary literal/R1 policy. C5-Case-* extends the SAME
+four-boundary fixture with
 complete independent literal expectations and prior file/output/result/FAIL
 preservation. Missing baseline artifacts remain incomplete/TWO REQUIRED-MISSING.
 Receipts in PR1260's case record distinguish actual controls/static results from

@@ -3912,7 +3912,13 @@ def failure_result_controls() -> dict:
                 results[label] = 'entire independent selected Case SOURCE/full SQL rows/types/order/nulls/original framing retained; prior files/tree/result/FAIL exact; incomplete baseline remains TWO REQUIRED-MISSING; native NOT RUN'
 
     case_holders = ('parked','live_s2','final_snapshot','running','pending','oracle','rejection_drain')
-    case_refusals = ['missing-'+k for k in ('method','index','variant','source_sha','task','starts','jobs','manifest','submit','script','script_sha256','job-id')]
+    case_missing_jobs = {f'{holder}-missing-job-index{index}': (holder,index)
+                         for holder in ('parked','live_s2','final_snapshot') for index in (0,4,5)}
+    # Omitted membership reaches R1 first on the original predicate; after R1
+    # alone is repaired, omitted per-job audit identity reaches R2 independently.
+    case_refusals = list(case_missing_jobs) + [holder+'-audit-missing-job'
+                        for holder in ('pending','oracle','rejection_drain')]
+    case_refusals += ['missing-'+k for k in ('method','index','variant','source_sha','task','starts','jobs','manifest','submit','script','script_sha256','job-id')]
     case_refusals += ['wrong-'+k for k in ('method','index','variant','source_sha','task','start','job-id','root','script','script_sha256')]
     case_refusals += ['index-bool','index1-job','start-copy','start-missing-fact','source-hash-only','row-script-content',
         'script-type','script-second-layer','script-secret','script-hash-type','row-flag-bool','row-review-bool','row-max-bytes-bool','row-exit-bool','row-missing-field',
@@ -3930,11 +3936,19 @@ def failure_result_controls() -> dict:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
-                image = case_input(root,late=True)
+                image = case_input(root,case_missing_jobs[case_name][1] if case_name in case_missing_jobs else 0,late=True)
                 case = image['durable'][0]['jobs_cases'][0]; job = case['jobs'][0]
                 snapshot = case['final_snapshot']; sql_job = job['oracle']['row']
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
-                if column_case:
+                if case_name in case_missing_jobs:
+                    holder,_ = case_missing_jobs[case_name]
+                    selected = case['live_s2']['snapshot'] if holder == 'live_s2' else case[holder]
+                    selected['jobs'].pop()
+                elif case_name in ('pending-audit-missing-job','oracle-audit-missing-job','rejection_drain-audit-missing-job'):
+                    holder = case_name.removesuffix('-audit-missing-job')
+                    audit = job['pending'][0]['audit'][0] if holder == 'pending' else job[holder]['audits'][0]
+                    audit['payload'] = json.dumps(dict(message='quote" LF\n 中'))
+                elif column_case:
                     table,column,top,form = column_case
                     if form == 'missing': del snapshot[table][0][column]
                     else: snapshot[table][0][column] = {'bool':True,'number':0,'container':{},'wrong-top':'[]' if top == '{' else '{}'}[form]
