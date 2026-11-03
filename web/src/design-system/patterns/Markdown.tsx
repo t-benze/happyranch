@@ -45,9 +45,10 @@ interface SourceNode {
 }
 
 /**
- * A fence info string starting with `<` is markup typed on the opening line
- * (```<a href…>…</a>), never a language: show that raw line as the first code
- * line instead of dropping it into lang/meta. Rendered as text, never HTML.
+ * Local recovery convention: the parser accepts an info string starting with
+ * `<` as lang/meta, but here it is treated as markup typed on the opening line
+ * (```<a href…>…</a>). Show that raw source line, minus fence and leading
+ * whitespace (trailing spaces/tabs kept), as the first code line. Text, never HTML.
  */
 function remarkOpeningLineMarkup() {
   return (tree: SourceNode, file: { value: unknown }) => {
@@ -55,8 +56,8 @@ function remarkOpeningLineMarkup() {
     const visit = (node: SourceNode) => {
       if (node.type === 'code' && node.lang?.startsWith('<')) {
         const start = node.position?.start.offset;
-        const line = start === undefined ? undefined : source.slice(start).split('\n', 1)[0];
-        const info = line?.replace(/^[ \t]*(`{3,}|~{3,})[ \t]*/, '').trimEnd() ?? [node.lang, node.meta].filter(Boolean).join(' ');
+        const line = start === undefined ? undefined : source.slice(start).split(/\r\n|\r|\n/, 1)[0];
+        const info = line?.replace(/^[ \t]*(`{3,}|~{3,})[ \t]*/, '') ?? [node.lang, node.meta].filter(Boolean).join(' ');
         node.value = node.value ? `${info}\n${node.value}` : info;
         node.lang = null;
         node.meta = null;

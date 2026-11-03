@@ -47,8 +47,22 @@ describe('Markdown', () => {
     expect(ordinary.textContent).toBe('const x = 1;\n');
   });
 
+  // TASK-13896 F1: the opening line ends at the first LF, CRLF or bare CR; source offsets stay raw.
+  it.each([['LF', '\n'], ['CRLF', '\r\n'], ['CR', '\r']])('recovers only the opening line with %s endings', (_name, nl) => {
+    const view = render(<Markdown body={['```<b>x</b>', 'body', '```', '', 'After @Current'].join(nl)} threadMentions />);
+    const codes = view.container.querySelectorAll('pre code');
+    expect(codes).toHaveLength(1);
+    expect(codes[0].textContent).toBe('<b>x</b>\nbody\n');
+    expect([...view.container.querySelectorAll('.gl-prose > p')].map(p => p.textContent)).toEqual(['After @Current']);
+    expect([...view.container.querySelectorAll('[data-thread-mention]')].map(n => n.textContent)).toEqual(['@Current']);
+    expect(view.container.querySelector('.gl-prose b, script')).toBeNull();
+  });
+
   it.each([
     ['~~~<b>x</b>\nbody\n~~~', '<b>x</b>\nbody\n', null],
+    ['```<b>x</b>  \t\n```', '<b>x</b>  \t\n', null],
+    ['``` <b>x</b> \t\nbody\n```', '<b>x</b> \t\nbody\n', null],
+    ['```ts title="<b>"\nlet y\n```', 'let y\n', 'language-ts'],
     ['```html\n<a href="x">y</a>\n```', '<a href="x">y</a>\n', 'language-html'],
     ['```ts title="a b"\nlet y\n```', 'let y\n', 'language-ts'],
     ['```\n```', '', null],
