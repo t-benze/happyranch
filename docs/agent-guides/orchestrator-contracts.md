@@ -5142,7 +5142,15 @@ or reference drift there rolls back only original uncommitted work. A successful
 COMMIT followed by refusal retains its committed prefix and native ownership.
 Selected metadata reads preserve the exact original BaseException and traceback
 through their once-only rollback and every independently owed outer fence exit;
-actual cleanup failures/tracebacks remain separately retained evidence.
+actual cleanup failures/tracebacks remain separately retained evidence. The selected
+support, role/binding and settings async contexts capture native traceback and
+message arguments before virtual operations, then unwind each positively acquired
+original exit independently in reverse order. A private profile signal carries the
+captured cause through the unchanged profile generators; actual errors never cross
+selected generator/ExitStack restoration. Repeated thrown occurrences have distinct
+records linked to their previous same-error owner and nested frames; boundary
+re-observations are identified separately. Failed attachment/diagnostic delivery
+retains the raw frame and cannot replace the first cause.
 The coordinator's short lease/business transactions preserve the FIRST actual
 error even without an admission validator, with one marked rollback attempt.
 An earlier business E0 stays primary beside release E1 and its rollback E2;
@@ -5156,8 +5164,14 @@ diagnostic/attachment failures remain separate, with prior nested records and
 original coordinator/frame fallback. Other no-validator reader contracts remain
 unchanged. Settings validation-only no-effect classification needs
 positive original rollback AND positive lease release, the exact selected body
-exception, no active transaction and no secondary cleanup evidence. Each owner's
-positive marker is its final publication, after all required diagnostics and
+exception, no active transaction and no current secondary cleanup evidence. A
+pre-business selected refusal additionally requires its own completed access frame,
+including every original read rollback and async/binding/fence exit. Stale exception
+markers, absent notes and an ended transaction cannot certify that interval. The
+original native writer captures admission, body and settlement errors before virtual
+access, retains every later occurrence beside its compatible first-per-kind slots,
+and keeps the same reservation and settlement predicates for default/selected
+callers. Each owner's positive marker is its final publication, after all required diagnostics and
 record attachments succeed. A failed exception attachment retains each actual
 occurrence/native traceback on the same owner/frame and withholds that marker;
 missing attached evidence never proves no later error. Exception identity or an

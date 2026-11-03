@@ -185,6 +185,14 @@ its actual outer exit without a virtual traceback setter. Positive rollback and
 release evidence publishes only after cleanup and required diagnostics/record
 attachments succeed; any genuine later failure withholds that owner's marker,
 including a failed exception attachment retained on the original owner/frame.
+Selected metadata read, role/binding and settings access contexts also preserve the
+actual cause outside generator/ExitStack restoration and attempt each positively
+acquired original exit once in reverse order. Pre-business no-effect requires the
+same error's own completed access frame and positive read rollback/exit evidence;
+stale markers, an ended transaction or absent notes cannot qualify it. The original
+native writer captures actual admission/body/settlement errors and native tracebacks
+before virtual access, retaining repeated later occurrences and prior/nested frames
+beside unchanged first-per-kind fields, reservation and settlement predicates.
 The original start body result is captured before existing context exits and
 returned only after they succeed. A release failure after business COMMIT keeps
 that exact value as failure-frame evidence and the committed prefix; it grants

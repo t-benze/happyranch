@@ -11,13 +11,13 @@ import base64
 import json
 import sqlite3
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable
 
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
-from runtime.workflows._coding_import_support import CodingImportSupport, _capture
+from runtime.workflows._coding_import_support import CodingImportSupport, _CodingReadFrame, _capture
 from runtime.workflows._coding_role_admission import capture_body, native_owner
 from runtime.workflows._coding_settings_execution import _read_json
 from runtime.workflows._coding_settings_records import account
@@ -90,36 +90,62 @@ class CodingRoleStore:
                     current = None
             return current, revise_limit
 
-    @asynccontextmanager
-    async def _access(self, principal: WorkflowTemplatePrincipal, *,
-                      validate_admission: Callable[[], None] | None = None) -> AsyncIterator:
+    def _access(self, principal: WorkflowTemplatePrincipal, *,
+                validate_admission: Callable[[], None] | None = None) -> AbstractAsyncContextManager:
         """Sole service lock owner: authority -> teams -> DB -> binding/read.
 
         Public callers stream outside this interval. Existing roster writers and
         their awaited bootstrap/compensation retain their authority-first owner.
         Neither direct callers nor routes may enter with teams/authority held.
         """
-        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
-        self._principal(principal, validate_admission=validate)
-        references = self.support._schema_references()
-        async with self.org.workflow_authority._async_writer_lock:
-            validate()
-            self._principal(principal, validate_admission=validate)
-            # Native checks keep DB -> binding ordering even at the first
-            # checkpoint. Release DB before waiting for teams; existing team
-            # writers may need it while finishing their authority interval.
-            async with self.org.db_lock:
-                validate()
-                self._checkpoint(principal, references, validate_admission=validate)
-            async with self.org.teams_lock:
-                validate()
-                self._principal(principal, validate_admission=validate)
-                async with self.org.db_lock:
+        store = self
+
+        class _Access:
+            async def __aenter__(self) -> tuple:
+                self.frame = frame = _CodingReadFrame(store.support)
+                try:
+                    validate = self.validate = coding_admission_validation(store) if validate_admission is None else validate_admission
+                    store._principal(principal, validate_admission=validate)
+                    references = store.support._schema_references()
+                    await frame.aenter(store.org.workflow_authority._async_writer_lock, 'authority async exit')
                     validate()
-                    capture, revise_limit = self._checkpoint(principal, references, validate_admission=validate)
+                    store._principal(principal, validate_admission=validate)
+                    # Same initial DB -> binding checkpoint, then release DB
+                    # before waiting for teams. No binding lease spans an await.
+                    await frame.aenter(store.org.db_lock, 'initial database async exit')
                     validate()
-                    yield references, capture, revise_limit, validate
+                    store._checkpoint(principal, references, validate_admission=validate)
+                    await frame.aclose_one()
+                    if frame.primary is not None:
+                        frame.deliver()
+                    await frame.aenter(store.org.teams_lock, 'teams async exit')
                     validate()
+                    store._principal(principal, validate_admission=validate)
+                    await frame.aenter(store.org.db_lock, 'database async exit')
+                    validate()
+                    capture, revise_limit = store._checkpoint(principal, references, validate_admission=validate)
+                    validate()
+                    return references, capture, revise_limit, validate
+                except BaseException as error:
+                    frame.record('role access acquisition observation', error)
+                await self.__aexit__(None, None, None)
+                raise AssertionError('unreachable selected role access failure')
+
+            async def __aexit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+                frame = self.frame
+                if error is not None:
+                    frame.record('role access body observation', error)
+                elif frame.primary is None:
+                    try:
+                        self.validate()
+                    except BaseException as validation:
+                        frame.record('role access final validation', validation)
+                while frame.pending:
+                    await frame.aclose_one()
+                frame.finish()
+                return frame.deliver(error, traceback)
+
+        return _Access()
 
     def _structure(self, conn: sqlite3.Connection, references: tuple[str, ...]) -> None:
         from runtime.infrastructure.workflow_schema import _read_structure
@@ -129,19 +155,39 @@ class CodingRoleStore:
         if not coding:
             raise CodingRoleError('coding_role_schema_required')
 
-    @contextmanager
     def _read(self, principal: WorkflowTemplatePrincipal, capture: AuthorityAdmissionCapture | None,
               references: tuple[str, ...], *, budget: _Budget | None = None,
-              validate_admission: Callable[[], None] | None = None) -> Iterator:
+              validate_admission: Callable[[], None] | None = None) -> AbstractContextManager:
         # Never hold the native threading binding lease across an await.
-        validate = coding_admission_validation(self) if validate_admission is None else validate_admission
-        validate()
-        with self.org.sessions._get_binding_lease(principal.task_id, principal.principal_id):
-            self._principal(principal, validate_admission=validate)
-            with self.support._read(capture, validate_admission=validate) as (conn, current):
-                self._structure(conn, references)
-                native_owner(self.org, principal, conn, budget=budget)  # Before private decoding.
-                yield conn, current
+        store = self
+
+        class _Read:
+            def __enter__(self) -> tuple:
+                self.frame = frame = _CodingReadFrame(store.support)
+                try:
+                    validate = coding_admission_validation(store) if validate_admission is None else validate_admission
+                    validate()
+                    frame.enter(store.org.sessions._get_binding_lease(principal.task_id, principal.principal_id), 'binding exit')
+                    store._principal(principal, validate_admission=validate)
+                    conn, current = frame.enter(store.support._read(capture, validate_admission=validate), 'selected read exit')
+                    store._structure(conn, references)
+                    native_owner(store.org, principal, conn, budget=budget)  # Before private decoding.
+                    return conn, current
+                except BaseException as error:
+                    frame.record('role read acquisition observation', error)
+                self.__exit__(None, None, None)
+                raise AssertionError('unreachable selected role read failure')
+
+            def __exit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+                frame = self.frame
+                if error is not None:
+                    frame.record('role read body observation', error)
+                while frame.pending:
+                    frame.close_one()
+                frame.finish()
+                return frame.deliver(error, traceback)
+
+        return _Read()
 
     def _storage(self, conn: sqlite3.Connection, references: tuple[str, ...], *,
                  budget: _Budget | None = None) -> _CodingInventory:

@@ -486,7 +486,15 @@ selected and default callers. Diagnostics use no error formatting. Nested record
 link prior records and remain on the original coordinator/frame if exception
 attachment fails. Positive rollback/release markers publish last, only after the
 original cleanup and all required secondary, diagnostic and record publications
-succeed; a missing attachment never proves no secondary error. A completed start
+succeed; a missing attachment never proves no secondary error. Selected coding
+read/role/binding/settings contexts preserve native first-cause custody outside
+unsafe generator/ExitStack restoration and independently unwind their original
+positively acquired exits. Pre-business no-effect requires that same interval's
+complete access/read rollback/exit evidence, never stale error markers or absence
+of notes. The native writer captures actual later settlement errors before virtual
+traceback/diagnostic access; its distinct occurrence and prior/nested-frame records
+supplement the compatible first-per-kind fields without changing reservation or
+settlement predicates. A completed start
 body keeps its exact result
 through original context exits; failed release after COMMIT is failed delivery
 with a committed prefix, never replay or native-retirement permission. Unedited

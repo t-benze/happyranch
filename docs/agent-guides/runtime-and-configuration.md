@@ -1387,8 +1387,13 @@ queue preparation, selected reads, settings/import/mapping writers, advancement 
 startup admission through original awaited and authority/Pause/registry owners.
 Coding settings classifies validation rejection as native no-effect only after
 original rollback and lease release complete: the same validation exception,
-no active transaction and no exception notes or secondary cleanup evidence are
-required. Each positive marker publishes last, after the original cleanup and
+no active transaction and no current secondary cleanup evidence are required.
+Pre-business rejection uses the positively completed ORIGINAL selected access frame,
+including its read rollback and independently owed exits, rather than absent notes
+or stale error attributes. Selected read/role/settings contexts keep the actual cause
+outside generator/ExitStack restoration; the native writer captures later settlement
+errors natively before diagnostics and preserves its original reservation/predicates.
+Each positive marker publishes last, after the original cleanup and
 all required diagnostic/record attachments succeed. A failed attachment retains
 its actual occurrence on the original owner/frame and withholds certification;
 absence of attached evidence never proves no error. Preserved cleanup secondaries

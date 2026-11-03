@@ -336,26 +336,30 @@ class NativeWriterDisposition:
         self.primary = self.primary_traceback = None
         self.previous = None  # Earlier actual writer intervals on this SAME E1.
         self._retained = False
+        self._primary_attachment_attempted = False
         self.errors = dict.fromkeys(("settlement", "note", "diagnostic"))
         self.error_tracebacks = self.errors.copy()
+        self.occurrences = []
+        self._last_occurrences = {}
+        self.lock_frames = []
+        self._retention_complete = True
+        self.evidence_complete = False
 
     def retain(self, primary, kind, error):
-        if self.primary is None:
-            self.primary, self.primary_traceback = primary, primary.__traceback__
-        if self.errors[kind] is None:
-            self.errors[kind], self.error_tracebacks[kind] = error, error.__traceback__
+        # Capture the actual later occurrence BEFORE touching even the primary.
+        # In particular an opaque settlement E1 cannot disappear behind its
+        # virtual traceback getter while an earlier body E0 is being delivered.
+        _native_writer_record(self, kind, error)
+        self.evidence_complete = False
+        self.uncertain = True
+        if self.primary is None or not self._primary_attachment_attempted:
+            _native_writer_record(self, 'primary observation', primary, primary=True, observation=True)
         try:
-            if not self._retained:
-                try:
-                    self.previous = BaseException.__getattribute__(primary, "_native_writer_disposition")
-                except AttributeError:
-                    pass
-                BaseException.__setattr__(primary, "_native_writer_disposition", self)
-                self._retained = True
             BaseException.add_note(primary, "native writer later failure retained by original disposition")
         except BaseException as diagnostic:
-            if self.errors["note"] is None:
-                self.errors["note"], self.error_tracebacks["note"] = diagnostic, diagnostic.__traceback__
+            _native_writer_record(self, 'note', diagnostic, attach=False)
+            self._retention_complete = False
+            self.uncertain = True
 
     @contextmanager
     def validation(self):
@@ -364,6 +368,105 @@ class NativeWriterDisposition:
         except Exception as exc:
             self.no_effect_error = exc
             raise
+
+
+def _native_writer_record(disposition: NativeWriterDisposition, kind: str, error: BaseException, *,
+                          primary: bool = False, observation: bool = False, attach: bool = True) -> dict:
+    """Original native-writer occurrence custody; fixed slots remain first-only."""
+    record = dict(kind=kind, error=error,
+        traceback=BaseException.__traceback__.__get__(error),
+        arguments=BaseException.args.__get__(error), observation=observation,
+        previous=None, previous_owner=None, nested=None)
+    disposition.occurrences.append(record)
+    if primary and disposition.primary is None:
+        disposition.primary, disposition.primary_traceback = error, record['traceback']
+    if kind in disposition.errors and disposition.errors[kind] is None:
+        disposition.errors[kind], disposition.error_tracebacks[kind] = error, record['traceback']
+    values = BaseException.__dict__['__dict__'].__get__(error)
+    record['previous'] = disposition._last_occurrences.get(id(error), values.get('_native_writer_occurrence'))
+    disposition._last_occurrences[id(error)] = record  # Link, never deduplicate.
+    record['previous_owner'] = values.get('_native_writer_disposition')
+    record['nested'] = (values.get('_coding_read_frame'), values.get('_workflow_authority_failure'))
+    if not attach:
+        return record
+    try:
+        if error is disposition.primary:
+            disposition._primary_attachment_attempted = True
+        if error is disposition.primary and not disposition._retained:
+            disposition.previous = next((r['previous_owner'] for r in disposition.occurrences
+                if r['error'] is error and r['previous_owner'] is not disposition), None)
+        BaseException.__setattr__(error, '_native_writer_occurrence', record)
+        BaseException.__setattr__(error, '_native_writer_disposition', disposition)
+        if error is disposition.primary:
+            disposition._retained = True
+    except BaseException as attachment:
+        # The raw disposition/context/frame remains reachable. Never recursively
+        # retry a failed attachment or let it replace the captured first cause.
+        _native_writer_record(disposition, 'note', attachment, attach=False)
+        disposition._retention_complete = False
+        disposition.uncertain = True
+    return record
+
+
+class _NativeWriterLocks:
+    """Only native_writer's original gate/RLock exits, each independently owed."""
+    def __init__(self, disposition: NativeWriterDisposition, phase: str, *contexts: Any) -> None:
+        self.disposition, self.phase, self.contexts = disposition, phase, contexts
+        self.exits = []
+        self.history = []
+        disposition.lock_frames.append(self)
+        self.body_record = None
+        self.first = self.traceback = None
+
+    def _record(self, error: BaseException, *, observation: bool = False) -> None:
+        # This leaf runs at the actual lock/body failure, before any transport.
+        if self.first is None:
+            self.first, self.traceback = error, BaseException.__traceback__.__get__(error)
+        if observation:
+            _native_writer_record(self.disposition, self.phase + ' observation', error,
+                observation=True, attach=False)
+        elif self.disposition.primary is None:
+            _native_writer_record(self.disposition, self.phase, error, primary=True)
+        else:
+            self.disposition.retain(self.disposition.primary, self.phase, error)
+
+    def __enter__(self) -> _NativeWriterLocks:
+        try:
+            for context in self.contexts:
+                kind = type(context)
+                record = dict(context=context, exit=kind.__exit__, acquired=False, attempted=False, returned=False)
+                self.exits.append(record)
+                self.history.append(record)
+                kind.__enter__(context)
+                record['acquired'] = True
+            return self
+        except BaseException as error:
+            self._record(error)
+        self.__exit__(None, None, None)
+
+    def __exit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+        if error is not None:
+            self._record(error, observation=self.body_record is not None and self.body_record['error'] is error)
+        while self.exits:
+            record = self.exits.pop()
+            if not record['acquired']:
+                self.disposition.uncertain = True
+                continue
+            args = ((None, None, None) if self.first is None
+                    else (type(self.first), self.first, self.traceback))
+            try:
+                record['attempted'] = True
+                record['exit'](record['context'], *args)
+                record['returned'] = True
+            except BaseException as later:
+                self._record(later)
+        if self.first is error:
+            if error is not None:
+                BaseException.__traceback__.__set__(error, traceback)
+            return False
+        if self.first is not None:
+            raise BaseException.with_traceback(self.first, self.traceback)
+        return False
 
 
 @contextmanager
@@ -393,106 +496,136 @@ def producer_preparation_effects(owner):
         _current.reset(token)
 
 
-@contextmanager
 def native_writer(db, *, publisher, agents=(), teams=(), durable=True, settlement=False, validate_admission=None):
-    """Reservation only, never a gate/DB lock across the writer body.
+    """Reserve the SAME native writer; explicit context keeps real errors native.
 
-    The caller retains its existing profile/workflow/roster/store lock order.
-    Unscoped canonical changes invalidate org-wide snapshot inputs and reserve
-    that input. This does not authorize D to borrow an existing journal.
+    Durable registration/settlement and their predicates are unchanged. No real
+    body error crosses generator or ExitStack traceback restoration.
     """
-    if validate_admission is not None:
-        validate_admission()
     disposition = NativeWriterDisposition()
-    admission = owner_for(db)
-    if validate_admission is not None:
-        validate_admission()
-    if admission is None:
-        yield disposition
-        return
-    with db._lock:
-        registry = admission.move._teams_reader() if admission.move._teams_reader else None
-        member_teams = set(teams)
-        unknown_membership = False
-        for agent in agents:
-            team = None if registry is None else (registry.team_for_agent(agent) or registry.team_for_manager(agent))
-            if team is not None:
-                member_teams.add(team)
-            elif not teams:
-                unknown_membership = True
-        teams = tuple(sorted(member_teams))
-    key = uuid.uuid4().hex
-    state = NativeWriterLifecycle(org_slug=admission.move.store.org_slug,
-        writer_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
-    # Native terminal recovery already owns publisher/DB; its leaf check is
-    # serialized against the operation's SAME DB COMMIT without reverse gate.
-    gate = nullcontext() if db._lock._is_owned() else admission.move.gate
-    with gate, db._lock:
-        if validate_admission is not None:
-            validate_admission()
-        if not settlement:
-            admission.check_uncommitted(agents=agents, teams=teams, global_write=unknown_membership or not (agents or teams))
-        if durable:
-            admission.write_writer(state, validate_admission=validate_admission)
-            disposition.writer_id = key
-        try:
-            if validate_admission is not None:
-                validate_admission()
-        except BaseException as exc:
-            disposition.primary, disposition.primary_traceback = exc, exc.__traceback__
-            # COMMIT succeeded, but no live publication or caller body began.
-            # Settle only THIS exact active reservation, independently of fresh
-            # admission. A failed proof/save retains its durable active owner.
-            if durable:
-                try:
-                    if admission.writer_store.history_uncommitted().get(key) != state:
-                        raise DeferredTeamMove('team_move_writer_owner_changed')
-                    admission.write_writer(state.model_copy(update={'state': 'settled'}))
-                except BaseException as secondary:
-                    disposition.uncertain = True
-                    # The registry is also the existing uncertainty barrier.
-                    # Retain failed settlement custody, never admitted body
-                    # publication (even if the settlement COMMIT is uncertain).
-                    admission.writers[key] = dict(
-                        owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams),
-                        admitted=False, admission_error=exc, settlement_error=secondary,
-                    )
-                    admission.writer_epoch += 1
-                    disposition.retain(exc, "settlement", secondary)
-                    try:
-                        logger.exception('Retaining committed native writer %s after admission refusal', key)
-                    except BaseException as diagnostic:
-                        disposition.retain(exc, "diagnostic", diagnostic)
-                    BaseException.__setattr__(exc, "__traceback__", disposition.primary_traceback)
-            raise
-        admission.writer_epoch += 1
-        admission.writers[key] = dict(owner_id=key, publisher=publisher, agents=tuple(agents), teams=tuple(teams))
-    primary = None
-    try:
-        yield disposition
-    except BaseException as exc:
-        primary = exc
-        disposition.primary, disposition.primary_traceback = exc, exc.__traceback__
-        raise
-    finally:
-        try:
-            with db._lock:
-                # Owed settlement stays ungated. Failure retains the original
-                # registry/audit owner; diagnostics cannot replace body E1.
-                if durable:
-                    unknown = disposition.uncertain or (primary is not None and primary is not disposition.no_effect_error)
-                    admission.write_writer(state.model_copy(update={'state': 'unknown' if unknown else 'settled'}))
-                admission.writers.pop(key, None)
-                admission.writer_epoch += 1
-        except BaseException as settlement:
-            if primary is None:
-                raise
-            disposition.retain(primary, "settlement", settlement)
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.admission = self.state = self.key = None
+            self.entered = self.exited = False
+            self.enter_attempted = False
+
+        def __enter__(self) -> NativeWriterDisposition:
+            if self.enter_attempted:
+                disposition.evidence_complete = False
+                disposition.uncertain = True
+                disposition.no_effect_error = None
+                raise RuntimeError('native writer context already entered')
+            self.enter_attempted = True
             try:
-                logger.exception('Retaining native writer ownership after evidence failure')
-            except BaseException as diagnostic:
-                disposition.retain(primary, "diagnostic", diagnostic)
-            BaseException.__setattr__(primary, "__traceback__", disposition.primary_traceback)
+                if validate_admission is not None:
+                    validate_admission()
+                admission = self.admission = owner_for(db)
+                if validate_admission is not None:
+                    validate_admission()
+                if admission is None:
+                    self.entered = True
+                    return disposition
+                with _NativeWriterLocks(disposition, 'admission', db._lock):
+                    registry = admission.move._teams_reader() if admission.move._teams_reader else None
+                    member_teams = set(teams)
+                    unknown_membership = False
+                    for agent in agents:
+                        team = None if registry is None else (registry.team_for_agent(agent) or registry.team_for_manager(agent))
+                        if team is not None:
+                            member_teams.add(team)
+                        elif not teams:
+                            unknown_membership = True
+                    selected_teams = tuple(sorted(member_teams))
+                key = self.key = uuid.uuid4().hex
+                state = self.state = NativeWriterLifecycle(org_slug=admission.move.store.org_slug,
+                    writer_id=key, publisher=publisher, agents=tuple(agents), teams=selected_teams)
+                gate = nullcontext() if db._lock._is_owned() else admission.move.gate
+                with _NativeWriterLocks(disposition, 'admission', gate, db._lock) as locks:
+                    if validate_admission is not None:
+                        validate_admission()
+                    if not settlement:
+                        admission.check_uncommitted(agents=agents, teams=selected_teams,
+                            global_write=unknown_membership or not (agents or selected_teams))
+                    if durable:
+                        admission.write_writer(state, validate_admission=validate_admission)
+                        disposition.writer_id = key
+                    try:
+                        if validate_admission is not None:
+                            validate_admission()
+                    except BaseException as exc:
+                        locks.body_record = _native_writer_record(disposition, 'admission refusal', exc, primary=True)
+                        # Only this exact committed reservation, without fresh
+                        # admission or a substitute owner, may be settled here.
+                        if durable:
+                            try:
+                                if admission.writer_store.history_uncommitted().get(key) != state:
+                                    raise DeferredTeamMove('team_move_writer_owner_changed')
+                                admission.write_writer(state.model_copy(update={'state': 'settled'}))
+                            except BaseException as secondary:
+                                disposition.retain(exc, 'settlement', secondary)
+                                disposition.uncertain = True
+                                admission.writers[key] = dict(owner_id=key, publisher=publisher,
+                                    agents=tuple(agents), teams=selected_teams, admitted=False,
+                                    admission_error=exc, settlement_error=secondary)
+                                admission.writer_epoch += 1
+                                try:
+                                    logger.exception('Retaining committed native writer %s after admission refusal', key)
+                                except BaseException as diagnostic:
+                                    disposition.retain(exc, 'diagnostic', diagnostic)
+                        raise
+                    admission.writer_epoch += 1
+                    admission.writers[key] = dict(owner_id=key, publisher=publisher,
+                        agents=tuple(agents), teams=selected_teams)
+                self.entered = True
+                return disposition
+            except BaseException as error:
+                # Lock owners already captured their occurrences. This is an
+                # explicit outer observation, never a second thrown occurrence.
+                _native_writer_record(disposition, 'admission observation', error,
+                    primary=True, observation=True, attach=False)
+            raise BaseException.with_traceback(disposition.primary, disposition.primary_traceback)
+
+        def __exit__(self, kind: Any, error: BaseException | None, traceback: Any) -> bool:
+            if error is not None:
+                _native_writer_record(disposition, 'body', error, primary=True)
+            # An unreturned enter owes no new settlement; repeated __exit__ does
+            # not replay the original once-only operation.
+            closing = self.entered and not self.exited
+            if closing:
+                self.exited = True
+                admission, state, key = self.admission, self.state, self.key
+                if admission is not None:
+                    try:
+                        with _NativeWriterLocks(disposition, 'settlement', db._lock):
+                            if durable:
+                                unknown = disposition.uncertain or (error is not None and error is not disposition.no_effect_error)
+                                admission.write_writer(state.model_copy(update={'state': 'unknown' if unknown else 'settled'}))
+                            admission.writers.pop(key, None)
+                            admission.writer_epoch += 1
+                    except BaseException as settlement_error:
+                        _native_writer_record(disposition, 'settlement observation', settlement_error,
+                            primary=True, observation=True, attach=False)
+                        disposition.uncertain = True
+                        if error is not None:
+                            try:
+                                logger.exception('Retaining native writer ownership after evidence failure')
+                            except BaseException as diagnostic:
+                                disposition.retain(disposition.primary, 'diagnostic', diagnostic)
+            disposition.evidence_complete = (closing and self.exited and disposition._retention_complete
+                and not disposition.uncertain and all(e is None for e in disposition.errors.values())
+                and (disposition.primary is None or disposition.primary is disposition.no_effect_error)
+                and all(record['attempted'] and record['returned']
+                    for frame in disposition.lock_frames for record in frame.history))
+            if disposition.primary is error:
+                if error is not None:
+                    BaseException.__traceback__.__set__(error, traceback)
+                return False
+            if disposition.primary is not None:
+                raise BaseException.with_traceback(disposition.primary, disposition.primary_traceback)
+            return False
+
+    return _Writer()
 
 
 class ProducerPreparation:
