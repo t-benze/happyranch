@@ -2408,7 +2408,17 @@ at the maintenance/idle/detach/DB-close barrier. It continues all independently
 owed original child joins and an otherwise authorized root tail before propagating
 the first cause; a failed sweep still suppresses the ENTIRE root DB batch,
 including admission/report. Unknown native custody stops dependent periodic
-activity. No retry, new sweep or allowance follows. Safe/preserved/deferred are
+activity. The inner periodic sweep retains its actual first error/native traceback
+and original manifest before attempting reset once. The caller consumes that
+record before deferred-context exit and retains the original helper frame/ledger
+through attachment failure. Body E1 precedes reset E2; reset-only E2 is primary.
+Either reset or manifest-delivery failure suppresses root-batch entry entirely,
+while the original committed child joins continue once in order. Actual later
+reset, retention, attachment and delivery failures remain separately reachable;
+same-object throws keep distinct native snapshots and delivered occurrences are
+observations. Final local delivery uses the native base implementation. Clean
+success and warm-up keep their original batch eligibility and exact returns.
+No retry, new sweep or allowance follows. Safe/preserved/deferred are
 local dispositions, not host closure. This S1a source correction has behavior
 NOT RUN / PROOF NOT RUN; wider shutdown and operator acceptance stay open.
 

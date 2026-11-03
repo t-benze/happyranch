@@ -463,7 +463,18 @@ finally or cancellation outcomes, remain independently attributed; bounded notes
 cannot replace E1 or hide an actual later error. An already observed/retained
 failure precedes later waiter cancellation; otherwise the first cancellation
 keeps its original traceback while repeated cancellation still joins the SAME
-owned completion. Capture the original owned connection and real Boolean
+owned completion. The periodic sweep captures its inner cause and original
+transition manifest before its one context reset. Body E1 remains primary beside
+reset E2; reset-only E2 is primary. Its caller retains that same record and the
+original deferred-context frame before delivery, consumes the inner error before
+context exit, and retains the helper's actual ledger even on failed attachment.
+Either reset or failed manifest delivery suppresses all root-batch entry,
+including admission/audit/report; every original committed child still joins once
+in order. Separate same-object throws retain their native traceback occurrences;
+delivering a retained occurrence is an attributed observation. Retention and
+diagnostic failures remain on the same record/frame; native base rethrow avoids
+virtual traceback restoration. Clean and warm-up returns retain their original
+batch eligibility. Capture the original owned connection and real Boolean
 transaction state before fallible classification or effects. Caller BEGIN or
 SAVEPOINT is never consumed by owned cleanup. Mark each original rollback
 obligation before its at-most-once attempt. Only successful owned PRECOMMIT

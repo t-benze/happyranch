@@ -322,7 +322,14 @@ inline hook, including audit failure. Callers without an orchestrator retain
 original audit/error behavior.
 Every captured committed child is joined on success or exceptional unwind,
 including failed v2/legacy parent publication. An ended child error/cancellation
-does not skip later children or the root batch. An earlier sweep/audit/publication
+does not skip later children or a root batch still authorized by a successful
+sweep and its original context exits. The inner sweep retains its first actual
+error/native traceback and manifest before reset; body E1 precedes reset E2,
+and reset-only E2 is primary. The caller consumes that same record before its
+deferred-context exit, retaining the actual helper frame/ledger if attachment
+fails. A failed sweep, either reset or manifest delivery suppresses ALL root-batch
+entry, including admission/audit/report, without losing positive earlier prefixes.
+Clean success and warm-up keep original returns and batch eligibility. An earlier sweep/audit/publication
 cause and traceback stay first; otherwise each original child/root join's raised
 outcome and original traceback select the primary, independently of secondary
 notification order. An already-failed cleanup stays primary over later waiter
@@ -330,10 +337,13 @@ cancellation; genuine cancellation before completion stays primary over later
 cleanup failure. After that selection, the SAME completed worker's actual outcome
 is consumed before bounded cancellation diagnostics, so repeated cancellation
 cannot exhaust custody of an actual cleanup failure. Selected and actual outcome
-identities are deduplicated when folding the bounded notifications. Actual worker
+deliveries retain explicit observation provenance when folding notifications;
+independent same-object throws retain their separate native snapshots. Actual worker
 failures reach the existing bounded secondary/overflow owner even when outer
 notes are full; no unfinished worker is treated as successful. Root teardown
-stays incomplete after a tail failure. No terminal
+stays incomplete after a tail failure. Later retention/attachment/diagnostic errors
+remain on the original record/frame; final local rethrow uses the native base
+implementation. No terminal
 replay, rescan or cleanup-success inference follows.
 Thread initial/fallback/nudge each join their actual native executor completion
 through repeated cancellation, including supervisor and direct_terminal tails,

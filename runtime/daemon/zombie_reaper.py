@@ -129,6 +129,7 @@ def _sweep_org_zombies(
     orchestrator: Orchestrator | None = None,
     queue: TaskQueue | None = None,
     deferred_child_worktrees: list[TaskRecord] | None = None,
+    _sweep_outcome: dict | None = None,
 ) -> None:
     """Sweep one org for zombie tasks.
 
@@ -156,13 +157,43 @@ def _sweep_org_zombies(
     # heartbeat interval. Prevents false-reaping freshly-spawned sessions
     # whose heartbeat hasn't been stamped yet after a boot.
     from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
-    root_transitions = _RootWorktreeTransitions()
-    root_tail_failed = False
-    sweep_failure = None
-    outer_delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
-    root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
-    root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
+    # The caller holds this SAME record before delivery through contextlib.
+    # Native occurrences are captured before reset, attachment or observation.
+    sweep_outcome = {} if _sweep_outcome is None else _sweep_outcome
+    failures = []
+    sweep_outcome.update(failures=failures, prior=[], delivery=None, suppressed=False,
+        deferred_batch=False)
+    root_transitions = root_delivery = outer_delivery = root_token = None
+    suppression_attempted = False
+
+    def remember(kind: str | tuple, error: BaseException) -> None:
+        failures.append((kind, error, BaseException.__traceback__.__get__(error)))
+        sweep_outcome['suppressed'] = True
+
+    def suppress_root_batch() -> None:
+        nonlocal suppression_attempted
+        if suppression_attempted:
+            return
+        suppression_attempted = True
+        # Local suppression and the original manifest survive a failed merge.
+        sweep_outcome['suppressed'] = True
+        if root_delivery is not None:
+            root_delivery['suppress_root_batch'] = True
+            root_delivery['teardown_incomplete'] = True
+        try:
+            if outer_delivery is not None and outer_delivery['orch'] is orchestrator:
+                outer_delivery['suppress_root_batch'] = True
+                outer_delivery['teardown_incomplete'] = True
+        except BaseException as error:
+            remember('suppression_delivery', error)
+
     try:
+        root_transitions = _RootWorktreeTransitions()
+        sweep_outcome['manifest'] = root_transitions
+        outer_delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
+        root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
+        sweep_outcome['root_delivery'] = root_delivery
+        root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
         if uptime < warm_up_seconds:
             return
 
@@ -377,27 +408,56 @@ def _sweep_org_zombies(
                                 if exc is not postcommit_error:
                                     postcommit_error.add_note("zombie cleanup also failed: " + repr(exc)[:512])
     except BaseException as exc:
-        root_tail_failed = True
-        sweep_failure = exc
-        raise
+        remember('body', exc)
+        suppress_root_batch()
     finally:
-        root_delivery['active'] = False
-        _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
-        if sweep_failure is None:
-            _root_worktree_batch(orchestrator, root_transitions,
-                teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
-        else:
-            # A failed observation cannot authorize even admission/audit work
-            # in the root batch. Preserve its whole in-memory manifest and the
-            # first error; independently owed child joins stay with their owner.
+        if root_delivery is not None:
+            root_delivery['active'] = False
+        if root_token is not None:
             try:
-                BaseException.__setattr__(sweep_failure, "_zombie_root_transitions", root_transitions)
-            except BaseException:
-                pass
-            if outer_delivery is not None and outer_delivery['orch'] is orchestrator:
-                outer_delivery['suppress_root_batch'] = True
-                outer_delivery['teardown_incomplete'] = True
-                outer_delivery['events'].extend(root_transitions)
+                _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+            except BaseException as exc:
+                remember('root_owner_reset', exc)
+                suppress_root_batch()
+        if not failures:
+            try:
+                if _sweep_outcome is None:
+                    _root_worktree_batch(orchestrator, root_transitions,
+                        teardown_incomplete=root_delivery['teardown_incomplete'])
+                else:
+                    # The periodic owner must complete its OWN original reset
+                    # before even entering the root-batch transport. It already
+                    # holds this exact manifest; no new batch owner is created.
+                    sweep_outcome['deferred_batch'] = True
+            except BaseException as exc:
+                remember('root_batch_delivery', exc)
+                suppress_root_batch()
+        if failures:
+            # No failed/reset-failed path enters even root DB admission/report.
+            # Each attachment is attempted once; failure remains in this live
+            # record/frame rather than replacing the actual first cause.
+            first = failures[0]
+            for name, value in (('_zombie_root_transitions', root_transitions),
+                                ('_zombie_sweep_failure', sweep_outcome)):
+                try:
+                    previous = BaseException.__getattribute__(first[1], '__dict__').get(name)
+                    if previous is not None and previous is not value:
+                        sweep_outcome['prior'].append((name, previous))
+                    BaseException.__setattr__(first[1], name, value)
+                except BaseException as exc:
+                    remember(('attachment', name), exc)
+            try:
+                if outer_delivery is not None and outer_delivery['orch'] is orchestrator:
+                    if root_transitions is not None:
+                        outer_delivery['events'].extend(root_transitions)
+            except BaseException as exc:
+                remember('manifest_delivery', exc)
+            try:
+                raise BaseException.with_traceback(first[1], first[2])
+            except BaseException as exc:
+                # This is transport of first, not another native occurrence.
+                sweep_outcome['delivery'] = (first, BaseException.__traceback__.__get__(exc))
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +538,7 @@ async def zombie_reaper_loop(
 
         for org in list(state.orgs_snapshot().values()):
             root_tail_failed = False
+            failure_record = None
             try:
                 validate_state()
                 validate_org = ordinary_admission_validation(org)
@@ -498,96 +559,219 @@ async def zombie_reaper_loop(
                 root_tail_failed = False
                 primary = None
                 primary_traceback = None
-                secondary_errors = []
                 cleanup_outcomes = []
                 native_unsettled = False
                 delivery = {"teardown_incomplete": False}
+                sweep_outcome = {}
+                failure_record = dict(occurrences=[], observations=[], prior=[],
+                    sweep=sweep_outcome, cleanup_outcomes=cleanup_outcomes)
+                attached = False
+                uncertainty_attached = False
+                root_batch_suppressed = False
 
-                def retain_failure(exc):
-                    nonlocal primary, primary_traceback, root_tail_failed, native_unsettled
-                    root_tail_failed = True
-                    native_unsettled |= getattr(exc, 'maintenance_native_unsettled', False)
+                def capture_failure(kind: str, exc: BaseException,
+                                    origin: tuple | None = None) -> tuple:
+                    nonlocal primary, primary_traceback, root_tail_failed
+                    if origin is None:
+                        origin = (kind, exc, BaseException.__traceback__.__get__(exc))
+                        failure_record['occurrences'].append(origin)
+                    else:
+                        failure_record['observations'].append((kind, origin))
                     if primary is None:
-                        primary, primary_traceback = exc, exc.__traceback__
-                    elif (exc is not primary and len(secondary_errors) < 8
-                          and not any(exc is item for item in secondary_errors)):
-                        secondary_errors.append(exc)
+                        primary, primary_traceback = origin[1], origin[2]
+                    root_tail_failed = True
+                    return origin
+
+                def retain_failure(exc: BaseException, *, kind: str = 'delivery',
+                                   origin: tuple | None = None) -> None:
+                    nonlocal primary, primary_traceback, root_tail_failed, native_unsettled
+                    nonlocal attached, uncertainty_attached
+                    # Actual capture precedes every fallible observer. Origins
+                    # name an existing occurrence; they never add another throw.
+                    capture_failure(kind, exc, origin)
+                    try:
+                        native_unsettled |= bool(getattr(exc, 'maintenance_native_unsettled', False))
+                    except BaseException as secondary:
+                        capture_failure('uncertainty_observation', secondary)
+                    failure_record['native_unsettled'] = native_unsettled
+                    if not attached:
+                        attached = True
+                        for name, value in (('_zombie_cleanup_outcomes', cleanup_outcomes),
+                                            ('_zombie_failure_record', failure_record)):
+                            try:
+                                previous = BaseException.__getattribute__(primary, '__dict__').get(name)
+                                if previous is not None and previous is not value:
+                                    failure_record['prior'].append((name, previous))
+                                BaseException.__setattr__(primary, name, value)
+                            except BaseException as secondary:
+                                capture_failure('error_attachment', secondary)
+                    if native_unsettled and not uncertainty_attached:
+                        uncertainty_attached = True
                         try:
-                            BaseException.add_note(primary, "zombie cleanup also failed: " + repr(exc)[:512])
-                        except BaseException:
-                            pass
-                    # One actual outcome per independently owed original join;
-                    # cancellation diagnostics cannot evict the real failures.
-                    BaseException.__setattr__(primary, '_zombie_cleanup_outcomes', cleanup_outcomes)
-                    if native_unsettled:
-                        primary.maintenance_native_unsettled = True
-                    state._startup_recovery._retain_secondary(exc)
-                    rollback = getattr(exc, "_zombie_writer_rollback_secondary", None)
-                    if rollback is not None:
-                        secondary, _ = rollback  # Original traceback is retained on exc.
-                        state._startup_recovery._retain_secondary(secondary)
+                            BaseException.__setattr__(primary, 'maintenance_native_unsettled', True)
+                        except BaseException as secondary:
+                            capture_failure('uncertainty_attachment', secondary)
+                    try:
+                        state._startup_recovery._retain_secondary(exc)
+                    except BaseException as secondary:
+                        capture_failure('secondary_retention', secondary)
+                    try:
+                        rollback = getattr(exc, "_zombie_writer_rollback_secondary", None)
+                        if rollback is not None:
+                            secondary, traceback = rollback
+                            capture_failure('writer_rollback_observation', secondary,
+                                ('writer_rollback', secondary, traceback))
+                            state._startup_recovery._retain_secondary(secondary)
+                    except BaseException as secondary:
+                        capture_failure('rollback_retention', secondary)
+
+                def consume_sweep() -> None:
+                    nonlocal root_batch_suppressed
+                    root_batch_suppressed |= sweep_outcome.get('suppressed', False)
+                    for occurrence in sweep_outcome.get('failures', ()):
+                        retain_failure(occurrence[1], kind='sweep_observation', origin=occurrence)
 
                 async def join_worktree(operation, *args, **kwargs) -> None:
                     # Registration preceded submission. The native owner retains
                     # its SAME result and fixed error/traceback slots even when
                     # cancellation selects another first cause at this wait.
+                    nonlocal native_unsettled
                     owner = None
-                    outcome = dict(owner=None, result=None, selected=None)
+                    outcome = dict(owner=None, result=None, selected=None, observations=[])
                     cleanup_outcomes.append(outcome)
-                    selected = None
                     try:
                         owner = _submit_worktree_cleanup(operation, *args,
                             _cleanup_owner=org.orchestrator, **kwargs)
                         outcome['owner'] = owner
                         outcome['result'] = await _join_worktree_cleanup(owner)
                     except BaseException as exc:
-                        selected = exc
-                        outcome['selected'] = (exc, exc.__traceback__)
-                        retain_failure(exc)
+                        traceback = BaseException.__traceback__.__get__(exc)
+                        outcome['selected'] = (exc, traceback)
+                        # Consume the actual failed join's earlier selection
+                        # before its final (possibly virtual) delivery error.
+                        origin = None
+                        if owner is not None and owner.primary is not None:
+                            origin = ('child_selected', owner.primary, owner.traceback)
+                            retain_failure(owner.primary, kind='child_selection', origin=origin)
+                        transport = traceback
+                        while transport is not None and not (
+                            transport.tb_frame.f_code is _join_worktree_cleanup.__code__
+                            and origin is not None and transport.tb_next is origin[2]
+                        ):
+                            transport = transport.tb_next
+                        if origin is not None and exc is origin[1]:
+                            # Keep the raw delivered snapshot even for a virtual
+                            # method throwing this same object again. Only the
+                            # exact native edge qualifies it as transport; an
+                            # unqualified delivery cannot invent a second native
+                            # incident or erase either original traceback.
+                            outcome['observations'].append((
+                                'join_transport' if transport is not None else 'join_delivery_unqualified',
+                                exc, traceback, origin))
+                        else:
+                            retain_failure(exc, kind='child_delivery')
                     finally:
                         if owner is not None:
                             outcome['result'] = owner.result
-                            failure = owner.errors['native']
-                            if failure is not None and failure is not selected:
-                                retain_failure(failure)
-                            wrapper_failure = owner.errors['worker_outcome']
-                            if (wrapper_failure is not None and wrapper_failure is not selected
-                                    and wrapper_failure is not failure):
-                                retain_failure(wrapper_failure)
-                            # A normal unknown root result has the same custody as
-                            # wrapper/submission/handoff uncertainty. Its exact
-                            # receipts and processes remain on this original owner.
-                            failure = owner.maintenance_error()
-                            if failure is not None:
-                                retain_failure(failure)
+                            native_unsettled |= owner.unknown
+                            failure_record['native_unsettled'] = native_unsettled
+                            # Keep the ORIGINAL fixed slots and native snapshots,
+                            # including equal-object occurrences. Reading these
+                            # is observation, not a synthetic native raise.
+                            for name, failure in owner.errors.items():
+                                if failure is not None:
+                                    occurrence = (name, failure, owner.error_tracebacks[name])
+                                    outcome['observations'].append(('owner_slot', occurrence))
+                                    retain_failure(failure, kind='child_slot', origin=occurrence)
+                            try:
+                                failure = owner.maintenance_error()
+                            except BaseException as exc:
+                                retain_failure(exc, kind='maintenance_observation')
+                            else:
+                                if failure is not None:
+                                    occurrence = ('maintenance_unknown', failure,
+                                        BaseException.__traceback__.__get__(failure))
+                                    retain_failure(failure, kind='maintenance_observation', origin=occurrence)
                             for exc in owner.notifications:
-                                if exc is not selected:
-                                    retain_failure(exc)
+                                occurrence = ('wait_notification', exc,
+                                    BaseException.__traceback__.__get__(exc))
+                                outcome['observations'].append(('notification', occurrence))
+                                retain_failure(exc, kind='notification_observation', origin=occurrence)
 
+                context = _defer_root_worktree_batches(org.orchestrator, root_transitions)
+                # Hold the ORIGINAL helper frame before entry/exit can fail.
+                # Its _JobTailErrors remains reachable even if every exception
+                # attachment fails and contextlib closes the generator.
+                context_frame = context.gen.gi_frame
+                failure_record['root_context'] = (context, context_frame)
+                context_failure = None
                 try:
-                    with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
-                        _sweep_org_zombies(
-                            org.db, now=now, uptime=uptime,
-                            warm_up_seconds=warm_up_seconds,
-                            orchestrator=org.orchestrator, queue=state.queue,
-                            deferred_child_worktrees=child_worktrees,
-                        )
+                    with context as delivery:
+                        try:
+                            _sweep_org_zombies(
+                                org.db, now=now, uptime=uptime,
+                                warm_up_seconds=warm_up_seconds,
+                                orchestrator=org.orchestrator, queue=state.queue,
+                                deferred_child_worktrees=child_worktrees,
+                                _sweep_outcome=sweep_outcome,
+                            )
+                        except BaseException as exc:
+                            # Select inner E1 BEFORE contextlib or its own reset.
+                            # Successful handling is local transport only; this
+                            # failed sweep can never authorize the root DB batch.
+                            root_batch_suppressed = True
+                            consume_sweep()
+                            delivered = sweep_outcome.get('delivery')
+                            if delivered is not None and exc is delivered[0][1]:
+                                failure_record['observations'].append(
+                                    ('sweep_delivery', exc, BaseException.__traceback__.__get__(exc), delivered))
+                            else:
+                                retain_failure(exc, kind='sweep_delivery')
                 except BaseException as exc:
-                    retain_failure(exc)
+                    root_batch_suppressed = True
+                    context_failure = (exc, BaseException.__traceback__.__get__(exc))
                 finally:
+                    # Consume the original helper ledger, including failed
+                    # attachments, before its final exception observation.
+                    context_errors = context_frame.f_locals.get('errors')
+                    failure_record['context_errors'] = context_errors
+                    if context_errors is not None:
+                        for occurrence in context_errors._occurrences:
+                            root_batch_suppressed = True
+                            retain_failure(occurrence[1], kind='context_observation', origin=occurrence)
+                    if context_failure is not None:
+                        exc, traceback = context_failure
+                        if context_errors is not None and exc is context_errors.primary:
+                            failure_record['observations'].append(
+                                ('context_delivery', exc, traceback, context_errors))
+                        else:
+                            retain_failure(exc, kind='context_delivery')
+                    root_batch_suppressed |= (sweep_outcome.get('suppressed', False)
+                        or delivery.get('suppress_root_batch', False)
+                        or delivery.get('_context_incomplete', False))
+                    if not root_batch_suppressed and sweep_outcome.get('deferred_batch', False):
+                        try:
+                            root_transitions.extend(sweep_outcome['manifest'])
+                            delivery['teardown_incomplete'] |= sweep_outcome['root_delivery']['teardown_incomplete']
+                        except BaseException as exc:
+                            root_batch_suppressed = True
+                            retain_failure(exc, kind='manifest_delivery')
                     # These are the original committed children captured by
                     # the sweep, including a failed parent-publication tail.
                     # Join each once outside capture/DB locks; one ended error
                     # or cancellation cannot discard the remaining obligations.
                     for task in child_worktrees:
-                        await join_worktree(
-                            _reclaim_terminal_task_worktree, org.orchestrator, task.id)
-                    if root_transitions and not delivery.get('suppress_root_batch', False):
+                        try:
+                            await join_worktree(
+                                _reclaim_terminal_task_worktree, org.orchestrator, task.id)
+                        except BaseException as exc:
+                            retain_failure(exc, kind='child_outcome_consumption')
+                    if not root_batch_suppressed and root_transitions:
                         await join_worktree(
                             _root_worktree_batch, org.orchestrator, root_transitions,
                             teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
                 if primary is not None:
-                    raise primary.with_traceback(primary_traceback)
+                    raise BaseException.with_traceback(primary, primary_traceback)
                 validate_state()
                 validate_org()
             except StartupUnavailable as exc:
@@ -596,13 +780,25 @@ async def zombie_reaper_loop(
                 logger.warning("zombie reaper selected runtime retired: %s", exc)
                 break
             except Exception as exc:
-                if getattr(exc, 'maintenance_native_unsettled', False):
+                if failure_record is not None:
+                    if primary is None:
+                        retain_failure(exc, kind='periodic_delivery')
+                    unsettled = native_unsettled
+                else:
+                    unsettled = getattr(exc, 'maintenance_native_unsettled', False)
+                if unsettled:
                     # Independent original joins above are still owed, but no
                     # dependent org/tick may start after uncertain native cleanup.
                     raise
-                logger.exception(
-                    "zombie reaper sweep failed for org %s", org.slug,
-                )
+                try:
+                    logger.exception(
+                        "zombie reaper sweep failed for org %s", org.slug,
+                    )
+                except BaseException as secondary:
+                    if failure_record is None:
+                        raise
+                    retain_failure(secondary, kind='failure_diagnostic')
+                    raise BaseException.with_traceback(primary, primary_traceback)
 
         duration = _time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
