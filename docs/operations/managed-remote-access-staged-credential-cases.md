@@ -1,6 +1,6 @@
 # PR800 staged credential and mode cases — THR228seq428
 
-## Controlling local correction — ROOT13808 / Founder THR327seq35/29/28A/26
+## Controlling local correction — ROOT13894 / Founder THR327seq43/35/29
 
 This section governs the current diagnostic delivery and accumulated test-source
 attribution. Read the [current repository diagnostic contract](../../AGENTS.md)
@@ -11,8 +11,9 @@ Their headings, receipts, failures and bytes remain history; they do not govern
 the version1 native/stage records at saved candidate
 `38d519647beca97dc23cb89b2ade661f1132969c` (C). TASK13824 reconstructs these
 answers from C source for its documentation-only descendant; this is neither
-original-author intent nor independent T1/D1 closure. No production, test or
-workflow source is changed by this correction.
+original-author intent nor independent T1/D1 closure. TASK13824 changed only
+documentation; TASK13899 corrects diagnostic event-history selection and current
+diagnostic documentation, with no test or production capture/retention changes.
 
 The manager accepted TASK13791's SAME24 design and seventeen compositions after
 TASK13793 DESIGN ONLY PASS. Its result SHA256 is
@@ -70,7 +71,7 @@ upload and workflow scratch removal are independent outcomes.
 
 The affected existing cases retain their four answers here; rows name every
 covered SAME24 ID rather than create a second case campaign. All are SOURCE
-ONLY / NOT RUN / PROOF NOT RUN at C and this documentation descendant. Seam
+ONLY / NOT RUN / PROOF NOT RUN at C and the current local diagnostic candidate. Seam
 answer for these diagnostic rows: **NO new production seam**; use the real
 existing private receipt/status path, never a copied parser or test-only caller.
 
@@ -83,7 +84,7 @@ existing private receipt/status path, never a copied parser or test-only caller.
 | E1a.subject/manager; A11,B02 | SAME consumed identities and installed AND loaded authority remain; degraded/status1 is availability only. | Substitute package hash for loaded authority or renew descriptor/context ownership. | Existing installed/loaded readers and E1a/E2/M13 remain keepers; a provenance join proves bytes, not readiness or installation success. |
 | E1a.failed-install/E6-final/H38; B04,B07 | Preserve original installer failure, affirmative never-started cleanup predicates versus actual-generation Stop/dial/SAME-peer proof, and independent later cleanup attempts. | Infer absence from flag0/missingIP, conflate product and workflow cleanup, or let a failed upload suppress the other upload. | Existing `cleanup`, shipping `virtual_removed`/`stop_completed`, installer/status/cleanup receipts own different final transitions. Upload/scratch outcomes cannot retroactively certify product cleanup. Historical40321214462/1 limited never-started receipt and40210816942/1 failed cleanup keep their attribution. |
 | E1a direct-call/package retention; B01,B02,B03,B05,B06,C05 | Retain/download exact full consumed TAR and manifest, actual run/attempt and ordinary hash/provenance joins, even after install failure; unknown fields remain null. | Upload only digest/wheel, hash rebuilt bytes, equate TAR with artifact digest, or claim missing upload/download success. | Existing builder→PACKAGE_TAR, immutable input identities and separate always uploads are source keepers; no actual downloaded package/native error exists yet. Founder35 supersedes the old B01/B06 archive-reader/custom-downloader qualification requirements: existing authenticated `gh run download`, normal timeouts and ordinary hashes only. |
-| Existing CI admission/publication cases; C01,C02,C03,C04 | Only the manager's eventual exact reviewed branch push/attempt1 may enter; all-event singleton and original shared request/byte/time bounds remain. | Relax singleton, trust stale H conflict, ignore companion PR record or publish corrected source without renewed gates. | Existing two CI admission guards own externally consumed workflow shape. PR synchronize plus push can create a companion record; conditional refusal risk remains OPEN/MANAGER-OWNED before publication. Source workflow is read-only here; no probe or event guarantee. |
+| Existing CI admission/publication cases; C01,C02,C03,C04 | Only ROOT13894's eventual exact reviewed same-repo H→distinct C branch push/attempt1 may enter. History selects exact workflow/branch/C with `event=push`; one selected push plus a same-head PR synchronize lint companion admits the push. | Broaden the singleton to two selected pushes, accept rerun/attempt>1 or wrong before/head/ref/repo/workflow, forced/create/delete, moving PR or ambiguous/missing metadata; replace the original event/head/tree/account/deadline in check2. | Both guards retain singleton and run_tuple(event=push) validation and original shared request/byte/time bounds. Ordinary PR lint remains enabled; PR companions cannot execute the diagnostic. Check1 refuses before checkout/build; check2 refuses before fixture entry, preserving any prior build. Manifest failure, independent uploads, native retention, original installer and separate teardown remain unchanged. These are SOURCE/STATIC dispositions, NOT behavioral proof or an atomic exactly-once guarantee. |
 
 The seventeen accepted compositions are reconciled to their owning boundaries:
 `original_body_failure`, `all_success`, `missing_prefix_at_outer_acquisition`,
@@ -107,7 +108,10 @@ package remain mandatory after the sole eventual automatic run; missing either
 means incomplete delivery and no rerun. Installer historically FAILED/cause
 UNKNOWN; same-boot NOT REACHED, R1/R2 HELD, N6/reboot/live-cleanup unproved.
 No install/recovery/transport decision changes. Historical2/3 publications and
-attempts remain SPENT; exclusive final1 each ROOT13808 UNSPENT; this leaf spends0.
+attempts remain SPENT; exclusive final1 each ROOT13894 UNSPENT; this leaf
+reserves/spends0. ROOT13894 alone owns later normal nonforce publication and
+settled existing-gh collection, after independent entire H..final diagnostic
+review and separate SAME-final-candidate scoped QA under Founder43.
 
 ### Accumulated Go authoring answers reconstructed from C
 
@@ -331,11 +335,26 @@ are manager/reviewer findings and limits of the current authoring reconstruction
 
 Normal lint/static checks remain exactly Source Boundary Lint and Web Lint
 (Node24); daily19UTC nonblocking Product E2E gets no new trigger. Exact-C JOB5756
-is historical evidence at C, never a receipt for this documentation descendant.
-Independent bounded accumulated review, final consolidated FULL final-candidate
-review and separate SAME-candidate SOURCE/STATIC QA remain pending. The conditional
-PR synchronize/push/all-event-singleton risk stays OPEN/MANAGER-OWNED. No leaf PR
-body mutation/publication, probe or allowance reservation is authorized.
+is historical evidence at C, never a receipt for the current local candidate.
+Founder43 supersedes the full accumulated B..candidate review prerequisite for
+THIS diagnostic-only run. Independent review of the ENTIRE publicH
+`ea7db390a830e0f22a489789d9c57056930fd38f`..exact final candidate diagnostic delta,
+including necessary caller interactions, workflow, capture, package retention and
+current docs, then separate SAME-final-candidate SOURCE/STATIC QA remain pending.
+New diagnostic defects block; outside-delta inherited findings and unfinished
+baseline slices are recorded for the repair tranche without reopening or fixing
+them here. No release/merge, inherited-baseline, behavioral or test-authoring PASS
+is supplied. The event correction uses provider `event=push` history selection
+and retains singleton/run identity checks; final composed review is still owed.
+
+LRA1/HIGH is OPEN / KNOWN / DEFERRED, nonblocking ONLY for this diagnostic run
+under Founder43. Preserve TASK13846 REQUEST_CHANGES and ROOT13808/step12:
+publicH-inherited `lifecycleReadAt`/`OpenLifecycle` blocking O_RDONLY opens precede
+regular-file checks and can stall on a writerless FIFO, including under the common
+flock. This is SOURCE INFERENCE ONLY, no runtime reproducer or historical installer
+causal proof, patch, FIFO experiment or closure claim. ROOT13894 owns the known
+defect record. No leaf PR body mutation/publication, probe or allowance reservation
+is authorized.
 
 The historical maintained case record follows byte-for-byte. Unaffected
 assertions retain their stated scope; dated “Current” headings and receipts

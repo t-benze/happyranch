@@ -1,12 +1,13 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**Current PR800 local diagnostics — Founder THR327seq35/29/28A/26; sole ROOT TASK-13808.**
+**Current PR800 local diagnostics — Founder THR327seq43/35/29; sole ROOT TASK-13894.**
 
-This controlling diagnostic contract supersedes only the active collection,
-nested stderr and package-retention directions in the historical snapshots below.
-TASK13808 explicitly succeeds TASK13786; accepted design TASK13791 and independent
-TASK13793 DESIGN ONLY PASS remain design evidence. Historical failures, approvals,
-spent grants and original records keep their original attribution. No repair or
+This controlling diagnostic contract supersedes the active collection, nested
+stderr, package-retention, all-event history and accumulated-review prerequisites
+in the historical snapshots below. TASK13894 is the genuine native successor to
+superseded TASK13808; no ended attempt is replayed. Accepted design TASK13791 and
+independent TASK13793 DESIGN ONLY PASS remain design evidence. Historical
+failures, approvals, spent grants and original records keep their original attribution. No repair or
 installer cause is established. Public PR800 remains OPEN/unmerged at
 `ea7db390a830e0f22a489789d9c57056930fd38f` during these LOCAL gates.
 
@@ -59,8 +60,12 @@ can still prevent publication/removal and keeps delivery incomplete.
 The sole automatic diagnostic selects only this same-repo branch PUSH from H to
 a distinct canonical C==checkout==PR800 head, workflow293424328/ci.yml, attempt1.
 Two anonymous bounded public admission checks (before checkout/build and immediately
-before fixture entry) each make seven exact reads and require the all-event C
-history singleton to be the current in-progress attempt1. A shared20s/14-request/
+before fixture entry) each make seven exact reads. History selects workflow293424328,
+this branch, exact C and `event=push`; its singleton must be the current in-progress
+run/attempt1. Ordinary same-head PR synchronize lint records are outside that
+selected history and cannot execute the push-only diagnostic. Two selected push
+records, a rerun/attempt>1 or a wrong subject still refuse. Check2 preserves the
+original event/head/tree/account/deadline. A shared20s/14-request/
 4MiB body/224KiB header account, original job timeout and fixed concurrency without
 cancellation apply. Redirects, stale/moving identities, duplicates, reruns, missing
 or denied metadata refuse; there is no credential/token/permission/settings change,
@@ -74,10 +79,27 @@ Actual useful secret-safe error AND downloadable exact consumed full package are
 both required after the ONE run; source/static inspection is no behavioral PASS.
 
 Historical TWO of THREE publications and automatic attempts are SPENT. Exclusive
-final ONE each belongs to ROOT13808 and remains UNSPENT during leaf-local work.
-Local normal commits/bundle only; no leaf push/PR mutation/run/install/service,
-merge/deploy/restart/reboot or historical cleanup. FULL independent B..C review,
-then separate SAME-C SOURCE/STATIC QA and normal lint/hooks precede manager gating.
+final ONE each belongs ONLY to ROOT13894 and remains UNSPENT during leaf-local
+work; this leaf reserves/spends ZERO. Local normal commits/bundle only; no leaf
+push/PR mutation/run/install/service, merge/deploy/restart/reboot or historical
+cleanup. Founder43 requires independent review of the ENTIRE diagnostic delta
+from publicH `ea7db390a830e0f22a489789d9c57056930fd38f` to the exact final candidate,
+including necessary caller interactions, capture, package retention, workflow
+and diagnostic docs, then separate SAME-final-candidate SOURCE/STATIC QA and
+normal lint/hooks before manager publication. New diagnostic defects block.
+Inherited findings outside that delta are recorded for repair and are NON-BLOCKING
+only for this diagnostic run; unfinished accumulated B..candidate audit slices
+are not reopened. This is no release/merge or inherited-baseline acceptance.
+
+LRA1/HIGH remains OPEN / KNOWN / DEFERRED to the repair tranche. TASK13846
+REQUEST_CHANGES and ROOT13808/step12 are preserved: inherited publicH
+`lifecycleReadAt`/`OpenLifecycle` use blocking O_RDONLY before regular-file
+checks, so a writerless FIFO may stall acquisition, including under the common
+flock. This is SOURCE INFERENCE ONLY, with no runtime reproducer or historical
+installer causal proof. No patch, FIFO experiment or closure is authorized here.
+ROOT13894 owns the known-defect record; Founder43 makes LRA1 nonblocking only
+for this diagnostic publication/run.
+
 Required PR/merge checks are exactly Source Boundary Lint and Web Lint(Node24),
 lint/static only. Python units RETIRED; suspended behavior/proofs NOT RUN; general
 integration INCLUDING callback/lifespan/SessionTracker SKIPPED THR243seq42. Daily

@@ -51,7 +51,7 @@ jobs:
 
   managed-n3-real-systemd:
     name: Managed N3 PARTIAL installer + same-boot diagnostic (Ubuntu 24.04)
-    # Founder THR327seq35/29/28A/26 / sole ROOT13808. Preparation only:
+    # Founder THR327seq43/35/29 / sole ROOT13894. Preparation only:
     # historical TWO/THREE publications/attempts SPENT; final ONE each remains
     # manager-owned and UNSPENT until the one normal push after local gates.
     # No rerun/manual route, future self-SHA, new token scope or cancellation.
@@ -326,7 +326,9 @@ jobs:
               if type(workflow.get("id")) is not int or workflow["id"] != 293424328 or workflow.get("path") != ".github/workflows/ci.yml" or workflow.get("state") != "active" or workflow.get("name") != "CI":
                   raise ValueError
               own = run_tuple(get(P + "/actions/runs/" + str(R)))
-              history = P + "/actions/workflows/293424328/runs?branch=task%2FTASK-6475&head_sha=" + C + "&per_page=100&page=1"
+              # Select push diagnostics; ordinary same-head PR lint is independent.
+              # Keep singleton/run_tuple refusal for duplicate pushes and reruns.
+              history = P + "/actions/workflows/293424328/runs?branch=task%2FTASK-6475&head_sha=" + C + "&event=push&per_page=100&page=1"
               first = singleton(get(history))
               second = singleton(get(history))
               closing = run_tuple(get(P + "/actions/runs/" + str(R)))
