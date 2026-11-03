@@ -1434,14 +1434,17 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
     if not stat.S_ISREG(before.st_mode) or tuple(getattr(named, k) for k in fields) != signature:
         raise ValueError("evidence input identity refused")
     bound = min(8388608, before.st_size)
-    if binary:
-        ledger.charge(1, 1, check)  # Rejection-only byte sentinel, before read.
-    ledger.reserve(bound, 0, check)  # Refuse BEFORE read if remaining space is smaller.
+    # All callers supply a binary stream. Text needs both the returned byte
+    # image and its strict decode, including the rejection-only sentinel.
+    ledger.charge(1 if binary else 2, 1, check)
+    reserved = bound if binary else 2 * bound
+    ledger.reserve(reserved, 0, check)  # Refuse BEFORE acquiring either image.
     try:
-        text = stream.read(bound + 1)  # Rejection-only sentinel, never parse capacity.
+        data = stream.read(bound + 1)  # BYTES, including rejection-only sentinel.
+        text = data if binary else data.decode("utf8", errors="strict")
         returned(text)  # Original returned-slice annotation precedes later checks.
         check()
-        size = len(text) if binary else _evidence_utf8_size(text, check, 33554436)
+        size = len(data)  # Strict UTF8 preserves the complete original byte count.
         measured(size)
         check()
         after = os.fstat(stream.fileno())
@@ -1455,11 +1458,11 @@ def _evidence_input(stream: Any, ledger: _EvidenceLedger, check: Callable[[], No
             raise ValueError("short evidence input refused")
     except BaseException:
         # A failed read/returned prefix cannot refund its reserved work.
-        ledger.settle(bound, bound)
+        ledger.settle(reserved, reserved)
         if binary:
             text = None  # Never retain a refused original image in this frame.
         raise
-    ledger.settle(bound, size)
+    ledger.settle(reserved, size if binary else 2 * size)
     return text
 
 
@@ -3168,6 +3171,9 @@ class _EvidenceJSON:
                     parts.append(chunk)
                     chunk, chunk_size = "", 0
                     self.check()
+                # chr storage plus the entire newly reconstructed carry, not
+                # merely the retained chunks/join charged above.
+                self.ledger.charge(chunk_size + 2 * width, 0, self.check)
                 chunk += chr(code)
                 chunk_size += width
             if chunk:
@@ -3548,7 +3554,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
             if not step("CONTEXT_PRESENT", context_path.exists):
                 raise ValueError("retained redaction context unavailable")
             def read_context() -> str:
-                with context_path.open(encoding="utf8", newline="") as stream:
+                with context_path.open("rb") as stream:
                     return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
 
             context_text = step("CONTEXT_READ", read_context)
@@ -3597,7 +3603,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                     if "scenario.json" in refused_sources:
                         refuse(None, reason="VALUE")  # No new cause or content attempt.
                     else:
-                        scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open(encoding="utf8", newline=""))
+                        scenario_file = step("SCENARIO_OPEN", lambda: scenario_path.open("rb"))
                         with scenario_file:
                             def returned(text: str) -> None:
                                 state["chars"] = len(text)
@@ -3654,7 +3660,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                         continue
                     if path.suffix in {".txt", ".json", ".jsonl"}:
                         def read_raw() -> str:
-                            with path.open(encoding="utf8", errors="strict", newline="") as stream:
+                            with path.open("rb") as stream:
                                 return _evidence_input(stream, ledger, eligible, lambda text: None, lambda size: None)
                         text = step("TEXT_READ", read_raw)
                         mark("REDACT")

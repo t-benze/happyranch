@@ -383,6 +383,8 @@ def failure_result_controls() -> dict:
     # Strict ORIGINAL scenario JSON through actual file/collector/detachment.
     json_cases = {
         'positive': b'{"variants":{},"groups":{"first":[true,false,null,7,1.5],"sample":"public\\nline","quote":"\\\"","unicode":"\xe4\xb8\xad","pair":"\\ud83d\\ude00","order":{"b":2,"a":1}}}',
+        'byte-bound-positive': b'{\r\n"variants":{},"groups":{"mixed":"'+b'a\xe4\xb8\xad\xf0\x9f\x98\x80\\u00e9'*140+b'","order":{"b":2,"a":1}}\r\n}',
+        'carry-capacity': b'{"variants":{},"groups":{"value":"'+b'a'*16384+b'"}}',
         'numeric-positive': b'{"variants":{},"groups":[18446744073709551615,-18446744073709551615,-0.0,0.'+b'1'*126+b']}',
         'duplicates': b'{"variants":{},"groups":{"x":1,"x":2}}',
         'escaped-equal': b'{"variants":{},"groups":{"x":1,"\\u0078":2}}',
@@ -414,23 +416,28 @@ def failure_result_controls() -> dict:
             assert not complete and not state['fatal'] and not errors
             assert (output/'failure.txt').read_bytes() == b'safe before [REDACTED] after\n'
             assert not (output/'result.tmp').exists()
-            if case in ('positive','numeric-positive'):
+            if case in ('positive','numeric-positive','byte-bound-positive'):
                 assert error is None
-                wanted = json_expected if case == 'positive' else {'variants':{},'groups':[
-                    18446744073709551615,-18446744073709551615,-0.0,0.1111111111111111]}
+                wanted = (json_expected if case == 'positive' else
+                          {'variants':{},'groups':{'mixed':'a中😀é'*140,'order':{'b':2,'a':1}}}
+                          if case == 'byte-bound-positive' else {'variants':{},'groups':[
+                              18446744073709551615,-18446744073709551615,-0.0,0.1111111111111111]})
                 exact(state['safe_scenario'],wanted)
                 for key in wanted: exact(value[key],wanted[key])
                 assert (root/'scenario.json').read_bytes() == source_bytes
+                if case == 'byte-bound-positive':
+                    assert (state['chars'],state['utf8_bytes']) == (1323,2023)
             else:
                 assert error is not None and failures[0][0] is error[0], case
                 assert state['safe_scenario'] == {'variants':{}}
                 assert value['variants'] == {} and 'groups' not in value
-                expected_op = 'SCENARIO_PROJECT' if case == 'decoded-backslash' else 'SCENARIO_DECODE'
+                expected_op = ('SCENARIO_PROJECT' if case == 'decoded-backslash' else
+                               'SCENARIO_READ' if case == 'parser-storage' else 'SCENARIO_DECODE')
                 assert failures[0][4][0] == expected_op, (case,failures[0][4])
-                if case in ('parser-storage','int-spelling','float-spelling'):
+                if case in ('parser-storage','carry-capacity','int-spelling','float-spelling'):
                     assert failures[0][4][1] == 'CAPACITY', case
                 if case == 'parser-storage':
-                    assert failures[0][4][2:] == (4194341,4194341)
+                    assert failures[0][4][2:] == ('U','U')
             results['F3-json-'+case] = 'actual full scenario file/tree/type/order or whole-claim refusal; eligible sibling exact'
 
     # C1/C3/C5-C7/F3/R1: registered RAW scans, independently literal bytes.
@@ -2563,7 +2570,7 @@ def failure_result_controls() -> dict:
             assert value['status'] == 'FAIL'
             results['B09-B11-complete-safe-file' if empty is None else 'B09-B11-empty-required-'+empty] = 'actual safe presence/required emptiness and decoded FAIL publication; no native acceptance'
 
-    for case in ('valid-empty','zero-byte','absent','open-directory','invalid-utf8','missing-variants','non-object',
+    for case in ('valid-empty','zero-byte','absent','open-directory','invalid-utf8','truncated-utf8','missing-variants','non-object',
                  'nonfinite','key-collision','deep','exact-cap','over-cap','multibyte-cap','long-prefix','raw-directory'):
         with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
             path = root / 'scenario.json'
@@ -2572,6 +2579,7 @@ def failure_result_controls() -> dict:
             elif case == 'absent': path.unlink()
             elif case == 'open-directory': path.unlink(); path.mkdir()
             elif case == 'invalid-utf8': path.write_bytes(b'\xff')
+            elif case == 'truncated-utf8': path.write_bytes(b'{"variants":{},"groups":"\xf0\x9f\x98')
             elif case == 'missing-variants': path.write_text('{}')
             elif case == 'non-object': path.write_text('[]')
             elif case == 'nonfinite': path.write_text('{"variants":{},"failures":[NaN]}')
@@ -2598,7 +2606,7 @@ def failure_result_controls() -> dict:
                 # refuses before read. This is NOT a C+1 returned-slice witness.
                 assert first[4] == ('SCENARIO_READ','CAPACITY','U','U')
                 assert value['variants'] == {}
-            elif case in ('open-directory','invalid-utf8'):
+            elif case in ('open-directory','invalid-utf8','truncated-utf8'):
                 assert first[4] == (('SCENARIO_OPEN','IO','U','U') if case == 'open-directory' else ('SCENARIO_READ','UNICODE','U','U'))
             assert first[0] is error[0] if error is not None else first[0] is None
             results['B09-B12-file-'+case] = 'real ordinary refusal/presence with independent sibling output and sticky FAIL'

@@ -2333,12 +2333,17 @@ checks are cooperative observations, not kernel-I/O or crash-atomicity proof.
 Each launcher collection opportunity now carries one nonrenewing C=8388608,
 F=200000, depth64 owner through its original context/scenario inputs, strict JSON,
 selected-seven detachment and raw siblings. Descriptor size/identity is
-checked around the same single bounded read; returned-slice facts are recorded
-only after return. Remaining-capacity refusal before read is not an input-cap
-witness. UTF8 sizing indexes codepoints without a whole encoding copy. The strict
-indexed JSON grammar materializes only the original context list and one required
+checked around the same single byte-bounded binary read. Collector text reserves
+both original bytes and strict UTF8 decoding before acquisition, including its
+rejection-only byte sentinel; CRLF is preserved. Refused returned work remains
+charged. Returned character/UTF8 facts are recorded only after strict decoding;
+remaining-capacity refusal before read has no returned-slice/input-cap witness.
+The strict indexed JSON grammar materializes only the original context list and one required
 scenario tree; duplicate decoded keys, malformed/trailing/nonfinite/surrogate or
-out-of-bounds numeric input refuses. Parser storage can refuse before projection.
+out-of-bounds numeric input refuses. Each JSON scalar append pays its newly
+constructed character and complete growing carry before concatenation, separately
+from retained chunks/join and temporary scratch. Honest cumulative debits can
+expose capacity refusals; storage can refuse before acquisition or projection.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
 one charged longest-first view preserves the original context list for identity

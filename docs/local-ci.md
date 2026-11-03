@@ -618,8 +618,13 @@ Preparation/text writers retain their existing persistent ledger. Each launcher
 collection now uses its own original nonrenewing C8388608/F200000/depth64 owner
 for bounded original context/scenario acquisition, strict indexed outer JSON,
 selected-seven original-plus-safe detachment and raw siblings. Metadata
-checks surround the single read; UTF8 counts use indexed codepoints. Early
-remaining-capacity refusal has no returned-slice/input-cap witness. Only the two
+checks surround one byte-bounded binary read. Collector text precharges both
+original bytes and strict UTF8 decoding, including the rejection-only sentinel;
+CRLF is preserved and refused returned work is never refunded. Character/UTF8
+annotations describe the actual decoded original. Early remaining-capacity
+refusal has no returned-slice/input-cap witness. JSON scalar concatenation pays
+the complete growing carry and new character before every append, in addition
+to retained chunk/join work and bounded scratch. Only the two
 required original trees are materialized; a file may refuse parser storage before
 projection. Borrowed-object projection still owes original PLUS safe bytes,
 including aliases; every literal replacement pass is charged under the same
