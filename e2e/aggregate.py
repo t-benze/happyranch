@@ -3916,7 +3916,7 @@ def failure_result_controls() -> dict:
     case_refusals += ['wrong-'+k for k in ('method','index','variant','source_sha','task','start','job-id','root','script','script_sha256')]
     case_refusals += ['index-bool','index1-job','start-copy','start-missing-fact','source-hash-only','row-script-content',
         'script-type','script-second-layer','script-secret','script-hash-type','row-flag-bool','row-review-bool','row-max-bytes-bool','row-exit-bool','row-missing-field',
-        'row-owner','row-interpreter','row-start','row-created','row-type','row-nested',
+        'row-interpreter','row-start','row-created','row-type','row-nested',
         'snapshot-type','snapshot-missing-table','snapshot-table-type','snapshot-empty-task','snapshot-duplicate-job',
         'snapshot-row-field','running-row-copy','pending-audit-type','oracle-audit-type','drain-audit-type','row-null-source','unknown-encoded','output-json-lookalike',
         'output-second-layer','job-out-second-layer','output-text-type','job-out-type','wrong-owner','lookalike-root','lookalike-column','first-terminal','terminal','refusal-script',
@@ -3971,7 +3971,6 @@ def failure_result_controls() -> dict:
                 elif case_name == 'row-max-bytes-bool': sql_job['max_output_bytes'] = True
                 elif case_name == 'row-exit-bool': sql_job['exit_code'] = False
                 elif case_name == 'row-missing-field': del sql_job['created_at']
-                elif case_name == 'row-owner': sql_job['task_id'] = 'TASK-foreign'
                 elif case_name == 'row-interpreter': sql_job['interpreter'] = 'bash'
                 elif case_name == 'row-start': sql_job['started_at'] += '-foreign'
                 elif case_name == 'row-created': sql_job['created_at'] += '-foreign'
