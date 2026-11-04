@@ -40,7 +40,6 @@ class _AttachmentCapture:
 
     def __init__(self, owner: dict) -> None:
         self.owner = owner
-        self.first: dict | None = None
         self.occurrences: list[dict] = []
         self.load_started = False
         self.load_returned = False
@@ -48,6 +47,13 @@ class _AttachmentCapture:
         self.load_outcome: dict | None = None
         self.load_frame = None
         self.preconstruction = False
+
+    @property
+    def first(self) -> dict | None:
+        # Native callback and loop waiter share this original record. The
+        # first list append selects FIRST, without a read/check/write race or
+        # another lock/wait. Later appends never overwrite that selection.
+        return self.occurrences[0] if self.occurrences else None
 
     def capture(self, phase: str, error: BaseException, *,
                 observation: bool = False, history: bool = True) -> dict:
@@ -60,12 +66,11 @@ class _AttachmentCapture:
             observation=observation, delivery=None, previous_occurrence=None,
             history=None, child=None)
         self.occurrences.append(record)
-        if self.first is None:
-            self.first = record
-        for previous in reversed(self.occurrences[:-1]):
+        for previous in self.occurrences:
+            if previous is record:
+                break
             if previous["error"] is error:
                 record["previous_occurrence"] = previous
-                break
         if history:
             try:
                 record["history"] = BaseException.__dict__["__dict__"].__get__(error).copy()
@@ -155,7 +160,6 @@ class _AttachmentCapture:
             record.update(phase="attachment child before cancellation",
                           observation=True, child=earlier, delivery=None)
             self.occurrences.append(record)
-            self.first = record
         self.capture("attachment waiter cancellation", cause, observation=True)
         return self.first["error"]
 
