@@ -2930,3 +2930,17 @@ and Submission comparisons, and Case/final-snapshot SQL scans all depend on this
 method. Renew their full existing controls and reconcile every published result's
 full builtin values/types/key/list order; do not infer unchanged dependencies or
 sufficient fit from static success or a local debit calculation.
+
+Case late command key/argv/wait joins now iterate each original operand directly,
+without populating a transient `zip` pair. They retain every full `same()` call,
+builtin type, cardinality and original key/list order comparison. The original
+traversal admission loses only the absent pair's two reference slots per member
+(16B/2facts); each explicit right iterator is prepaid 8B/1fact. Full SQL row
+comparison iterates original keys instead of `items()` pairs; its extra left
+lookup is prepaid 8B/1fact, leaving a net absent 8B/1fact per field. Mismatched
+cardinality retains the original conservative admission. Operand retention,
+scalar bytes, full comparisons and each occurrence's safety keep their rates.
+These are logical construction charges, not claims that the interpreter allocates
+a fresh tuple each iteration or that native memory/timing is bounded. All old
+fixtures/statuses/oracles and shared caps stay unchanged; actual complete SOURCE
+controls and independent review/QA are still required to establish fit.

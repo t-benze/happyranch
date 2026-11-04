@@ -3555,3 +3555,17 @@ isolated charges. Every own SOURCE/file/stdout/wire/shape/owner safety check and
 every late full command/SQL-row comparison remains. This shares storage within
 one occurrence and supplies no cross-occurrence admission. Complete original-cap
 controls and the intended equality-omission assertion must establish fit/proof.
+
+Case late command key/argv/wait joins now iterate each original operand directly,
+without populating a transient `zip` pair. They retain every full `same()` call,
+builtin type, cardinality and original key/list order comparison. The original
+traversal admission loses only the absent pair's two reference slots per member
+(16B/2facts); each explicit right iterator is prepaid 8B/1fact. Full SQL row
+comparison iterates original keys instead of `items()` pairs; its extra left
+lookup is prepaid 8B/1fact, leaving a net absent 8B/1fact per field. Mismatched
+cardinality retains the original conservative admission. Operand retention,
+scalar bytes, full comparisons and each occurrence's safety keep their rates.
+These are logical construction charges, not claims that the interpreter allocates
+a fresh tuple each iteration or that native memory/timing is bounded. All old
+fixtures/statuses/oracles and shared caps stay unchanged; actual complete SOURCE
+controls and independent review/QA are still required to establish fit.

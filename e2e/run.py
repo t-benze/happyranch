@@ -2776,8 +2776,18 @@ class _EvidenceObservations:
             self.ledger.charge(32, 4, self.check)
             if type(left) is not type(right) or type(left) is not list:
                 return False
-            self.ledger.charge(16 * (len(left) + len(right)), 2 * (len(left) + len(right)), self.check)
-            return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+            if len(left) != len(right):
+                self.ledger.charge(16 * (len(left) + len(right)), 2 * (len(left) + len(right)), self.check)
+                return False
+            # No zip pair is constructed. Keep both operand traversal slots;
+            # remove only its two temporary references, and pay the explicit
+            # right iterator before allocation. Every same() still runs.
+            self.ledger.charge(16 * len(left) + 8, 2 * len(left) + 1, self.check)
+            remaining = iter(right)
+            for value in left:
+                if not same(value, next(remaining)):
+                    return False
+            return True
         def command_equal(left: tuple, right: tuple) -> bool:
             # One traversal of the original ordered shapes owns BOTH key and
             # scalar equality. The former second traversal zipped eleven fact
@@ -2820,9 +2830,13 @@ class _EvidenceObservations:
                 # comparison charges. Only the separate scalar-map traversal
                 # and its reference-pair construction have disappeared.
                 self.ledger.charge(32, 4, self.check)
-                self.ledger.charge(16 * (len(keys) + len(other[1])),
-                                   2 * (len(keys) + len(other[1])), self.check)
-                for key, other_key in zip(keys, other[1]):
+                # Cardinality is already equal. Direct original key iteration
+                # needs no zip pair; keep operand traversal and independently
+                # charge the explicit other-key iterator before allocation.
+                self.ledger.charge(16 * len(keys) + 8, 2 * len(keys) + 1, self.check)
+                other_keys = iter(other[1])
+                for key in keys:
+                    other_key = next(other_keys)
                     if not same(key, other_key):
                         return False
                     if (number == 0 and key in ('provider', 'payload', 'payload_file', 'argv', 'wire')
@@ -2839,8 +2853,18 @@ class _EvidenceObservations:
                                       for v in (left, right)), 4, self.check)
             return type(left) is type(right) and left == right
         def full_row(left: dict, right: dict) -> bool:
-            self.ledger.charge(32 * (len(left) + len(right)), 4 * (len(left) + len(right)), self.check)
-            return len(left) == len(right) and all(k in right and same(v, right[k]) for k,v in left.items())
+            if len(left) != len(right):
+                self.ledger.charge(32 * (len(left) + len(right)), 4 * (len(left) + len(right)), self.check)
+                return False
+            # Key iteration removes items()'s temporary (key, value) pair
+            # (16B/2facts per left entry). Pay the new left lookup (8B/1fact),
+            # retaining every other traversal and full scalar comparison cost.
+            self.ledger.charge(24 * len(left) + 32 * len(right),
+                               3 * len(left) + 4 * len(right), self.check)
+            for key in left:
+                if key not in right or not same(left[key], right[key]):
+                    return False
+            return True
         for c in self.cases:
             self.ledger.charge(8, 1, self.check)
             if not c['used']:
