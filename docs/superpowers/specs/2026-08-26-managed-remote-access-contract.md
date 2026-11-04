@@ -1,5 +1,101 @@
 # Managed Remote Access — Normative Contract
 
+## Private package executable custody — THR327seq62 / ROOT14036
+
+This local repair contract governs the three nested package children. Earlier
+PR800 diagnostic/checkpoint text below remains historical, including its original
+failures and allocations. All three publications and three automatic attempts
+are spent; this repair grants no publication, CI run, merge, deployment, restart,
+reboot, live installation, credential operation or same-boot cleanup. Independent
+full exact-candidate repair review and separate scoped QA remain necessary. The
+accumulated baseline is INCOMPLETE; Founder43 was a diagnostic-only waiver.
+
+The outer helper and its authenticated sealed archive/connector/executable inputs
+remain unchanged. After original A acquisition and installed AND loaded current
+proof, before the first child or inhibition/manager/retirement effect, prepare
+ALL THREE private images under that original A10s deadline. The sole early
+exception is executable copying and its bounded custody directories/lock.
+Package extraction, transaction/staging, service and credential effects still
+follow B. The outer180s deadline, admission stdin/EOF/environment/output, SAME-OFD
+ownership, drain/join/actual waits, withdrawal/retry/debt and category-only
+diagnostic shapes stay unchanged. Bootstrap linkat publishes a lock, not an image.
+
+Use only `/run/happyranch-connector-images/<boot>.<operation_id>.<site>/image`,
+where boot is the existing validated boot identity, operation_id the exact
+32hex request, and site is `admission`, `stopped-admission` or `body`.
+Walk literal ancestry through held no-follow directory descriptors, comparing
+entries/inodes and root ownership/modes. `/run` must be writable executable
+tmpfs; read-only/noexec/unsupported filesystems, unsafe types/modes/owners,
+identity/device drift and stale-boot exposure refuse without repair. The fixed
+root is root:root0700; its permanent empty single-link `.allocation.lock` is
+root:root0600, safely type-checked before nonblocking open. Acquire common A
+FIRST, allocation `LOCK_EX|LOCK_NB` SECOND. No reverse acquisition, wait, child,
+manager call or common unlock occurs under allocation lock. Never remove it.
+
+Under this ONE lock validate S>0, S<=256MiB and complete-operation headroom:
+existing R+3<=32 and B+3*S<=512MiB, using checked/subtraction arithmetic BEFORE
+any site mkdir. Bound root enumeration to34 entries including its overflow
+sentinel and each generation to2. Count every validated current-boot generation
+once, even empty crash residue, and its actual present bounded image length
+(zero only for a genuinely missing image). Only known fixed-site names,
+root:root0700/0500 directories and regular single-link root:root0600/0500
+images on that filesystem are accepted. Unknown children/metadata, stale boots,
+overflow or collision refuse. Never adopt, execute, complete, evict or delete a
+peer generation. Logical caps reserve neither physical free space nor A feasibility.
+
+Exclusively create each distinct0700 directory and0600 image. Copy from the
+already authenticated regular/unlinked/root-owned source with WRITE/GROW/SHRINK/
+SEAL seals using bounded ReadAt/pread from zero; source offsets stay unchanged.
+Require exact size, EOF, full writes and SHA256 equality. Each sole writable
+handle stays synchronous under allocation lock: no duplicate, map, asynchronous
+handoff, child inheritance, hardlink, rename or writable alias. End writes,
+sync, set0500, sync and attempt writer close ONCE. Uncertain close prevents
+readiness and retains residue; no later write or retry-close is permitted.
+Read-only/no-follow reopen verifies mode/owner/link, size/hash and created inode
+plus directory entry/ancestry. Set generation0500, sync metadata and validate
+the complete triple before declaring it ready, BEFORE allocation lock release.
+
+All ready members are boot-retained, even unused, before first Start, on Start
+error or A/B-gap crash. Each existing child call explicitly selects its own
+single-use site and read-only revalidates that prepared path; no later allocation,
+reservation or capacity readmission occurs. ExtraFiles remain
+`[p.lock,incoming,connector,executable]` in child slots3/4/5/6; slot5 is sealed
+source, never a writable named image. Preparation failure uses existing
+admission_child/not_attempted initialization/finish/deadline behavior; later
+refusals retain their actual child stage. No new raw path/error/public/audit field.
+
+Only failed PRE-READY construction can unwind its exact own never-exposed
+members, after positive handle settlement and fresh descriptor-relative identity,
+under BOTH original held locks and remaining A deadline. Expiry, close or identity
+uncertainty retains actual residue/charge. No recursive, peer, parent, global-lock
+or deferred removal. Ready sets never unwind. Retain exact names/inodes/bytes
+through stock frozen archive reopening/extraction/re-exec/lazy imports/finalizers,
+parent/descendant uncertainty, update/rollback/uninstall and ordinary shutdown.
+Age, PID absence, direct-child reap, transaction success or service stop supplies
+no deletion right or descendant-quiescence proof. Existing SAME-OFD settlement
+requirements remain independent.
+
+These private children remain root-only and can traverse the tree. The service
+account continues to use the installed0755 payload, with no new access. All
+cooperating trusted-root actors must preserve the reserved namespace and mount
+topology; modes/hash alone do not establish custody. Hostile root and root-created
+aliases are outside this existing threat model. Eventual cleanup is actual FULL
+volatile `/run` boot teardown, never an inferred reboot or live clearing/unmount.
+Stale-boot entries refuse without deletion. At the retained19285456-byte size a
+triple costs57856368 logical bytes; at most nine such triples fit the byte cap.
+This is arithmetic, not measured performance or installer acceptance.
+
+Acceptance uses the finite [custody cases](../../operations/managed-remote-access-staged-credential-cases.md).
+Actual body commit/cleanup and final Refresh/current, then the separately required
+READY/remote checks, cannot be replaced by allocation or --help. Root/systemd and
+fault-injection cases remain NOT RUN without an authorized disposable venue;
+the local uid1000 does not authorize host fixed-path effects. LRA1/HIGH record/
+lock FIFO hang remains OPEN/KNOWN/DEFERRED and is not probed. Python units remain
+RETIRED; suspended proofs NOT RUN; general integration INCLUDING callback/
+lifespan/SessionTracker SKIPPED24342. Required checks stay Source Boundary Lint
+and Web Lint(Node24), lint/static only; Product E2E daily19UTC/nonblocking with
+no ad hoc run here. No behavioral/test-authoring/installer PASS follows source.
+
 **Current PR800 local diagnostics — Founder THR327seq43/35/29; sole ROOT TASK-13894.**
 
 This controlling diagnostic contract supersedes the active collection, nested

@@ -1,5 +1,48 @@
 # Runtime And Configuration
 
+**Current private package executable custody — THR327seq62 / ROOT14036.**
+
+Use the [normative private-image contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-package-executable-custody--thr327seq62--root14036).
+Sealed archive/connector/executable transports and child slots3/4/5/6 remain;
+only the three nested frozen children execute protected named images. After
+original A/current proof, under common A THEN permanent nonblocking allocation
+lock, fully construct/close/validate three distinct images before first child
+or policy/manager/retirement effects. Original A10s/outer180s remain. Extraction,
+transaction, service and credential work still follow B. No configuration,
+environment override or anonymous-exec fallback selects another image root.
+
+The literal root is `/run/happyranch-connector-images`, root:root0700 on writable
+executable tmpfs `/run`; no-follow ancestry/entry/inode validation refuses unsafe,
+unsupported or stale-boot state without repair. Generation names are
+`<boot>.<operation_id>.<admission|stopped-admission|body>/image`. Before any mkdir,
+require existing_slots+3<=32, existing_bytes+3*S<=512MiB, 0<S<=256MiB. Bounded
+enumeration counts actual partial/crashed slots/lengths, never reservations or
+peer reuse. Exclusive0600 sole-writer copies preserve authenticated source
+offset/EOF/hash; sync/final0500/once-close and read-only reopen/full validation
+precede ready. Mode/hash alone proves no custody. Later sites read-only select
+their prepared inode without new capacity admission.
+
+Every ready triple is retained for the boot, even unused/failed Start, through
+archive reopen/extraction/re-exec/imports/finalizers, update/rollback/uninstall
+and parent/descendant uncertainty. No same-boot clearing/unmount, GC or PID/age/
+direct-reap inference. Only exact own failed PRE-READY construction can unwind
+under original held locks/deadline after settled handles and fresh identity;
+uncertainty retains actual charge. Full volatile-boot teardown is eventual
+cleanup; stale exposure refuses. Trusted cooperating root preserves namespace
+and mount topology. Private children remain root-only; service retains the
+installed0755 payload, with no new access or host privilege grant.
+
+Logical caps guarantee neither space, A feasibility nor successful installation.
+Preserve SAME-OFD actual settlement, category-only existing diagnostics and all
+admission/withdrawal/debt behavior. See the [finite case guide](../operations/managed-remote-access-staged-credential-cases.md)
+for policy/payload oracles. This is a LOCAL repair with zero publications/runs
+remaining; independent exact-candidate review/QA and real installer acceptance
+remain. Root/systemd/fault cases are NOT RUN without an authorized fixture.
+LRA1 HIGH remains deferred; Python units RETIRED, suspended proofs NOT RUN,
+integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342. Required
+checks are lint/static only; no ad hoc Product E2E. Earlier “Current” diagnostic
+checkpoints below are preserved history, with no replenished allowance.
+
 **Current PR800 local diagnostics — Founder THR327seq43/35/29; sole ROOT TASK-13894.**
 
 This controlling diagnostic contract supersedes the active collection, nested

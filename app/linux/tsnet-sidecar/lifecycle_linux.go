@@ -3834,18 +3834,28 @@ func (d *lifecyclePackageChildDiagnostic) finishNative() {
 	}
 }
 
-func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, connector, executable *os.File, request lifecyclePackageRequest, admission bool, output io.Writer) (diagnostic lifecyclePackageChildDiagnostic, failure error) {
+func lifecyclePackageChildInitialDiagnostic() (diagnostic lifecyclePackageChildDiagnostic) {
 	diagnostic.DiagnosticState = "unavailable"
 	diagnostic.Native = lifecyclePackageNativeDiagnostic{Source: "nested_frozen_stderr", State: "unavailable", Messages: []string{}, Losses: []string{}, Read: "not_started", Close: "not_opened"}
 	diagnostic.Process = lifecyclePackageProcessDiagnostic{Launch: "not_attempted", Wait: "not_attempted", Kill: "not_requested", WriterClose: "not_opened"}
+	return diagnostic
+}
+
+func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, connector, executable *os.File, request lifecyclePackageRequest, images *lifecyclePackageImages, site lifecycleImageSite, admission bool, output io.Writer) (diagnostic lifecyclePackageChildDiagnostic, failure error) {
+	diagnostic = lifecyclePackageChildInitialDiagnostic()
 	defer func() {
 		if deadline, bounded := ctx.Deadline(); bounded {
 			diagnostic.DeadlineElapsed = !time.Now().Before(deadline)
 		}
 		diagnostic.finishNative()
 	}()
-	// The executable and borrowed SAME-OFD mappings remain unchanged.
-	cmd := exec.CommandContext(ctx, "/proc/self/fd/5", "managed-private", request.Operation)
+	path, err := images.path(ctx, site)
+	if err != nil {
+		return diagnostic, ErrLifecycle
+	}
+	// Only the exec pathname changes. Sealed inputs and borrowed SAME-OFD
+	// mappings remain slots3/4/5/6; no named writable handle reaches a child.
+	cmd := exec.CommandContext(ctx, path, "managed-private", request.Operation)
 	cmd.ExtraFiles = []*os.File{p.lock, incoming, connector, executable}
 	cmd.Env = append(os.Environ(), "HAPPYRANCH_LIFECYCLE_DEADLINE_NS="+strconv.FormatInt(request.DeadlineNS, 10))
 	body := ""
@@ -4023,6 +4033,7 @@ func lifecyclePackageChild(ctx context.Context, p *LifecyclePair, incoming, conn
 		}
 		observed <- result
 	}()
+	images.members[site].possibleStart = true
 	startErr := cmd.Start()
 	closeErr := writer.Close()
 	diagnostic.Process.WriterClose = "ok"
@@ -4175,7 +4186,18 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	if !lifecyclePackageCurrent(a, p, false) {
 		return lifecyclePackageRefusal("admission_current")
 	}
-	if diagnostic, err := lifecyclePackageChild(a, p, incoming, connector, executable, request, true, io.Discard); err != nil {
+	// Fully prepare the operation's three distinct images inside ORIGINAL A,
+	// after current proof and before any child, inhibition or manager effect.
+	images, err := lifecyclePreparePackageImages(a, p, connector, request)
+	if err != nil {
+		diagnostic := lifecyclePackageChildInitialDiagnostic()
+		if deadline, bounded := a.Deadline(); bounded {
+			diagnostic.DeadlineElapsed = !time.Now().Before(deadline)
+		}
+		diagnostic.finishNative()
+		return lifecyclePackageChildRefusal("admission_child", diagnostic)
+	}
+	if diagnostic, err := lifecyclePackageChild(a, p, incoming, connector, executable, request, images, lifecycleImageAdmission, true, io.Discard); err != nil {
 		return lifecyclePackageChildRefusal("admission_child", diagnostic)
 	} else {
 		lifecyclePackageChildFrame("admission_child", diagnostic, false)
@@ -4213,7 +4235,7 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	if !lifecyclePackageCurrent(ctx, p, true) {
 		return lifecyclePackageRefusal("stopped_current")
 	}
-	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, true, io.Discard); err != nil {
+	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, images, lifecycleImageStoppedAdmission, true, io.Discard); err != nil {
 		return lifecyclePackageChildRefusal("stopped_admission_child", diagnostic)
 	} else {
 		lifecyclePackageChildFrame("stopped_admission_child", diagnostic, false)
@@ -4221,7 +4243,7 @@ func HandleLifecyclePackage(input io.Reader, output io.Writer) int {
 	if request.Operation == "package-uninstall" && p.policyChange("retired", false, request.OperationID) != nil {
 		return lifecyclePackageRefusal("retire_policy")
 	}
-	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, false, output); err != nil {
+	if diagnostic, err := lifecyclePackageChild(ctx, p, incoming, connector, executable, request, images, lifecycleImageBody, false, output); err != nil {
 		return lifecyclePackageChildRefusal("package_body", diagnostic)
 	} else {
 		lifecyclePackageChildFrame("package_body", diagnostic, false)

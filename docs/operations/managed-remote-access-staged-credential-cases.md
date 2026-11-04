@@ -1,5 +1,82 @@
 # PR800 staged credential and mode cases — THR228seq428
 
+## Current private-image acceptance — THR327seq62 / ROOT14036
+
+Apply the [complete private executable custody contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-package-executable-custody--thr327seq62--root14036)
+and manager's accepted design v2/cases v3. Earlier ROOT13894/13151 checkpoints
+below remain historical, with their actual failed receipts and spent allowances.
+No test source is added by this repair. These are finite acceptance expectations,
+not executed behavioral PASS; local build/static/help cannot prove a working
+managed installer. All three publications/runs are spent, zero remain.
+
+After original A/current proof, all THREE fixed-site images must be completely
+constructed, sole-writer once-closed and read-only hash/inode/ancestry validated
+under common A THEN nonblocking permanent allocation lock, before any first
+child/inhibition/manager/retirement effect and within A10s/outer180s. Extraction/
+transaction/staging/credential/service work still follows B. Require protected
+root-only literal tmpfs `/run` ancestry, source seals/offset/size/EOF/hash and
+distinct exclusive0500 final images, no writable alias or inherited named writer.
+Slots3/4/5/6 remain unchanged. Later sites read-only select/revalidate without
+allocation/readmission. Ready triples, including unused/failed-Start ones, retain
+names/inodes/bytes through full frozen lifetime and update/rollback/uninstall,
+until actual volatile-boot teardown. No same-boot GC/PID/age/reap clearance.
+Only safe exact own failed PRE-READY unwind under original locks/deadline and
+settled handles is allowed; uncertain residue is charged, never adopted/evicted.
+Unknown/stale/unsafe state refuses without repair. Trusted cooperating root
+preserves namespace/mount topology; mode/hash alone proves no custody. Service
+remains on installed0755 payload, private children root-only.
+
+Capacity cases must reach the real allocator, or be recorded NOT REACHED:
+R+3<=32 and B+3*S<=536870912, 0<S<=268435456, before any mkdir. For S=19285456,
+R25/B482136400 refuses539992768 before effects; R24/B462850944 can reach
+R27/B520707312, with zero later charge; a next triple needs578563680 and refuses.
+R30 refuses33 slots, R29 can reach32 if bytes fit. Empty-root S268435456 refuses
+805306368; S178956970 fits536870910, the next byte refuses536870913. Exact L
+fits quota only. Count actual crash-prefix directories and present bytes in
+bounded scans (root34/generation2 with sentinel); no absent reservation debt.
+Lock busy/collision/ENOSPC/sync/close/deadline failures cannot launch a partial
+triple. No new test seam, fake helper or copied allocator supplies product proof.
+
+For the accepted existing-installed/current fixture, snapshot paired P0
+(desired=run, enabled=E, revision=r, prior operation distinct) and exact payload/
+units/drop-in/credential/config T0, no pending transaction or concurrent writer.
+Pstop(O) is both successfully persisted policies stopped/E/r+1/inhibitID(O).
+Pretired(O) is both subsequent retired/false/r+2/O. Runtime service observations
+are separate; a stop error never proves physical process absence.
+
+| Boundary (requires actual preceding successes) | Final policy/payload | Result |
+| --- | --- | --- |
+| First selection/read refusal or first Start error after ready | P0/T0 | admission_child; not_attempted or actual failed Start, respectively; no body |
+| Inhibition succeeded then manager-stop error; or actual successful stop then B refusal | Pstop/T0 | manager_stop or reacquire_pair; no stopped admission/body |
+| B/current succeeded then stopped-site selection refusal | Pstop/T0 | stopped_admission_child/not_attempted; no retirement/body |
+| Stopped admission and uninstall retirement succeeded then body selection refusal | Pretired/T0 | package_body/not_attempted; no payload removal/uninstall success |
+| Stopped admission succeeded then install body selection refusal | Pstop/T0 | package_body/not_attempted; no transaction/publication |
+| Real install/reinstall body commit+cleanup and final Refresh/current succeeded | Pstop/actual authenticated NEW | real body response/version/manifest, actual child/helper0/waits; later READY/remote proof separate |
+
+All refusal rows retain helper78 and exact actual diagnostic stage. Q1-R applies
+to NONMUTATING refusals: all three original names/dev/inodes/S/hash/0500 single
+links remain charged, no new allocation. Q1-M destructive mismatch instead
+records actual changed/missing objects/remaining charge, no reconstructed bytes,
+repair or Start. Q1-U partial writes, supersession, unknown crash boundary or
+uncertain observation retain actual partial/unknown evidence; never force a
+finite policy/payload oracle or infer rollback/quiescence/deletion permission.
+In the A/B interleaving, B snapshots AFTER A inhibition (Pstop(A)/T0/R27/B520707312)
+and must pass its old guards to reach quota. Guard refusal is NOT REACHED for
+quota. A resumes only with real B/current proof; positive consumption requires
+the full successful-body row, not merely preparation/help.
+
+Record actual source/head/tree/binary/TAR identities, argv/cwd/minimal environment,
+uid/gid, bounded time/output, full streams, launch errors distinct from executable
+exit, cancellation/kill/wait/reap and actual teardown. C2/C3 managed path/final
+installation, faults and Q1 behaviors are NOT RUN without an existing authorized
+disposable fixed-path root/systemd venue; do not change host permissions or
+provision one here. No reboot/live cleanup. Preserve LRA1 HIGH deferred/unprobed,
+baseline INCOMPLETE, historical custody UNKNOWN and historical EACCES/INCONCLUSIVE
+and installer1/helper78/nested255. Exact-candidate independent review/scoped QA
+remain. Python units RETIRED; suspended proofs NOT RUN; integration INCLUDING
+callback/lifespan/SessionTracker SKIPPED24342; required checks lint/static only;
+daily19UTC/nonblocking E2E with no ad hoc trigger.
+
 ## Controlling local correction — ROOT13894 / Founder THR327seq43/35/29
 
 This section governs the current diagnostic delivery and accumulated test-source

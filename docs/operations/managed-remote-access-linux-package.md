@@ -1,5 +1,57 @@
 # Managed remote access: Linux package operations (N3)
 
+**Current private package images — THR327seq62 / ROOT14036 (LOCAL repair).**
+
+The [normative custody contract](../superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-package-executable-custody--thr327seq62--root14036)
+governs this repair; earlier “Current” checkpoints below remain historical.
+All three publications and automatic attempts are SPENT, zero remain. No push,
+CI/rerun, merge, deploy/restart/reboot, live installation/service/credential or
+host-permission workaround is authorized. Independent full exact-candidate
+repair review and separate scoped QA remain; baseline INCOMPLETE and LRA1/HIGH
+OPEN/KNOWN/DEFERRED are not waived by the old diagnostic-only Founder43 ruling.
+
+Package admission prepares three protected named connector images after the
+original common A/current proof, before first child or policy/manager/retirement
+effect, under original A10s/outer180s. Only these copies and custody directories/
+permanent lock move early; extraction/transaction/stages/credential/service
+effects still follow B. Sealed input transports, SAME-OFD actual settlement,
+child slots3/4/5/6, admission protocol and category-only diagnostics stay intact.
+Each later site explicitly revalidates/selects its own already prepared image;
+there is no later allocation/quota check or anonymous-exec fallback.
+
+Require writable executable tmpfs `/run`, protected literal no-follow ancestry,
+root:root0700 fixed `happyranch-connector-images`, permanent empty single-link
+root:root0600 `.allocation.lock`, and exact current-boot/32hex/fixed-site names.
+Common A precedes nonblocking allocation flock; no child/manager wait or common
+unlock occurs under it. Admit R+3<=32/B+3*S<=512MiB (0<S<=256MiB) before any site
+mkdir. Bounded scans count actual empty/partial crash directories and actual
+bytes; unsafe/unknown/stale/colliding state refuses without repair/adoption/
+eviction. The entire triple is copied from authenticated sealed source with
+offset-preserving reads, exclusive distinct0600 inodes, no writable aliases,
+sync/final0500/once-close writers, read-only reopen/hash/inode/ancestry validation,
+0500 generation metadata and complete-set ready before lock release.
+
+Never clear/unmount the namespace on a live boot. ALL ready images, even unused
+or failed-Start ones, retain exact names/inodes/bytes through PyInstaller archive
+reopen/extraction/re-exec/import/finalization, parent/descendant uncertainty,
+update/rollback/uninstall and ordinary shutdown. No PID/age/direct-exit GC.
+Only failed PRE-READY own never-exposed members may unwind under original locks/
+remaining A after positive handle settlement and fresh identities; uncertainty
+retains actual charge, never peers/parents/global lock. Actual full volatile-boot
+teardown is eventual cleanup; stale exposure refuses without clearing. Cooperating
+trusted root preserves mount/namespace topology; modes/hash alone do not supply
+custody or hostile-root resistance. Root-only private children traverse the tree;
+the service account continues installed0755 execution without new access.
+
+At the retained connector size, a triple is57856368 logical bytes and nine fit
+512MiB; metadata/extraction are extra, and quota guarantees neither physical space
+nor A10s feasibility. Allocation/--help is not managed installation. Require
+actual body commit+cleanup/final Refresh/current and separately READY/remote
+acceptance; see [finite failure oracles](managed-remote-access-staged-credential-cases.md).
+Unsupported privileged/fault cases stay NOT RUN. Python units RETIRED; suspended
+proofs NOT RUN; integration INCLUDING callback/lifespan/SessionTracker SKIPPED24342.
+Required checks stay lint/static only, daily19UTC E2E nonblocking/no ad hoc trigger.
+
 **Current PR800 local diagnostics — Founder THR327seq43/35/29; sole ROOT TASK-13894.**
 
 This controlling diagnostic contract supersedes the active collection, nested

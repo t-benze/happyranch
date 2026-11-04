@@ -1,5 +1,65 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**Current private package executable repair — Founder THR327seq62; sole ROOT TASK-14036.**
+
+The [private executable custody contract](docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md#private-package-executable-custody--thr327seq62--root14036)
+controls this local repair. Earlier PR800 “Current” checkpoints below retain
+their historical bytes/receipts; their older allocation and anonymous child-exec
+directions do not govern this repair. ALL THREE publications and automatic
+attempts are SPENT, ZERO remain. Local normal-hooked candidates/builds only;
+no push, PR mutation, CI/rerun, merge, new reservation, deploy/restart/reboot,
+live installation/credentials/service, host-permission workaround or cleanup.
+Full independent exact-candidate code review and separate scoped QA return to
+the manager; accumulated baseline INCOMPLETE and Founder43 diagnostic-only
+waiver remain. LRA1/HIGH record/lock FIFO hang stays OPEN/KNOWN/DEFERRED, unprobed.
+
+After original A/common lock and current installed AND loaded proof, construct
+ALL THREE images before first child/inhibition/manager-stop/retirement, within
+original A10s and outer180s. This permits only early private executable copies
+and custody directories/lock; extraction, transaction/stages, service and
+credential effects still follow B. Fixed names are
+`/run/happyranch-connector-images/<boot>.<operation_id>.<site>/image`, with sites
+admission/stopped-admission/body. Literal no-follow descriptor ancestry, held
+entry/inode checks, root ownership/modes and writable executable tmpfs `/run`
+are required; unsupported/unsafe/stale-boot metadata refuses without repair.
+Common A FIRST, permanent safe0600 `.allocation.lock` nonblocking SECOND; no
+child/manager wait, common unlock or reverse acquisition under allocation lock.
+Before any site creation admit R+3<=32 and B+3*S<=512MiB, S>0 and <=256MiB.
+Bounded scans count actual partial/crashed slots/lengths; unknown names/children,
+collisions or overflow refuse, never adopt/reuse/evict peer images.
+
+Copies preserve sealed-source offset/size/EOF/hash using bounded ReadAt, exclusive
+distinct single-link0600 destinations and sole synchronous writers with no
+duplicate/map/alias/escape. Sync/final0500/ONCE-close writers, read-only reopen,
+hash/inode/ancestry checks and0500 generation/sync complete ALL THREE before
+ready/lock release. A close uncertainty forbids readiness, retains actual
+residue and permits no later writes. Later calls explicitly select/read-only
+revalidate their fixed prepared site without allocation/readmission. Child
+slots3/4/5/6 remain `[p.lock,incoming,connector,executable]`, sealed source in5;
+existing diagnostics, admission protocol, deadlines and actual drain/join/wait/
+SAME-OFD ownership remain. Preparation refuses admission_child/not_attempted;
+later refusals keep their actual stage. No raw path/error/new audit shape.
+
+ALL ready names/inodes/bytes, including unused or failed-Start sites, survive
+archive reopening/re-exec/extraction/imports/finalization, uncertain descendants,
+update/rollback/uninstall and the whole boot. No same-boot GC or PID/age/direct-
+exit cleanup. Only failed PRE-READY own construction may unwind exact members
+under original held locks/remaining deadline, positive handle settlement and
+fresh identities; uncertainty retains actual charge. Never remove peers/parents/
+global lock or run deferred cleanup. Actual full volatile-boot teardown is
+eventual cleanup; stale exposure refuses, never clears. Cooperating trusted root
+must preserve namespace/mount topology; modes/hash alone prove no custody or
+hostile-root resistance. Root-only children traverse it; service remains on
+installed0755 payload with no new access. Logical caps promise no physical space,
+A10s feasibility, descendant quiescence or working installer.
+
+Finite stage-specific policy/payload assertions and NOT RUN limits are in the
+[case guide](docs/operations/managed-remote-access-staged-credential-cases.md).
+Python units RETIRED, suspended proofs NOT RUN, general integration INCLUDING
+callback/lifespan/SessionTracker SKIPPED24342. Required checks stay Source
+Boundary Lint and Web Lint(Node24), static only; daily19UTC/nonblocking Product
+E2E has no ad hoc trigger here. Historical adverse evidence is preserved.
+
 **Current PR800 local diagnostics — Founder THR327seq43/35/29; sole ROOT TASK-13894.**
 
 This controlling diagnostic contract supersedes the active collection, nested

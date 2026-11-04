@@ -956,7 +956,9 @@ def _managed_package_outer(package: Path | None, operation: str, deadline: int) 
     try:
         if package is not None:
             # Authenticate ONE immutable incoming image before using its two
-            # fixed existing executables. No extraction/temp/stage precedes B.
+            # fixed existing executables. Go prepares all three private named
+            # connector copies under original A/current proof before admission;
+            # package extraction/transaction/temp/stage still follows B.
             _require_package_source(package)
             incoming_bytes = package.read_bytes()
             diagnostic = _MANAGED_PACKAGE_DIAGNOSTIC.get()
