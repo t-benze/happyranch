@@ -3631,13 +3631,18 @@ SOURCE lexical scanning populates its token-start alias only in the existing
 identifier and numeric branches, where token-length and prefix checks use it.
 The lexical token loop dispatches directly on the original indexed characters,
 without populating a retained character alias per token. Its fixed token fact
-remains; up to 16 indexed lookup/dispatch operations prepay 128B/0facts. Only the
-absent alias population loses 8B/1fact. Comments, plain quoted literals,
-delimiters, operators and continuations therefore pay 128B/1fact. Identifier and
-numeric branches retain the start-reference 8B/1fact plus 16B/0facts for their
-branch-local setup/check, totaling 152B/2facts. These are nonrefundable logical
-slot operations: earlier start/preflight-character values may still occupy
-the same local cells; no Python allocation or peak-memory saving is certified.
+remains, plus 32B/0facts for phased selection setup. Each reached stage prepays
+its maximum indexed reads at the same 8B each: comment 8B, quote 8B, ASCII
+letter/underscore membership 8B, numeric selection 24B, opening 16B, closing
+16B, continuation 8B and operator checks 24B. Early token exits do not execute
+later stages. The ASCII membership replaces repeated indexed character method
+calls with one equivalent complete set check. Explicit delimiter/continuation
+exits additionally pay 16B/0facts. Identifier and numeric branches retain the
+start-reference 8B/1fact plus 16B/0facts for their branch-local setup/check;
+delimiter stack retention still pays 8B/1fact. Reached precharges never refund.
+These are nonrefundable logical slot operations: earlier start/preflight-character
+values may still occupy the same local cells; no Python allocation or peak-memory
+saving is certified.
 Complete grammar,
 token/line/literal/depth limits, periodic/end checks and every independent
 original-occurrence safety/comparison remain. All existing shared controls
