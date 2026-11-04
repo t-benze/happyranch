@@ -490,6 +490,19 @@ whole-service responsiveness or behavioral acceptance. Native validation, the
 45-second native-await semantics and CLI deadlines remain; there is no hard
 filesystem bound or demonstrated dominant slow stage.
 
+Current CLI timeout amendment (Founder THR-296 seq239 approving seq238): this
+supersedes the preceding CLI-deadline sentence only for team-move preview. Its
+request uses a 300-second response-read/inactivity allowance, with connect,
+write and pool still 30 seconds. The shared client default and other team-move
+requests remain at 30 seconds; existing request-specific overrides elsewhere
+are unchanged. This is not a total wall deadline or completion guarantee. Native
+45-second awaits, drain and server deadlines remain. Preserve the same key and
+saved inputs after errors, without automatic retry; reconcile outstanding
+handler ownership before another authorized attempt. Source acceptance adds no
+operation allocation. Only ROOT14014 owns the task-bound grant for up to two
+same-key/saved-input previews, stopping at the first successful result for review;
+apply/recover remain excluded and existing human/auth boundaries remain.
+
 Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligible request; stale/wrong target/third member/concurrent writers; session-only worker refusal; causal pending work; captured threads/pending followups; task/thread/schedule races/retry/fallback; due schedules; file/reset/context/publication failures/timeouts; separately authorized process-loss restart; identical/changed-key replay; permission/skill differences; historical/natural postmove work; unrelated execution/draft staleness. Store/state handoff carries four answers for each applicable case (real seam, expected observation, actual static evidence, missing behavior). It adds no test cases/fixtures/campaign.
 
 NO new unit/integration cases/parameters/fixtures, retired Python run/import/collection/restoration, ad hoc Product E2E, protected mutation/process-kill/replay/restoration experiments, Jenkins, live synthetic task/DB operation/provider reset/roster move or reinstated four-control premerge gate. General integration SKIPPED THR243seq42. All unobserved behavior/migration/recovery scenarios remain UNEXECUTED. Source/static QA PASS is not behavioral PASS. Independent full final-head reviewer, honest scoped QA, normal hooks/nonforce publication and manager guarded merge remain; each push renews required gates. PR/main automation remains ONLY Source Boundary Lint and Web Lint(Node24), with standalone source-only dependency lint preserved.
