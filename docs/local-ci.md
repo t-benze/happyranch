@@ -3016,13 +3016,32 @@ until the complete existing controls and required omission/restoration pass.
 
 SOURCE lexical scanning populates its token-start alias only in the existing
 identifier and numeric branches, where token-length and prefix checks use it.
-Comments, plain quoted literals, delimiters, operators and continuations keep
-the original character and fixed token admission (8B/2facts); only the absent
-start-reference population loses 8B/1fact. Identifier and numeric tokens pay
-the original start-reference 8B/1fact plus 16B/0facts for the new branch-local
-setup and check call, totaling 32B/3facts. These are nonrefundable logical slot
-operations: an earlier start value may still occupy the same local cell; no
-Python allocation or peak-memory saving is certified. Complete grammar,
+After its original whitespace check, the lexical token loop uses prefix
+predicates against fixed one-character constants/tuples, without constructing
+indexed token-start character scalars, per-token class tuples or a retained
+character alias. Its fixed token fact and 32B/0facts selection setup remain.
+Only the absent token-start indexed lookups lose their 8B charges; the
+still-indexed opening append and closing lookup each prepay 8B/0facts.
+Every ASCII class and numeric lookahead keeps its membership and end guard.
+Explicit delimiter/continuation exits additionally pay 16B/0facts. Identifier
+and numeric branches retain the start-reference 8B/1fact plus 16B/0facts for
+their branch-local setup/check; stack retention still pays 8B/1fact. Reached
+precharges never refund. These are nonrefundable logical slot operations:
+earlier start/preflight-character values may still occupy the same local cells;
+no Python allocation or peak-memory saving is certified. Complete grammar,
 token/line/literal/depth limits, periodic/end checks and every independent
 original-occurrence safety/comparison remain. All existing shared controls
 renew; complete green and the required omission/restoration remain necessary.
+
+The complete submit/completion request digest sizes each string directly through
+the existing full-scalar sizing path. Its original reference still costs
+8B/1fact; only the absent span endpoints lose 16B/2facts. The 32B selection and
+character dispatch, full encoded work, scratch admission, escaping, UTF8 and
+entire hash traversal remain. Fixed object/array punctuation uses immutable byte
+constants directly, retaining 32B selection/call plus 3B/1fact output per byte;
+the omitted general spelling calls need neither their 24B/3fact span setup nor
+8B/1fact scratch. Other spellings retain their original construction charges.
+Every field, insertion order, array member, number and complete request digest
+is still consumed. No full request buffer, cap/rate change or refund is added.
+All shared canonical/Case-copy controls renew; this operation elimination alone
+establishes no fit, independent QA or native acceptance.

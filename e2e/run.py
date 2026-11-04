@@ -986,9 +986,15 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
     ledger.charge(128, 16, check)
     digest = hashlib.sha256()
     def put(text: str, string: bool = False) -> None:
-        ledger.charge(24, 3, check)
         ledger.charge(32, 0, check)  # Size selection plus possible chars dispatch.
-        size = _evidence_string_size([(text, 0, len(text))], check) if string else len(text)
+        if string:
+            # Size this same complete scalar without constructing span endpoints.
+            # Its original reference and all encoding work remain charged.
+            ledger.charge(8, 1, check)
+            size = _evidence_string_size(text, check)
+        else:
+            ledger.charge(24, 3, check)  # Conservative original nonstring setup.
+            size = len(text)
         ledger.charge(3 * size, 1, check)
         ledger.reserve(8, 1, check)
         try:
@@ -1018,19 +1024,30 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
             raise _EvidenceCapacity('request depth capacity refused')
         ledger.charge(16, 2, check)
         if type(value) is dict:
-            put('{')
+            # Fixed punctuation needs no general spelling encoder or scratch.
+            # Keep its selection and full output debit before each hash update.
+            ledger.charge(35, 1, check)
+            digest.update(b'{')
             for index, (key, child) in enumerate(value.items()):
                 if index:
-                    put(',')
-                put(key, True); put(':'); visit(child, depth + 1)
-            put('}')
+                    ledger.charge(35, 1, check)
+                    digest.update(b',')
+                put(key, True)
+                ledger.charge(35, 1, check)
+                digest.update(b':')
+                visit(child, depth + 1)
+            ledger.charge(35, 1, check)
+            digest.update(b'}')
         elif type(value) is list:
-            put('[')
+            ledger.charge(35, 1, check)
+            digest.update(b'[')
             for index, child in enumerate(value):
                 if index:
-                    put(',')
+                    ledger.charge(35, 1, check)
+                    digest.update(b',')
                 visit(child, depth + 1)
-            put(']')
+            ledger.charge(35, 1, check)
+            digest.update(b']')
         elif type(value) is str:
             put(value, True)
         else:

@@ -3646,3 +3646,16 @@ Complete grammar,
 token/line/literal/depth limits, periodic/end checks and every independent
 original-occurrence safety/comparison remain. All existing shared controls
 renew; complete green and the required omission/restoration remain necessary.
+
+The complete submit/completion request digest sizes each string directly through
+the existing full-scalar sizing path. Its original reference still costs
+8B/1fact; only the absent span endpoints lose 16B/2facts. The 32B selection and
+character dispatch, full encoded work, scratch admission, escaping, UTF8 and
+entire hash traversal remain. Fixed object/array punctuation uses immutable byte
+constants directly, retaining 32B selection/call plus 3B/1fact output per byte;
+the omitted general spelling calls need neither their 24B/3fact span setup nor
+8B/1fact scratch. Other spellings retain their original construction charges.
+Every field, insertion order, array member, number and complete request digest
+is still consumed. No full request buffer, cap/rate change or refund is added.
+All shared canonical/Case-copy controls renew; this operation elimination alone
+establishes no fit, independent QA or native acceptance.
