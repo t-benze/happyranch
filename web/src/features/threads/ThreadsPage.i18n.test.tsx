@@ -25,6 +25,7 @@ import { seedReadyHealth, startupHealth, stubReadyHealth } from '@/test/startup'
 import { makeQueryClient } from '@/design-system/providers/AppProvider';
 import { getCommittedThreadPageRuns } from '@/design-system/providers/_real-threads';
 import { HEALTH_QUERY_KEY } from '@/lib/startup';
+import { ApiError } from '@/lib/api/client';
 import { translate } from '@/lib/i18n';
 
 const mermaidChunk = vi.hoisted(() => {
@@ -391,26 +392,121 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
   test('detail loading then error with retry are localized', async () => {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => { release = resolve; });
-    stubList([]);
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9`, async () => {
-        await held;
-        return HttpResponse.json({ detail: 'nope' }, { status: 500 });
-      }),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/messages`, () =>
-        HttpResponse.json({ detail: 'nope' }, { status: 500 }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tasks`, () => HttpResponse.json([])),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tail`, () =>
-        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
-      ),
-    );
-    mount(`/orgs/${SLUG}/threads/THR-9`, 'zh-CN');
-    expect(await screen.findByText('正在加载消息…')).toBeInTheDocument();
-    release();
-    expect(await screen.findByText('加载会话失败。', {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+    const client = makeQueryClient();
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const operations: Completion[] = [];
+    const originals = new Set<Promise<unknown>>();
+    const listRuns = new Set<Promise<void>>();
+    const responses = new Set<string>();
+    const rejections: Array<{ phase: string; error: unknown; expected: boolean }> = [];
+    const restores: (() => void)[] = [];
+    let view: ReturnType<typeof mount> | undefined;
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, phase: string, expected = (_error: unknown) => false) => {
+      if (!originals.has(original)) {
+        originals.add(original);
+        operations.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => {
+            // Keep the actual intended HTTP errors too; they feed the UI's
+            // existing error state, rather than constituting cleanup failures.
+            const handled = expected(reason);
+            rejections.push({ phase, error: reason, expected: handled });
+            if (!handled) later.push({ phase, error: reason });
+            return { status: 'rejected', reason } as const;
+          },
+        ));
+      }
+      return original;
+    };
+    const captureListRuns = () => {
+      for (const original of getCommittedThreadPageRuns(client, ['threads', SLUG, { status: 'open', page_size: 50 }])) {
+        listRuns.add(original);
+        observe(original, 'original list run');
+      }
+    };
+    try {
+      // The locked QueryCache notifies added synchronously before Query.fetch.
+      // Capture that outer return, including its error callbacks/finalization.
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type === 'added') {
+          const query = event.query;
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+            observe(fetch.apply(query, args), `original query ${JSON.stringify(query.queryKey)}`, (error) => {
+              const [kind, slug, id] = query.queryKey;
+              // Only these two exact response consumers intentionally handle500.
+              // State identity excludes a different pre-request/callback/finally error.
+              return query.queryKey.length === 3 && slug === SLUG && id === 'THR-9'
+                && (kind === 'thread' || kind === 'thread-messages') && responses.has(kind)
+                && error instanceof ApiError && error.status === 500 && error.code === null
+                && error.detail === 'nope' && query.state.error === error;
+            }));
+          restores.push(() => spy.mockRestore());
+        }
+        captureListRuns();
+      }));
+      stubList([]);
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9`, () => {
+          const original = (async () => {
+            await held;
+            const response = HttpResponse.json({ detail: 'nope' }, { status: 500 });
+            responses.add('thread');
+            return response;
+          })();
+          observe(original, 'original detail handler');
+          captureListRuns();
+          return original;
+        }),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/messages`, () => {
+          const response = HttpResponse.json({ detail: 'nope' }, { status: 500 });
+          responses.add('thread-messages');
+          return response;
+        }),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tasks`, () => HttpResponse.json([])),
+        http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tail`, () =>
+          HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+        ),
+      );
+      view = mount(`/orgs/${SLUG}/threads/THR-9`, 'zh-CN', client);
+      captureListRuns();
+      expect(listRuns.size).toBeGreaterThan(0);
+      expect(await screen.findByText('正在加载消息…')).toBeInTheDocument();
+      release();
+      expect(await screen.findByText('加载会话失败。', {}, { timeout: 4000 })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try { release(); } catch (error) { later.push({ phase: 'release detail', error }); }
+      // Acquire while this test owns work; a pending/latest snapshot is not a
+      // historical census. Never wait on an unstarted handler or launch a retry.
+      let joined = 0;
+      do {
+        try { captureListRuns(); } catch (error) { later.push({ phase: 'capture list', error }); }
+        while (joined < operations.length) {
+          const completion = operations[joined++];
+          try { await completion; } catch (error) { later.push({ phase: 'join observation', error }); }
+          try { captureListRuns(); } catch (error) { later.push({ phase: 'capture list', error }); }
+        }
+        try { await act(async () => {}); } catch (error) { later.push({ phase: 'React delivery', error }); }
+        try { captureListRuns(); } catch (error) { later.push({ phase: 'capture list', error }); }
+      } while (joined < operations.length);
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+      try { view?.unmount(); } catch (error) { later.push({ phase: 'unmount', error }); }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear client', error }); }
+    }
+    if (primary) {
+      if (later.length) console.error('Threads detail secondary errors', later, rejections);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Threads detail completion errors');
   });
 
   test('no-messages state is localized', async () => {
