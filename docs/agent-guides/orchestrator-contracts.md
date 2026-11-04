@@ -6367,3 +6367,39 @@ separately root-routed scoped QA remain required; the actual entitled final
 manager alone owns expected-head/non-admin guarded merge and independent remote
 confirmation in its own live session before callback. No schema/auth/permission/
 grant/restart/deploy/live experiment, self-merge or cleanup is authorized here.
+
+
+Founder thread abort (THR329 seq3/16) has two ordering points: successful atomic
+abort COMMIT fixes the exact pending transition/count/discard set; signal-only
+handoff fences its captured native generations before the same DB RLock releases.
+No route acquires move gate beneath DB; lock order stays move gate → DB RLock →
+host terminal leaf, after repository custody. Opaque callbacks/actual joins run
+off-loop outside those locks, with independent stop capacity. All started workers
+retain original lifetime ownership through repeated wrapper cancellation. Host
+first-wins reason remains separate from durable founder_aborted. Compare-removal
+requires matching genuinely settled controls; native uncertainty keeps a successor
+veto. Confirmed pre-COMMIT rollback and uncertain COMMIT are distinct; post-COMMIT
+signal/dispatch/audit failure preserves committed identities/count/discard and
+original plus secondary errors, never clean/rollback/replay. Unsupported direct/
+passthrough stop records its actual limitation and waits for original exit/timeout.
+Preparation, all three provider awaits and final owner.finish establish original
+callable custody before submission. Only the original call acknowledges its entry,
+result/error and return independently of the async Future. Queue-before-throw or
+bridge cancellation keeps the original runner/native pin and pair guard; no
+ordinary finally may certify finish/pop or launch a successor ahead of actual
+return and native/backend settlement. The first observed cause and original
+traceback survive later cancellation/dispatch/worker/settlement errors, bound to
+the same INTEGER/permanent agent/thread/native SID/preparation generation. No
+missing Future authorizes a duplicate call or an uncertainty-clearing retry.
+Thread repository refresh submits the existing synchronous refresh function as
+one such original callable: materialization retention, batch and the entire
+original finally/completion tail precede its return acknowledgement. The original
+30-second deadline starts before submission and the same preparation-stop event
+crosses that boundary. A completion error cannot replace the first batch error
+or traceback; its actual secondary exception is retained with the primary.
+C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.

@@ -252,3 +252,4 @@ One line per area; read the linked contract before changing it.
 - **Remote access and remote jobs** (daemon stays loopback-only): [remote-access-and-remote-jobs.md](docs/agent-guides/contracts/remote-access-and-remote-jobs.md)
 - **Memory census** (THR-091): [memory-census.md](docs/agent-guides/contracts/memory-census.md)
 - **Usage, metrics, failure diagnostics** (never delete `metrics.db` or its `-wal`/`-shm`): [observability.md](docs/agent-guides/contracts/observability.md)
+- **Founder thread abort** (THR329 seq3/16/22): [runtime guide](docs/agent-guides/runtime-and-configuration.md) and [orchestrator guide](docs/agent-guides/orchestrator-contracts.md) cover original callable return, native settlement and retained uncertainty.

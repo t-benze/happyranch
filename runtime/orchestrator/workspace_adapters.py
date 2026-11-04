@@ -2725,6 +2725,10 @@ def _repo_refresh_child(
     def not_admitted():
         evidence.emit("not_admitted", command=kind, request_ref=request_id, complete=True)
 
+    parent_abort = getattr(evidence.owner, "abort_control", None)
+    child_token = evidence.cancellation
+    if parent_abort is not None:
+        parent_abort.attach(child_token)  # Before FIFO; fired parent replays now.
     try:
         # The first validator is AFTER host FIFO admission and BEFORE backend
         # prepare. A queued timeout/cancel has no invented creation attempt.
@@ -2758,6 +2762,12 @@ def _repo_refresh_child(
             return None
         outcome.fail(exc)
         evidence.uncertain = True
+    finally:
+        # Only the ORIGINAL command may retire its attachment after genuine
+        # settlement/no-admission. Unknown children retain the original owner.
+        if parent_abort is not None and (outcome.tree_quiescent
+                or not attempted and outcome.failure is None):
+            parent_abort.detach(child_token)
     if not outcome.tree_quiescent:
         evidence.uncertain = True
         if outcome.failure is None:
@@ -3339,22 +3349,37 @@ def refresh_workspace_repos(
     if preparation is not None:
         preparation._repository_worker_active = True
         preparation._repository_completion_active = True
+    failure = None
     try:
         results = _repo_refresh_batch(workspace, preparation, host_supervisor, deadline, cancel, work)
+    except BaseException as exc:
+        failure = (exc, exc.__traceback__)
     finally:
         if preparation is not None:
             preparation._repository_worker_active = False
         try:
             results = _repo_refresh_complete(preparation, results, work)
+        except BaseException as completion:
+            if failure is None:
+                raise
+            # Preserve the first batch cause/traceback and the actual secondary
+            # completion error, after attempting this original tail exactly once.
+            primary, traceback = failure
+            BaseException.add_note(primary, "repository refresh completion also failed; retained as cause")
+            raise BaseException.with_traceback(primary, traceback) from completion
         finally:
             if preparation is not None:
                 preparation._repository_completion_active = False
+    if failure is not None:
+        primary, traceback = failure
+        raise BaseException.with_traceback(primary, traceback)
     return results
 
 
 async def refresh_workspace_repos_async(workspace: Path, *, preparation=None, host_supervisor=None, materialization=None) -> dict[str, bool]:
     """Keep the real native owner/OrgState alive through shielded worker join."""
-    cancel = threading.Event()
+    parent_abort = getattr(preparation, "abort_control", None)
+    cancel = parent_abort.preparation_stop if parent_abort is not None else threading.Event()
     deadline = time.monotonic()+_REPO_REFRESH_SECONDS
     context = copy_context()
     work = []
@@ -3374,6 +3399,9 @@ async def refresh_workspace_repos_async(workspace: Path, *, preparation=None, ho
         except asyncio.CancelledError as exc:
             cancellation = cancellation or exc
             cancel.set()
+            if parent_abort is not None:
+                parent_abort.signal()
+                parent_abort.dispatch()
             if worker.done():
                 break
         except BaseException as exc:
@@ -3394,6 +3422,9 @@ async def refresh_workspace_repos_async(workspace: Path, *, preparation=None, ho
             except asyncio.CancelledError as exc:
                 cancellation = cancellation or exc
                 cancel.set()
+                if parent_abort is not None:
+                    parent_abort.signal()
+                    parent_abort.dispatch()
                 if tail.done():
                     # Retrieve a completed result/error despite waiter cancellation.
                     results = tail.result()
