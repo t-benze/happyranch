@@ -623,10 +623,12 @@ original bytes and strict UTF8 decoding, including the rejection-only sentinel;
 CRLF is preserved and refused returned work is never refunded. Character/UTF8
 annotations describe the actual decoded original. Early remaining-capacity
 refusal has no returned-slice/input-cap witness. After full grammar/size preflight,
-unescaped JSON strings fitting one conservative 1021-byte construction chunk
+unescaped JSON strings of at most4096 UTF8 bytes
 use one precharged complete original scalar slice, with separate paid branch
-work and no intermediate construction or join. Larger and escaped JSON scalars
-use bounded local fragments and fixed reference slots.
+work and no intermediate construction or join. Above1021B, a new8B/1fact escape
+flag is paid before assignment and tracks only this occurrence through the full
+preflight. Other scalars up to4096B use a bounded buffer and strict decode;
+larger scalars use bounded local fragments and fixed reference slots.
 After its original whitespace check, the SOURCE token loop uses prefix predicates
 with fixed one-character constants/tuples instead of constructing indexed token-start
 characters or per-token class tuples. Its fixed token fact and 32B/0facts
@@ -2948,12 +2950,14 @@ one occurrence and supplies no cross-occurrence admission. Complete original-cap
 controls and the intended equality-omission assertion must establish fit/proof.
 
 The shared JSON string method keeps its complete codepoint/quote/surrogate/size
-preflight. An unescaped original spelling of at most 1021 UTF8 bytes then pays
+preflight. An unescaped original spelling of at most4096 UTF8 bytes then pays
 8+UTF8-size bytes/one fact for its retained complete slice before creating it;
 branch selection pays another 16 bytes at the existing fixed
 construction-slot rate, with no additional
 retained scalar/chunk fact. No chunk/fragment arrays, intermediate chunks,
-chunk references or final join exist on that branch. Other scalars up to4096
+chunk references or final join exist on that branch. Above1021B, the new
+escape flag costs8B/1fact before assignment at the first crossing codepoint,
+using that same occurrence's original fragment state. Other scalars up to4096
 decoded UTF8 bytes use the prepaid bounded buffer/strict decode described above.
 Above4096 bytes, the original construction, charges and shorter-chunk carry
 clearing remain, plus the explicit tracking charge. No retained-work rate or allowance changes.
@@ -2978,7 +2982,7 @@ fixtures/statuses/oracles and shared caps stay unchanged; actual complete SOURCE
 controls and independent review/QA are still required to establish fit.
 
 The existing SOURCE lexical validator also selects a direct original body slice
-for a literal of at most 1021 decoded UTF8 bytes, only after its complete original
+for a literal of at most4096 decoded UTF8 bytes, only after its complete original
 prefix, quote, codepoint, spelling/decoded size, binary and CRLF preflight. The
 existing closing-spelling scan records escape presence in a prepaid 8B/1fact
 Boolean, including on refusal. This removes the later separate backslash search
@@ -2986,30 +2990,42 @@ and only its full-spelling search debit. The exact spelling-versus-decoded byte
 count still excludes newline normalization. The slice retains its full scalar
 debit and all fixed 32B/4facts; selection still pays 24B. Absent intermediate
 decoded storage, chunk references, per-codepoint concatenation and construction
-scratch remain absent. Escaped/multichunk construction keeps every original
-construction debit and the new escape-state admission. The original decoded
+scratch remain absent. Unescaped grammar/size preflight traverses the original
+characters directly, including binary and CRLF checks. Six prefix/quote slots
+retain48B/6facts; only a fallback constructs the two decoder closures, paying
+16B/2facts before creation. Escaped or CRLF-normalized literals of at most4096
+decoded bytes use one bounded UTF8 buffer and strict decode instead of growing
+chr/concatenation, chunk references and a final join. Before allocation they pay
+2*size+40B/5facts (both full writes, original32B/4fact scalar admission and new
+buffer owner),64B/0facts replacement setup and sizeB/1fact scratch. Above4096B
+the original chunk construction and all its charges remain. The new escape-state
+admission, full safety and every distinct comparison remain on every branch.
+Fallback construction selection prepays8B/0facts. An empty or one-byte decoded
+literal uses the already computed codepoint (necessarily ASCII for one byte),
+with its original32B/4fact scalar admission and full scalar-size debit. No
+buffer/chunk/list/concatenation/join is constructed on that branch; decoded
+backslash refusal and the complete independent safety check still run. The original decoded
 no-backslash and full independent sanitation/secret checks still run on every
 slice occurrence. This does not establish fit, a resource bound or native proof;
 all existing SOURCE and shared parser controls and their full oracles renew.
 
-Short safe-string comparisons also avoid constructing a temporary
+Safe-string comparisons at every length avoid constructing a temporary
 `(safe, 0, len(safe))` span. After the same complete plan, sanitizer and UTF8
-checks, scalars of at most 1021 bytes are traversed in full directly against
+checks, complete scalars are traversed in full directly against
 the original right-hand spans, with the same periodic and final checks. The
 original safe-reference debit remains 8B/1fact; only the two absent endpoint
 slots lose 16B/2facts. Caller selection, comparator dispatch and up to two
-character-iterator dispatches prepay another 64B/0facts. Larger scalars retain
-the original span construction and charges plus that new work. The typed
+character-iterator dispatches prepay another64B/0facts at every length. The typed
 key-collision caller retains its complete comparison and pays 48B/0facts for
 comparator and character-iterator dispatch. Every secret pass, independent
 comparison, original value/type/order and shared limit remains. All existing
 safety, parser and writer callers require renewed complete controls; this
 construction change alone establishes no fit, proof or native acceptance.
 
-The original replacement plan also retains a complete scalar directly when its
-original UTF8 size is at most 1021 bytes. Its original reference still costs
+The original replacement plan retains every complete original scalar directly,
+independently of its UTF8 length. Its original reference still costs
 8B/1fact; the absent begin/end slots alone lose 16B/2facts. Selection prepays
-16B/0facts. Longer scalars retain the original 24B/3fact span plus selection.
+16B/0facts at every length; no initial full-span triple is constructed.
 Every original match and residual-secret search still runs. An actual match
 prepays 16B for representation selection and, if needed, the full 24B/3facts
 before constructing the original span for the unchanged replacement traversal;

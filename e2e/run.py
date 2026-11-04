@@ -625,13 +625,13 @@ def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context
             actual = _evidence_utf8_size(safe, check, expected)
         except ValueError as exc:
             raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-        # A short full scalar needs no temporary begin/end span slots. Keep
-        # its original reference and pay both construction selection and the
-        # comparator's dispatch; larger comparisons keep the original triple.
+        # A complete scalar needs no temporary begin/end span slots. The
+        # existing direct iterator checks every original character at any
+        # length; retain its reference and all comparison/dispatch work.
         ledger.charge(64, 0, check)  # Selection/comparator plus both chars dispatches.
-        ledger.charge(8 if actual <= 1021 else 24, 1 if actual <= 1021 else 3, check)
+        ledger.charge(8, 1, check)
         if (actual != expected or not _evidence_span_equal(
-                safe if actual <= 1021 else [(safe, 0, len(safe))], spans, check)
+                safe, spans, check)
                 or any(secret in safe for secret in context)):
             raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
         check()
@@ -747,13 +747,9 @@ def _evidence_literal_plan(text: str, size: int, context: list[str] | tuple[str,
     The caller owns the original debit. Retained spans refer to that SAME
     original or the fixed marker. No second decode/sanitation recovers content.
     """
-    ledger.charge(16, 0, check)  # Complete-scalar versus original-span selection.
-    if size <= 1021:
-        ledger.charge(8, 1, check)
-        spans = text
-    else:
-        ledger.charge(24, 3, check)
-        spans = [(text, 0, len(text))]
+    ledger.charge(16, 0, check)  # Original complete-scalar selection remains paid.
+    ledger.charge(8, 1, check)
+    spans = text  # No initial full-span triple, independently of scalar length.
     peak, changed = size, False
     for secret in context:
         if type(secret) is not str or not secret:
@@ -1165,7 +1161,9 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             raise ValueError('Python lexical representation withheld')
 
         def literal(begin: int, quote_at: int) -> int:
-            ledger.charge(64, 8, check)
+            # Six original prefix/quote slots exist on every literal. The
+            # two decoder closures are created and paid only on the fallback.
+            ledger.charge(48, 6, check)
             prefix = ''.join(source[n].lower() for n in range(begin, quote_at))
             if prefix not in ('', 'u', 'b', 'r', 'br', 'rb'):
                 fail()
@@ -1174,6 +1172,74 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             triple = source.startswith(quote * 3, quote_at)
             opening = quote_at + (3 if triple else 1)
 
+            # Locate the closing spelling without slices, including escaped quote
+            # and raw termination rules. Grammar/decoded length preflight follows.
+            # This SAME traversal records escapes; short-literal selection no
+            # longer searches the original spelling a second time. Prepay the
+            # new state before traversing, including on eventual refusal.
+            ledger.charge(8, 1, check)
+            escaped_spelling = False
+            cursor = opening
+            while cursor < end:
+                if cursor % 1024 == 0:
+                    check()
+                if source[cursor] == quote and (not triple or source.startswith(quote * 3, cursor)):
+                    finish = cursor + (3 if triple else 1)
+                    break
+                if source[cursor] == '\\':
+                    escaped_spelling = True
+                    cursor += 1
+                    if cursor == end:
+                        fail()
+                    if source[cursor] == '\r' and cursor + 1 < end and source[cursor + 1] == '\n':
+                        cursor += 1
+                cursor += 1
+            else:
+                fail()
+            spelling_size = 0
+            for n in range(begin, finish):
+                if n % 1024 == 0:
+                    check()
+                code = ord(source[n])
+                spelling_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                if spelling_size > 262144:
+                    raise _EvidenceCapacity('Python literal spelling capacity refused')
+            if not escaped_spelling:
+                # SAME original grammar/decoded-size preflight, without either
+                # decoder closure or generator. No decoded scalar exists yet.
+                decoded_size, cursor = 0, opening
+                while cursor < finish - (3 if triple else 1):
+                    if cursor % 1024 == 0:
+                        check()
+                    code = ord(source[cursor])
+                    cursor += 1
+                    if code in (10, 13) and not triple:
+                        fail()
+                    if binary and code >= 128:
+                        fail()
+                    if code == 13:
+                        if cursor == end or source[cursor] != '\n':
+                            fail()
+                        cursor += 1
+                        code = 10
+                    decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if decoded_size > 262144:
+                        raise _EvidenceCapacity('Python literal output capacity refused')
+                ledger.charge(24, 0, check)  # Original selection slots remain.
+                if (decoded_size <= 4096
+                        and spelling_size - (opening - begin) - (3 if triple else 1) == decoded_size):
+                    # The entire literal is one bounded original slice. No
+                    # decoder closures, decoded chunks or final join exist.
+                    ledger.charge(decoded_size + 32, 4, check)
+                    value = source[opening:finish - (3 if triple else 1)]
+                    try:
+                        if '\\' in value:
+                            fail()
+                        _evidence_original(value, context, ledger, check, sanitize)
+                    finally:
+                        value = None
+                    return finish
+            ledger.charge(16, 2, check)  # Two fallback closures, before creation.
             def codes() -> Iterator[int]:
                 cursor = opening
                 while cursor < end:
@@ -1266,63 +1332,70 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 if needed:
                     fail()
 
-            # Locate the closing spelling without slices, including escaped quote
-            # and raw termination rules. Grammar/decoded length preflight follows.
-            # This SAME traversal records escapes; short-literal selection no
-            # longer searches the original spelling a second time. Prepay the
-            # new state before traversing, including on eventual refusal.
-            ledger.charge(8, 1, check)
-            escaped_spelling = False
-            cursor = opening
-            while cursor < end:
-                if cursor % 1024 == 0:
-                    check()
-                if source[cursor] == quote and (not triple or source.startswith(quote * 3, cursor)):
-                    finish = cursor + (3 if triple else 1)
-                    break
-                if source[cursor] == '\\':
-                    escaped_spelling = True
-                    cursor += 1
-                    if cursor == end:
+            if escaped_spelling:
+                decoded_size = 0
+                for code in decoded():
+                    decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if decoded_size > 262144:
+                        raise _EvidenceCapacity('Python literal output capacity refused')
+                ledger.charge(24, 0, check)
+            ledger.charge(8, 0, check)  # Replacement construction selection.
+            if decoded_size <= 1:
+                # Full preflight emitted either no codepoint or exactly one
+                # ASCII codepoint. Its existing final code slot is sufficient:
+                # no buffer, chunk list, concatenation or join is constructed.
+                ledger.charge(decoded_size + 32, 4, check)
+                value = chr(code) if decoded_size else ''
+                try:
+                    if '\\' in value:
                         fail()
-                    if source[cursor] == '\r' and cursor + 1 < end and source[cursor + 1] == '\n':
-                        cursor += 1
-                cursor += 1
-            else:
-                fail()
-            spelling_size = 0
-            for n in range(begin, finish):
-                if n % 1024 == 0:
-                    check()
-                code = ord(source[n])
-                spelling_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
-                if spelling_size > 262144:
-                    raise _EvidenceCapacity('Python literal spelling capacity refused')
-            decoded_size = 0
-            for code in decoded():
-                decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
-                if decoded_size > 262144:
-                    raise _EvidenceCapacity('Python literal output capacity refused')
-            # Selection follows the complete original grammar/size preflight.
-            # Keep the original selection slots. Escape presence came from
-            # the paid closing scan, without a second full-span search.
-            ledger.charge(24, 0, check)
-            if decoded_size <= 1021:
-                content_end = finish - (3 if triple else 1)
-                if (not escaped_spelling
-                        and spelling_size - (opening - begin) - (finish - content_end) == decoded_size):
-                    # One literal slice needs no decoded chunks/concat/join.
-                    # Keep final scalar storage and ALL fixed admission; only
-                    # absent intermediate/chunk/scratch construction loses cost.
-                    ledger.charge(decoded_size + 32, 4, check)
-                    value = source[opening:content_end]
-                    try:
-                        if '\\' in value:
-                            fail()
-                        _evidence_original(value, context, ledger, check, sanitize)
-                    finally:
-                        value = None
-                    return finish
+                    _evidence_original(value, context, ledger, check, sanitize)
+                finally:
+                    value = None
+                return finish
+            if decoded_size <= 4096:
+                # Replace every chr/concatenation, chunk reference and join
+                # with one bounded UTF8 buffer and its strict decoded scalar.
+                # Keep the original32B/4fact scalar admission, both complete
+                # writes, the new buffer owner and replacement local setup.
+                ledger.charge(2 * decoded_size + 40, 5, check)
+                ledger.charge(64, 0, check)
+                ledger.reserve(decoded_size, 1, check)
+                buffer = value = None
+                try:
+                    buffer = bytearray(decoded_size)
+                    position = 0
+                    for code in decoded():
+                        if position % 1024 == 0:
+                            check()
+                        width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                        if position + width > decoded_size:
+                            raise _EvidenceUnsafe('Python literal decoding postcondition')
+                        if width == 1:
+                            buffer[position] = code
+                        elif width == 2:
+                            buffer[position] = 192 | code >> 6
+                            buffer[position + 1] = 128 | code & 63
+                        elif width == 3:
+                            buffer[position] = 224 | code >> 12
+                            buffer[position + 1] = 128 | code >> 6 & 63
+                            buffer[position + 2] = 128 | code & 63
+                        else:
+                            buffer[position] = 240 | code >> 18
+                            buffer[position + 1] = 128 | code >> 12 & 63
+                            buffer[position + 2] = 128 | code >> 6 & 63
+                            buffer[position + 3] = 128 | code & 63
+                        position += width
+                    if position != decoded_size:
+                        raise _EvidenceUnsafe('Python literal decoding postcondition')
+                    value = buffer.decode('utf-8', errors='strict')
+                    if '\\' in value:
+                        fail()
+                    _evidence_original(value, context, ledger, check, sanitize)
+                finally:
+                    ledger.settle(decoded_size, 0)  # Scratch only; no work refund.
+                    buffer = value = None
+                return finish
             chunks = (decoded_size + 1020) // 1021
             ledger.charge(2 * decoded_size + 8 * chunks + 32, chunks + 4, check)
             ledger.reserve(min(4096, 4 * decoded_size), 1, check)
@@ -3964,6 +4037,15 @@ class _EvidenceJSON:
             escaped = self.text[cursor] == "\\"
             code, cursor = self.codepoint(cursor)
             width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if size <= 1021 < size + width:
+                # Before the first chunk reset, its original fragment state
+                # identifies whether the whole prefix was unescaped. Admit
+                # this extra long-scalar state BEFORE assigning it. Short
+                # scalars create no new flag/fact. No other occurrence helps.
+                self.ledger.charge(8, 1, self.check)
+                unescaped = pieces == 1 and literal and not escaped
+            elif size > 1021:
+                unescaped = unescaped and not escaped
             if chunk_size + width > 1024:
                 slots = max(slots, pieces)
                 chunk_size = pieces = 0
@@ -3978,14 +4060,12 @@ class _EvidenceJSON:
         if cursor >= self.end:
             self.error()
         slots = max(slots, pieces)
-        # Pay fixed branch selection at the construction-slot rate. Within
-        # one chunk, the existing preflight state identifies an empty string
-        # or one final literal span without extra per-codepoint tracking.
+        # Pay the original construction selection. Short scalars use their
+        # existing fragment state; longer ones use their own paid escape flag.
         self.ledger.charge(16, 0, self.check)
-        if size <= 1021 and (not size or pieces == 1 and literal):
-            # A complete one-chunk literal needs only its retained slice.
-            # Keep the existing multi-chunk construction policy for larger
-            # scalars; this branch needs no arrays, chunk references or join.
+        if size <= 4096 and ((not size or pieces == 1 and literal) if size <= 1021 else unescaped):
+            # One bounded complete literal needs only its retained slice.
+            # No byte buffer/decode, arrays, chunk references or join exist.
             # Keep the original retained-scalar storage and fact admission.
             self.ledger.charge(8 + size, 1, self.check)
             value = self.text[start:cursor]
