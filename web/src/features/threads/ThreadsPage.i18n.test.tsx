@@ -23,6 +23,7 @@ import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/tes
 import { server } from '@/test/server';
 import { seedReadyHealth, startupHealth, stubReadyHealth } from '@/test/startup';
 import { makeQueryClient } from '@/design-system/providers/AppProvider';
+import { getCommittedThreadPageRuns } from '@/design-system/providers/_real-threads';
 import { HEALTH_QUERY_KEY } from '@/lib/startup';
 import { translate } from '@/lib/i18n';
 
@@ -164,8 +165,7 @@ function stubDetail(
   );
 }
 
-function mount(route: string, locale: 'en' | 'zh-CN') {
-  const client = makeQueryClient();
+function mount(route: string, locale: 'en' | 'zh-CN', client = makeQueryClient()) {
   seedReadyHealth(client);
   return renderWithProviders(
     <>
@@ -229,52 +229,130 @@ describe('ThreadsPage list i18n (zh-CN)', () => {
       mkThread('THR-2', 'Ordinary subject'),
       mkThread('THR-3', 'Archived subject', { status: 'archived' }),
     ];
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
-        await held;
-        const status = new URL(request.url).searchParams.get('status');
-        return threadListResponse({ threads: threads.filter((t) => t.status === status) }, threads);
-      }),
-    );
-    stubDetail(threads[0], [mkMessage(1, 'founder', AUTHORED_BODY)]);
-    const user = userEvent.setup();
-    mount(`/orgs/${SLUG}/threads`, 'zh-CN');
+    const client = makeQueryClient();
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const operations: Completion[] = [];
+    const originals = new Set<Promise<unknown>>();
+    const listRuns = new Set<Promise<void>>();
+    const restores: (() => void)[] = [];
+    let view: ReturnType<typeof mount> | undefined;
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, phase: string) => {
+      if (!originals.has(original)) {
+        originals.add(original);
+        operations.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => {
+            later.push({ phase, error: reason });
+            return { status: 'rejected', reason } as const;
+          },
+        ));
+      }
+      return original;
+    };
+    const captureListRuns = () => {
+      for (const original of getCommittedThreadPageRuns(client, ['threads', SLUG, { status: 'open', page_size: 50 }])) {
+        listRuns.add(original);
+        observe(original, 'original list run');
+      }
+    };
+    try {
+      // QueryCache adds synchronously before the library calls Query.fetch.
+      // Retain its actual outer return, including detail/messages/tasks reads.
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type === 'added') {
+          const query = event.query;
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+            observe(fetch.apply(query, args), 'original query fetch'));
+          restores.push(() => spy.mockRestore());
+        }
+        captureListRuns();
+      }));
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+          const original = (async () => {
+            await held;
+            const status = new URL(request.url).searchParams.get('status');
+            return threadListResponse({ threads: threads.filter((t) => t.status === status) }, threads);
+          })();
+          observe(original, 'original list handler');
+          captureListRuns();
+          return original;
+        }),
+      );
+      stubDetail(threads[0], [mkMessage(1, 'founder', AUTHORED_BODY)]);
+      const user = userEvent.setup();
+      view = mount(`/orgs/${SLUG}/threads`, 'zh-CN', client);
+      captureListRuns();
+      // Absence is unavailable work, never successful list settlement.
+      expect(listRuns.size).toBeGreaterThan(0);
 
-    // Loading: localized chrome + in-progress bucket counts.
-    expect(await screen.findByRole('heading', { name: '全组织的会话' })).toBeInTheDocument();
-    const tabs = screen.getByRole('tablist', { name: '状态筛选' });
-    expect(within(tabs).getByRole('tab', { name: /^全部/ })).toBeInTheDocument();
-    expect(within(tabs).getByRole('tab', { name: /^开放/ })).toBeInTheDocument();
-    expect(within(tabs).getByRole('tab', { name: /^已归档/ })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('筛选…')).toHaveAccessibleName('筛选会话');
-    expect(screen.getByRole('button', { name: '新建会话' })).toHaveTextContent('+ 新建会话');
-    release();
+      // Loading: localized chrome + in-progress bucket counts.
+      expect(await screen.findByRole('heading', { name: '全组织的会话' })).toBeInTheDocument();
+      const tabs = screen.getByRole('tablist', { name: '状态筛选' });
+      expect(within(tabs).getByRole('tab', { name: /^全部/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^开放/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^已归档/ })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('筛选…')).toHaveAccessibleName('筛选会话');
+      expect(screen.getByRole('button', { name: '新建会话' })).toHaveTextContent('+ 新建会话');
+      release();
 
-    // Populated.
-    expect(await screen.findByText('3 个会话 · 1 个由梦境开启')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '已置顶' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '会话' })).toBeInTheDocument();
-    const pinnedRow = screen.getByRole('link', { name: new RegExp('THR-10') });
-    expect(within(pinnedRow).getByText(AUTHORED_SUBJECT)).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('开放')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('来自梦境')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('最后发言')).toBeInTheDocument();
-    // Agent names / ids stay verbatim; relative time is localized.
-    expect(within(pinnedRow).getAllByText('engineering_manager')[0]).toBeInTheDocument();
-    expect(within(pinnedRow).getByText((_text, node) => node?.tagName === 'DIV' && node.textContent === 'founder · engineering_manager')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText(/^\d+ 天前$/)).toBeInTheDocument();
-    // English copy of the same keys is absent.
-    expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
-    expect(screen.queryByText(/THREADS ·/)).not.toBeInTheDocument();
-    expect(screen.queryByText('from dream')).not.toBeInTheDocument();
+      // Populated.
+      expect(await screen.findByText('3 个会话 · 1 个由梦境开启')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '已置顶' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '会话' })).toBeInTheDocument();
+      const pinnedRow = screen.getByRole('link', { name: new RegExp('THR-10') });
+      expect(within(pinnedRow).getByText(AUTHORED_SUBJECT)).toBeInTheDocument();
+      expect(within(pinnedRow).getByText('开放')).toBeInTheDocument();
+      expect(within(pinnedRow).getByText('来自梦境')).toBeInTheDocument();
+      expect(within(pinnedRow).getByText('最后发言')).toBeInTheDocument();
+      // Agent names / ids stay verbatim; relative time is localized.
+      expect(within(pinnedRow).getAllByText('engineering_manager')[0]).toBeInTheDocument();
+      expect(within(pinnedRow).getByText((_text, node) => node?.tagName === 'DIV' && node.textContent === 'founder · engineering_manager')).toBeInTheDocument();
+      expect(within(pinnedRow).getByText(/^\d+ 天前$/)).toBeInTheDocument();
+      // English copy of the same keys is absent.
+      expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
+      expect(screen.queryByText(/THREADS ·/)).not.toBeInTheDocument();
+      expect(screen.queryByText('from dream')).not.toBeInTheDocument();
 
-    // Selection navigates to the detail; the authored title is byte-identical.
-    await user.click(pinnedRow);
-    expect((await screen.findByText('bold')).closest('article')?.textContent).toContain(
-      'Plan: bold and code for engineering_manager',
-    );
-    expect(screen.getAllByText(AUTHORED_SUBJECT).length).toBeGreaterThan(0);
-    expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+      // Selection navigates to the detail; the authored title is byte-identical.
+      await user.click(pinnedRow);
+      expect((await screen.findByText('bold')).closest('article')?.textContent).toContain(
+        'Plan: bold and code for engineering_manager',
+      );
+      expect(screen.getAllByText(AUTHORED_SUBJECT).length).toBeGreaterThan(0);
+      expect(screen.getByRole('link', { name: '‹ 全部会话' })).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try { release(); } catch (error) { later.push({ phase: 'release list', error }); }
+      // Drain only returns actually captured while this declaration owns them.
+      // React delivery may start further real reads; join those before teardown.
+      let joined = 0;
+      do {
+        captureListRuns();
+        while (joined < operations.length) {
+          const completion = operations[joined++];
+          try { await completion; } catch (error) { later.push({ phase: 'join observation', error }); }
+          captureListRuns();
+        }
+        try { await act(async () => {}); } catch (error) { later.push({ phase: 'React delivery', error }); }
+        captureListRuns();
+      } while (joined < operations.length);
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+      try { view?.unmount(); } catch (error) { later.push({ phase: 'unmount', error }); }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear client', error }); }
+    }
+    if (primary) {
+      if (later.length) console.error('Threads list secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Threads list completion errors');
   });
 
   test('error + retry, empty and filter-empty states are localized', async () => {

@@ -88,8 +88,23 @@ interface ThreadPageOwner {
   dirty: boolean;
   failure: 'next' | 'refresh' | null;
   error: Error | null;
+  pendingRuns: Set<Promise<void>>;
+  runSequence: number;
+  completedRun: { sequence: number; promise: Promise<void> } | null;
 }
 const threadPageOwners = new WeakMap<QueryClient, Map<string, ThreadPageOwner>>();
+
+/** Snapshot already-created raw runs for this client/key; never starts work.
+ * Pending runs and the latest completed invocation are retained per owner.
+ * An empty snapshot means no available return, not successful settlement. */
+export function getCommittedThreadPageRuns(
+  client: QueryClient,
+  queryKey: readonly unknown[],
+): readonly Promise<void>[] {
+  const owner = threadPageOwners.get(client)?.get(JSON.stringify(queryKey));
+  if (!owner) return [];
+  return [...owner.pendingRuns, ...(owner.completedRun ? [owner.completedRun.promise] : [])];
+}
 
 /** Shared committed-page ownership for daemon and prototype transports.
  * Refresh pages stay private until the entire prior depth is replaced. */
@@ -112,7 +127,8 @@ export function useCommittedThreadPages(
     let existing = owners.get(identity);
     if (!existing) {
       existing = { users: 0, listeners: new Set(), runners: new Map(), generation: 0, controller: null,
-        operation: null, dirty: false, failure: null, error: null };
+        operation: null, dirty: false, failure: null, error: null,
+        pendingRuns: new Set(), runSequence: 0, completedRun: null };
       owners.set(identity, existing);
     }
     return existing;
@@ -125,69 +141,83 @@ export function useCommittedThreadPages(
   });
   const active = useCallback(() => currentIdentity.current === identity, [identity]);
   const paused = useCallback(() => !!qc.getQueryData<number>(pinnedQueryKey), [qc, pinnedQueryKey]);
-  const run = useCallback(async (kind: 'next' | 'refresh') => {
-    if (!scope || !active() || paused() || owner.failure) return;
-    if (owner.operation) {
-      if (kind !== 'refresh') return;
-      if (owner.operation === 'refresh') {
-        owner.dirty = true;
-        return;
-      }
-      // Fence a pending continuation before aborting it; a late success cannot
-      // resurrect rows or counts from the generation being replaced.
-      owner.generation++;
-      owner.controller?.abort();
-      owner.operation = null;
-      owner.controller = null;
-    }
-    const previous = qc.getQueryData<InfiniteData<ThreadListPage, string | null>>(key);
-    const tail = previous?.pages.at(-1);
-    if (kind === 'next' && !tail?.has_more) return;
-    const ctl = new AbortController();
-    const generation = ++owner.generation;
-    owner.controller = ctl;
-    owner.operation = kind;
-    owner.error = null;
-    owner.failure = null;
-    notifyOwners();
-    const owned = () => owner.users > 0 && generation === owner.generation && !ctl.signal.aborted;
-    try {
-      const staged: InfiniteData<ThreadListPage, string | null> = kind === 'next'
-        ? { pages: [...(previous?.pages ?? [])], pageParams: [...(previous?.pageParams ?? [])] }
-        : { pages: [], pageParams: [] };
-      let cursor = kind === 'next' ? tail!.next_cursor : null;
-      const depth = kind === 'refresh' ? Math.max(1, previous?.pages.length ?? 0) : staged.pages.length + 1;
-      const seen = new Set(staged.pageParams.filter((p): p is string => p !== null));
-      while (staged.pages.length < depth) {
-        const page = await load(cursor, ctl.signal);
-        if (!owned()) return;
-        if (!Array.isArray(page.threads) || !page.totals || typeof page.has_more !== 'boolean'
-            || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor : page.next_cursor !== null)
-            || (page.next_cursor !== null && (seen.has(page.next_cursor) || page.next_cursor === cursor))) {
-          throw new Error('invalid_thread_page');
+  const run = useCallback((kind: 'next' | 'refresh') => {
+    const sequence = ++owner.runSequence;
+    const original = (async () => {
+      if (!scope || !active() || paused() || owner.failure) return;
+      if (owner.operation) {
+        if (kind !== 'refresh') return;
+        if (owner.operation === 'refresh') {
+          owner.dirty = true;
+          return;
         }
-        if (cursor !== null) seen.add(cursor);
-        staged.pageParams.push(cursor);
-        staged.pages.push(page);
-        if (!page.has_more) break;
-        cursor = page.next_cursor;
-      }
-      if (owned() && !paused() && !owner.dirty) qc.setQueryData(key, staged);
-    } catch (error) {
-      if (owned()) {
-        owner.failure = kind;
-        owner.error = error instanceof Error ? error : new Error(String(error));
-      }
-    } finally {
-      if (owned()) {
+        // Fence a pending continuation before aborting it; a late success cannot
+        // resurrect rows or counts from the generation being replaced.
+        owner.generation++;
+        owner.controller?.abort();
         owner.operation = null;
         owner.controller = null;
-        const dirty = owner.dirty;
-        owner.dirty = false;
-        notifyOwners();
-        if (dirty && !owner.failure && !paused()) void owner.runners.values().next().value?.('refresh');
       }
-    }
+      const previous = qc.getQueryData<InfiniteData<ThreadListPage, string | null>>(key);
+      const tail = previous?.pages.at(-1);
+      if (kind === 'next' && !tail?.has_more) return;
+      const ctl = new AbortController();
+      const generation = ++owner.generation;
+      owner.controller = ctl;
+      owner.operation = kind;
+      owner.error = null;
+      owner.failure = null;
+      notifyOwners();
+      const owned = () => owner.users > 0 && generation === owner.generation && !ctl.signal.aborted;
+      try {
+        const staged: InfiniteData<ThreadListPage, string | null> = kind === 'next'
+          ? { pages: [...(previous?.pages ?? [])], pageParams: [...(previous?.pageParams ?? [])] }
+          : { pages: [], pageParams: [] };
+        let cursor = kind === 'next' ? tail!.next_cursor : null;
+        const depth = kind === 'refresh' ? Math.max(1, previous?.pages.length ?? 0) : staged.pages.length + 1;
+        const seen = new Set(staged.pageParams.filter((p): p is string => p !== null));
+        while (staged.pages.length < depth) {
+          const page = await load(cursor, ctl.signal);
+          if (!owned()) return;
+          if (!Array.isArray(page.threads) || !page.totals || typeof page.has_more !== 'boolean'
+              || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor : page.next_cursor !== null)
+              || (page.next_cursor !== null && (seen.has(page.next_cursor) || page.next_cursor === cursor))) {
+            throw new Error('invalid_thread_page');
+          }
+          if (cursor !== null) seen.add(cursor);
+          staged.pageParams.push(cursor);
+          staged.pages.push(page);
+          if (!page.has_more) break;
+          cursor = page.next_cursor;
+        }
+        if (owned() && !paused() && !owner.dirty) qc.setQueryData(key, staged);
+      } catch (error) {
+        if (owned()) {
+          owner.failure = kind;
+          owner.error = error instanceof Error ? error : new Error(String(error));
+        }
+      } finally {
+        if (owned()) {
+          owner.operation = null;
+          owner.controller = null;
+          const dirty = owner.dirty;
+          owner.dirty = false;
+          notifyOwners();
+          if (dirty && !owner.failure && !paused()) void owner.runners.values().next().value?.('refresh');
+        }
+      }
+    })();
+    owner.pendingRuns.add(original);
+    const settled = () => {
+      owner.pendingRuns.delete(original);
+      if (!owner.completedRun || sequence > owner.completedRun.sequence) {
+        owner.completedRun = { sequence, promise: original };
+      }
+    };
+    // Observe rejection on creation without changing the caller's raw Promise,
+    // its result/error, or any original scheduling/notification policy.
+    void original.then(settled, settled);
+    return original;
   }, [scope, owner, qc, key, load, notifyOwners, active, paused]);
   useEffect(() => {
     owner.users++;
