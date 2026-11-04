@@ -499,7 +499,8 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
       for (const name of ['onError', 'onSettled'] as const) {
         const callback = config[name];
         if (callback) {
-          const spy = vi.spyOn(config, name).mockImplementation(function (this: typeof config, ...args) {
+          const present = config as Required<typeof config>;
+          const spy = vi.spyOn(present, name).mockImplementation(function (this: typeof config, ...args: unknown[]) {
             const query = args[name === 'onError' ? 1 : 2] as object;
             const state = queryCalls.get(query);
             return callPhase(`cache ${name}`, state?.calling ?? state?.running, () => callback.apply(this, args));
@@ -519,7 +520,8 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
             const options = query.options as { queryFn?: (...args: unknown[]) => unknown };
             const queryFn = options.queryFn;
             if (typeof queryFn !== 'function' || wrapped.has(queryFn)) return;
-            const spy = vi.spyOn(options, 'queryFn').mockImplementation(function (this: unknown, ...args) {
+            const present = options as Required<typeof options>;
+            const spy = vi.spyOn(present, 'queryFn').mockImplementation(function (this: unknown, ...args: unknown[]) {
               const invocation = state.calling;
               const [kind, slug, id] = query.queryKey;
               const input: Input = {
