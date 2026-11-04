@@ -1008,6 +1008,11 @@ class _InvocationWorker:
         with self.lock:
             if not any(error is exc for _, error, _ in self.errors):
                 self.errors.append((stage, exc, exc.__traceback__))
+            # A caller may handle this error before its outer finish awaits.
+            # Keep the first actual cause across that boundary, too. Calls for
+            # this owner are serial; concurrent records share this mutex.
+            if getattr(self.owner, "_invocation_worker_primary", None) is None:
+                self.owner._invocation_worker_primary = (exc, exc.__traceback__)
 
     def run(self) -> None:
         try:
@@ -1156,27 +1161,36 @@ async def run_invocation(
             raise
         finally:
             import sys
-            primary = sys.exception()
+            escaping = sys.exception()
+            if (escaping is not None
+                    and getattr(owner, "_invocation_worker_primary", None) is None):
+                owner._invocation_worker_primary = (escaping, escaping.__traceback__)
             settlement_errors = []
             try:
                 try:
                     await owner.abort_control.join_dispatch()
                 except BaseException as exc:
                     settlement_errors.append(exc)
+                    if getattr(owner, "_invocation_worker_primary", None) is None:
+                        owner._invocation_worker_primary = (exc, exc.__traceback__)
                 try:
                     await _await_invocation_worker(org_state, owner,
                         lambda: owner.finish(deferred=deferred, failed=failed))
                 except BaseException as exc:
                     settlement_errors.append(exc)
-                if settlement_errors:
-                    if primary is not None:
-                        for exc in settlement_errors:
-                            primary.add_note(f"thread lifecycle settlement failed: {exc!r}")
-                    else:
-                        first, *rest = settlement_errors
-                        for exc in rest:
-                            first.add_note(f"thread settlement secondary: {exc!r}")
-                        raise first
+                    if getattr(owner, "_invocation_worker_primary", None) is None:
+                        owner._invocation_worker_primary = (exc, exc.__traceback__)
+                if escaping is not None or settlement_errors:
+                    primary, traceback = owner._invocation_worker_primary
+                    owner._invocation_settlement_errors = (
+                        (() if escaping is None else (escaping,)) + tuple(settlement_errors))
+                    for exc in owner._invocation_settlement_errors:
+                        if exc is not primary:
+                            BaseException.add_note(primary,
+                                f"thread lifecycle {owner.abort_control.key!r} secondary: "
+                                f"{type(exc).__name__}; actual error retained by original owner")
+                    if primary is not escaping:
+                        raise BaseException.with_traceback(primary, traceback)
             finally:
                 guard.release()
 
