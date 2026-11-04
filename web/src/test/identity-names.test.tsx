@@ -11,7 +11,7 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { realIdentitiesApi } from '@/design-system/providers/_real-identities';
 import { HEALTH_QUERY_KEY, STARTUP_MAX_AGE_MS, StartupHeldError } from '@/lib/startup';
-import { startupHealth } from '@/test/startup';
+import { seedReadyHealth, startupHealth } from '@/test/startup';
 import { I18nProvider } from '@/hooks/i18n';
 import { LocaleTestSwitch, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
@@ -111,6 +111,7 @@ function fixture() {
 function mount(route: string) {
   sessionStorage.setItem('happyranch.token', 'mock-token');
   const client = makeQueryClient();
+  seedReadyHealth(client);
   render(<MemoryRouter initialEntries={[route]}><I18nProvider mode="full" adapter={savedLocaleAdapter('en')}><AppProvider client={client}>
     <Routes>
       <Route path="/orgs/:slug/agents/:agent_name?" element={<OrgProvider><AgentsPage /></OrgProvider>} />
@@ -559,6 +560,7 @@ function founderThread() {
 function mountShell(route: string) {
   sessionStorage.setItem('happyranch.token', 'mock-token');
   const client = makeQueryClient();
+  seedReadyHealth(client);
   const shell = (page: JSX.Element) => <OrgProvider><Sidebar />{page}</OrgProvider>;
   render(<MemoryRouter initialEntries={[route]}><I18nProvider mode="full" adapter={savedLocaleAdapter('en')}><AppProvider client={client}>
     <Routes>
@@ -665,24 +667,55 @@ describe('Founder presentation (THR-293 seq236) — shipping Sidebar + threads, 
   test('case 6: org switch never leaks the previous org Founder name, including while loading', async () => {
     fixture(); founderThread();
     let releaseBeta!: () => void; const betaGate = new Promise<void>((r) => { releaseBeta = r; });
+    const handlers: Promise<unknown>[] = [];
+    const operations = new Set<Promise<unknown>>();
     const records = { alpha: 'Boss', beta: 'BetaBoss' } as const;
-    server.use(http.get('/api/v1/orgs/:slug/identities', async ({ params }) => {
-      const slug = String(params.slug) as keyof typeof records;
-      if (slug === 'beta') await betaGate;
-      return HttpResponse.json({ identities: [{ canonical_id: 'founder', kind: 'founder', lifecycle: 'founder', addressable_name: records[slug], name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' }] });
+    server.use(http.get('/api/v1/orgs/:slug/identities', ({ params }) => {
+      const response = (async () => {
+        const slug = String(params.slug) as keyof typeof records;
+        if (slug === 'beta') await betaGate;
+        return HttpResponse.json({ identities: [{ canonical_id: 'founder', kind: 'founder', lifecycle: 'founder', addressable_name: records[slug], name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' }] });
+      })();
+      handlers.push(response);
+      void response.catch(() => {});
+      return response;
     }));
-    mountShell('/orgs/alpha/threads/THR-F');
-    await accountRow('Boss');
-    fireEvent.click(screen.getByRole('link', { name: 'Mock org beta thread' }));
-    // Beta identities still loading: canonical fallback, never alpha's Boss.
-    await accountRow('founder');
-    expect(screen.queryByLabelText('Account: Boss, Founder')).not.toBeInTheDocument();
-    releaseBeta();
-    const beta = await accountRow('BetaBoss');
-    expect(within(beta).getByText('BE')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
-    await accountRow('Boss');
-    expect(screen.queryByLabelText('Account: BetaBoss, Founder')).not.toBeInTheDocument();
+    const client = mountShell('/orgs/alpha/threads/THR-F');
+    const observe = () => {
+      for (const query of client.getQueryCache().findAll({ queryKey: ['identities'] })) {
+        if (query.promise) {
+          operations.add(query.promise);
+          void query.promise.catch(() => {});
+        }
+      }
+    };
+    const unsubscribe = client.getQueryCache().subscribe(() => {
+      observe();
+      // A fetch notification can precede the query assigning its promise.
+      queueMicrotask(observe);
+    });
+    observe();
+    try {
+      await accountRow('Boss');
+      fireEvent.click(screen.getByRole('link', { name: 'Mock org beta thread' }));
+      // Beta identities still loading: canonical fallback, never alpha's Boss.
+      await accountRow('founder');
+      expect(screen.queryByLabelText('Account: Boss, Founder')).not.toBeInTheDocument();
+      releaseBeta();
+      const beta = await accountRow('BetaBoss');
+      expect(within(beta).getByText('BE')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('link', { name: 'Mock org alpha thread' }));
+      await accountRow('Boss');
+      expect(screen.queryByLabelText('Account: BetaBoss, Founder')).not.toBeInTheDocument();
+    } finally {
+      releaseBeta();
+      try {
+        await Promise.allSettled(operations);
+        await Promise.allSettled(handlers);
+      } finally {
+        unsubscribe();
+      }
+    }
   });
 });
 
@@ -730,16 +763,34 @@ describe('THR-308 identity operations recheck startup after the cancellation awa
       read: realIdentitiesApi.useReadIdentities(),
       rename: realIdentitiesApi.useRenameIdentity(),
     }), { wrapper });
-    const invoke = (operation: Operation): Promise<unknown> => operation === 'readback'
-      ? hooks.result.current.read.mutateAsync({ slug: 'alpha' })
-      : hooks.result.current.rename.mutateAsync({
-        slug: 'alpha', kind: operation, canonicalId: operation === 'founder' ? 'founder' : 'agent_a', body: RENAME,
-      });
-    const dispose = () => {
-      server.events.removeListener('request:start', record);
-      cancel.mockRestore();
-      hooks.unmount();
-      client.clear();
+    const started: Promise<unknown>[] = [];
+    const invoke = (operation: Operation): Promise<unknown> => {
+      const pending = operation === 'readback'
+        ? hooks.result.current.read.mutateAsync({ slug: 'alpha' })
+        : hooks.result.current.rename.mutateAsync({
+          slug: 'alpha', kind: operation, canonicalId: operation === 'founder' ? 'founder' : 'agent_a', body: RENAME,
+        });
+      started.push(pending);
+      // Observe rejection immediately, including an assertion failure before release.
+      void pending.catch(() => {});
+      return pending;
+    };
+    const dispose = async () => {
+      release();
+      try {
+        // Mutation settlement includes its original HTTP handler, when reached.
+        await Promise.allSettled(started);
+      } finally {
+        try {
+          server.events.removeListener('request:start', record);
+        } finally {
+          try { cancel.mockRestore(); }
+          finally {
+            try { hooks.unmount(); }
+            finally { client.clear(); }
+          }
+        }
+      }
     };
     return { client, seen, bodies, cancel, release, invoke, dispose };
   }
@@ -764,7 +815,7 @@ describe('THR-308 identity operations recheck startup after the cancellation awa
       expect(h.seen).toEqual([]);
       expect(h.bodies).toEqual([]);
     } finally {
-      h.dispose();
+      await h.dispose();
     }
   });
 
@@ -778,7 +829,7 @@ describe('THR-308 identity operations recheck startup after the cancellation awa
       expect(h.seen).toEqual([EXPECTED[operation]]);
       expect(h.bodies).toEqual(operation === 'readback' ? [] : [RENAME]);
     } finally {
-      h.dispose();
+      await h.dispose();
     }
   });
 });

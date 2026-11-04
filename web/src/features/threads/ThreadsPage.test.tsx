@@ -1024,6 +1024,10 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
 
   test('renders detail pane with messages when thread selected', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    const firstPage = [mkMessage(1, 'founder', 'message', 'Hello team'),
+      ...Array.from({ length: 199 }, (_, i) => mkMessage(i + 2, 'agent_a', 'message', `Transcript row ${i + 2}`))];
+    const laterPage = Array.from({ length: 50 }, (_, i) => mkMessage(i + 201, 'agent_a', 'message', `Transcript row ${i + 201}`));
+    const cursors: string[] = [];
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
         threadListResponse({ threads: [mkThread('THR-001', 'My subject')] }),
@@ -1038,9 +1042,13 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
           messages: [mkMessage(1, 'founder', 'message', 'Hello team')],
         }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/threads/THR-001/messages`, () =>
-        HttpResponse.json({ messages: [mkMessage(1, 'founder', 'message', 'Hello team')] }),
-      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/THR-001/messages`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('since_seq') ?? 'missing';
+        cursors.push(cursor);
+        if (cursor === '0') return HttpResponse.json({ messages: firstPage, has_more: true, next_since_seq: 200 });
+        if (cursor === '200') return HttpResponse.json({ messages: laterPage, has_more: false, next_since_seq: 250 });
+        return HttpResponse.json({ detail: 'unexpected transcript cursor' }, { status: 400 });
+      }),
       http.get(`/api/v1/orgs/${SLUG}/threads/THR-001/tail`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
       ),
@@ -1052,6 +1060,17 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
       // agent_a appears in both the inbox row (last speaker) and the detail header (participants)
       expect(screen.getAllByText(/agent_a/).length).toBeGreaterThanOrEqual(1);
     });
+    // The shipping page owns demand: no test-side paging effect or manual fetch.
+    await screen.findByText('Transcript row 250', {}, { timeout: 5000 });
+    const rendered = screen.getAllByRole('article').filter((node) =>
+      node.textContent?.includes('Hello team') || /Transcript row \d+/.test(node.textContent ?? ''));
+    expect(rendered).toHaveLength(250);
+    expect(rendered.map((node) => Number(node.querySelector('header')?.textContent?.match(/#(\d+) ·/)?.[1])))
+      .toEqual(Array.from({ length: 250 }, (_, i) => i + 1));
+    rendered.forEach((node, i) => {
+      expect(within(node).getByText(i === 0 ? 'Hello team' : `Transcript row ${i + 1}`)).toBeInTheDocument();
+    });
+    expect(cursors).toEqual(['0', '200']);
   });
 
   test('renders dream moon marker in detail header for dream-originated thread', async () => {

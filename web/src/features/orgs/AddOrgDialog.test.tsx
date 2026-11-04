@@ -57,6 +57,8 @@ describe('AddOrgDialog', () => {
     await user.click(screen.getByRole('button', { name: /create/i }));
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ slug: 'good-slug' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledWith(false));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   test('surfaces 409 org_exists inline', async () => {
