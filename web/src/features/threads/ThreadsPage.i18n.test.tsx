@@ -557,7 +557,7 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
               }
               return original;
             });
-            wrapped.add(spy);
+            wrapped.add(present.queryFn);
             restores.push(() => spy.mockRestore());
           };
           observeInput();
