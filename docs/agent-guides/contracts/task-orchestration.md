@@ -117,7 +117,14 @@ report claim and recorded retry evidence only after `BEGIN IMMEDIATE` under the
 Database RLock. `Committed` alone enqueues children; `InvalidLineage` uses owned
 atomic feedback, and `LostClaim` drops without writes. Ordinary revision delta
 rolls back with spawn. Retry feedback admission holds a separate no-write writer
-reservation through synchronous queue insertion, released on every path. It is
+reservation through synchronous queue insertion, with one rollback attempt on
+every path. The four original retry transaction owners retain the first actual
+error and native traceback before cleanup, plus separately thrown rollback and
+retention errors; refusal rollback failure never retries that obligation.
+Successful precommit rollback restores its transaction; failed BEGIN, COMMIT,
+rollback or queue publication retains uncertainty and earlier committed prefixes.
+A's feedback commit survives B/queue/exit failure. An exact completed local value
+is evidence only until the method and wrapper deliver it successfully. B is
 not a durable task claim or an exactly-once queue guarantee. Cross-root provenance
 is bounded to 20 root records / 19 recorded supersession edges; failed history
 and original parent links stay intact. See orchestrator-contracts.md.

@@ -5879,18 +5879,36 @@ binding yields `LostClaim` with no feedback or enqueue. With ownership intact,
 invalid provenance yields `InvalidLineage`; `Committed` alone permits child
 queues. Ordinary worker-of-record revision accounting commits in the same
 transaction as the child, attachment links/audits, chain and parent transition.
-Fanout adds no revision. Actual write errors roll back and propagate; existing
-callback results and decision history survive all refusals and rollbacks.
+Fanout adds no revision. The original writers retain the first actual error and
+native traceback before their owed rollback, with each later cleanup/retention
+error separately retained even if the same error object is thrown again. A
+transported retained cause is an observation, not a new failure occurrence.
+Each rollback obligation is marked before its sole attempt; a refusal rollback
+failure cannot reenter cleanup. Existing callback results and decision history
+survive refusals and successful precommit rollback. Failed/effect-then-raise
+BEGIN, COMMIT or rollback keeps uncertainty without probing or retry. Successful
+COMMIT remains a prefix if constructing or delivering `Committed` then fails;
+an unreturned method result is never invented or used to enqueue children.
 
 Retry refusal uses two separate transactions. A atomically records the existing
 feedback result and orchestration audit and returns the parent to PENDING while
 preserving its original session and counters. B takes a fresh writer reservation,
 checks A's exact pending fingerprint and feedback row, and holds that reservation
 through the actual synchronous nonblocking enqueue. B writes nothing and always
-rolls back its reservation. Cancellation committed before B means zero insertion;
+attempts its one reservation rollback, including on BEGIN/body failure. With no
+earlier error, rollback failure is primary; otherwise the original body/queue
+error remains primary beside the later cleanup error. Native base traceback
+capture/rethrow and frame-local evidence preserve opaque/falsey exceptions and
+prior nested records even when named attachment fails, without formatting or
+diagnostic retry. Cancellation committed before B means zero insertion;
 if B wins, cancellation may commit after insertion and the queued item cannot
-claim a cancelled task. Queue failure preserves A's pending feedback and releases
-the reservation. Queue insertion is not a task claim or an exactly-once crash
+claim a cancelled task. Queue failure preserves A's pending feedback; only a
+successful rollback acknowledges reservation cleanup. A possible/positive put
+survives a later enqueue/cleanup/exit error. A completed exact local tag or value
+may be retained as evidence; it is not a method-returned value when cleanup or
+delivery failed. Missing or cancelled acknowledgement stays unknown with the
+same owner, without extra enqueue, replay, retirement or DB-close permission.
+Queue insertion is not a task claim or an exactly-once crash
 boundary; startup may enqueue PENDING again. Other feedback paths, general chain
 advancement and restart policy are unchanged.
 
