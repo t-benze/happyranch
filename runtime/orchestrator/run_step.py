@@ -5067,15 +5067,22 @@ def _attachment_feedback_and_reenqueue(
                 task_id, audit_agent=expected_claim.assigned_agent or "orchestrator",
                 error="task stopped after attachment correction opportunities were exhausted",
             )
-    _attachment_owned_effect(orch, current, abort_original_envelope)
-    root_transitions = _RootWorktreeTransitions()
-    if outcome.worktree_before and outcome.worktree_after:
-        before, after = json.loads(outcome.worktree_before), json.loads(outcome.worktree_after)
-        if (before["parent_task_id"] is None and before["status"] not in {s.value for s in TERMINAL_STATES}
-                and after["status"] in {s.value for s in TERMINAL_STATES}):
-            root_transitions.append(_RootWorktreeTransition(before, after, "attachment_correction_stop"))
+
+    def prepare_stop_tail() -> list:
+        # Nonroot stops already owe their original job tail before ANY of
+        # this preparation, including envelope lookup and transition decoding.
+        _attachment_owned_effect(orch, current, abort_original_envelope)
+        root_transitions = _RootWorktreeTransitions()
+        if outcome.worktree_before and outcome.worktree_after:
+            before, after = json.loads(outcome.worktree_before), json.loads(outcome.worktree_after)
+            if (before["parent_task_id"] is None and before["status"] not in {s.value for s in TERMINAL_STATES}
+                    and after["status"] in {s.value for s in TERMINAL_STATES}):
+                root_transitions.append(_RootWorktreeTransition(before, after, "attachment_correction_stop"))
+        return root_transitions
+
     is_root_stop = bool(outcome.audit_pair)
     if is_root_stop:
+        prepare_stop_tail()
         _attachment_owned_effect(orch, current, lambda: orch.notify_escalated(
             task_id=task_id, agent="orchestrator", reason=outcome.task_projection[8],
         ))
@@ -5084,7 +5091,7 @@ def _attachment_feedback_and_reenqueue(
         ))
     else:
         _fail_terminal_tail(orch, task_id, reclaim_terminal_worktree=reclaim_terminal_worktree,
-                            current_owner=current, root_transitions=root_transitions)
+                            current_owner=current, _prepare_terminal=prepare_stop_tail)
         _attachment_owned_effect(orch, current, lambda: _enqueue_parent_if_waiting(
             orch, task_id, current_owner=current,
         ))
@@ -6188,6 +6195,7 @@ def _fail_terminal_tail(
     expected_note: str | None = None,
     root_transitions: list | None = None,
     current_owner: Callable[[], bool] | None = None,
+    _prepare_terminal: Callable[[], list] | None = None,
 ) -> None:
     """Run `_fail`'s post-transition effects, optionally owner-fenced."""
     def current() -> bool:
@@ -6219,6 +6227,8 @@ def _fail_terminal_tail(
 
     try:
         with _owed_job_cleanup(orch, errors, finish_jobs):
+            if _prepare_terminal is not None:
+                root_transitions = _prepare_terminal()
             if current():
                 if current_owner is None:
                     _log_verdict_if_delegated(orch, task_id, success=False)

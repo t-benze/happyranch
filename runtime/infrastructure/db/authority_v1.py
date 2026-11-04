@@ -970,9 +970,10 @@ class AuthorityV1Mixin:
             )
             if failure["phase"] == "rollback":
                 failure["rollback_error"] = failure["first_error"]
-            # The original error arm cleaned up Exception only. Retain other
-            # BaseExceptions too, without expanding its transaction policy.
-            if (failure["rollback_owed"] and isinstance(error, Exception)
+            # Match the actual native exception hierarchy, like the original
+            # except Exception arm; never consult an instance's __class__.
+            # Other BaseExceptions retain evidence without acquiring cleanup.
+            if (failure["rollback_owed"] and issubclass(type(error), Exception)
                     and not failure["rollback_attempted"]):
                 failure["rollback_attempted"] = True
                 try:

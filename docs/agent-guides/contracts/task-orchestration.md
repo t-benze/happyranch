@@ -100,8 +100,15 @@ SQLite/OSError/transaction/postcommit failures retain their existing boundaries;
 only six exact built-in ValueError shapes at initial validation/preparation
 recover. Callback admission, receipt identity/history and once-only consumption
 are preserved. Old schema readers do not enforce this new budget policy.
-Stop tails use the captured winning owner and recheck before initiation. Their
-history fence retains the FIRST current-owner/effect BaseException before the
+Stop tails use the captured winning owner and recheck before initiation. After
+a genuine nonroot stop COMMIT, the existing owed-job boundary encloses the
+owner-fenced envelope abort and complete transition preparation, including decoding.
+Their failure preserves FIRST and stops later verdict/history/worktree/parent/thread
+effects, while the one original job-tail attempt retains current-owner and
+selected-human-result vetoes. False or failed owner checks grant no action or
+retry; failures retain uncertainty. ROOT ordering and other tail callers stay
+original. The stop history fence retains the FIRST current-owner/effect
+BaseException before the
 original sole rollback and RLock exit, with separately retained later native
 occurrences and actual completed effect values. History=False adds no rollback;
 history=True keeps its rollback duty even after failed BEGIN, but not failed
@@ -109,7 +116,9 @@ lock entry. The exact captured active-envelope abort retains body/UPDATE/audit/
 serialization/COMMIT E1 before rollback E2; rowcount-refusal rollback marks before
 one attempt, so failure cannot reenter cleanup. Its absent False, clean-refusal
 False, successful-COMMIT-only True, failed-BEGIN no-rollback and Exception-only
-body-cleanup policy stay original. Other BaseExceptions retain native evidence
+body-cleanup policy stay original. Eligibility uses the actual native type
+hierarchy without instance-controlled `__class__`, truthiness, formatting or
+virtual traceback lookup. Other BaseExceptions retain native evidence
 without a new rollback duty. Separate SAME-object throws and failed retention
 keep prior nested records/frames; delivered observations are not new failures.
 Stop COMMIT, partial history and actual local values survive failed delivery as

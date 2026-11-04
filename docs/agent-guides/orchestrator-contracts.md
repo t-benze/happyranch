@@ -5901,8 +5901,15 @@ new cleanup duties. Successful feedback or ROOT/nonroot exhausted-stop COMMIT
 remains a prefix through later result/delivery failure. Completed PendingRetry,
 AttachmentCorrectionStopped or LostClaim values are evidence only when actually
 constructed, and never method returns after failed cleanup or wrapper delivery.
-The returned exhausted stop's history fence retains current-owner/history FIRST
-BaseException before original rollback and RLock exit. History=False owes no
+The returned exhausted nonroot stop enters its existing owed-job boundary before
+the owner-fenced envelope abort and complete transition preparation, including
+decoding. Preparation E1 remains FIRST through later owner/cleanup/retention
+errors and prevents later verdict/history/worktree/parent/thread effects. The
+one original job-tail attempt still requires the original current-owner and
+selected-human-result checks; stale/false/failed checks grant no action or retry,
+and errors retain uncertainty. ROOT stop ordering and other terminal-tail callers
+remain unchanged. The returned exhausted stop's history fence retains
+current-owner/history FIRST BaseException before original rollback and RLock exit. History=False owes no
 rollback; history=True still attempts its original rollback once after failed
 BEGIN, but not after failed lock entry. An actual completed effect value survives
 cleanup-only or exit failure as evidence, never a delivered return. The captured
@@ -5910,7 +5917,9 @@ still-active original envelope's abort writer retains body/UPDATE/audit/
 serialization/COMMIT E1 before rollback E2; rowcount refusal marks rollback before
 its sole attempt, and returns False only after successful cleanup. Absent False,
 True only after successful COMMIT, original failed-BEGIN no-rollback and
-Exception-only body-cleanup eligibility remain; other BaseExceptions are retained
+Exception-only body-cleanup eligibility remain, determined from the actual native
+type hierarchy without instance-controlled `__class__`, truthiness, formatting or
+virtual traceback lookup; other BaseExceptions are retained
 without a new rollback duty. Actual independent SAME-object rollback/exit throws
 retain separate native snapshots; transported observations add none. Failed
 attachment retains prior nested records and original owner frames without
