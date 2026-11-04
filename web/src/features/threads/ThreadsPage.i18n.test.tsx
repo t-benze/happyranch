@@ -396,23 +396,72 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     const operations: Completion[] = [];
     const originals = new Set<Promise<unknown>>();
     const listRuns = new Set<Promise<void>>();
-    const responses = new Set<string>();
-    const rejections: Array<{ phase: string; error: unknown; expected: boolean }> = [];
+    type Failure = { phase: string; error: unknown };
+    type Input = { kind: unknown; pending: boolean; response?: Response; failure?: Failure };
+    type Invocation = { input?: Input; shared?: Invocation; entered: boolean; settled: boolean; failures: Failure[] };
+    type Phase = { name: string; invocation?: Invocation; outcome?: 'returned' | 'threw'; failure?: Failure };
+    type SinkFailure = { error: unknown; original: Failure; previous?: SinkFailure };
+    const inputs: Input[] = [];
+    const invocations: Invocation[] = [];
+    const phases: Phase[] = [];
+    let currentPhase: Phase | undefined;
+    const observedObservers = new WeakSet<object>();
+    const queryCalls = new WeakMap<object, { calling?: Invocation; running?: Invocation }>();
+    const rejections: Array<{ phase: string; error: unknown; disposition: string }> = [];
     const restores: (() => void)[] = [];
     let view: ReturnType<typeof mount> | undefined;
     let primary: { error: unknown } | undefined;
-    const later: Array<{ phase: string; error: unknown }> = [];
-    const observe = <T,>(original: Promise<T>, phase: string, expected = (_error: unknown) => false) => {
+    const later: Failure[] = [];
+    let sinkFailures: SinkFailure | undefined;
+    const retain = (failure: Failure) => {
+      try { later.push(failure); } catch (error) {
+        // A failed diagnostic sink must neither lose the occurrence nor replace
+        // the original UI/operation failure. Keep an independent fallback chain.
+        sinkFailures = { error, original: failure, previous: sinkFailures };
+      }
+    };
+    const callPhase = <T,>(name: string, invocation: Invocation | undefined, call: () => T): T => {
+      const frame: Phase = { name, invocation };
+      const parent = currentPhase;
+      try { phases.push(frame); } catch (error) { retain({ phase: `${name} provenance`, error }); }
+      currentPhase = frame;
+      try {
+        const value = call();
+        frame.outcome = 'returned';
+        return value;
+      } catch (error) {
+        // onQueryUpdate -> cache.notify has no catch in the locked source.
+        // That outward propagation is one occurrence. A subsequent callback/GC
+        // call has a fresh frame, even if it throws the very same object.
+        const failure = frame.failure && frame.failure.error === error ? frame.failure : { phase: name, error };
+        if (failure !== frame.failure) {
+          retain(failure);
+          try { invocation?.failures.push(failure); } catch (diagnostic) {
+            retain({ phase: `${name} provenance`, error: diagnostic });
+          }
+        }
+        frame.outcome = 'threw';
+        frame.failure = failure;
+        if (parent) parent.failure = failure;
+        throw error;
+      } finally {
+        currentPhase = parent;
+      }
+    };
+    const observe = <T,>(original: Promise<T>, phase: string, classify = (_error: unknown) => 'unexpected', fulfilled = () => {}) => {
       if (!originals.has(original)) {
         originals.add(original);
         operations.push(original.then(
-          (value) => ({ status: 'fulfilled', value } as const),
+          (value) => { fulfilled(); return { status: 'fulfilled', value } as const; },
           (reason: unknown) => {
-            // Keep the actual intended HTTP errors too; they feed the UI's
-            // existing error state, rather than constituting cleanup failures.
-            const handled = expected(reason);
-            rejections.push({ phase, error: reason, expected: handled });
-            if (!handled) later.push({ phase, error: reason });
+            let disposition = 'unexpected';
+            try { disposition = classify(reason); } catch (error) {
+              retain({ phase: `${phase} provenance`, error });
+            }
+            try { rejections.push({ phase, error: reason, disposition }); } catch (error) {
+              sinkFailures = { error, original: { phase, error: reason }, previous: sinkFailures };
+            }
+            if (disposition === 'unexpected') retain({ phase, error: reason });
             return { status: 'rejected', reason } as const;
           },
         ));
@@ -425,24 +474,146 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
         observe(original, 'original list run');
       }
     };
+    const intendedInput = (input: Input, error: unknown) =>
+      input.response?.status === 500 && error instanceof Error && error.name === 'ApiError'
+      && 'status' in error && error.status === 500 && 'code' in error && error.code === null
+      && 'detail' in error && error.detail === 'nope';
+    const pendingInput = (kind: string) => {
+      const pending = inputs.filter((input) => input.kind === kind && input.pending);
+      return pending.length === 1 ? pending[0] : undefined;
+    };
     try {
+      const cache = client.getQueryCache();
+      const notify = cache.notify;
+      const notifySpy = vi.spyOn(cache, 'notify').mockImplementation(function (this: typeof cache, event) {
+        const state = queryCalls.get(event.query);
+        return callPhase(`cache ${event.type}`, state?.calling ?? state?.running, () => notify.call(this, event));
+      });
+      restores.push(() => notifySpy.mockRestore());
+      // Observe only callbacks that really exist; do not invent a successful
+      // callback phase when the original client has none.
+      const config = cache.config as {
+        onError?: (...args: unknown[]) => unknown;
+        onSettled?: (...args: unknown[]) => unknown;
+      };
+      for (const name of ['onError', 'onSettled'] as const) {
+        const callback = config[name];
+        if (callback) {
+          const spy = vi.spyOn(config, name).mockImplementation(function (this: typeof config, ...args) {
+            const query = args[name === 'onError' ? 1 : 2] as object;
+            const state = queryCalls.get(query);
+            return callPhase(`cache ${name}`, state?.calling ?? state?.running, () => callback.apply(this, args));
+          });
+          restores.push(() => spy.mockRestore());
+        }
+      }
       // The locked QueryCache notifies added synchronously before Query.fetch.
       // Capture that outer return, including its error callbacks/finalization.
-      restores.push(client.getQueryCache().subscribe((event) => {
+      restores.push(cache.subscribe((event) => {
         if (event.type === 'added') {
           const query = event.query;
-          const fetch = query.fetch;
-          const spy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
-            observe(fetch.apply(query, args), `original query ${JSON.stringify(query.queryKey)}`, (error) => {
+          const state: { calling?: Invocation; running?: Invocation } = {};
+          queryCalls.set(query, state);
+          const wrapped = new WeakSet<(...args: unknown[]) => unknown>();
+          const observeInput = () => {
+            const options = query.options as { queryFn?: (...args: unknown[]) => unknown };
+            const queryFn = options.queryFn;
+            if (typeof queryFn !== 'function' || wrapped.has(queryFn)) return;
+            const spy = vi.spyOn(options, 'queryFn').mockImplementation(function (this: unknown, ...args) {
+              const invocation = state.calling;
               const [kind, slug, id] = query.queryKey;
-              // Only these two exact response consumers intentionally handle500.
-              // State identity excludes a different pre-request/callback/finally error.
-              return query.queryKey.length === 3 && slug === SLUG && id === 'THR-9'
-                && (kind === 'thread' || kind === 'thread-messages') && responses.has(kind)
-                && error instanceof Error && error.name === 'ApiError'
-                && 'status' in error && error.status === 500 && 'code' in error && error.code === null
-                && 'detail' in error && error.detail === 'nope' && query.state.error === error;
-            }));
+              const input: Input = {
+                kind: query.queryKey.length === 3 && slug === SLUG && id === 'THR-9'
+                  && (kind === 'thread' || kind === 'thread-messages') ? kind : undefined,
+                pending: true,
+              };
+              inputs.push(input);
+              if (invocation) {
+                invocation.entered = true;
+                invocation.input = input;
+                state.running = invocation;
+              }
+              const rejected = (error: unknown) => {
+                input.pending = false;
+                input.failure = { phase: `query input ${JSON.stringify(query.queryKey)}`, error };
+                return intendedInput(input, error) ? 'intended input' : 'unexpected';
+              };
+              let original: unknown;
+              try { original = queryFn.apply(this, args); } catch (error) {
+                try {
+                  if (rejected(error) === 'unexpected') retain(input.failure!);
+                } catch (diagnostic) {
+                  retain({ phase: 'query input provenance', error: diagnostic });
+                  retain({ phase: 'query input', error });
+                }
+                throw error;
+              }
+              if (original instanceof Promise) {
+                observe(original, `query input ${JSON.stringify(query.queryKey)}`, rejected, () => { input.pending = false; });
+              } else {
+                input.pending = false;
+              }
+              return original;
+            });
+            wrapped.add(spy);
+            restores.push(() => spy.mockRestore());
+          };
+          observeInput();
+          const setOptions = query.setOptions;
+          const optionsSpy = vi.spyOn(query, 'setOptions').mockImplementation(function (this: typeof query, ...args) {
+            if (state.calling) state.calling.entered = true;
+            const value = setOptions.apply(this, args);
+            observeInput();
+            return value;
+          });
+          restores.push(() => optionsSpy.mockRestore());
+          // scheduleGc is protected in TS, but is this original instance's
+          // actual finalization method. No prototype or global is replaced.
+          const gc = query as unknown as { scheduleGc: () => void };
+          const scheduleGc = gc.scheduleGc;
+          const gcSpy = vi.spyOn(gc, 'scheduleGc').mockImplementation(function (this: typeof gc, ...args) {
+            if (state.calling) state.calling.entered = true;
+            return callPhase('query scheduleGc', state.calling ?? state.running, () => scheduleGc.apply(this, args));
+          });
+          restores.push(() => gcSpy.mockRestore());
+          const fetch = query.fetch;
+          const spy = vi.spyOn(query, 'fetch').mockImplementation(function (this: typeof query, ...args) {
+            const previous = state.calling;
+            const retryer = query.promise as (Promise<unknown> & { status: string }) | undefined;
+            // Locked fetch's pending fast path returns the existing retryer;
+            // continueRetry only assigns a Boolean and invokes no callback.
+            const shared = query.state.fetchStatus !== 'idle' && retryer && retryer.status !== 'rejected'
+              && !(query.state.data !== undefined && args[1]?.cancelRefetch) && !state.running?.settled
+              ? state.running : undefined;
+            const invocation: Invocation = { shared, entered: false, settled: false, failures: [] };
+            invocations.push(invocation);
+            state.calling = invocation;
+            try {
+              const original = fetch.apply(this, args);
+              observe(original, `original query ${JSON.stringify(query.queryKey)}`, (error) => {
+                invocation.settled = true;
+                const source = invocation.input ? invocation : !invocation.entered ? invocation.shared : undefined;
+                // Input and phase wrappers already retained the actual throw.
+                // This outer rejection is propagation, never another occurrence.
+                if (invocation.failures.some((failure) => failure.error === error)) return 'phase propagation';
+                if (source?.input?.failure && source.input.failure.error === error) return 'input propagation';
+                return 'unexpected';
+              }, () => { invocation.settled = true; });
+              return original;
+            } finally {
+              state.calling = previous;
+            }
+          });
+          restores.push(() => spy.mockRestore());
+        }
+        if (event.type === 'observerAdded' && !observedObservers.has(event.observer)) {
+          const observer = event.observer;
+          observedObservers.add(observer);
+          const update = observer.onQueryUpdate;
+          const spy = vi.spyOn(observer, 'onQueryUpdate').mockImplementation(function (this: typeof observer, ...args) {
+            const state = queryCalls.get(event.query);
+            return callPhase('observer onQueryUpdate', state?.calling ?? state?.running, () => update.apply(this, args));
+          });
           restores.push(() => spy.mockRestore());
         }
         captureListRuns();
@@ -450,10 +621,11 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
       stubList([]);
       server.use(
         http.get(`/api/v1/orgs/${SLUG}/threads/THR-9`, () => {
+          const input = pendingInput('thread');
           const original = (async () => {
             await held;
             const response = HttpResponse.json({ detail: 'nope' }, { status: 500 });
-            responses.add('thread');
+            if (input) input.response = response;
             return response;
           })();
           observe(original, 'original detail handler');
@@ -461,8 +633,9 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
           return original;
         }),
         http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/messages`, () => {
+          const input = pendingInput('thread-messages');
           const response = HttpResponse.json({ detail: 'nope' }, { status: 500 });
-          responses.add('thread-messages');
+          if (input) input.response = response;
           return response;
         }),
         http.get(`/api/v1/orgs/${SLUG}/threads/THR-9/tasks`, () => HttpResponse.json([])),
@@ -481,30 +654,35 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
     } catch (error) {
       primary = { error };
     } finally {
-      try { release(); } catch (error) { later.push({ phase: 'release detail', error }); }
+      try { release(); } catch (error) { retain({ phase: 'release detail', error }); }
       // Acquire while this test owns work; a pending/latest snapshot is not a
       // historical census. Never wait on an unstarted handler or launch a retry.
       let joined = 0;
       do {
-        try { captureListRuns(); } catch (error) { later.push({ phase: 'capture list', error }); }
+        try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
         while (joined < operations.length) {
           const completion = operations[joined++];
-          try { await completion; } catch (error) { later.push({ phase: 'join observation', error }); }
-          try { captureListRuns(); } catch (error) { later.push({ phase: 'capture list', error }); }
+          try { await completion; } catch (error) { retain({ phase: 'join observation', error }); }
+          try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
         }
-        try { await act(async () => {}); } catch (error) { later.push({ phase: 'React delivery', error }); }
-        try { captureListRuns(); } catch (error) { later.push({ phase: 'capture list', error }); }
+        try { await act(async () => {}); } catch (error) { retain({ phase: 'React delivery', error }); }
+        try { captureListRuns(); } catch (error) { retain({ phase: 'capture list', error }); }
       } while (joined < operations.length);
-      for (const restore of restores) {
-        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      for (const restore of restores.reverse()) {
+        try { restore(); } catch (error) { retain({ phase: 'restore observation', error }); }
       }
-      try { view?.unmount(); } catch (error) { later.push({ phase: 'unmount', error }); }
-      try { client.clear(); } catch (error) { later.push({ phase: 'clear client', error }); }
+      try { view?.unmount(); } catch (error) { retain({ phase: 'unmount', error }); }
+      try { client.clear(); } catch (error) { retain({ phase: 'clear client', error }); }
     }
     if (primary) {
-      if (later.length) console.error('Threads detail secondary errors', later, rejections);
+      try {
+        if (later.length || sinkFailures) console.error('Threads detail secondary errors', later, rejections, sinkFailures, invocations, phases);
+      } catch (error) {
+        retain({ phase: 'report secondary errors', error });
+      }
       throw primary.error;
     }
+    if (sinkFailures) throw new AggregateError([sinkFailures, ...later.map(({ error }) => error)], 'Threads detail provenance sink failed');
     if (later.length === 1) throw later[0].error;
     if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Threads detail completion errors');
   });
