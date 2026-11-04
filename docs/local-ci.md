@@ -623,10 +623,11 @@ original bytes and strict UTF8 decoding, including the rejection-only sentinel;
 CRLF is preserved and refused returned work is never refunded. Character/UTF8
 annotations describe the actual decoded original. Early remaining-capacity
 refusal has no returned-slice/input-cap witness. After full grammar/size preflight,
-unescaped JSON strings use one precharged complete original scalar slice, with
-separate paid flag/branch work and no intermediate construction or join.
-Escaped JSON scalars use bounded local fragments and fixed reference slots.
-Within that escaped path, literal-only chunks are direct original
+unescaped JSON strings fitting one conservative 1021-byte construction chunk
+use one precharged complete original scalar slice, with separate paid flag/branch
+work and no intermediate construction or join. Larger and escaped JSON scalars
+use bounded local fragments and fixed reference slots.
+Within that path, literal-only chunks are direct original
 slices with no intermediate fragment/join. Mixed/escaped construction,
 slot storage/writes/clearing and join reference reads are paid before work,
 alongside retained chunks/final join and bounded scratch. Only the two
@@ -2916,12 +2917,13 @@ one occurrence and supplies no cross-occurrence admission. Complete original-cap
 controls and the intended equality-omission assertion must establish fit/proof.
 
 The shared JSON string method keeps its complete codepoint/quote/surrogate/size
-preflight. An unescaped original spelling then pays 8+UTF8-size bytes/one fact
-for its retained complete slice before creating it; flag/selection tracking pays
-another 16 bytes at the existing fixed construction-slot rate, with no additional
+preflight. An unescaped original spelling of at most 1021 UTF8 bytes then pays
+8+UTF8-size bytes/one fact for its retained complete slice before creating it;
+flag/selection tracking pays another 16 bytes at the existing fixed
+construction-slot rate, with no additional
 retained scalar/chunk fact. No chunk/fragment arrays, intermediate chunks,
-chunk references or final join exist on that branch. Escaped construction and
-its shorter-chunk carry clearing retain their original charges and behavior,
+chunk references or final join exist on that branch. Larger and escaped scalars
+retain the original construction, charges and shorter-chunk carry clearing,
 plus the explicit tracking charge. No retained-work rate or allowance changes.
 Required context/scenario trees, Controller preparation, raw/JSONL scans, Relay
 and Submission comparisons, and Case/final-snapshot SQL scans all depend on this

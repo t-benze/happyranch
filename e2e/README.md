@@ -2341,13 +2341,14 @@ remaining-capacity refusal before read has no returned-slice/input-cap witness.
 The strict indexed JSON grammar materializes only the original context list and one required
 scenario tree; duplicate decoded keys, malformed/trailing/nonfinite/surrogate or
 out-of-bounds numeric input refuses. After the complete codepoint/quote/surrogate/
-size preflight, an unescaped JSON string returns one complete original slice.
+size preflight, an unescaped JSON string fitting one conservative 1021-byte
+construction chunk returns one complete original slice.
 Its retained storage remains charged at 8+UTF8-size bytes/one fact before slicing;
 new flag/selection work pays a separate 16 bytes at the existing fixed
 construction-slot rate, with no additional retained scalar/chunk fact. That branch constructs
 no chunk/fragment arrays, chunk references, intermediate chunks or final join.
-Escaped JSON scalars retain fixed bounded fragment slots instead of repeated
-growing-string reconstruction. Within that escaped path, a literal-only chunk
+Larger and escaped JSON scalars retain fixed bounded fragment slots instead of
+repeated growing-string reconstruction. Within that path, a literal-only chunk
 is one direct original slice, paid with its final join; it creates no intermediate
 fragment or per-chunk join. Mixed/escaped fragments, slot storage/writes/clearing
 and join reference reads are charged before construction, in addition to retained

@@ -3658,9 +3658,10 @@ class _EvidenceJSON:
         # independently of the retained scalar/chunk facts. Complete grammar/
         # size preflight still precedes admission, as on the escaped path.
         self.ledger.charge(16, 0, self.check)
-        if unescaped:
-            # One complete original slice IS the retained scalar. There are
-            # no chunk/fragment arrays, chunk references, or final join here.
+        if unescaped and size <= 1021:
+            # A complete one-chunk literal needs only its retained slice.
+            # Keep the existing multi-chunk construction policy for larger
+            # scalars; this branch needs no arrays, chunk references or join.
             # Keep the original retained-scalar storage and fact admission.
             self.ledger.charge(8 + size, 1, self.check)
             value = self.text[start:cursor]
