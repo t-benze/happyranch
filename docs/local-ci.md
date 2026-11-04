@@ -3298,3 +3298,19 @@ debit changes. The unchanged restored5208/ALL4572 typed ordered reconciliation,
 SAME intended comparator omission/exact restoration/final green and clean-head
 static checks must establish the actual candidate result; this operation
 removal supplies no fit or native acceptance claim.
+
+
+The existing SOURCE lexer now consumes punctuation after an identifier, number
+or literal in its current loop, without repeating the full prefix classifier
+for each glyph. It still admits every punctuation token separately, preserves
+all bracket/operator/continuation predicates and stack charges, and returns a
+dot followed by a digit to the unchanged numeric grammar. The source-owned
+suffix state costs8B/1fact before assignment; narrower punctuation selection
+costs16B/1fact, while a full outer dispatch keeps32B/1fact. All original literal
+spelling/decoded grammar, per-occurrence safety and bounds remain. This removes
+executed dispatch work; it neither changes a retained-work rate nor proves fit.
+The strict JSON number constructor uses one original bounded spelling slice
+instead of a per-digit generator and join; its full original length+8B/1fact
+admission and numeric checks stay unchanged. Complete restored5208/ALL4572 typed
+ordered reconciliation, the SAME intended command-comparison omission, exact
+restoration/final green and clean committed-head static checks remain required.

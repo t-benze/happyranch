@@ -1452,15 +1452,19 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 parts = chunk = value = None
             return finish
 
+        # One source-owned suffix state, before its first assignment. A
+        # completed token validates punctuation directly instead of rebuilding
+        # the full comment/literal/name/number dispatch for every glyph.
+        ledger.charge(8, 1, check)
+        suffix_paid = False
         while index < end:
             if index % 1024 == 0:
                 check()
             if source[index] in ' \t\f\r\n':
                 index += 1
                 continue
-            # Prefix predicates construct no indexed character scalar or
-            # per-token class tuple. Keep the fixed token fact and the same
-            # selection setup; still-indexed stack lookups pay separately.
+            # Full dispatch and original token fact, including punctuation
+            # reached directly from whitespace/comment or source start.
             ledger.charge(32, 1, check)
             if source.startswith('#', index):
                 while index < end and source[index] not in '\r\n':
@@ -1472,8 +1476,8 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 continue
             if source.startswith(('"', "'"), index):
                 index = literal(index, index)
-                continue
-            if source.startswith(('a','b','c','d','e','f','g','h','i','j','k','l','m',
+                suffix_paid = False
+            elif source.startswith(('a','b','c','d','e','f','g','h','i','j','k','l','m',
                                   'n','o','p','q','r','s','t','u','v','w','x','y','z',
                                   'A','B','C','D','E','F','G','H','I','J','K','L','M',
                                   'N','O','P','Q','R','S','T','U','V','W','X','Y','Z','_'), index):
@@ -1491,8 +1495,8 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     if index - begin > 2:
                         fail()
                     index = literal(begin, index)
-                continue
-            if (source.startswith(('0','1','2','3','4','5','6','7','8','9'), index)
+                suffix_paid = False
+            elif (source.startswith(('0','1','2','3','4','5','6','7','8','9'), index)
                     or source.startswith('.', index) and index + 1 < end
                         and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
                 # Keep the original begin fact and branch setup; only the
@@ -1511,37 +1515,56 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                 if index < end and (source[index].isascii() and (source[index].isalpha() or source[index] == '_')):
                     fail()
-                continue
-            if source.startswith(('(', '[', '{'), index):
-                if depth + len(stack) + 3 > 64:
-                    raise _EvidenceCapacity('Python depth capacity refused')
-                ledger.charge(8, 1, check)
-                ledger.charge(8, 0, check)  # Still-indexed append lookup.
-                stack.append(source[index])
-                ledger.charge(16, 0, check)
-                index += 1
-                continue
-            if source.startswith((')', ']', '}'), index):
-                ledger.charge(8, 0, check)  # Still-indexed closing lookup.
-                if not stack or '([{'.index(stack.pop()) != ')]}'.index(source[index]):
-                    fail()
-                ledger.charge(16, 0, check)
-                index += 1
-                continue
-            if source.startswith('\\', index):
-                index += 1
-                if index < end and source[index] == '\r':
+                suffix_paid = False
+            else:
+                suffix_paid = True
+            while index < end:
+                if index % 1024 == 0:
+                    check()
+                # A dot followed by a digit belongs to the original numeric
+                # grammar. Other token classes return to the full dispatch.
+                if (source.startswith('.', index) and index + 1 < end
+                        and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
+                    break
+                if not source.startswith(('(', '[', '{', ')', ']', '}', '\\',
+                        ':','.',',',';','+','-','*','/','%','&','|','^','~','<','>','=','!','@'), index):
+                    if suffix_paid:
+                        fail()
+                    break
+                if not suffix_paid:
+                    # Only the narrower suffix classifier executes. Keep
+                    # every token fact and its16B selection work; the full
+                    # prefix classifier is absent at these positions.
+                    ledger.charge(16, 1, check)
+                suffix_paid = False
+                if source.startswith(('(', '[', '{'), index):
+                    if depth + len(stack) + 3 > 64:
+                        raise _EvidenceCapacity('Python depth capacity refused')
+                    ledger.charge(8, 1, check)
+                    ledger.charge(8, 0, check)  # Still-indexed append lookup.
+                    stack.append(source[index])
+                    ledger.charge(16, 0, check)
                     index += 1
-                if index == end or source[index] != '\n':
+                    continue
+                if source.startswith((')', ']', '}'), index):
+                    ledger.charge(8, 0, check)  # Still-indexed closing lookup.
+                    if not stack or '([{'.index(stack.pop()) != ')]}'.index(source[index]):
+                        fail()
+                    ledger.charge(16, 0, check)
+                    index += 1
+                    continue
+                if source.startswith('\\', index):
+                    index += 1
+                    if index < end and source[index] == '\r':
+                        index += 1
+                    if index == end or source[index] != '\n':
+                        fail()
+                    ledger.charge(16, 0, check)
+                    index += 1
+                    continue
+                if source.startswith('!', index) and (index + 1 == end or not source.startswith('=', index + 1)):
                     fail()
-                ledger.charge(16, 0, check)
                 index += 1
-                continue
-            if not source.startswith((':','.',',',';','+','-','*','/','%','&','|','^','~','<','>','=','!','@'), index):
-                fail()
-            elif source.startswith('!', index) and (index + 1 == end or not source.startswith('=', index + 1)):
-                fail()
-            index += 1
         if stack:
             fail()
         check()
@@ -4239,7 +4262,7 @@ class _EvidenceJSON:
         if length > (128 if floating else 21):
             raise _EvidenceCapacity("JSON number spelling refused")
         self.ledger.charge(length + 8, 1, self.check)
-        spelling = "".join(self.text[i] for i in range(start, self.index))
+        spelling = self.text[start:self.index]
         value = float(spelling) if floating else int(spelling)
         if (floating and not math.isfinite(value)) or (not floating and value.bit_length() > 64):
             self.error()
