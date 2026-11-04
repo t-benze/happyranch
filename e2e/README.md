@@ -3702,3 +3702,24 @@ comparison and final eligibility check. Only that duplicate's 8B/1fact debit
 ceases; every original/safe secret pass, sanitizer pass, reference admission and
 distinct full comparison remains. These operation removals make no capacity,
 causal-proof or native-acceptance claim before actual complete verification.
+
+
+Command root metadata owns its ordered keys even before a late action. No
+second root-key list or raw duplicate-key set is built; scalar insertion retains
+the original key once, and container keys keep their charged placeholders.
+Unknown root scalars remain refusal facts and decoded duplicates still refuse
+before the next value. Non-wire primitives use the existing direct parent/field
+route before action selection; unknown wire occurrences keep legacy discovery.
+Only absent root-key retention and general dispatch/path construction lose their
+separate debits. Full scalar storage, original order and every occurrence's
+SOURCE, file, stdout, wire, grammar and secret checks remain.
+
+Late start, actual-submit, copy and completion joins count matches while scanning
+the same original population. No match list is allocated. Each traversal keeps
+16B/2facts per candidate; each selection prepays32B/4facts for its fixed count and
+reference state, and every matching count increment pays8B/1fact. The absent
+match-list construction loses its separate16B/2facts per candidate allowance.
+Every original matching predicate, exact-one check and distinct full comparison
+still runs at its original comparison rate. There is no shared index, cached
+proof or reuse of another occurrence's safety. These source changes establish no
+capacity fit until the full original controls and reconciliation actually pass.
