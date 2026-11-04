@@ -716,46 +716,97 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       mkThread('THR-10', 'Ten unpinned', { started_at: '2026-05-14T00:00:00Z' }),
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
-    stubServerOrderedList(state);
-    stubDetail(state[1]);
-    // Gated POST: the mutation stays pending until the test releases it, so the
-    // optimistic render is observable before the response and the refetch.
+    // Retain only the two original gated handler/mutation obligations.
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const restores: (() => void)[] = [];
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[], phase: string) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => {
+          later.push({ phase, error: reason });
+          return { status: 'rejected', reason } as const;
+        },
+      ));
+      return original;
+    };
     let releasePost!: () => void;
     const gate = new Promise<void>((res) => {
       releasePost = res;
     });
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, async ({ request }) => {
-        expect(await request.json()).toEqual({ pinned: true });
-        await gate;
-        state[1].pinned = true;
-        state[1].pinned_at = '2026-05-21T00:00:00Z';
-        return HttpResponse.json({ thread_id: 'THR-10', pinned: true });
-      }),
-    );
-    mountAt(`/orgs/${SLUG}/threads`);
-    await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
-    // Initial server order: Pinned [THR-2], Threads [THR-10, THR-1].
-    expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
+    try {
+      stubServerOrderedList(state);
+      stubDetail(state[1]);
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, ({ request }) => {
+          const original = (async () => {
+            expect(await request.json()).toEqual({ pinned: true });
+            await gate;
+            state[1].pinned = true;
+            state[1].pinned_at = '2026-05-21T00:00:00Z';
+            return HttpResponse.json({ thread_id: 'THR-10', pinned: true });
+          })();
+          return observe(original, handlers, 'POST handler');
+        }),
+      );
+      mountAt(`/orgs/${SLUG}/threads`);
+      await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
+      // Initial server order: Pinned [THR-2], Threads [THR-10, THR-1].
+      expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
 
-    await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
-    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+      await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
+      // MutationCache adds synchronously, before execute/onMutate or HTTP starts.
+      restores.push(mountedQueryClient!.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations, 'mutation'));
+        restores.push(() => spy.mockRestore());
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
 
-    // The list unmounts on detail navigation. Its real cache still exposes
-    // the optimistic numeric ordering before the gated response settles.
-    await waitFor(() => {
-      const data = openListCache();
-      expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-2', 'THR-1']);
-      expect(data?.threads[0].pinned).toBe(true);
-    });
-    expect(screen.getByRole('button', { name: 'Unpin' })).toBeDisabled();
+      // The list unmounts on detail navigation. Its real cache still exposes
+      // the optimistic numeric ordering before the gated response settles.
+      await waitFor(() => {
+        const data = openListCache();
+        expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-2', 'THR-1']);
+        expect(data?.threads[0].pinned).toBe(true);
+      });
+      expect(screen.getByRole('button', { name: 'Unpin' })).toBeDisabled();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      // Release even when no operation started, or an optimistic assertion failed.
+      try { releasePost(); } catch (error) { later.push({ phase: 'release POST', error }); }
+      // An onMutate failure can precede handler entry. Join each actually started
+      // mutation first, then every original handler it may have started meanwhile.
+      for (const [phase, ledger] of [['mutation observation', mutations], ['handler observation', handlers]] as const) {
+        for (const completion of ledger) {
+          try { await completion; } catch (error) { later.push({ phase, error }); }
+        }
+      }
+      try {
+        await act(async () => {
+          // Deliver React work AFTER the original returns joined above.
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Gated pin secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Gated pin completion errors');
 
-    // Release the response — success + refetch reconcile to the same order.
-    await act(async () => {
-      releasePost();
-    });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
     await waitFor(() => expect(rowSubjects()).toEqual(expect.arrayContaining([
@@ -779,40 +830,94 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       }),
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
-    stubServerOrderedList(state);
-    stubDetail(state[1]);
+    // Retain only the two original gated handler/mutation obligations.
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const restores: (() => void)[] = [];
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[], phase: string) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => {
+          later.push({ phase, error: reason });
+          return { status: 'rejected', reason } as const;
+        },
+      ));
+      return original;
+    };
     let releasePost!: () => void;
     const gate = new Promise<void>((res) => {
       releasePost = res;
     });
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, async ({ request }) => {
-        expect(await request.json()).toEqual({ pinned: false });
-        await gate;
-        state[1].pinned = false;
-        state[1].pinned_at = null;
-        return HttpResponse.json({ thread_id: 'THR-2', pinned: false });
-      }),
-    );
-    mountAt(`/orgs/${SLUG}/threads`);
-    await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
+    try {
+      stubServerOrderedList(state);
+      stubDetail(state[1]);
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, ({ request }) => {
+          const original = (async () => {
+            expect(await request.json()).toEqual({ pinned: false });
+            await gate;
+            state[1].pinned = false;
+            state[1].pinned_at = null;
+            return HttpResponse.json({ thread_id: 'THR-2', pinned: false });
+          })();
+          return observe(original, handlers, 'POST handler');
+        }),
+      );
+      mountAt(`/orgs/${SLUG}/threads`);
+      await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('link', { name: /Two pinned/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
-    await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
+      await userEvent.click(screen.getByRole('link', { name: /Two pinned/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
+      // MutationCache adds synchronously, before execute/onMutate or HTTP starts.
+      restores.push(mountedQueryClient!.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations, 'mutation'));
+        restores.push(() => spy.mockRestore());
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
 
-    // The list is unmounted; assert the live open-list cache before POST resolution.
-    await waitFor(() => {
-      const data = openListCache();
-      expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-1', 'THR-2']);
-      expect(data?.threads[2].pinned).toBe(false);
-    });
-    expect(screen.getByRole('button', { name: 'Pin' })).toBeDisabled();
+      // The list is unmounted; assert the live open-list cache before POST resolution.
+      await waitFor(() => {
+        const data = openListCache();
+        expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-1', 'THR-2']);
+        expect(data?.threads[2].pinned).toBe(false);
+      });
+      expect(screen.getByRole('button', { name: 'Pin' })).toBeDisabled();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      // Release even when no operation started, or an optimistic assertion failed.
+      try { releasePost(); } catch (error) { later.push({ phase: 'release POST', error }); }
+      // An onMutate failure can precede handler entry. Join each actually started
+      // mutation first, then every original handler it may have started meanwhile.
+      for (const [phase, ledger] of [['mutation observation', mutations], ['handler observation', handlers]] as const) {
+        for (const completion of ledger) {
+          try { await completion; } catch (error) { later.push({ phase, error }); }
+        }
+      }
+      try {
+        await act(async () => {
+          // Deliver React work AFTER the original returns joined above.
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Gated pin secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Gated pin completion errors');
 
-    await act(async () => {
-      releasePost();
-    });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
     await waitFor(() => expect(rowSubjects()).toHaveLength(3));
