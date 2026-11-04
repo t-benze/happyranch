@@ -3685,3 +3685,22 @@ start grammar, twenty-token cardinality and occurrence safety remain. These
 construction removals establish no fit; complete original-cap SOURCE controls,
 full typed/ordered reconciliation and the intended omission/restoration are
 still required, separately from review, QA and native acceptance.
+
+Scan-only Case rows use their own retained field dictionary for decoded-key
+membership. Projected rows retain a charged key-only placeholder for each
+otherwise unretained scalar column; complete rows still retain every original
+value. Required trees keep their separate complete output. Only the redundant
+syntax-set insertion disappears for already retained fields; the field rates,
+unknown-key slots, duplicate-before-value rule, own safety and late full-row
+comparisons remain. New post-child membership/dispatch pays 16B per field.
+
+An unselected scan-only array no longer constructs unused member indices.
+Selected/expected index consumers and retained tree entries keep their existing
+8B/1fact admission; dispatch and the new fixed flag pay 24B/1fact per container.
+Every member's grammar,
+depth and scalar checks still run. The raw scalar callback also omits its second
+identical unchanged-value comparison after the first full builtin-string
+comparison and final eligibility check. Only that duplicate's 8B/1fact debit
+ceases; every original/safe secret pass, sanitizer pass, reference admission and
+distinct full comparison remains. These operation removals make no capacity,
+causal-proof or native-acceptance claim before actual complete verification.

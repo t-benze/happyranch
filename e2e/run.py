@@ -4141,16 +4141,16 @@ class _EvidenceJSON:
         if char not in "[{":
             self.error()
         self.ledger.charge(8, 1, self.check)
-        # A complete Case row already retains EVERY original scalar key in
-        # its own private fact dict. The SAME occurrence owns duplicate-key
-        # membership before the next value; no second syntax set is populated.
-        # Non-retaining rows and unrelated syntax callers keep their key set.
+        # The SAME Case row owns duplicate-key membership. Full rows already
+        # retain every scalar; projected rows keep charged key-only placeholders
+        # for the other columns. No second syntax set is populated. Required
+        # trees and unrelated syntax callers keep their original key storage.
         borrowed_keys = False
         command_keys = None
         if (not tree and char == '{' and isinstance(selected_owner, _EvidenceObservations)
                 and descendants is not None and descendants.__func__ is _EvidenceObservations.case_row_event):
             row = selected_owner.case['rows'][-1]
-            borrowed_keys = row[1] == 'jobs' or row[1] in ('tasks', 'results') and row[3] in ('parked', 'first_terminal')
+            borrowed_keys = True
         if char == '{':
             command_owner = getattr(descendants, '__self__', None) if descendants is not None else selected_owner
             if isinstance(command_owner, _EvidenceSubmission) and (command_owner.copy
@@ -4175,6 +4175,11 @@ class _EvidenceJSON:
         self.index += 1
         self.whitespace()
         member_index = 0
+        # A scan-only array without a selected/expected descendant has no
+        # consumer for member indices. Tree entry storage remains separately
+        # admitted even when its append does not need an index.
+        self.ledger.charge(24, 1, self.check)  # Dispatch plus the new fixed flag.
+        indexed_array = matching or selected is not None and selected_children
         previous_key = None
         expected_keys = None
         if matching and char == '{' and ordered:
@@ -4255,17 +4260,28 @@ class _EvidenceJSON:
                         proof.field(key, child)
                     if tree:
                         output[key] = child
+                    elif borrowed_keys and command_keys is None:
+                        # Known projected fields were retained by the row event.
+                        # Only an otherwise unretained scalar needs a key slot;
+                        # preserve its original syntax-set admission before the
+                        # SAME row takes ownership for decoded duplicates.
+                        self.ledger.charge(16, 0, self.check)
+                        if key not in output:
+                            self.ledger.charge(16, 1, self.check)
+                            output[key] = None
                     child = None
                 else:
-                    self.ledger.charge(8, 1, self.check)
+                    if tree or indexed_array:
+                        self.ledger.charge(8, 1, self.check)
                     if matching and member_index >= len(expected):
                         raise ValueError('completion complete waiting equality withheld')
                     child = self.value(depth + 1, scalar, tree=tree, route=3 if route == 2 else 0,
                                        event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
                                        selected=selected if selected_children else None, selected_path=selected_path,
-                                       selected_field=member_index, submission_identity=submission_identity,
+                                       selected_field=member_index if indexed_array else None, submission_identity=submission_identity,
                                        expected=expected[member_index] if matching else _EvidenceUnsafe)
-                    member_index += 1
+                    if indexed_array:
+                        member_index += 1
                     if tree:
                         output.append(child)
                     child = None
@@ -4635,9 +4651,7 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                                     eligible()
                                 finally:
                                     ledger.settle(0, 0)
-                                ledger.charge(8, 1, eligible)
-                                if safe != value:
-                                    raise _EvidenceUnsafe("raw unchanged postcondition")
+                                eligible()  # Keep the former final debit's eligibility boundary.
 
                             top = "[" if path.name in {"browser-events.json", "e05-browser-events.json"} else "{"
                             _EvidenceJSON(text, ledger, eligible).scan(
