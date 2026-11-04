@@ -498,9 +498,12 @@ describe('THR-209 — Pinned section', () => {
   test('empty list renders no sections', async () => {
     stubList([]);
     mountAt(`/orgs/${SLUG}/threads`);
+    expect(await screen.findByRole('heading', { level: 3, name: 'No threads yet' })).toBeInTheDocument();
+    expect(screen.getByText('Compose a thread to start a broadcast conversation with your agents.')).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument(),
     );
+    expect(screen.queryByRole('heading', { level: 2, name: 'Threads' })).not.toBeInTheDocument();
   });
 
   test('pinned section rows are navigation-only and retain native links', async () => {
@@ -568,6 +571,7 @@ describe('THR-209 — Pinned section', () => {
     expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     expect(await screen.findByRole('button', { name: 'Unpin' })).toBeInTheDocument();
   });
@@ -585,6 +589,7 @@ describe('THR-209 — Pinned section', () => {
     await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
     // Error banner appears (aria-live alert).
     await waitFor(() =>
@@ -635,6 +640,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
 
     await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
 
     // The list unmounts on detail navigation. Its real cache still exposes
@@ -693,6 +699,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
 
     await userEvent.click(screen.getByRole('link', { name: /Two pinned/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
 
     // The list is unmounted; assert the live open-list cache before POST resolution.
@@ -734,6 +741,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
 
     await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),
@@ -772,6 +780,7 @@ describe('THR-209 — inline rename', () => {
     );
     server.use(http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/rename`, postRename));
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     expect(input).toHaveValue('Original title'); // prefilled
@@ -794,6 +803,7 @@ describe('THR-209 — inline rename', () => {
     );
     server.use(http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/rename`, postRename));
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input);
@@ -801,6 +811,7 @@ describe('THR-209 — inline rename', () => {
     await waitFor(() => expect(postRename).toHaveBeenCalled());
 
     // Escape cancels without saving.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input2 = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input2);
@@ -823,6 +834,7 @@ describe('THR-209 — inline rename', () => {
       ),
     );
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input);
@@ -838,6 +850,7 @@ describe('THR-209 — inline rename', () => {
 
     // Retry succeeds.
     fail = false;
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(screen.queryByRole('textbox', { name: /Thread title/i })).not.toBeInTheDocument(),
@@ -848,6 +861,7 @@ describe('THR-209 — inline rename', () => {
   test('save is disabled for whitespace-only input', async () => {
     mountDetail();
     await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Rename/i })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: /Rename/i }));
     const input = screen.getByRole('textbox', { name: /Thread title/i });
     await userEvent.clear(input);
@@ -916,6 +930,7 @@ describe('THR-209 — pin from detail', () => {
       }),
     );
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     // Optimistic flip + refetch persistence both read as Unpin.
     await waitFor(() =>
@@ -936,6 +951,7 @@ describe('THR-209 — pin from detail', () => {
 
     expect(screen.queryByRole('button', { name: /Thread actions/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
@@ -950,6 +966,7 @@ describe('THR-209 — pin from detail', () => {
         HttpResponse.json({ error: 'boom' }, { status: 500 }),
       ),
     );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),
