@@ -5180,6 +5180,18 @@ to its original occurrence only when that original child frame emits a delivery
 during the same original exit call; equal errors or phase labels do not prove
 transport. This observation never certifies cleanup. Failed attachment/diagnostic
 delivery retains the raw frame and cannot replace the first cause.
+The joined schema snapshot and literal-reference contexts also capture native
+first/later occurrences before cleanup or virtual error access, without generator
+traceback restoration. They keep the same original connection: joined caller
+BEGIN/SAVEPOINT owes no rollback, while only a returned owned BEGIN owes one.
+Only a returned reference constructor owes its one close, including setup failure;
+a failed or undelivered close retains that handle and UNKNOWN, never a second
+close. Each original selected frame consumes its own raw lower outcomes even
+when attachments fail; reused-error history cannot certify a new invocation.
+Failed lower rollback, reference close, retention or transport withholds clean
+no-effect evidence despite a successful outer rollback or absent notes. Clean
+refusal keeps its original positive predicates. Original reference cache, reader
+watermark and caller publication boundaries still require positive context exit.
 The coordinator's short lease/business transactions preserve the FIRST actual
 error even without an admission validator, with one marked rollback attempt.
 An earlier business E0 stays primary beside release E1 and its rollback E2;

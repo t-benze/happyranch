@@ -218,6 +218,19 @@ postcommit rollback. Audit-watermark advances publish only after positive COMMIT
 AND context exit under the same lock; a body-local result alone cannot publish
 watermarks, ownership or registration success. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
+The schema read contexts capture native first and later occurrences before
+cleanup or opaque exception access. A snapshot uses the same connection, joins
+caller BEGIN/SAVEPOINT without transaction cleanup, and owes one rollback only
+after its own BEGIN returns. A returned literal-reference constructor owes its
+one close even on setup or body failure; a failed constructor grants no close.
+Failed or undelivered rollback/reference close retains the actual cause and
+original handle, without fallback target close, retry or retirement proof. The
+original selected frame consumes these lower outcomes through its own interval,
+even if exception attachment fails; outer rollback, absent notes or autocommit
+cannot make failed lower cleanup clean. Clean refusal retains its original
+positive predicates. Reference layout/cache results and audit-watermark or
+installer/ownership publication still require their original positive exits;
+a local result, completed reference or COMMIT alone is insufficient.
 The request's retained attachment Task and native worker keep the exact loaded
 or partly failed DB handle through disconnect/repeated waiter cancellation.
 Loop-owned references bind around the native profile-protected map insertion;

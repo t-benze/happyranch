@@ -553,7 +553,15 @@ read/role/binding/settings contexts preserve native first-cause custody outside
 unsafe generator/ExitStack restoration and independently unwind their original
 positively acquired exits. Pre-business no-effect requires that same interval's
 complete access/read rollback/exit evidence, never stale error markers or absence
-of notes. The native writer captures actual later settlement errors before virtual
+of notes. Their same-connection schema snapshot and literal-reference contexts
+capture native first/later occurrences before their one owned rollback or original
+reference close. Joined caller BEGIN/SAVEPOINT owes no schema cleanup; a failed
+constructor owes no reference close. Failed or undelivered cleanup retains the
+same handle and UNKNOWN without retry. The original selected frame consumes its
+own lower raw outcomes even on failed attachment, so outer rollback or autocommit
+cannot supply missing clean proof. Local layout/cache results, watermarks and
+installer/ownership publication remain behind their original positive exits.
+The native writer captures actual later settlement errors before virtual
 traceback/diagnostic access; its distinct occurrence and prior/nested-frame records
 supplement the compatible first-per-kind fields without changing reservation or
 settlement predicates. A completed start

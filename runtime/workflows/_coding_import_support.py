@@ -13,6 +13,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
+from runtime.infrastructure.workflow_schema import _schema_read_outcomes
 from runtime.workflows.authority import AuthorityAdmissionCapture, WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplatePrincipal
@@ -61,15 +62,23 @@ class _CodingReadFrame:
         if self.parent is not None:
             self.parent.children.append(self)
         self.token = _selected_read.set(self)
+        self.schema_outcomes: dict = dict(owners=[], records=[])
+        self.schema_ingested = 0
+        self.schema_token = _schema_read_outcomes.set(self.schema_outcomes)
 
     def record(self, phase: str, error: BaseException, *, later: bool = False,
                handled: bool = False, exit_record: dict | None = None) -> None:
         # Native capture precedes every attachment, diagnostic or virtual access.
         occurrence = dict(phase=phase, error=error,
             traceback=BaseException.__traceback__.__get__(error),
-            arguments=BaseException.args.__get__(error), previous=None, nested=None,
+            arguments=BaseException.args.__get__(error),
+            context=BaseException.__context__.__get__(error),
+            cause=BaseException.__cause__.__get__(error),
+            suppress_context=BaseException.__suppress_context__.__get__(error),
+            previous=None, nested=None,
             previous_occurrence=None, handled=handled, observation='observation' in phase,
             source_occurrence=None)
+        self.ingest_schema()
         self.records.append(occurrence)
         source = None
         if exit_record is not None:
@@ -163,7 +172,24 @@ class _CodingReadFrame:
         except BaseException as error:
             self.record(exit_record['phase'], error, later=True)
 
+    def ingest_schema(self) -> None:
+        # Only THIS original invocation's native channel is authoritative. An
+        # attachment on a reused exception is historical, never current proof.
+        for occurrence in self.schema_outcomes['records'][self.schema_ingested:]:
+            self.records.append(occurrence)
+            self.schema_ingested += 1
+            if self.primary is None:
+                self.primary = occurrence['error']
+                self.primary_occurrence = occurrence
+                self.traceback = occurrence['traceback']
+            self.last_occurrences[id(occurrence['error'])] = occurrence
+        if any(not owner.finished or not owner.evidence_complete
+               for owner in self.schema_outcomes['owners']):
+            self.failed = True
+        self.evidence_complete = False
+
     def finish(self) -> None:
+        self.ingest_schema()
         # Every occurrence is retained, even the same object thrown twice. A
         # failed attachment is captured once on this raw frame, never retried.
         for occurrence in tuple(self.records):
@@ -178,6 +204,10 @@ class _CodingReadFrame:
                 BaseException.add_note(self.primary, 'selected coding read cleanup failed; actual occurrences retained by original frame')
             except BaseException as diagnostic:
                 self.record('diagnostic', diagnostic, later=True)
+        try:
+            _schema_read_outcomes.reset(self.schema_token)
+        except BaseException as restoration:
+            self.record('schema context restoration', restoration, later=True)
         try:
             _selected_read.reset(self.token)
         except BaseException as restoration:
@@ -197,10 +227,15 @@ class _CodingReadFrame:
     def deliver(self, inbound: BaseException | None = None, traceback: Any = None) -> bool:
         if self.primary is None:
             return False
-        if self.primary is inbound:
-            BaseException.__traceback__.__set__(inbound, traceback)
+        error = self.primary
+        first = self.primary_occurrence
+        BaseException.args.__set__(error, first['arguments'])
+        BaseException.__traceback__.__set__(error, self.traceback)
+        BaseException.__context__.__set__(error, first['context'])
+        BaseException.__cause__.__set__(error, first['cause'])
+        BaseException.__suppress_context__.__set__(error, first['suppress_context'])
+        if error is inbound:
             return False
-        error = BaseException.with_traceback(self.primary, self.traceback)
         if self.finished and self.exit_call is not None:
             # Delivery is provenance, never positive cleanup evidence. Failed
             # attachments leave this source reachable on the original frames.
