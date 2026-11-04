@@ -7996,6 +7996,12 @@ value delivery excludes its candidate, while failed delivery retains that cause.
 Stop retains repeated actual throws separately and attempts remaining original
 children and its owed audit despite prior errors. Original Future publication,
 producer return and loop acknowledgement are distinct; ambiguity retains UNKNOWN.
+Positive provider return/post/loop/bridge facts cannot retire the SAME originally
+registered OrgState native user while original abort custody is UNKNOWN, even
+after healthy refresh retires its independent pin and runner/queue delivery exits.
+The actual org idle/close guard continues to observe that retained native user.
+Fully acknowledged semantic failure remains distinct from missing acknowledgement;
+its original error alone creates no new native-lifetime hold.
 Thread repository refresh submits the existing synchronous refresh function as
 one such original callable: materialization retention, batch and the entire
 original finally/completion tail precede its return acknowledgement. The original

@@ -1255,6 +1255,10 @@ async def _await_invocation_worker(
     try:
         await owner.abort_control.join_dispatch()
     except BaseException as exc:
+        # A failed join before acknowledgement retains original abort custody;
+        # an acknowledged semantic failure still has a settled native lifetime.
+        if not owner.abort_control.dispatch_acknowledged:
+            owner._invocation_native_unsettled = True
         delivered = owner.abort_control.dispatch_delivery
         origin = delivered[3] if delivered is not None and delivered[0] is exc else None
         occurrence = native_owner.record("abort settlement", exc, origin=origin)
@@ -1262,14 +1266,19 @@ async def _await_invocation_worker(
             native_owner.control_failure(exc, origin=occurrence)
         if refresh is not None:
             refresh.fail("settlement", exc, origin=occurrence)
+    if (owner.abort_control.token.cancelled
+            and not owner.abort_control.dispatch_acknowledged):
+        owner._invocation_native_unsettled = True
     positive = (native_owner.submission_error is None and native_owner.returned.is_set()
         and native_owner.handed_off and native_owner.acknowledged and native_owner.bridge_completed)
     if not positive:
         owner._invocation_native_unsettled = True
         native_owner.record("worker retirement", RuntimeError("thread_native_acknowledgement_unavailable"))
-    else:
-        # Original body return alone does not release org custody. Preserve any
-        # failed release, and the independent refresh pin, without retry.
+    elif not owner._invocation_native_unsettled:
+        # Provider acknowledgement cannot discharge UNKNOWN original abort
+        # custody. Keep this SAME registered native owner after runner/queue
+        # exit, even if healthy refresh already retired its independent pin.
+        # Preserve failed release and refresh custody without retry.
         native_owner.release_attempted = True
         try:
             org_state._release_native_task(native_owner)

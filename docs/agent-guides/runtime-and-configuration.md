@@ -5697,6 +5697,11 @@ freeze native arguments and traceback before cleanup or formatting. A handled
 candidate is excluded after authentic value delivery; failed delivery retains
 its earlier cause. Independent stop actions and the owed audit precede the sole
 Future publication attempt; failed or ambiguous acknowledgement stays UNKNOWN.
+Provider return/post/loop/bridge acknowledgement is separate from original abort
+settlement. UNKNOWN abort retains the SAME originally registered OrgState native
+user even after healthy refresh retires its independent pin and runner/queue
+delivery exits. A fully acknowledged semantic failure alone creates no new
+native-lifetime hold; original errors still propagate.
 C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
 
 Unsupported-stop audit failure is retained without interrupting the original
