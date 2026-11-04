@@ -625,8 +625,13 @@ def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context
             actual = _evidence_utf8_size(safe, check, expected)
         except ValueError as exc:
             raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
-        ledger.charge(24, 3, check)
-        if (actual != expected or not _evidence_span_equal([(safe, 0, len(safe))], spans, check)
+        # A short full scalar needs no temporary begin/end span slots. Keep
+        # its original reference and pay both construction selection and the
+        # comparator's dispatch; larger comparisons keep the original triple.
+        ledger.charge(32, 0, check)
+        ledger.charge(8 if actual <= 1021 else 24, 1 if actual <= 1021 else 3, check)
+        if (actual != expected or not _evidence_span_equal(
+                safe if actual <= 1021 else [(safe, 0, len(safe))], spans, check)
                 or any(secret in safe for secret in context)):
             raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
         check()
@@ -648,7 +653,18 @@ def _evidence_chars(spans: list[tuple[str, int, int]], check: Callable[[], None]
     check()
 
 
-def _evidence_span_equal(left: list, right: list, check: Callable[[], None]) -> bool:
+def _evidence_span_equal(left: str | list, right: list, check: Callable[[], None]) -> bool:
+    # Both callers prepay this dispatch. The complete scalar traversal keeps
+    # the left generator's check cadence and final check without span slots.
+    if type(left) is str:
+        b = _evidence_chars(right, check)
+        for index in range(len(left)):
+            if index % 4096 == 0:
+                check()
+            if left[index] != next(b, None):
+                return False
+        check()
+        return next(b, None) is None
     a, b = _evidence_chars(left, check), _evidence_chars(right, check)
     while True:
         x, y = next(a, None), next(b, None)
@@ -1488,6 +1504,7 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                 for previous, previous_size in keys[-1]:
                     if safe_size == previous_size:
                         ledger.charge(safe_size + previous_size, 1, check)
+                        ledger.charge(16, 0, check)  # Existing comparator's new dispatch.
                         if _evidence_span_equal(spans, previous, check):
                             raise ValueError("evidence redacted key collision")
                 ledger.charge(safe_size + 16, 1, check)

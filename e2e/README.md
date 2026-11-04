@@ -3582,3 +3582,16 @@ Escaped/multichunk construction keeps every original debit. The original decoded
 no-backslash and full independent sanitation/secret checks still run on every
 slice occurrence. This does not establish fit, a resource bound or native proof;
 all existing SOURCE and shared parser controls and their full oracles renew.
+
+Short safe-string comparisons also avoid constructing a temporary
+`(safe, 0, len(safe))` span. After the same complete plan, sanitizer and UTF8
+checks, scalars of at most 1021 bytes are traversed in full directly against
+the original right-hand spans, with the same periodic and final checks. The
+original safe-reference debit remains 8B/1fact; only the two absent endpoint
+slots lose 16B/2facts. Caller selection and comparator dispatch prepay another
+32B/0facts. Larger scalars retain the original span construction and charges
+plus that new work. The typed key-collision caller retains its complete
+comparison and pays 16B/0facts for dispatch. Every secret pass, independent
+comparison, original value/type/order and shared limit remains. All existing
+safety, parser and writer callers require renewed complete controls; this
+construction change alone establishes no fit, proof or native acceptance.
