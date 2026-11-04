@@ -204,7 +204,13 @@ records its own positive body return while only the owning loop retires after
 that original worker is acknowledged and joined. Failed acquisition/release,
 enqueued-then-raised submission/posting and missing/cancelled acknowledgement
 retain the same owner/pin and UNKNOWN without retry, second finish or inferred
-no-run. Positive pre-submit refusal creates no native work.
+no-run. Positive pre-submit refusal creates no native work. The writer captures
+its native write and rollback occurrences before virtual diagnostics, using only
+the same invocation capture leaf beneath its original gates; that leaf enters no
+DB, gate, refresh mutex or callback. Transfer to the refresh owner follows gate
+release and links the early occurrence rather than assigning it a later order.
+Successful COMMIT remains a committed prefix if its callback or later delivery
+fails. All originally owed lease exits still run once in record order.
 Repository custody precedes binding, root/Pause, move and short DB arbitration.
 Worker and completion acquisition, including native owner rechecks, binding/root
 gate-map lookups and failure attribution, uses the original remaining deadline;

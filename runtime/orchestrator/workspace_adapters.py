@@ -2249,7 +2249,21 @@ def _repo_preparation_gates(owner: Any, evidence: Any = None, *, deadline: float
 def _repo_preparation_writer(owner: Any, evidence: Any, *,
         committed: Callable[[], None] | None = None) -> Iterator[None]:
     """One original-owner transaction; publish COMMIT facts before gate release."""
+    def capture(kind: str, error: BaseException) -> tuple:
+        # This short native capture leaf never enters the refresh-owner mutex.
+        # The only lock it can take is the invocation's terminal capture leaf,
+        # which enters no gate, DB, callback or other owner.
+        capture_owner = evidence._invocation_capture_owner
+        native_capture = None if capture_owner is None else capture_owner._invocation_worker_capture
+        origin = None if native_capture is None else native_capture("repository " + kind, error)
+        snapshot = (kind, error, BaseException.args.__get__(error) if origin is None else origin[2],
+            BaseException.__traceback__.__get__(error) if origin is None else origin[3],
+            origin, evidence._write_occurrences)
+        evidence._write_occurrences = snapshot
+        return snapshot
+
     db = evidence.db
+    evidence._write_delivery = None
     with _repo_preparation_gates(owner, evidence) as root_id:
         if not evidence.active() and not evidence.finishing:
             raise TimeoutError("repository_preparation_control_deadline")
@@ -2271,24 +2285,37 @@ def _repo_preparation_writer(owner: Any, evidence: Any, *,
             except BaseException as error:
                 # Latch locally before rollback or any fallible attribution.
                 # No refresh-owner mutex may be acquired under these gates.
+                original = capture("evidence_write", error)
                 evidence.uncertain = True
                 if evidence.write_error is None:
-                    evidence.write_error, evidence.write_traceback = error, error.__traceback__
-                if getattr(owner, "_repository_preparation_failure", None) is None:
-                    # Revalidation can fail before the opened obligation exists.
-                    # Retain that SAME evidence on its ordinary/offline owner too.
-                    owner._repository_preparation_failure = evidence
+                    evidence.write_error, evidence.write_traceback = error, original[3]
                 try:
-                    db._conn.rollback()
-                except BaseException as rollback:
-                    if evidence.rollback_error is None:
-                        evidence.rollback_error = rollback
-                        evidence.rollback_traceback = rollback.__traceback__
-                raise
+                    if getattr(owner, "_repository_preparation_failure", None) is None:
+                        owner._repository_preparation_failure = evidence
+                except BaseException as attribution:
+                    capture("attribution", attribution)
+                finally:
+                    try:
+                        db._conn.rollback()
+                    except BaseException as rollback:
+                        rolled_back = capture("evidence_rollback", rollback)
+                        if evidence.rollback_error is None:
+                            evidence.rollback_error, evidence.rollback_traceback = rollback, rolled_back[3]
+                BaseException.args.__set__(error, original[2])
+                evidence._write_delivery = original
+                raise BaseException.with_traceback(error, original[3])
             # No deadline/readback/reacquisition follows successful COMMIT.
             # Even a later context restoration error cannot erase these facts.
             if committed is not None:
-                committed()
+                try:
+                    committed()
+                except BaseException as error:
+                    # The transaction already committed: retain this separate
+                    # callback failure without another rollback or COMMIT.
+                    original = capture("evidence", error)
+                    BaseException.args.__set__(error, original[2])
+                    evidence._write_delivery = original
+                    raise BaseException.with_traceback(error, original[3])
 
 
 @contextmanager
@@ -2444,6 +2471,9 @@ class _RepoPreparationEvidence:
         self.finishing = False
         self.write_error = self.write_traceback = None
         self.rollback_error = self.rollback_traceback = None
+        self._invocation_capture_owner = owner if hasattr(owner, "_invocation_worker_capture") else None
+        self._write_occurrences = self._transferred_write_occurrences = None
+        self._write_delivery = None
 
     def active(self) -> bool:
         return (time.monotonic() < self.deadline and not self.cancellation.cancelled
@@ -3301,21 +3331,47 @@ def _repo_refresh_batch(workspace: Path, preparation: Any, supervisor: Any, dead
 def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: list[dict], *, _owner=None) -> dict[str, bool]:
     """The original caller owns this tail AFTER actual worker return/join."""
     primary = None
-    primary_traceback = None
+    occurrences = None
+
+    def capture(kind: str, error: BaseException, *, origin=None, native=None) -> tuple:
+        nonlocal primary, occurrences
+        # Capture before safe classification, attribution, owner attachment or
+        # lease diagnostics. A forwarded writer occurrence keeps its early order.
+        if native is None:
+            native = (error, BaseException.args.__get__(error), BaseException.__traceback__.__get__(error))
+        snapshot = (error, native[1] if origin is None else origin[2],
+            native[2] if origin is None else origin[3], origin)
+        occurrences = (kind, snapshot, origin, occurrences)
+        if primary is None:
+            primary = snapshot
+        if _owner is not None:
+            delivered = _owner.fail(kind, error, traceback=snapshot[2], origin=origin)
+            if origin is None and delivered is not None:
+                forwarded = (error, delivered[2], delivered[3], delivered)
+                if primary is snapshot:
+                    primary = forwarded
+                snapshot = forwarded
+        return snapshot
+
+    def transfer(evidence: Any) -> None:
+        if _owner is None or evidence is None:
+            return
+        # The original gates have exited. No refresh mutex is acquired by the
+        # writer; this transfer links its early invocation occurrence explicitly.
+        cursor, pending = evidence._write_occurrences, []
+        while cursor is not evidence._transferred_write_occurrences and cursor is not None:
+            pending.append(cursor)
+            cursor = cursor[5]
+        for original in reversed(pending):
+            capture(original[0], original[1], origin=original[4])
+            evidence._transferred_write_occurrences = original
+
     for record in work:
         evidence, outcome = record["evidence"], record["outcome"]
         try:
             if evidence is not None:
-                if _owner is not None and evidence.write_error is not None:
-                    # Transfer only after the original writer released its gates.
-                    # Earlier waiter/submission/cancellation ownership still wins.
-                    _owner.fail("evidence_write", evidence.write_error,
-                        traceback=evidence.write_traceback)
-                    if evidence.rollback_error is not None:
-                        _owner.fail("evidence_rollback", evidence.rollback_error,
-                            traceback=evidence.rollback_traceback)
-                    if primary is None:
-                        primary, primary_traceback = evidence.write_error, evidence.write_traceback
+                transfer(evidence)
+                evidence._write_delivery = None
                 evidence.returned()
                 if not evidence.settle():
                     if outcome is None:
@@ -3331,51 +3387,77 @@ def _repo_refresh_complete(preparation: Any, results: dict[str, bool], work: lis
             elif outcome is not None:
                 outcome.stderr.clear()
         except BaseException as exc:
-            # Failed closure/export cannot turn a completed Popen into a
-            # settled preparation; latch before preserving the first safe cause.
-            if _owner is not None:
-                _owner.fail("evidence", exc)
-            safe_error = _repo_pull_safe_error(exc)
+            # Freeze this actual observation first. If the writer explicitly
+            # delivered it, link that particular occurrence; otherwise it is a
+            # new throw even when its object appeared in an earlier interval.
+            observed = (exc, BaseException.args.__get__(exc), BaseException.__traceback__.__get__(exc))
+            original = None if evidence is None else evidence._write_delivery
+            origin = original[4] if original is not None and original[1] is exc else None
+            if _owner is not None and _owner.thread_binding:
+                worker = _owner.finish_native_worker or _owner.native_worker
+                origin = worker.record("repository completion observation", exc, origin=origin)
+            # A closure writer can itself fail: transfer that SAME earlier raw
+            # occurrence before this outer delivery, after its gates exited.
+            transfer(evidence)
+            original = capture("evidence", exc, origin=origin, native=observed)
+            safe_error = RuntimeError("repository_pull_failed")
+            try:
+                safe_error = _repo_pull_safe_error(exc)
+            except BaseException as diagnostic:
+                capture("attribution", diagnostic)
             try:
                 if evidence is not None:
                     evidence.uncertain = True
+                    evidence._write_delivery = None
                 preparation.failed_cleanup(repository_deadline=record["deadline"])
             except BaseException as attribution:
-                if _owner is not None:
-                    _owner.fail("attribution", attribution)
-                safe_error.add_note("repository preparation failure attribution unavailable; ownership remains unknown")
+                delivered = None if evidence is None else evidence._write_delivery
+                capture("attribution", attribution, origin=(delivered[4]
+                    if delivered is not None and delivered[1] is attribution else None))
+                transfer(evidence)
+                if safe_error is not None:
+                    try:
+                        BaseException.add_note(safe_error,
+                            "repository preparation failure attribution unavailable; ownership remains unknown")
+                    except BaseException as diagnostic:
+                        capture("attribution", diagnostic)
             if outcome is not None:
                 try:
+                    if evidence is not None:
+                        evidence._write_delivery = None
                     _repo_pull_failed(preparation, record["name"], outcome,
                         preparation_closed=evidence is not None and evidence.closed,
                         repository_deadline=record["deadline"])
                 except BaseException as attribution:
-                    if _owner is not None:
-                        _owner.fail("cause_attribution", attribution)
-                    safe_error.add_note("repository preparation cause attribution failed; original failure retained")
-            if primary is None:
-                primary = exc if _owner is not None else safe_error
-                primary_traceback = primary.__traceback__
-            if _owner is not None and evidence is not None and evidence.write_error is not None:
-                _owner.fail("evidence_write", evidence.write_error,
-                    traceback=evidence.write_traceback)
-                if evidence.rollback_error is not None:
-                    _owner.fail("evidence_rollback", evidence.rollback_error,
-                        traceback=evidence.rollback_traceback)
+                    delivered = None if evidence is None else evidence._write_delivery
+                    capture("cause_attribution", attribution, origin=(delivered[4]
+                        if delivered is not None and delivered[1] is attribution else None))
+                    transfer(evidence)
+                    if safe_error is not None:
+                        try:
+                            BaseException.add_note(safe_error,
+                                "repository preparation cause attribution failed; original failure retained")
+                        except BaseException as diagnostic:
+                            capture("cause_attribution", diagnostic)
+            if _owner is None and primary is original and safe_error is not None:
+                # Keep the default/task boundary's fixed safe diagnostic shape.
+                primary = (safe_error, BaseException.args.__get__(safe_error),
+                    BaseException.__traceback__.__get__(safe_error), None)
         finally:
             try:
                 record["lease"].__exit__(None, None, None)
             except BaseException as error:
-                if _owner is not None:
-                    _owner.fail("lease", error)
-                    if primary is not None:
-                        raise primary.with_traceback(primary_traceback)
-                raise
+                capture("lease", error)
             else:
                 if _owner is not None:
                     record["lease_closed"] = True
+        # No earlier failure may skip the remaining originally owed leases.
     if primary is not None:
-        raise primary.with_traceback(primary_traceback) from None
+        if _owner is not None and _owner.thread_binding:
+            # run() forwards this particular original occurrence to the worker.
+            _owner.delivery_occurrence = primary[3]
+        BaseException.args.__set__(primary[0], primary[1])
+        raise BaseException.with_traceback(primary[0], primary[2]) from None
     return results
 
 
@@ -3517,8 +3599,10 @@ class _RepositoryRefreshOwner:
             else:
                 worker.observe("repository refresh " + kind + " delivery", origin)
         with self.lock:
-            snapshot = (kind, error, BaseException.args.__get__(error),
-                BaseException.__traceback__.__get__(error) if traceback is None else traceback, origin)
+            snapshot = (kind, error,
+                BaseException.args.__get__(error) if origin is None else origin[2],
+                (BaseException.__traceback__.__get__(error) if traceback is None else traceback)
+                    if origin is None else origin[3], origin)
             self.pending_failure = snapshot
             try:
                 self.failure_occurrences = (snapshot, self.failure_occurrences)
@@ -3533,6 +3617,7 @@ class _RepositoryRefreshOwner:
                     if self.diagnostic_error is None:
                         self.diagnostic_error = retention
             self._annotate_locked()
+        return origin
 
     def remember_primary(self, error):
         with self.lock:
@@ -3543,41 +3628,38 @@ class _RepositoryRefreshOwner:
     def run(self, workspace, supervisor, *, materialization=None):
         primary = traceback = primary_occurrence = None
 
-        def capture(stage: str, error: BaseException, frontier: object) -> tuple | None:
+        def capture(stage: str, error: BaseException) -> tuple | None:
             if not self.thread_binding or self.native_worker is None:
                 return None
-            # Only this original helper interval may supply a forwarded cause;
-            # unrelated earlier throws of the SAME object are not deduplicated.
-            cursor, origin = self.failure_occurrences, None
-            while cursor is not frontier and cursor is not None:
-                snapshot, cursor = cursor
-                if snapshot[1] is error and snapshot[4] is not None:
-                    origin = snapshot[4]
+            # Completion explicitly forwards its selected occurrence. Never
+            # search by SAME-object identity to deduplicate separate throws.
+            origin = self.delivery_occurrence
+            if origin is not None and origin[1] is not error:
+                origin = None
             if origin is None:
                 return self.native_worker.record(stage, error)
             self.native_worker.observe(stage + " delivery", origin)
             return origin
 
         try:
-            frontier = self.failure_occurrences
             try:
                 if materialization is not None:
                     _repo_retain_materialization(self.preparation, workspace, *materialization)
                 self.results = _repo_refresh_batch(workspace, self.preparation, supervisor,
                     self.deadline, self.cancel, self.work)
             except BaseException as error:
-                primary_occurrence = capture("repository batch", error, frontier)
+                primary_occurrence = capture("repository batch", error)
                 primary, traceback = error, BaseException.__traceback__.__get__(error)
                 self.fail("batch", error, origin=primary_occurrence)
             finally:
                 if self.preparation is not None:
                     self.preparation._repository_worker_active = False
-                frontier = self.failure_occurrences
+                self.delivery_occurrence = None
                 try:
                     self.results = _repo_refresh_complete(self.preparation, self.results,
                         self.work, _owner=self)
                 except BaseException as error:
-                    occurrence = capture("repository completion", error, frontier)
+                    occurrence = capture("repository completion", error)
                     self.fail("completion", error, origin=occurrence)
                     if primary is None:
                         primary, traceback, primary_occurrence = (
@@ -3591,7 +3673,7 @@ class _RepositoryRefreshOwner:
                     evidence.closed for evidence in self.preparation._repository_preparations.values()))
             if not self.closed:
                 error = RuntimeError("repository_refresh_closure_unavailable")
-                occurrence = capture("repository closure refusal", error, self.failure_occurrences)
+                occurrence = capture("repository closure refusal", error)
                 self.fail("closure", error, origin=occurrence)
                 if primary is None:
                     primary, traceback, primary_occurrence = (

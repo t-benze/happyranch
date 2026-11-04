@@ -5303,6 +5303,13 @@ Submission failure after queueing and missing/done/cancelled Futures do not perm
 finish, control removal, DB lifetime release or successor commitment. The same
 original callable is joined without resubmission; unresolved admission retains
 its native owner and pair guard, first cause and attributable secondary errors.
+That same owner's UNKNOWN is consumed before every preparation/provider error
+handler can settle, publish or return normally. Native inner observations precede
+cleanup and diagnostics; each actual repeated throw has its own snapshot, while
+transport links its particular original occurrence. Authentically delivered
+handled values remain handled. Stop errors cannot skip the remaining original
+child cancellations, owed audit or sole Future publication attempt; uncertain
+settlement never authorizes a second attempt.
 
 Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.

@@ -5690,6 +5690,13 @@ cancelled Future proves neither no effects nor original return. Unknown admissio
 retains the runner/native DB lifetime, pair guard and exact control without finish
 or resubmission until the original acknowledgement. Submission, original worker,
 dispatch and settlement errors retain their first cause and secondary context.
+Preparation, initial, fallback and nudge catches consume the same preparation
+owner's unsettled fact before diagnostics or failure writes, and propagate its
+original error to the queue failure path. Nested provider/preparation observations
+freeze native arguments and traceback before cleanup or formatting. A handled
+candidate is excluded after authentic value delivery; failed delivery retains
+its earlier cause. Independent stop actions and the owed audit precede the sole
+Future publication attempt; failed or ambiguous acknowledgement stays UNKNOWN.
 C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
 
 Unsupported-stop audit failure is retained without interrupting the original

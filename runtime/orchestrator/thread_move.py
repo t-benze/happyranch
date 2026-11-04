@@ -69,18 +69,55 @@ class _ThreadAbortControl:
         self.children: set[Any] = set()
         self.dispatch_future: Future[None] | None = None
         self.failure: BaseException | None = None
+        self.failure_snapshot = self.failure_occurrences = None
+        self.invocation_owner = None
+        self.dispatch_thread = None
+        self.dispatch_returned = threading.Event()
+        self.dispatch_published = False
+        self.dispatch_start_error = None
+        self.dispatch_delivery = None
+        self.dispatch_snapshot = None
+        self.dispatch_acknowledged = False
         self.mode: str | None = None
         self.launched = False
         self.worker_running = False
         self.audit_attempted = False
         self.audit_mode: str | None = None
 
-    def record_failure(self, exc: BaseException) -> None:
+    def record_failure(self, exc: BaseException, *, origin: Any = None) -> tuple:
+        # Capture before the control leaf or any diagnostic sink. Never call
+        # exception-defined getters, notes, repr or truthiness in stop custody.
+        owner = self.invocation_owner
+        if origin is None and owner is not None:
+            # Same invocation capture leaf, available even before a provider
+            # worker enters. No control/refresh mutex, DB or callback is nested.
+            with owner._invocation_worker_lock:
+                origin = ("thread abort", exc, BaseException.args.__get__(exc),
+                    BaseException.__traceback__.__get__(exc), None,
+                    owner._invocation_worker_occurrences, [True], None)
+                owner._invocation_worker_pending = origin
+                owner._invocation_worker_occurrences = origin
+                if owner._invocation_worker_primary is None:
+                    owner._invocation_worker_primary = origin
+        args = BaseException.args.__get__(exc) if origin is None else origin[2]
+        traceback = BaseException.__traceback__.__get__(exc) if origin is None else origin[3]
         with self.lock:
-            if self.failure is None:
+            snapshot = (exc, args, traceback, origin, self.failure_occurrences)
+            self.failure_occurrences = snapshot
+            earlier = self.failure_snapshot is None
+            # Capture and control leaves are never nested. If concurrent
+            # captures reach this leaf out of order, their immutable SAME-owner
+            # predecessor links, rather than transfer time, establish FIRST.
+            cursor = None if self.failure_snapshot is None else self.failure_snapshot[3]
+            while cursor is not None and origin is not None:
+                if cursor is origin:
+                    earlier = True
+                    break
+                cursor = cursor[5]
+            if earlier:
+                self.failure_snapshot = snapshot
                 self.failure = exc
-            elif self.failure is not exc:
-                self.failure.add_note(f"thread abort secondary: {exc!r}")
+        return snapshot
 
     def _capture_unsupported_unlocked(self) -> None:
         if self.token.cancelled and self.launched and self.worker_running and self.mode is not None:
@@ -132,53 +169,97 @@ class _ThreadAbortControl:
             future = self.dispatch_future = Future()
 
         def stop() -> None:
-            primary = None
-            with self.lock:
-                tokens = (self.token, *self.children)
-            for action in (*[token.cancel for token in tokens], self.unsupported_stop_audit):
+            try:
+                with self.lock:
+                    tokens = (self.token, *self.children)
+                # Resolve each opaque action INSIDE its own catch. One failed
+                # child cannot skip the remaining children or the owed audit.
+                for token in tokens:
+                    try:
+                        token.cancel()
+                    except BaseException as exc:
+                        self.record_failure(exc)
+                frontier = self.failure_occurrences
                 try:
-                    action()
+                    self.unsupported_stop_audit()
                 except BaseException as exc:
-                    if primary is None:
-                        primary = exc
+                    original = self.failure_occurrences
+                    if original is frontier or original is None or original[0] is not exc:
+                        self.record_failure(exc)
+            except BaseException as exc:
+                self.record_failure(exc)
+            finally:
+                try:
+                    primary = self.failure_snapshot
+                    self.dispatch_snapshot = primary
+                    if primary is not None:
+                        BaseException.args.__set__(primary[0], primary[1])
+                        BaseException.__traceback__.__set__(primary[0], primary[2])
+                        future.set_exception(primary[0])
                     else:
-                        primary.add_note(f"thread abort secondary: {exc!r}")
-            if primary is not None:
-                self.record_failure(primary)
-                future.set_exception(primary)
-            else:
-                future.set_result(None)
+                        future.set_result(None)
+                    self.dispatch_published = True
+                except BaseException as exc:
+                    # Settlement may have taken effect. Retain UNKNOWN; never
+                    # retry, replace or infer acknowledgement from done().
+                    self.record_failure(exc)
+                finally:
+                    self.dispatch_returned.set()
         try:
-            threading.Thread(target=stop, name=f"thread-abort-{self.key[0]}", daemon=True).start()
+            self.dispatch_thread = threading.Thread(target=stop, name=f"thread-abort-{self.key[0]}", daemon=True)
+            self.dispatch_thread.start()
         except BaseException as exc:
-            self.record_failure(exc)
-            future.set_exception(exc)
+            self.dispatch_start_error = self.record_failure(exc)
+            # start() can take effect then raise. Its sole producer retains
+            # publication custody; the caller cannot race it with a second set.
         return future
 
     async def join_dispatch(self) -> None:
         if not self.token.cancelled:
             return
         worker = asyncio.wrap_future(self.dispatch())
-        cancellation = None
         while not worker.done():
+            if (self.dispatch_start_error is not None or self.dispatch_returned.is_set()) and not self.dispatch_published:
+                break
             try:
                 await asyncio.shield(worker)
             except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-            except BaseException:
+                # A cancelled wrapper can never make progress by shielding it
+                # again. Each actual waiter cancellation keeps its own snapshot.
+                original = self.dispatch_snapshot
+                if (not worker.done() or worker.cancelled() or original is None
+                        or original[0] is not exc):
+                    self.record_failure(exc)
+                if worker.cancelled():
+                    break
+            except BaseException as exc:
+                original = self.dispatch_snapshot
+                if not worker.done() or original is None or original[0] is not exc:
+                    self.record_failure(exc)
                 break
-        try:
-            worker.result()
-        except BaseException as exc:
-            if cancellation is None:
-                raise
-            cancellation.add_note(f"thread abort dispatch failed: {exc!r}")
-        if cancellation is not None:
-            raise cancellation
+        if worker.done():
+            try:
+                worker.result()
+            except BaseException as exc:
+                original = self.dispatch_snapshot
+                if original is None or original[0] is not exc:
+                    self.record_failure(exc)
+        self.dispatch_acknowledged = (worker.done() and not worker.cancelled()
+            and self.dispatch_published and self.dispatch_returned.is_set()
+            and self.dispatch_start_error is None)
+        if not self.dispatch_acknowledged:
+            owner = self.invocation_owner
+            if owner is not None:
+                owner._invocation_native_unsettled = True
+            if self.failure_snapshot is None:
+                self.record_failure(RuntimeError("thread_abort_acknowledgement_unavailable"))
         # A late original on_started may have recorded an audit failure after
         # the once-only dispatch returned. Never retry that write or hide it.
-        if self.failure is not None:
-            raise self.failure
+        primary = self.failure_snapshot
+        if primary is not None:
+            self.dispatch_delivery = primary
+            BaseException.args.__set__(primary[0], primary[1])
+            raise BaseException.with_traceback(primary[0], primary[2])
 
 
 class ThreadPreparation:
@@ -205,6 +286,9 @@ class ThreadPreparation:
         self._invocation_worker_pending = None
         self._invocation_worker_delivery = None
         self._invocation_native_unsettled = False
+        self._invocation_worker_capture = None
+        self.abort_control.invocation_owner = self
+        self._preparation_failure_occurrences = None
 
         self._repository_refresh_owner = None
         self._repository_preparations = {}
@@ -257,11 +341,22 @@ class ThreadPreparation:
             with _repo_effect_interval(self):
                 yield
         except BaseException as exc:
+            capture = self._invocation_worker_capture
+            origin = None if capture is None else capture("preparation effects", exc, candidate=True)
+            snapshot = (exc, BaseException.args.__get__(exc) if origin is None else origin[2],
+                BaseException.__traceback__.__get__(exc) if origin is None else origin[3])
+            self._preparation_failure_occurrences = (snapshot, self._preparation_failure_occurrences)
             try:
                 self.failed_cleanup()
             except BaseException as evidence:
-                exc.add_note(f"thread preparation evidence failed: {evidence}")
-            raise
+                later_origin = None if capture is None else capture("preparation failed cleanup", evidence, candidate=True)
+                later = (evidence, BaseException.args.__get__(evidence) if later_origin is None else later_origin[2],
+                    BaseException.__traceback__.__get__(evidence) if later_origin is None else later_origin[3])
+                self._preparation_failure_occurrences = (later, self._preparation_failure_occurrences)
+            if origin is not None:
+                capture.__self__.native_delivery = origin
+            BaseException.args.__set__(exc, snapshot[1])
+            raise BaseException.with_traceback(exc, snapshot[2])
 
     def admission_refused(self, error: BaseException) -> None:
         error.native_admission_owner = self

@@ -1996,6 +1996,10 @@ submission. Missing, done or cancelled Futures never substitute for that origina
 return and native settlement. Queue-before-throw retains the exact native DB pin,
 pair serialization and controls without a duplicate invocation or false cleanup;
 later errors cannot replace its first cause. Both executor bodies stay unchanged.
+The same preparation owner, rather than an exception attribute, carries UNKNOWN
+through preparation and all provider catches to the original queue failure path.
+Raw nested candidates retain each actual occurrence through context and bridge
+delivery without turning an authentic handled result into a failure.
 
 Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.

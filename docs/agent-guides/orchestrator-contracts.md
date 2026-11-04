@@ -7989,6 +7989,13 @@ return and native/backend settlement. The first observed cause and original
 traceback survive later cancellation/dispatch/worker/settlement errors, bound to
 the same INTEGER/permanent agent/thread/native SID/preparation generation. No
 missing Future authorizes a duplicate call or an uncertainty-clearing retry.
+All preparation/initial/fallback/nudge consumers inspect the same owner's UNKNOWN
+before exception diagnostics or terminal writes. Inner catches capture native
+object, arguments and traceback before cleanup/formatting; successful handled
+value delivery excludes its candidate, while failed delivery retains that cause.
+Stop retains repeated actual throws separately and attempts remaining original
+children and its owed audit despite prior errors. Original Future publication,
+producer return and loop acknowledgement are distinct; ambiguity retains UNKNOWN.
 Thread repository refresh submits the existing synchronous refresh function as
 one such original callable: materialization retention, batch and the entire
 original finally/completion tail precede its return acknowledgement. The original
