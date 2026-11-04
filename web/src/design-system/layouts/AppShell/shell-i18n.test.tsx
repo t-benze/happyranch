@@ -7,7 +7,8 @@
  * `LocaleTestSwitch` controls — never a public selector.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { Query } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 
 import { AppRoutes } from '@/routes';
@@ -80,19 +81,203 @@ describe('root fallback copy', () => {
     sessionStorage.setItem('happyranch.token', 'fixture-token');
     stubReadyHealth();
   });
-  it('renders the English loading copy while the orgs query is pending', () => {
-    server.use(http.get('/api/v1/orgs', () => new Promise(() => undefined)));
-    renderWithProviders(<AppRoutes />, { route: '/' });
-    expect(screen.getByText('Loading…')).toBeInTheDocument();
+  it('renders the English loading copy while the orgs query is pending', async () => {
+    const client = makeQueryClient();
+    let releaseOrgs!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseOrgs = resolve; });
+    const handlers: Promise<PromiseSettledResult<unknown>>[] = [];
+    const fetches: Promise<PromiseSettledResult<unknown>>[] = [];
+    const restores: (() => void)[] = [];
+    // QueryCache.add notifies synchronously inside build, before first fetch.
+    // Observe only these original instances on this fresh, unseeded client.
+    const unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (event.type !== 'added') return;
+      const query = event.query as Query;
+      if (query.queryKey.length !== 1 ||
+          (query.queryKey[0] !== 'orgs' && query.queryKey[0] !== HEALTH_QUERY_KEY[0])) return;
+      const originalFetch = query.fetch;
+      const spy = vi.spyOn(query, 'fetch').mockImplementation((...args) => {
+        const original = originalFetch.apply(query, args);
+        // Query.promise is only the retryer; retain the complete outer fetch.
+        fetches.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => ({ status: 'rejected', reason } as const),
+        ));
+        return original;
+      });
+      restores.push(() => spy.mockRestore());
+    });
+    let view: ReturnType<typeof renderWithProviders> | undefined;
+    let primary: { error: unknown } | undefined;
+    const later: { phase: string; error: unknown }[] = [];
+    try {
+      server.use(http.get('/api/v1/orgs', () => {
+        const original = (async () => {
+          await gate;
+          return HttpResponse.json({ orgs: [] });
+        })();
+        handlers.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => ({ status: 'rejected', reason } as const),
+        ));
+        return original;
+      }));
+      view = renderWithProviders(<AppRoutes />, {
+        route: '/', queryClient: client,
+      });
+      // Checking health alone renders the same copy. Reach the original
+      // health delivery and its rendered ready state with orgs still pending.
+      await waitFor(() => {
+        expect(client.getQueryState(HEALTH_QUERY_KEY)?.status).toBe('success');
+        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+        expect(handlers).toHaveLength(1);
+        expect(client.getQueryState(['orgs'])?.status).toBe('pending');
+        expect(client.getQueryState(['orgs'])?.fetchStatus).toBe('fetching');
+      });
+      expect(screen.getByText('Loading…')).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      // Release even if render/assertion failed before the handler arrived.
+      releaseOrgs();
+      try {
+        await act(async () => {
+          // Each iterator includes work genuinely started while earlier joins
+          // yield. A late-arriving handler is joined after the original fetch.
+          for (const completion of fetches) {
+            const result = await completion;
+            if (result.status === 'rejected') later.push({ phase: 'query fetch', error: result.reason });
+          }
+          for (const completion of handlers) {
+            const result = await completion;
+            if (result.status === 'rejected') later.push({ phase: 'orgs handler', error: result.reason });
+          }
+          // Original fetch delivery schedules notifyManager's zero-delay
+          // notifications; let that ordered turn deliver before act flushes.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        });
+      } catch (error) {
+        later.push({ phase: 'React delivery', error });
+      }
+      try {
+        if (view) view.unmount();
+        else cleanup(); // render can throw after mounting but before returning.
+      } catch (error) {
+        later.push({ phase: 'unmount', error });
+      }
+      try { unsubscribe(); } catch (error) { later.push({ phase: 'unsubscribe', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore fetch', error }); }
+      }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear cache', error }); }
+    }
+    if (primary) {
+      if (later.length) console.error('Shell pending-query secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error),
+      `Shell pending-query cleanup: ${later.map(({ phase }) => phase).join(', ')}`);
   });
 
-  it('renders the zh-CN loading copy while the orgs query is pending', () => {
-    server.use(http.get('/api/v1/orgs', () => new Promise(() => undefined)));
-    renderWithProviders(<AppRoutes />, {
-      route: '/',
-      i18n: { adapter: savedLocaleAdapter('zh-CN') },
+  it('renders the zh-CN loading copy while the orgs query is pending', async () => {
+    const client = makeQueryClient();
+    let releaseOrgs!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseOrgs = resolve; });
+    const handlers: Promise<PromiseSettledResult<unknown>>[] = [];
+    const fetches: Promise<PromiseSettledResult<unknown>>[] = [];
+    const restores: (() => void)[] = [];
+    // QueryCache.add notifies synchronously inside build, before first fetch.
+    // Observe only these original instances on this fresh, unseeded client.
+    const unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (event.type !== 'added') return;
+      const query = event.query as Query;
+      if (query.queryKey.length !== 1 ||
+          (query.queryKey[0] !== 'orgs' && query.queryKey[0] !== HEALTH_QUERY_KEY[0])) return;
+      const originalFetch = query.fetch;
+      const spy = vi.spyOn(query, 'fetch').mockImplementation((...args) => {
+        const original = originalFetch.apply(query, args);
+        // Query.promise is only the retryer; retain the complete outer fetch.
+        fetches.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => ({ status: 'rejected', reason } as const),
+        ));
+        return original;
+      });
+      restores.push(() => spy.mockRestore());
     });
-    expect(screen.getByText('加载中…')).toBeInTheDocument();
+    let view: ReturnType<typeof renderWithProviders> | undefined;
+    let primary: { error: unknown } | undefined;
+    const later: { phase: string; error: unknown }[] = [];
+    try {
+      server.use(http.get('/api/v1/orgs', () => {
+        const original = (async () => {
+          await gate;
+          return HttpResponse.json({ orgs: [] });
+        })();
+        handlers.push(original.then(
+          (value) => ({ status: 'fulfilled', value } as const),
+          (reason: unknown) => ({ status: 'rejected', reason } as const),
+        ));
+        return original;
+      }));
+      view = renderWithProviders(<AppRoutes />, {
+        route: '/', queryClient: client,
+        i18n: { adapter: savedLocaleAdapter('zh-CN') },
+      });
+      // Checking health alone renders the same copy. Reach the original
+      // health delivery and its rendered ready state with orgs still pending.
+      await waitFor(() => {
+        expect(client.getQueryState(HEALTH_QUERY_KEY)?.status).toBe('success');
+        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+        expect(handlers).toHaveLength(1);
+        expect(client.getQueryState(['orgs'])?.status).toBe('pending');
+        expect(client.getQueryState(['orgs'])?.fetchStatus).toBe('fetching');
+      });
+      expect(screen.getByText('加载中…')).toBeInTheDocument();
+    } catch (error) {
+      primary = { error };
+    } finally {
+      // Release even if render/assertion failed before the handler arrived.
+      releaseOrgs();
+      try {
+        await act(async () => {
+          // Each iterator includes work genuinely started while earlier joins
+          // yield. A late-arriving handler is joined after the original fetch.
+          for (const completion of fetches) {
+            const result = await completion;
+            if (result.status === 'rejected') later.push({ phase: 'query fetch', error: result.reason });
+          }
+          for (const completion of handlers) {
+            const result = await completion;
+            if (result.status === 'rejected') later.push({ phase: 'orgs handler', error: result.reason });
+          }
+          // Original fetch delivery schedules notifyManager's zero-delay
+          // notifications; let that ordered turn deliver before act flushes.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        });
+      } catch (error) {
+        later.push({ phase: 'React delivery', error });
+      }
+      try {
+        if (view) view.unmount();
+        else cleanup(); // render can throw after mounting but before returning.
+      } catch (error) {
+        later.push({ phase: 'unmount', error });
+      }
+      try { unsubscribe(); } catch (error) { later.push({ phase: 'unsubscribe', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore fetch', error }); }
+      }
+      try { client.clear(); } catch (error) { later.push({ phase: 'clear cache', error }); }
+    }
+    if (primary) {
+      if (later.length) console.error('Shell pending-query secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error),
+      `Shell pending-query cleanup: ${later.map(({ phase }) => phase).join(', ')}`);
   });
 
   it('renders the English not-found copy with an unchanged home href', async () => {
