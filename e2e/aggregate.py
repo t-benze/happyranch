@@ -4360,7 +4360,13 @@ def failure_result_controls() -> dict:
                     try:
                         if boundary == 'writer': writer._atomic_json(destination,image)
                         else: writer._prepare_original_evidence(destination,source)
-                    except (ValueError,AssertionError): pass
+                    except (ValueError,AssertionError):
+                        if writer._evidence_fatal is not None:
+                            # Preserve the first actual fatal cause instead of
+                            # masking it with the later sibling-readiness error.
+                            error, tb = writer._evidence_fatal
+                            error.add_note('Case refusal: '+case_name+'/'+boundary)
+                            raise error.with_traceback(tb)
                     else: raise AssertionError('Case unsafe member admitted: '+case_name+'/'+boundary)
                     assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
                     if boundary == 'prefix': assert source.read_bytes() == original_image

@@ -4080,7 +4080,16 @@ class _EvidenceJSON:
             if cursor % 4096 == 0:
                 self.check()
             escaped = self.text[cursor] == "\\"
-            code, cursor = self.codepoint(cursor)
+            if escaped:
+                code, cursor = self.codepoint(cursor)
+            else:
+                # The current loop already owns this original character and
+                # cursor. Avoid a method call and returned pair per ordinary
+                # glyph; keep exactly codepoint()'s strict original checks.
+                code = ord(self.text[cursor])
+                cursor += 1
+                if code < 32 or 0xD800 <= code <= 0xDFFF:
+                    self.error()
             width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
             if size <= 1021 < size + width:
                 # Before the first chunk reset, its original fragment state
@@ -4134,7 +4143,13 @@ class _EvidenceJSON:
                 while index < cursor:
                     if position % 1024 == 0:
                         self.check()
-                    code, index = self.codepoint(index)
+                    if self.text[index] == "\\":
+                        code, index = self.codepoint(index)
+                    else:
+                        code = ord(self.text[index])
+                        index += 1
+                        if code < 32 or 0xD800 <= code <= 0xDFFF:
+                            self.error()
                     width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
                     if position + width > size:
                         raise _EvidenceUnsafe('JSON scalar decoding postcondition')
@@ -4201,7 +4216,13 @@ class _EvidenceJSON:
             index = start
             while index < cursor:
                 original = index
-                code, index = self.codepoint(index)
+                if self.text[index] == "\\":
+                    code, index = self.codepoint(index)
+                else:
+                    code = ord(self.text[index])
+                    index += 1
+                    if code < 32 or 0xD800 <= code <= 0xDFFF:
+                        self.error()
                 width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
                 if chunk_size + width > 1024:
                     finish(original)

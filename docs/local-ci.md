@@ -3314,3 +3314,19 @@ instead of a per-digit generator and join; its full original length+8B/1fact
 admission and numeric checks stay unchanged. Complete restored5208/ALL4572 typed
 ordered reconciliation, the SAME intended command-comparison omission, exact
 restoration/final green and clean committed-head static checks remain required.
+
+
+The strict JSON scalar loops now handle an ordinary original character in
+place: the current cursor/code slots retain the same control/surrogate checks,
+without constructing codepoint()'s returned pair for every glyph. Escaped
+characters still use the original strict decoder, including surrogate pairs.
+Both bounded-buffer and long-fragment construction keep their original full
+storage/copy/work/fact admissions and checks. No accounting saving is claimed
+for the removed, previously unpriced call/return temporaries; no rate or limit
+changes. The existing Case refusal control rethrows the first latched fatal
+writer error, with its original object/traceback and case/boundary note, before
+an eligible-sibling attempt could mask it. Ordinary refusals keep every original
+sibling/preservation assertion; fixtures, names and expected values stay exact.
+A failure remains FAIL. Full restored5208/ALL4572 reconciliation, the SAME one
+command-comparison omission, exact restoration/final green and committed-head
+static checks remain required; this correction establishes no fit or acceptance.
