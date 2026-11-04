@@ -1919,7 +1919,11 @@ class _EvidenceSubmission:
                 ledger.charge(16 + _evidence_utf8_size(value, check), 2, check)
                 keys = self.shapes[path][1]
                 if type(keys) is dict:
-                    keys[value] = None
+                    # This key announces a container, not an original null.
+                    # Scalar insertion replaces its own slot with the actual
+                    # builtin value. Keep containers distinct when a legacy
+                    # receipt requires literal null payload/payload_file.
+                    keys[value] = _EvidenceUnsafe
                 else:
                     keys.append(value)
             return

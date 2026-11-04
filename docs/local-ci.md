@@ -3109,3 +3109,9 @@ Every original matching predicate, exact-one check and distinct full comparison
 still runs at its original comparison rate. There is no shared index, cached
 proof or reuse of another occurrence's safety. These source changes establish no
 capacity fit until the full original controls and reconciliation actually pass.
+
+Container key placeholders use the existing internal unsafe sentinel, distinct
+from every original builtin scalar. A receipt's required literal-null `payload`
+and `payload_file` therefore cannot match empty containers retained for key
+order. Scalar insertion keeps the actual original value and type. Placeholder
+storage keeps its original charge; this distinction claims no capacity credit.
