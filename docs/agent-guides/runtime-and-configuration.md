@@ -763,8 +763,16 @@ The original unpublished-load close scope includes database-observer exit after
 successful construction. The returned handle is captured before owner forwarding;
 that same invocation retains native FIRST and each later close/retention failure
 before delivery. Failed or unreturned close, including a completed SQLite body
-with failed wrapper exit, keeps UNKNOWN and its handle. Local error custody does
-not settle outer attachment forwarding or authorize another close or retirement.
+with failed wrapper exit, keeps UNKNOWN and its handle. Outer attachment owners
+capture the same actual FIRST before error formatting, notes or attachment and
+retain later occurrences and failed sinks on the original owner/frame. Selector
+failure still attempts its original close independently of diagnostic delivery.
+Dynamic attachment consumes the current load-close evidence even when the load
+already exposed `owner.org`; failed/undelivered/unknown close forbids a second
+close and retains the existing shutdown/removal/swap barrier. A returned load
+followed by selector/attachment failure keeps its genuinely owed first org close.
+Returned close, owner acknowledgement and native retirement remain independent;
+clean paths retire without converting a body/event return into acknowledgement.
 Span stack release precedes post-body timing, aggregate-lock and fault delivery;
 native hierarchy classification does not consult an opaque error's `__class__`.
 Ordinary optional Exception swallowing/counting keeps its original policy. The
@@ -1032,6 +1040,11 @@ later owner-forwarding or observer-exit failure. Constructor nonreturn creates
 no outer close, and normal load returns the exact state without closing. Close
 attempt, returned close and successful load delivery remain distinct; actual
 lower same-call evidence and failed sinks stay on the original load frame.
+Outer forwarding consumes that actual frame/outcome rather than reused exception
+attributes or missing metadata. Both native-error/cancellation orders preserve
+FIRST and separate later snapshots, including repeated throws of the same object.
+Failed diagnostics remain failed delivery; neither native return nor early org
+construction certifies close or permits a speculative second close.
 The schema read contexts capture native first and later occurrences before
 cleanup or opaque exception access. A snapshot uses the same connection, joins
 caller BEGIN/SAVEPOINT without transaction cleanup, and owes one rollback only

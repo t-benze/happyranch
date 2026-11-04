@@ -315,9 +315,20 @@ creates no outer close duty, and successful load does not close. The same local
 frame freezes FIRST native arguments/traceback before close and retains actual
 later occurrences, failed sinks and the original owner/DB. A returned SQLite
 body with failed wrapper delivery remains UNKNOWN; only returned close can set
-`load_db_closed`. Local custody supplies no native retirement certificate. Outer
-attachment forwarding and dynamic second-close enforcement remain separate open
-corrections; this load-local repair does not establish those guarantees.
+`load_db_closed`. Outer load, selector, native-worker and waiter boundaries
+capture FIRST before formatting, classification, notes or attachment. Each actual
+later occurrence, including another throw of the same object, retains its own
+native snapshot; forwarding observations link the original child/frame evidence.
+Failed sinks cannot replace FIRST or skip the original selector close. An earlier
+native/load error and an earlier waiter cancellation keep their respective order.
+The dynamic owner consumes the current load outcome even after early `owner.org`:
+failed, undelivered or unknown load-close keeps the SAME owner/DB and never calls
+close again. A positively returned load followed by attachment failure still owes
+its one original `org.close`, under the original barriers. Returned close and
+failed owner acknowledgement remain distinct. Clean publication and clean close
+can retire normally; body/event/Future completion alone cannot discharge either
+the native ticket or DB barrier. This custody supplies no public shutdown or
+behavioral certification and clears no historical uncertainty.
 All shared-map iterations use finite captures. The state mutex covers only map
 membership and in-memory reader bookkeeping, never I/O/DB/profile acquisition,
 worker join or await. Native profile/metrics readers and ordinary request

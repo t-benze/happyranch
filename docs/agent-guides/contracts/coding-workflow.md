@@ -133,8 +133,16 @@ owes one original close on any later unpublished failure. Constructor nonreturn
 owes no outer close; normal load returns its exact state without closing. Native
 FIRST and separately captured later/failed-delivery evidence survive that close
 on the same owner/frame. SQLite body completion alone grants no returned-close,
-second-close, attachment-retirement or public shutdown proof; outer attachment
-forwarding and dynamic close enforcement remain separate open corrections.
+second-close, attachment-retirement or public shutdown proof. Outer attachment
+forwarding freezes FIRST before fallible diagnostics and preserves separate later
+occurrences/native snapshots and actual child delivery provenance. Its original
+selector close remains owed despite failed sinks. Dynamic attachment consumes the
+current load outcome regardless of early `owner.org`: failed/undelivered/unknown
+load-close retains the SAME owner/DB/barrier without a second close. A positively
+returned load followed by attachment failure still owes its original first org
+close. Clean close, failed owner acknowledgement and native retirement remain
+distinct, and normal publication/retirement retains its original barriers. Source
+custody establishes no behavioral or full native-public lifetime acceptance.
 The schema read contexts capture native first and later occurrences before
 cleanup or opaque exception access. A snapshot uses the same connection, joins
 caller BEGIN/SAVEPOINT without transaction cleanup, and owes one rollback only
