@@ -106,6 +106,18 @@ Any different linked registration strictly beneath a worktree candidate retains
 its containing candidate, even if ignored, detached or not named as a task root.
 Use the complete reciprocal census at admission and immediately before Git
 remove, contained repair and single retry; siblings do not veto one another.
+Founder THR307seq235 approving234 permits registration-local retention only after
+exhaustive literal no-follow names, fresh common/admin/entry identities, canonical
+unique reciprocal mappings and task-root/containment reconciliation before Git.
+An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
+its exact metadata path/native cause; independently validated same-repository peers
+can progress. Missing mapping/enumeration/entry, unsafe alias/hardlink/special
+objects, conflict or unknown descendant location retains the shared scope.
+All proven paths, including locally uncertain non-task descendants, protect
+containing trees at every final remove/repair/retry boundary. Retention is latched
+for the attempt, never clearance; own metadata and shared topology stay fresh.
+Reports keep local discovery partial, known-only counts and unknown allocation;
+any partial/unknown scope or remaining registration prohibits repository-wide prune.
 Preserve manifests/locks/output, dirty worktrees and
 branches. No legacy receipt/count/rotation policy is imported into this new
 mechanism; legacy cleanup, flags and seven sessions are unchanged. Dry run never
