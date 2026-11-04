@@ -198,7 +198,7 @@ class PendingRetry:
 
 
 def _retry_transaction_failure(owner: str, database: Any) -> dict:
-    """Local evidence for the four original retry transaction owners only."""
+    """Local evidence for the five original retry transaction owners only."""
     return {
         "owner": owner, "database": database, "connection": None,
         "phase": "body", "first_error": None, "rollback_error": None,
@@ -2412,11 +2412,22 @@ class TasksMixin:
             raise ValueError("unrecognized attachment correction code")
         if type(feedback) is not str or not feedback:
             raise ValueError("attachment correction feedback is required")
+        failure = _retry_transaction_failure("try_attachment_retry_feedback", self)
+        conn = None
         try:
-            self._conn.execute("BEGIN IMMEDIATE")
+            conn = self._conn
+            failure["connection"] = conn
+            conn.execute("BEGIN IMMEDIATE")
             if not self._retry_claim_matches(expected_claim):
-                self._conn.rollback()
-                return LostClaim()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
+                result = LostClaim()
+                failure["local_result"] = result
+                failure["local_result_ready"] = True
+                return result
             task = self._conn.execute("SELECT * FROM tasks WHERE id=?", (expected_claim.task_id,)).fetchone()
             _attachment_history_require(task["task_type"] == "task")
             history = self._attachment_correction_history_txn(expected_claim.task_id)
@@ -2438,12 +2449,24 @@ class TasksMixin:
                     "accepted_result_id": accepted["id"], "accepted_session_id": accepted["session_id"],
                     "error_code": attachment_error,
                 })
-                self._conn.commit()
+                failure["local_result"] = pending
+                failure["local_result_ready"] = True
+                failure["phase"] = "commit"
+                failure["commit_attempted"] = True
+                conn.commit()
+                failure["commit_returned"] = True
                 return pending
             # Count2 never writes a third feedback or enters B.
             if not self._retry_claim_matches(expected_claim):
-                self._conn.rollback()
-                return LostClaim()
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
+                conn.rollback()
+                failure["rollback_returned"] = True
+                failure["phase"] = "result"
+                result = LostClaim()
+                failure["local_result"] = result
+                failure["local_result_ready"] = True
+                return result
             now = datetime.now(timezone.utc).isoformat()
             note = "attachment correction opportunities exhausted (2): " + feedback
             before = self.terminal_worktree_task_projection(expected_claim.task_id)
@@ -2471,11 +2494,25 @@ class TasksMixin:
                 json.dumps(before, sort_keys=True) if before is not None else None,
                 json.dumps(self.terminal_worktree_task_projection(expected_claim.task_id), sort_keys=True),
             )
-            self._conn.commit()
+            failure["local_result"] = stopped
+            failure["local_result_ready"] = True
+            failure["phase"] = "commit"
+            failure["commit_attempted"] = True
+            conn.commit()
+            failure["commit_returned"] = True
             return stopped
-        except BaseException:
-            self._conn.rollback()
-            raise
+        except BaseException as error:
+            failure["first_error"] = (failure["phase"], error, BaseException.__traceback__.__get__(error))
+            if failure["phase"] == "rollback":
+                failure["rollback_error"] = failure["first_error"]
+            if not failure["rollback_attempted"]:
+                failure["rollback_attempted"] = True
+                try:
+                    (self._conn if conn is None else conn).rollback()
+                    failure["rollback_returned"] = True
+                except BaseException as later:
+                    failure["rollback_error"] = ("rollback", later, BaseException.__traceback__.__get__(later))
+            _raise_retry_transaction_failure(failure)
 
     @_synchronized
     def admit_retry_feedback(self, pending: PendingRetry, enqueue) -> str | LostClaim:

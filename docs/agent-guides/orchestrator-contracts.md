@@ -5892,9 +5892,18 @@ an unreturned method result is never invented or used to enqueue children.
 
 Retry refusal uses two separate transactions. A atomically records the existing
 feedback result and orchestration audit and returns the parent to PENDING while
-preserving its original session and counters. B takes a fresh writer reservation,
-checks A's exact pending fingerprint and feedback row, and holds that reservation
-through the actual synchronous nonblocking enqueue. B writes nothing and always
+preserving its original session and counters. Attachment A retains the same
+lower first-cause/sole-rollback evidence for claim, history, feedback and exhausted
+stop failures, before the synchronized wrapper observes them. Its two LostClaim
+paths each mark their original rollback before its sole attempt; a failed refusal
+cannot reenter rollback. Input validation stays before the transaction without
+new cleanup duties. Successful feedback or ROOT/nonroot exhausted-stop COMMIT
+remains a prefix through later result/delivery failure. Completed PendingRetry,
+AttachmentCorrectionStopped or LostClaim values are evidence only when actually
+constructed, and never method returns after failed cleanup or wrapper delivery.
+B takes a fresh writer reservation, checks A's exact pending fingerprint and
+feedback row, and holds that reservation through the actual synchronous
+nonblocking enqueue. B writes nothing and always
 attempts its one reservation rollback, including on BEGIN/body failure. With no
 earlier error, rollback failure is primary; otherwise the original body/queue
 error remains primary beside the later cleanup error. Native base traceback

@@ -489,13 +489,18 @@ SAVEPOINT is never consumed by owned cleanup. Mark each original rollback
 obligation before its at-most-once attempt. Only successful owned PRECOMMIT
 rollback proves restoration of that transaction; COMMIT/rollback/release or late
 clock/warning/return failure retains committed or unknown prefixes, not a no-effect
-or successful-return assertion. The four original retry transaction owners keep
+or successful-return assertion. The five original retry transaction owners keep
 this same first-cause/sole-rollback evidence at their own lower boundary, before
 the synchronized wrapper observes it. Their existing transaction policy remains:
 common/accepted entry excludes caller transactions; lower default writers gain
-no new caller-transaction guard or composition guarantee. Feedback A's commit
-survives the separate no-write B reservation's synchronous enqueue and cleanup
-failure. Actual rollback throws remain separate even for the same object;
+no new caller-transaction guard or composition guarantee. Attachment A includes
+both original LostClaim rollback paths and its feedback/exhausted-stop body;
+validation before its transaction gains no cleanup obligation. Its successful
+feedback or ROOT/nonroot exhausted-stop COMMIT remains a prefix through later
+result/delivery failure, with actual completed local values retained as evidence
+only. Feedback A's commit survives the separate no-write B reservation's
+synchronous enqueue and cleanup failure. Actual rollback throws remain separate
+even for the same object;
 transporting a retained occurrence adds no failure. Frame-local records retain
 prior nested evidence and actual attachment failure without diagnostic retry.
 Completed local values and successful COMMIT/possible queue prefixes survive as
