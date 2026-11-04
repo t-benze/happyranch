@@ -3613,3 +3613,16 @@ This is the same original occurrence within the existing helpers, with no
 cross-occurrence safety reuse or change to output values, types or order. All
 shared parser/safety/writer controls renew; fit and acceptance remain unproved
 until the complete existing controls and required omission/restoration pass.
+
+SOURCE lexical scanning populates its token-start alias only in the existing
+identifier and numeric branches, where token-length and prefix checks use it.
+Comments, plain quoted literals, delimiters, operators and continuations keep
+the original character and fixed token admission (8B/2facts); only the absent
+start-reference population loses 8B/1fact. Identifier and numeric tokens pay
+the original start-reference 8B/1fact plus 16B/0facts for the new branch-local
+setup and check call, totaling 32B/3facts. These are nonrefundable logical slot
+operations: an earlier start value may still occupy the same local cell; no
+Python allocation or peak-memory saving is certified. Complete grammar,
+token/line/literal/depth limits, periodic/end checks and every independent
+original-occurrence safety/comparison remain. All existing shared controls
+renew; complete green and the required omission/restoration remain necessary.

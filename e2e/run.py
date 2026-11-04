@@ -1232,11 +1232,13 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
         while index < end:
             if index % 1024 == 0:
                 check()
-            char, begin = source[index], index
+            char = source[index]
             if char in ' \t\f\r\n':
                 index += 1
                 continue
-            ledger.charge(16, 3, check)  # Token/span, before retaining any state.
+            # Keep the character and fixed token admission. Only word/number
+            # grammars need a start alias; other tokens do not populate it.
+            ledger.charge(8, 2, check)
             if char == '#':
                 while index < end and source[index] not in '\r\n':
                     if index % 4096 == 0:
@@ -1249,6 +1251,9 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 index = literal(index, index)
                 continue
             if char.isascii() and (char.isalpha() or char == '_'):
+                # Original start slot plus new branch-local setup/check work.
+                ledger.charge(24, 1, check)
+                begin = index
                 index += 1
                 while index < end and source[index].isascii() and (source[index].isalnum() or source[index] == '_'):
                     if index - begin >= 65536:
@@ -1262,6 +1267,8 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                     index = literal(begin, index)
                 continue
             if char in '0123456789' or char == '.' and index + 1 < end and source[index + 1] in '0123456789':
+                ledger.charge(24, 1, check)
+                begin = index
                 def digits(cursor: int) -> int:
                     count, underscore = 0, False
                     while cursor < end and source[cursor] in '0123456789_':
