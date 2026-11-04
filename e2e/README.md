@@ -3592,13 +3592,15 @@ controls and independent review/QA are still required to establish fit.
 
 The existing SOURCE lexical validator also selects a direct original body slice
 for a literal of at most 1021 decoded UTF8 bytes, only after its complete original
-prefix, quote, codepoint, spelling/decoded size, binary and CRLF preflight. A paid
-original-span backslash search and exact spelling-versus-decoded byte count exclude
-escapes and newline normalization. The slice retains its full scalar debit and
-all fixed 32B/4facts. Only absent intermediate decoded storage, chunk references,
-per-codepoint concatenation and construction scratch lose their isolated costs;
-selection pays 24B plus the full searched spelling size at zero temporary facts.
-Escaped/multichunk construction keeps every original debit. The original decoded
+prefix, quote, codepoint, spelling/decoded size, binary and CRLF preflight. The
+existing closing-spelling scan records escape presence in a prepaid 8B/1fact
+Boolean, including on refusal. This removes the later separate backslash search
+and only its full-spelling search debit. The exact spelling-versus-decoded byte
+count still excludes newline normalization. The slice retains its full scalar
+debit and all fixed 32B/4facts; selection still pays 24B. Absent intermediate
+decoded storage, chunk references, per-codepoint concatenation and construction
+scratch remain absent. Escaped/multichunk construction keeps every original
+construction debit and the new escape-state admission. The original decoded
 no-backslash and full independent sanitation/secret checks still run on every
 slice occurrence. This does not establish fit, a resource bound or native proof;
 all existing SOURCE and shared parser controls and their full oracles renew.
