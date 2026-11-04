@@ -2963,10 +2963,28 @@ Short safe-string comparisons also avoid constructing a temporary
 checks, scalars of at most 1021 bytes are traversed in full directly against
 the original right-hand spans, with the same periodic and final checks. The
 original safe-reference debit remains 8B/1fact; only the two absent endpoint
-slots lose 16B/2facts. Caller selection and comparator dispatch prepay another
-32B/0facts. Larger scalars retain the original span construction and charges
-plus that new work. The typed key-collision caller retains its complete
-comparison and pays 16B/0facts for dispatch. Every secret pass, independent
+slots lose 16B/2facts. Caller selection, comparator dispatch and up to two
+character-iterator dispatches prepay another 64B/0facts. Larger scalars retain
+the original span construction and charges plus that new work. The typed
+key-collision caller retains its complete comparison and pays 48B/0facts for
+comparator and character-iterator dispatch. Every secret pass, independent
 comparison, original value/type/order and shared limit remains. All existing
 safety, parser and writer callers require renewed complete controls; this
 construction change alone establishes no fit, proof or native acceptance.
+
+The original replacement plan also retains a complete scalar directly when its
+original UTF8 size is at most 1021 bytes. Its original reference still costs
+8B/1fact; the absent begin/end slots alone lose 16B/2facts. Selection prepays
+16B/0facts. Longer scalars retain the original 24B/3fact span plus selection.
+Every original match and residual-secret search still runs. An actual match
+prepays 16B for representation selection and, if needed, the full 24B/3facts
+before constructing the original span for the unchanged replacement traversal;
+the earlier scalar-reference charge is never refunded. Matcher selection and
+temporary endpoints pay 32B/0facts per call. Each actual character traversal
+prepays another 16B/0facts through its existing caller; conditional size callers
+conservatively prepay 32B for selection plus traversal. Complete character/end
+checks, encoded sizing, ordered collision comparisons and emission remain.
+This is the same original occurrence within the existing helpers, with no
+cross-occurrence safety reuse or change to output values, types or order. All
+shared parser/safety/writer controls renew; fit and acceptance remain unproved
+until the complete existing controls and required omission/restoration pass.

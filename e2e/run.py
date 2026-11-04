@@ -628,7 +628,7 @@ def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context
         # A short full scalar needs no temporary begin/end span slots. Keep
         # its original reference and pay both construction selection and the
         # comparator's dispatch; larger comparisons keep the original triple.
-        ledger.charge(32, 0, check)
+        ledger.charge(64, 0, check)  # Selection/comparator plus both chars dispatches.
         ledger.charge(8 if actual <= 1021 else 24, 1 if actual <= 1021 else 3, check)
         if (actual != expected or not _evidence_span_equal(
                 safe if actual <= 1021 else [(safe, 0, len(safe))], spans, check)
@@ -642,7 +642,16 @@ def _evidence_safe(text: str, size: int, sanitize: Callable[[str], str], context
     return safe
 
 
-def _evidence_chars(spans: list[tuple[str, int, int]], check: Callable[[], None]) -> Iterator[str]:
+def _evidence_chars(spans: str | list[tuple[str, int, int]], check: Callable[[], None]) -> Iterator[str]:
+    # Every caller prepays this dispatch. A complete scalar needs no retained
+    # endpoint slots, but still traverses every original character and check.
+    if type(spans) is str:
+        for index in range(len(spans)):
+            if index % 4096 == 0:
+                check()
+            yield spans[index]
+        check()
+        return
     count = 0
     for text, begin, end in spans:
         for index in range(begin, end):
@@ -653,7 +662,7 @@ def _evidence_chars(spans: list[tuple[str, int, int]], check: Callable[[], None]
     check()
 
 
-def _evidence_span_equal(left: str | list, right: list, check: Callable[[], None]) -> bool:
+def _evidence_span_equal(left: str | list, right: str | list, check: Callable[[], None]) -> bool:
     # Both callers prepay this dispatch. The complete scalar traversal keeps
     # the left generator's check cadence and final check without span slots.
     if type(left) is str:
@@ -674,12 +683,19 @@ def _evidence_span_equal(left: str | list, right: list, check: Callable[[], None
             return True
 
 
-def _evidence_matches(spans: list, secret: str, ledger: _EvidenceLedger,
+def _evidence_matches(spans: str | list, secret: str, ledger: _EvidenceLedger,
                       check: Callable[[], None], *, first: bool = False) -> list[int]:
     """Nonoverlapping indexed matches; no whole token or matching carry copy."""
     matches = []
-    if len(spans) == 1:
-        text, begin, end = spans[0]
+    # Pay the new representation selection and temporary endpoint setup.
+    ledger.charge(32, 0, check)
+    if type(spans) is str or len(spans) == 1:
+        if type(spans) is str:
+            text = spans
+            begin = 0
+            end = len(spans)
+        else:
+            text, begin, end = spans[0]
         position = begin
         while True:
             check()
@@ -709,6 +725,7 @@ def _evidence_matches(spans: list, secret: str, ledger: _EvidenceLedger,
             matched += 1
         prefix[index // 512][index % 512] = matched
     matched = 0
+    ledger.charge(16, 0, check)  # Character iterator's representation dispatch.
     for position, char in enumerate(_evidence_chars(spans, check)):
         while matched and char != secret[matched]:
             matched = prefix[(matched - 1) // 512][(matched - 1) % 512]
@@ -730,8 +747,13 @@ def _evidence_literal_plan(text: str, size: int, context: list[str] | tuple[str,
     The caller owns the original debit. Retained spans refer to that SAME
     original or the fixed marker. No second decode/sanitation recovers content.
     """
-    ledger.charge(24, 3, check)
-    spans = [(text, 0, len(text))]
+    ledger.charge(16, 0, check)  # Complete-scalar versus original-span selection.
+    if size <= 1021:
+        ledger.charge(8, 1, check)
+        spans = text
+    else:
+        ledger.charge(24, 3, check)
+        spans = [(text, 0, len(text))]
     peak, changed = size, False
     for secret in context:
         if type(secret) is not str or not secret:
@@ -743,6 +765,13 @@ def _evidence_literal_plan(text: str, size: int, context: list[str] | tuple[str,
         ledger.charge(safe_size, 1, check)
         if matches:
             changed = True
+            ledger.charge(16, 0, check)
+            if type(spans) is str:
+                # Actual replacement needs the original indexed span. Pay
+                # its full construction before allocating, without refunding
+                # the earlier complete-scalar reference or any safety pass.
+                ledger.charge(24, 3, check)
+                spans = [(spans, 0, len(spans))]
             output = []
             def retain(source: str, begin: int, end: int) -> None:
                 if begin < end:
@@ -771,7 +800,7 @@ def _evidence_literal_plan(text: str, size: int, context: list[str] | tuple[str,
     return spans, size, peak, changed
 
 
-def _evidence_string_size(spans: list, check: Callable[[], None]) -> int:
+def _evidence_string_size(spans: str | list, check: Callable[[], None]) -> int:
     size = 2
     for char in _evidence_chars(spans, check):
         code = ord(char)
@@ -813,7 +842,7 @@ def _evidence_encoded_size(value: object, ledger: _EvidenceLedger, check: Callab
             raise _EvidenceCapacity("evidence depth capacity refused")
         ledger.charge(0, 1, check)
         if type(item) is str:
-            ledger.charge(24, 3, check)
+            ledger.charge(40, 3, check)  # Original triple plus chars dispatch.
             add(_evidence_string_size([(item, 0, len(item))], check))
         elif type(item) in (dict, list):
             if id(item) in ancestors:
@@ -866,6 +895,7 @@ def _evidence_buffer(tokens: list, size: int, ledger: _EvidenceLedger,
     for kind, content in tokens:
         if kind == "string":
             put(34)
+        ledger.charge(16, 0, check)  # Character iterator's representation dispatch.
         for char in _evidence_chars(content, check):
             code = ord(char)
             if kind == "string" and (code < 32 or char in '\"\\'):
@@ -938,6 +968,7 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
     digest = hashlib.sha256()
     def put(text: str, string: bool = False) -> None:
         ledger.charge(24, 3, check)
+        ledger.charge(32, 0, check)  # Size selection plus possible chars dispatch.
         size = _evidence_string_size([(text, 0, len(text))], check) if string else len(text)
         ledger.charge(3 * size, 1, check)
         ledger.reserve(8, 1, check)
@@ -1504,12 +1535,13 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                 for previous, previous_size in keys[-1]:
                     if safe_size == previous_size:
                         ledger.charge(safe_size + previous_size, 1, check)
-                        ledger.charge(16, 0, check)  # Existing comparator's new dispatch.
+                        ledger.charge(48, 0, check)  # Comparator plus both chars dispatches.
                         if _evidence_span_equal(spans, previous, check):
                             raise ValueError("evidence redacted key collision")
                 ledger.charge(safe_size + 16, 1, check)
                 keys[-1].append((spans, safe_size))
             tokens[index] = ("string", spans)
+            ledger.charge(16, 0, check)  # String-size character dispatch.
             count = _evidence_string_size(spans, check)
         if size + count > 8388608:
             raise _EvidenceCapacity("evidence encoded capacity refused")
@@ -1631,6 +1663,7 @@ class _EvidenceRelay:
         def put(text: str, string: bool = False) -> None:
             self.ledger.charge(48, 5, self.check)
             spans = [(text, 0, len(text))]
+            self.ledger.charge(32, 0, self.check)  # Size selection plus possible chars dispatch.
             size = _evidence_string_size(spans, self.check) if string else len(text)
             data = _evidence_buffer([("string" if string else "literal", spans)], size,
                                     self.ledger, self.check)
