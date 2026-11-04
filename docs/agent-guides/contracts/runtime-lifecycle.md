@@ -505,7 +505,24 @@ transporting a retained occurrence adds no failure. Frame-local records retain
 prior nested evidence and actual attachment failure without diagnostic retry.
 Completed local values and successful COMMIT/possible queue prefixes survive as
 evidence, never as invented method returns, replay or native/DB-close clearance.
-Independently owed cleanup stays ungated.
+Independently owed cleanup stays ungated. The reached attachment-stop history
+fence retains its current-owner/history FIRST BaseException before the original
+one rollback and native RLock exit; cleanup-only failure is primary. `history=True`
+still owes rollback after failed BEGIN; `history=False` owes none, and failed lock
+entry owes none. Actual effect values survive failed cleanup/exit as evidence,
+never successful delivery or reversal of the stop COMMIT/partial history prefix.
+The captured active-envelope abort writer likewise retains its first cause
+before rollback and marks rowcount-refusal cleanup before its sole attempt.
+Absent envelope remains False; rowcount refusal returns False only after clean
+rollback; True follows successful original COMMIT. Its original failed-BEGIN
+no-rollback and Exception-only body-cleanup eligibility remain unchanged; other
+BaseExceptions are retained without adding a cleanup duty. Separate rollback,
+lock-exit and retention throws retain native snapshots, even for the SAME object;
+transported observations add no failure. Prior nested records/native frames stay
+reachable on failed named attachment. A successful COMMIT/local value and actual
+method/wrapper delivery remain distinct; failed/effect-then-raise COMMIT or rollback
+stays UNKNOWN. These lower owners add no caller-transaction/SAVEPOINT protection,
+envelope authority, retry, replay, cleanup or DB-close clearance.
 Legacy `workflow_start` preflight captures the original validator, Database,
 connection and native RLock; that SAME lock spans its complete readiness read
 transaction, with selection renewed after waiting and BEGIN. Caller BEGIN or

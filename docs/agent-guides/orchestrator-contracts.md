@@ -5901,6 +5901,25 @@ new cleanup duties. Successful feedback or ROOT/nonroot exhausted-stop COMMIT
 remains a prefix through later result/delivery failure. Completed PendingRetry,
 AttachmentCorrectionStopped or LostClaim values are evidence only when actually
 constructed, and never method returns after failed cleanup or wrapper delivery.
+The returned exhausted stop's history fence retains current-owner/history FIRST
+BaseException before original rollback and RLock exit. History=False owes no
+rollback; history=True still attempts its original rollback once after failed
+BEGIN, but not after failed lock entry. An actual completed effect value survives
+cleanup-only or exit failure as evidence, never a delivered return. The captured
+still-active original envelope's abort writer retains body/UPDATE/audit/
+serialization/COMMIT E1 before rollback E2; rowcount refusal marks rollback before
+its sole attempt, and returns False only after successful cleanup. Absent False,
+True only after successful COMMIT, original failed-BEGIN no-rollback and
+Exception-only body-cleanup eligibility remain; other BaseExceptions are retained
+without a new rollback duty. Actual independent SAME-object rollback/exit throws
+retain separate native snapshots; transported observations add none. Failed
+attachment retains prior nested records and original owner frames without
+recursive diagnostics. Original stop COMMIT/partial history prefixes survive;
+local values, successful COMMIT and actual method/wrapper return remain distinct.
+Failed/effect-then-raise COMMIT/rollback stays UNKNOWN. No lower/default caller-
+transaction/SAVEPOINT guard, authority/spend/retry rule, replay, cleanup or DB-close
+clearance is added; entire failed-root batch suppression and independent tails
+remain owed at their original owners.
 B takes a fresh writer reservation, checks A's exact pending fingerprint and
 feedback row, and holds that reservation through the actual synchronous
 nonblocking enqueue. B writes nothing and always

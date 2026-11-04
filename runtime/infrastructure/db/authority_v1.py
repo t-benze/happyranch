@@ -895,12 +895,27 @@ class AuthorityV1Mixin:
         True when an envelope was spent. Exactly-once: only the transition
         from ``active`` wins.
         """
-        env = self.get_active_authority_continue_envelope(root_task_id)
-        if env is None:
-            return False
-        now = _now().isoformat()
-        self._conn.execute("BEGIN")
+        failure = {
+            "owner": "spend_authority_continue_envelope_if_active",
+            "phase": "lookup", "first_error": None, "rollback_error": None,
+            "rollback_owed": False, "rollback_attempted": False,
+            "rollback_returned": False, "commit_attempted": False,
+            "commit_returned": False, "local_result_ready": False,
+            "local_result": None, "previous": None, "retention_error": None,
+        }
         try:
+            env = self.get_active_authority_continue_envelope(root_task_id)
+            if env is None:
+                failure["local_result"] = False
+                failure["local_result_ready"] = True
+                return False
+            now = _now().isoformat()
+            failure["phase"] = "begin"
+            self._conn.execute("BEGIN")
+            # Preserve the original BEGIN-outside-error-arm policy: a failed
+            # BEGIN never adds a rollback duty or a caller-transaction guard.
+            failure["rollback_owed"] = True
+            failure["phase"] = "body"
             cur = self._conn.execute(
                 "UPDATE authority_continue_envelopes "
                 "SET state = 'violated', consumed_at = ?, updated_at = ? "
@@ -908,7 +923,12 @@ class AuthorityV1Mixin:
                 (now, now, env["id"]),
             )
             if cur.rowcount != 1:
+                failure["phase"] = "rollback"
+                failure["rollback_attempted"] = True
                 self._conn.rollback()
+                failure["rollback_returned"] = True
+                failure["local_result"] = False
+                failure["local_result_ready"] = True
                 return False
             payload: dict = {
                 "envelope_id": env["id"],
@@ -936,11 +956,42 @@ class AuthorityV1Mixin:
                     now,
                 ),
             )
+            failure["phase"] = "commit"
+            failure["commit_attempted"] = True
             self._conn.commit()
+            failure["commit_returned"] = True
+            failure["phase"] = "result"
+            failure["local_result"] = True
+            failure["local_result_ready"] = True
             return True
-        except Exception:
-            self._conn.rollback()
-            raise
+        except BaseException as error:
+            failure["first_error"] = (
+                failure["phase"], error, BaseException.__traceback__.__get__(error),
+            )
+            if failure["phase"] == "rollback":
+                failure["rollback_error"] = failure["first_error"]
+            # The original error arm cleaned up Exception only. Retain other
+            # BaseExceptions too, without expanding its transaction policy.
+            if (failure["rollback_owed"] and isinstance(error, Exception)
+                    and not failure["rollback_attempted"]):
+                failure["rollback_attempted"] = True
+                try:
+                    self._conn.rollback()
+                    failure["rollback_returned"] = True
+                except BaseException as later:
+                    failure["rollback_error"] = (
+                        "rollback", later, BaseException.__traceback__.__get__(later),
+                    )
+            _, primary, traceback = failure["first_error"]
+            try:
+                values = BaseException.__getattribute__(primary, "__dict__")
+                failure["previous"] = values.get("_authority_continue_spend_failure")
+                BaseException.__setattr__(primary, "_authority_continue_spend_failure", failure)
+            except BaseException as later:
+                failure["retention_error"] = (later, BaseException.__traceback__.__get__(later))
+            # This native frame retains failed attachment and prior nested
+            # evidence. The synchronized wrapper observes this SAME cause.
+            raise BaseException.with_traceback(primary, traceback)
 
     def _authority_candidate_from_row(self, row) -> AuthorityCandidate:
         return AuthorityCandidate(

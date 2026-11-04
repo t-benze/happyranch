@@ -4965,16 +4965,68 @@ def _attachment_owned_effect(
     orch: "Orchestrator", current_owner: Callable[[], bool],
     effect: Callable[[], object], *, history: bool = False,
 ) -> object | None:
-    """Same-daemon fence; history additionally reserves independent SQLite writers."""
-    with orch._db._lock:
+    """Same fence and cleanup policy; retain inner errors before fallible tails."""
+    failure = {
+        "history": history, "current_owner": current_owner, "effect": effect,
+        "phase": "lock entry", "first_error": None, "rollback_error": None,
+        "lock_error": None, "rollback_attempted": False,
+        "rollback_returned": False, "lock_exit_returned": False,
+        "local_result_ready": False, "local_result": None,
+        "previous": None, "retention_error": None,
+    }
+    result = None
+    try:
+        with orch._db._lock:
+            try:
+                if history:
+                    failure["phase"] = "begin"
+                    orch._db._conn.execute("BEGIN IMMEDIATE")
+                failure["phase"] = "current owner"
+                if current_owner():
+                    failure["phase"] = "effect"
+                    result = effect()
+                failure["local_result"] = result
+                failure["local_result_ready"] = True
+            except BaseException as error:
+                failure["first_error"] = (
+                    failure["phase"], error, BaseException.__traceback__.__get__(error),
+                )
+            finally:
+                if history:
+                    # Original duty includes failed BEGIN, but never a failed
+                    # lock entry. An uncertain rollback is not attempted again.
+                    failure["rollback_attempted"] = True
+                    try:
+                        orch._db._conn.rollback()
+                        failure["rollback_returned"] = True
+                    except BaseException as error:
+                        failure["rollback_error"] = (
+                            "rollback", error, BaseException.__traceback__.__get__(error),
+                        )
+                        if failure["first_error"] is None:
+                            failure["first_error"] = failure["rollback_error"]
+            # Do not deliver the retained body occurrence through __exit__:
+            # an exit throw, even of the SAME object, is an actual later error.
+            failure["phase"] = "lock exit"
+        failure["lock_exit_returned"] = True
+    except BaseException as error:
+        failure["lock_error"] = (
+            failure["phase"], error, BaseException.__traceback__.__get__(error),
+        )
+        if failure["first_error"] is None:
+            failure["first_error"] = failure["lock_error"]
+    if failure["first_error"] is not None:
+        _, primary, traceback = failure["first_error"]
         try:
-            if history:
-                orch._db._conn.execute("BEGIN IMMEDIATE")
-            if current_owner():
-                return effect()
-        finally:
-            if history:
-                orch._db._conn.rollback()
+            values = BaseException.__getattribute__(primary, "__dict__")
+            failure["previous"] = values.get("_attachment_owned_effect_failure")
+            BaseException.__setattr__(primary, "_attachment_owned_effect_failure", failure)
+        except BaseException as error:
+            failure["retention_error"] = (error, BaseException.__traceback__.__get__(error))
+        # The native frame retains this record and all nested owner frames if
+        # named attachment fails. Delivery is observation, not a new occurrence.
+        raise BaseException.with_traceback(primary, traceback)
+    return failure["local_result"]
 
 
 def _publish_retry_feedback_task(orch: "Orchestrator", task_id: str) -> None:

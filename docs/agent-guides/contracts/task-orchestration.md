@@ -100,7 +100,22 @@ SQLite/OSError/transaction/postcommit failures retain their existing boundaries;
 only six exact built-in ValueError shapes at initial validation/preparation
 recover. Callback admission, receipt identity/history and once-only consumption
 are preserved. Old schema readers do not enforce this new budget policy.
-Stop tails use the captured winning owner and recheck before initiation. Existing
+Stop tails use the captured winning owner and recheck before initiation. Their
+history fence retains the FIRST current-owner/effect BaseException before the
+original sole rollback and RLock exit, with separately retained later native
+occurrences and actual completed effect values. History=False adds no rollback;
+history=True keeps its rollback duty even after failed BEGIN, but not failed
+lock entry. The exact captured active-envelope abort retains body/UPDATE/audit/
+serialization/COMMIT E1 before rollback E2; rowcount-refusal rollback marks before
+one attempt, so failure cannot reenter cleanup. Its absent False, clean-refusal
+False, successful-COMMIT-only True, failed-BEGIN no-rollback and Exception-only
+body-cleanup policy stay original. Other BaseExceptions retain native evidence
+without a new rollback duty. Separate SAME-object throws and failed retention
+keep prior nested records/frames; delivered observations are not new failures.
+Stop COMMIT, partial history and actual local values survive failed delivery as
+evidence, never public returns or no-effect/native cleanup proof. Lower/default
+transaction limits and independently owed tails remain; no new caller-transaction
+or SAVEPOINT guard, spend/retry rule or clearance follows. Existing
 external cross-process/cross-await job, cleanup and notification limits remain;
 source inspection supplies no behavioral or automatic-startup coverage.
 Keep task-only evidence in output/<actual-task-id>, report output_dir and use
