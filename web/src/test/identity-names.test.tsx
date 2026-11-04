@@ -457,6 +457,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
   test.each(['success', 'failure'] as const)('scenario 8: real task filter picker Clear invalidates deferred resolution %s', async (outcome) => {
     fixture();
     const queries: URLSearchParams[] = [];
+    const handlers: Promise<Response>[] = [];
     let finish!: () => void;
     const deferred = new Promise<void>((resolve) => { finish = resolve; });
     let arrived = false;
@@ -465,18 +466,45 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
         queries.push(new URL(request.url).searchParams);
         return HttpResponse.json({ tasks: [], next_cursor: null });
       }),
-      http.post('/api/v1/orgs/alpha/identities/resolve', async ({ request }) => {
-        const body = await request.json() as ResolveBody;
-        expect(body.addresses).toEqual(['Alpha']);
-        arrived = true;
-        await deferred;
-        return outcome === 'success'
-          ? HttpResponse.json({ resolutions: [{ address: 'Alpha', identity: { canonical_id: 'agent_a', kind: 'agent', lifecycle: 'active' }, status: 'resolved', eligible: true }] })
-          : HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 });
+      http.post('/api/v1/orgs/alpha/identities/resolve', ({ request }) => {
+        const handler = (async () => {
+          const body = await request.json() as ResolveBody;
+          expect(body.addresses).toEqual(['Alpha']);
+          arrived = true;
+          await deferred;
+          return outcome === 'success'
+            ? HttpResponse.json({ resolutions: [{ address: 'Alpha', identity: { canonical_id: 'agent_a', kind: 'agent', lifecycle: 'active' }, status: 'resolved', eligible: true }] })
+            : HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 });
+        })();
+        handlers.push(handler);
+        void handler.catch(() => {});
+        return handler;
       }),
     );
     const client = mount('/orgs/alpha/tasks');
+    const mutations: Promise<unknown>[] = [];
+    const restores: (() => void)[] = [];
+    const unsubscribe = client.getMutationCache().subscribe((event) => {
+      if (event.type !== 'added') return;
+      const mutation = event.mutation;
+      const execute = mutation.execute.bind(mutation);
+      const spy = vi.spyOn(mutation, 'execute').mockImplementation((variables) => {
+        const pending = execute(variables);
+        mutations.push(pending);
+        void pending.catch(() => {});
+        return pending;
+      });
+      restores.push(() => spy.mockRestore());
+    });
+    // Keep the actual mutateAsync return, not just the HTTP response. The form's
+    // synchronous post-await branch runs before this later act join completes.
+    const settle = () => act(async () => {
+      finish();
+      await Promise.allSettled(mutations);
+      await Promise.allSettled(handlers);
+    });
     const user = userEvent.setup();
+    let failed = false;
     try {
       await waitFor(() => expect(queries.length).toBeGreaterThan(0));
       await user.click(await screen.findByRole('button', { name: t('tasks.page.filter') }));
@@ -490,7 +518,7 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
       await user.click(screen.getByRole('button', { name: t('tasks.filters.clear') }));
       expect(agent).toHaveValue('');
       expect(status).toHaveValue('');
-      await act(async () => { finish(); });
+      await settle();
       await waitFor(() => expect(client.isMutating()).toBe(0));
       expect(queries.map((query) => query.toString())).toEqual(initialQueries);
       // Unfiltered loading legitimately requests status=completed (one owner per
@@ -502,9 +530,21 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
       expect(screen.getByLabelText(t('tasks.filters.statusSelect'))).toHaveValue('');
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
       expect(screen.queryByText((text) => text.startsWith(t('tasks.filters.applied')))).not.toBeInTheDocument();
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await act(async () => { finish(); });
-      client.clear();
+      try {
+        try {
+          await settle();
+        } finally {
+          unsubscribe();
+          restores.forEach((restore) => restore());
+          client.clear();
+        }
+      } catch (error) {
+        if (!failed) throw error;
+      }
     }
   });
 
