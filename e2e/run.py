@@ -1595,7 +1595,32 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                 # The row event pays for this original field reference. No
                 # one-element selector tuple is constructed by this caller.
                 selected(selected_path, 'scalar', item, field=selected_field)
-            elif primitive_field or case_field:
+            elif case_field:
+                # This visitor frame already owns the original item, parent
+                # and field. Keep its field reference and complete stored
+                # pair, without forwarding field/item to a second frame.
+                ledger.charge(8, 1, check)
+                ledger.charge(16 + _evidence_utf8_size(selected_field, check)
+                    + (_evidence_utf8_size(item, check) if type(item) is str else 8), 2, check)
+                if not selected_path:
+                    selected_owner.case['meta'][selected_field] = item
+                elif selected_path[0] == 'starts':
+                    if selected_path[1] >= len(selected_owner.case['starts']):
+                        raise ValueError('Case start fact withheld')
+                    selected_owner.case['starts'][selected_path[1]][selected_field] = item
+                else:
+                    if selected_path[1] >= len(selected_owner.case['jobs']):
+                        raise ValueError('Case job selector withheld')
+                    selected_owner.case['jobs'][selected_path[1]][selected_field] = item
+                    if selected_field in ('out', 'err') and type(item) is not str:
+                        raise ValueError('Case literal output type withheld')
+                    if selected_field == 'script':
+                        selected_owner.case['used'] = True
+                        if type(item) is not str:
+                            raise ValueError('Case SOURCE type withheld')
+                        _evidence_python(item, selected_owner.context, ledger, check, selected_owner.sanitize,
+                                         selected_owner.depth + 4 + len(selected_path) + 2)
+            elif primitive_field:
                 ledger.charge(8, 1, check)  # Existing field reference, no ancestor-path copy.
                 selected(selected_path, 'scalar', item, field=selected_field)
             else:
@@ -2173,34 +2198,13 @@ class _EvidenceSubmission:
             # receives its own ordinary/SOURCE admission below.
             o.ledger.charge(128, 16, o.check)
             root_depth = self.depth + (2 if stdout else 3)
-            def compare(kind: str, value: object, wanted: object, field: str | int | None, depth: int) -> None:
-                o.ledger.charge(24, 3, o.check)
-                if kind == 'object':
-                    if type(wanted) is not dict or not (depth == root_depth or
-                          (depth == root_depth + 1 and not script and
-                          (field == 'authentication' or receipt and field in ('job', 'output')
-                           or completion and field == 'decision'))):
-                        raise ValueError('submission nested shape withheld')
-                elif kind == 'array':
-                    if (not completion or depth != root_depth + 1 or field != 'waiting_on_job_ids'
-                            or type(wanted) is not list):
-                        raise ValueError('completion waiting shape withheld')
-                elif kind == 'scalar':
-                    if type(value) is str:
-                        o.ledger.charge(_evidence_utf8_size(value, o.check) +
-                            (_evidence_utf8_size(wanted, o.check) if type(wanted) is str else 0), 1, o.check)
-                    if type(value) is not type(wanted) or value != wanted:
-                        raise ValueError('completion ordered waiting equality withheld' if type(field) is int
-                                         else 'submission complete equality withheld')
-                    if type(value) is str:
-                        if script and field == 'script' or receipt and field == 'script_text':
-                            _evidence_python(value, o.context, o.ledger, o.check, o.sanitize, self.depth + 4)
-                        else:
-                            self.ordinary(value)
-                else:
-                    raise ValueError('submission nested shape withheld')
+            # The parser already holds kind/expected/field/depth. Its existing
+            # member loop now performs the comparison directly, without a
+            # callback forwarding those same references for every node. Keep
+            # the full root setup debit for the once-per-scan owner and flags.
             _EvidenceJSON(text, o.ledger, o.check).scan('{', self.ordinary,
-                depth=root_depth, event=compare, expected=expected, ordered=ordered)
+                depth=root_depth, expected=expected, ordered=ordered,
+                submission=self, script=script, receipt=receipt, completion=completion)
         finally:
             text = None
 
@@ -4257,6 +4261,42 @@ class _EvidenceJSON:
         self.ledger.charge(0, 1, self.check)
         char = self.text[self.index]
         matching = expected is not _EvidenceUnsafe
+        if matching:
+            # SAME parser frame, original expected value and field. No nested
+            # comparison event or its 24B/3facts forwarding setup is created.
+            # The scalar comparison and each occurrence's own safety remain.
+            if char not in '[{':
+                value = None
+                try:
+                    if char == '"':
+                        value = self.string()
+                    elif char in '-0123456789':
+                        value = self.number()
+                    else:
+                        for spelling, primitive in (("true", True), ("false", False), ("null", None)):
+                            if self.text.startswith(spelling, self.index, self.end):
+                                self.index += len(spelling)
+                                value = primitive
+                                break
+                        else:
+                            self.error()
+                    if type(value) is str:
+                        self.ledger.charge(_evidence_utf8_size(value, self.check) +
+                            (_evidence_utf8_size(expected, self.check) if type(expected) is str else 0), 1, self.check)
+                    if type(value) is not type(expected) or value != expected:
+                        raise ValueError('completion ordered waiting equality withheld' if type(selected_field) is int
+                                         else 'submission complete equality withheld')
+                    if type(value) is str:
+                        if self.comparison_script and selected_field == 'script' or self.comparison_receipt and selected_field == 'script_text':
+                            _evidence_python(value, self.comparison_submission.owner.context, self.ledger,
+                                self.check, self.comparison_submission.owner.sanitize,
+                                self.comparison_submission.depth + 4)
+                        else:
+                            self.comparison_submission.ordinary(value)
+                    return value
+                except BaseException:
+                    value = None
+                    raise
         selected_children = True
         selected_owner = getattr(selected, '__self__', None)
         row_field = (selected_field is not None and char not in '[{'
@@ -4352,10 +4392,7 @@ class _EvidenceJSON:
                     else:
                         selected(selected_path, 'scalar', value)
                 if event is not None:
-                    if matching:
-                        event('scalar', value, expected, selected_field, depth)
-                    else:
-                        event("scalar", value)
+                    event("scalar", value)
                 return value
             except BaseException:
                 value = None
@@ -4368,10 +4405,7 @@ class _EvidenceJSON:
                 else:
                     selected(selected_path, 'scalar', value)
             if event is not None:
-                if matching:
-                    event('scalar', value, expected, selected_field, depth)
-                else:
-                    event("scalar", value)
+                event("scalar", value)
             return value
         for spelling, primitive in (("true", True), ("false", False), ("null", None)):
             if self.text.startswith(spelling, self.index, self.end):
@@ -4382,10 +4416,7 @@ class _EvidenceJSON:
                     else:
                         selected(selected_path, 'scalar', primitive)
                 if event is not None:
-                    if matching:
-                        event('scalar', primitive, expected, selected_field, depth)
-                    else:
-                        event("scalar", primitive)
+                    event("scalar", primitive)
                 return primitive
         if char not in "[{":
             self.error()
@@ -4424,14 +4455,37 @@ class _EvidenceJSON:
                 output = command_keys if command_keys is not None else row[4] if borrowed_keys else None if matching else set()
         else:
             output = [] if tree else None
+        case_fields = None
+        case_kind = 0
+        if char == '{' and isinstance(selected_owner, _EvidenceObservations):
+            if descendants is not None and descendants.__func__ is _EvidenceObservations.case_event:
+                self.ledger.charge(16, 2, self.check)
+                case_fields = selected_owner.case['meta']
+            elif selected.__func__ is _EvidenceObservations.case_event and selected_children:
+                if not selected_path:
+                    self.ledger.charge(16, 2, self.check)
+                    case_fields = selected_owner.case['meta']
+                elif len(selected_path) == 2 and type(selected_path[1]) is int and selected_path[0] in ('starts', 'jobs'):
+                    self.ledger.charge(16, 2, self.check)
+                    case_kind = 1 if selected_path[0] == 'starts' else 2
+                    if selected_path[1] >= len(selected_owner.case[selected_path[0]]):
+                        raise ValueError('Case start fact withheld' if case_kind == 1 else 'Case job selector withheld')
+                    case_fields = selected_owner.case[selected_path[0]][selected_path[1]]
         proof = _EvidenceRelay(relay_context, self.ledger, self.check, relay_sanitize, depth) if route == 3 else None
         selection = None
         close = "}" if char == "{" else "]"
+        if matching:
+            if char == '{':
+                if type(expected) is not dict or not (depth == self.comparison_depth or
+                      (depth == self.comparison_depth + 1 and not self.comparison_script and
+                      (selected_field == 'authentication' or self.comparison_receipt and selected_field in ('job', 'output')
+                       or self.comparison_completion and selected_field == 'decision'))):
+                    raise ValueError('submission nested shape withheld')
+            elif (not self.comparison_completion or depth != self.comparison_depth + 1
+                    or selected_field != 'waiting_on_job_ids' or type(expected) is not list):
+                raise ValueError('completion waiting shape withheld')
         if event is not None:
-            if matching:
-                event('object' if char == '{' else 'array', None, expected, selected_field, depth)
-            else:
-                event("object" if char == "{" else "array", None)
+            event("object" if char == "{" else "array", None)
         self.index += 1
         self.whitespace()
         member_index = 0
@@ -4502,17 +4556,37 @@ class _EvidenceJSON:
                         self.whitespace()
                         if self.index >= self.end or self.text[self.index] != '"':
                             raise ValueError("Relay response text withheld")
-                    # A complete Case row is already this member loop's
-                    # original output owner. Ordinary primitive columns need
-                    # no recursive row callback or fresh current-row selection.
-                    # Keep SOURCE/encoded SQL columns and container refusals on
-                    # their original event route. No array ordinal is elided.
+                    self.whitespace()
+                    # Keep the existing row preselection admission, including
+                    # SOURCE/encoded SQL columns and container refusals.
                     if (borrowed_keys and command_keys is None
                             and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
                                  and row[3] in ('parked', 'first_terminal'))):
-                        self.ledger.charge(16, 0, self.check)  # Selection BEFORE its column/character checks.
-                        self.whitespace()
-                    if (borrowed_keys and command_keys is None
+                        self.ledger.charge(16, 0, self.check)
+                    if (case_fields is not None and self.index < self.end and self.text[self.index] not in '[{'
+                            and (case_kind == 1 or case_kind == 0 and key in ('method', 'variant', 'index', 'source_sha', 'task')
+                                 or case_kind == 2 and key in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))):
+                        # Parse this occurrence with its own scalar grammar and
+                        # safety, then retain directly in the already selected
+                        # original holder. No field/event forwarding survives.
+                        child = self.value(depth + 1, None if case_kind == 2 and key == 'script' else scalar,
+                            tree=tree, event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            submission_identity=submission_identity)
+                        self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
+                            + (_evidence_utf8_size(child, self.check) if type(child) is str else 8), 2, self.check)
+                        case_fields[key] = child
+                        if case_kind == 2:
+                            if key in ('out', 'err') and type(child) is not str:
+                                raise ValueError('Case literal output type withheld')
+                            if key == 'script':
+                                selected_owner.case['used'] = True
+                                if type(child) is not str:
+                                    raise ValueError('Case SOURCE type withheld')
+                                _evidence_python(child, relay_context, self.ledger, self.check, relay_sanitize,
+                                                 selected_owner.depth + 4 + len(selected_path) + 2)
+                        if tree:
+                            output[key] = child
+                    elif (borrowed_keys and command_keys is None
                             and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
                                  and row[3] in ('parked', 'first_terminal'))
                             and not (row[1] == 'jobs' and key == 'script_text')
@@ -4631,14 +4705,20 @@ class _EvidenceJSON:
              tree: bool = False, observations: bool = False, context: tuple | list = (),
              sanitize: Callable | None = None, depth: int = 0, event: Callable | None = None,
              submission_identity: tuple | None = None,
-             expected: object = _EvidenceUnsafe, ordered: bool = False) -> Any:
+             expected: object = _EvidenceUnsafe, ordered: bool = False,
+             submission: _EvidenceSubmission | None = None, script: bool = False,
+             receipt: bool = False, completion: bool = False) -> Any:
         """Validate the SAME image; JSONL bounds are indices, never line copies."""
         records = result = None
         try:
             if expected is not _EvidenceUnsafe and (
                     type(expected) is not dict or tree or jsonl or observations
-                    or event is None or top != '{' or submission_identity is not None):
+                    or submission is None or event is not None or top != '{' or submission_identity is not None):
                 raise ValueError('submission comparison shape withheld')
+            if expected is not _EvidenceUnsafe:
+                # Paid by Submission.object's original128B/16facts setup.
+                self.comparison_submission, self.comparison_depth = submission, depth
+                self.comparison_script, self.comparison_receipt, self.comparison_completion = script, receipt, completion
             if tree and jsonl:
                 self.ledger.charge(8, 1, self.check)
                 records = []
@@ -4688,6 +4768,8 @@ class _EvidenceJSON:
             raise
         finally:
             result = records = None
+            if expected is not _EvidenceUnsafe:
+                self.comparison_submission = None
             self.text = ""  # Refused-image traceback keeps syntax facts, not input.
 
 

@@ -3881,3 +3881,32 @@ removals, not a changed token/scalar/retention/comparison rate or cap. Full
 restored5208 controls and ALL4572 typed ordered reconciliation, followed by the
 SAME one command-equality omission/restoration/final green, remain required to
 establish this candidate's result; source inspection supplies no fit claim.
+
+
+Nested Submission comparison now executes directly in the existing strict parser
+frame. The original expected holder, field, depth and parsed kind no longer
+pass through a per-node callback, so its24B/3facts forwarding setup is absent.
+The original128B/16facts root setup remains for the once-per-scan Submission
+owner, depth and finite flags. This mode remains confined to the same non-tree,
+non-JSONL single-object scan. Full builtin type/value equality, complete string
+operand sizing, allowed object/array depth, sorted or original key order,
+decoded duplicate membership and complete cardinality checks remain. Every key
+and decoded scalar still receives its own ordinary or SOURCE admission; no
+other occurrence supplies safety or a comparison result.
+
+The raw/required-tree parser retains named Case meta, start and job scalars
+directly in its existing original member loop. Selecting the SAME parent
+holder/kind costs16B/2facts before assignment. Each scalar keeps its full
+key/value pair16B/2facts and complete original bytes; only the absent8B/1fact
+selected-field argument and16B/2facts callback forwarding disappear. The typed
+visitor performs the same retention in its existing scalar frame after original
+depth/node admission, keeping its8B/1fact field reference and removing only the
+16B/2facts event forwarding. Own scalar grammar/node/key/syntax/tree storage,
+output string types and each script's independent SOURCE checks remain.
+Containers, other fields, SQL rows,
+array ordinals and all distinct late comparisons keep their existing routes.
+No cap, retained-work rate, input, oracle, retention frequency or final-buffer
+debit changes. The unchanged restored5208/ALL4572 typed ordered reconciliation,
+SAME intended comparator omission/exact restoration/final green and clean-head
+static checks must establish the actual candidate result; this operation
+removal supplies no fit or native acceptance claim.
