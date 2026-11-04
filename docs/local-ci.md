@@ -627,12 +627,13 @@ unescaped JSON strings fitting one conservative 1021-byte construction chunk
 use one precharged complete original scalar slice, with separate paid branch
 work and no intermediate construction or join. Larger and escaped JSON scalars
 use bounded local fragments and fixed reference slots.
-The SOURCE lexical token loop uses indexed character dispatch without populating
-a per-token character alias. Its fixed token fact remains. Each reached
-dispatch stage prepays its maximum indexed reads at 8B each, with 32B/0facts
-for phased selection setup; early token exits do not reach later stages.
-ASCII letter/underscore dispatch uses one complete membership check instead
-of repeated indexed method calls. Explicit delimiter/continuation exits pay
+After its original whitespace check, the SOURCE token loop uses prefix predicates
+with fixed one-character constants/tuples instead of constructing indexed token-start
+characters or per-token class tuples. Its fixed token fact and 32B/0facts
+selection setup remain. Only absent indexed lookups lose their 8B charges;
+the still-indexed opening append and closing lookup each prepay 8B/0facts.
+ASCII classes and numeric lookahead retain exact membership/end guards.
+Explicit delimiter/continuation exits pay
 16B/0facts; reached precharges never refund. Word/number start aliases,
 all grammar/safety/comparisons and the original shared limits remain charged.
 This logical slot change certifies neither allocation bounds nor fit.

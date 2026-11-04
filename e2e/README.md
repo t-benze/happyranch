@@ -3629,14 +3629,13 @@ until the complete existing controls and required omission/restoration pass.
 
 SOURCE lexical scanning populates its token-start alias only in the existing
 identifier and numeric branches, where token-length and prefix checks use it.
-The lexical token loop dispatches directly on the original indexed characters,
-without populating a retained character alias per token. Its fixed token fact
-remains, plus 32B/0facts for phased selection setup. Each reached stage prepays
-its maximum indexed reads at the same 8B each: comment 8B, quote 8B, ASCII
-letter/underscore membership 8B, numeric selection 24B, opening 16B, closing
-16B, continuation 8B and operator checks 24B. Early token exits do not execute
-later stages. The ASCII membership replaces repeated indexed character method
-calls with one equivalent complete set check. Explicit delimiter/continuation
+After its original whitespace check, the lexical token loop uses prefix
+predicates against fixed one-character constants/tuples, without constructing indexed token-start
+character scalars, per-token class tuples or a retained character alias.
+Its fixed token fact and 32B/0facts selection setup remain. Only the absent
+token-start indexed lookups lose their 8B charges; the still-indexed opening
+append and closing lookup each prepay 8B/0facts. Every ASCII class and numeric
+lookahead has the same membership and end guard. Explicit delimiter/continuation
 exits additionally pay 16B/0facts. Identifier and numeric branches retain the
 start-reference 8B/1fact plus 16B/0facts for their branch-local setup/check;
 delimiter stack retention still pays 8B/1fact. Reached precharges never refund.

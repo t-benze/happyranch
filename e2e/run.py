@@ -1254,12 +1254,11 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             if source[index] in ' \t\f\r\n':
                 index += 1
                 continue
-            # No retained character alias. Keep the fixed token fact and
-            # pay phased selection setup plus the first indexed dispatch.
-            # Every reached stage prepays its maximum reads at 8B each;
-            # early exits neither perform nor debit the later stages.
-            ledger.charge(40, 1, check)
-            if source[index] == '#':
+            # Prefix predicates construct no indexed character scalar or
+            # per-token class tuple. Keep the fixed token fact and the same
+            # selection setup; still-indexed stack lookups pay separately.
+            ledger.charge(32, 1, check)
+            if source.startswith('#', index):
                 while index < end and source[index] not in '\r\n':
                     if index % 4096 == 0:
                         check()
@@ -1267,12 +1266,13 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                     index += 1
                 continue
-            ledger.charge(8, 0, check)
-            if source[index] in "\"'":
+            if source.startswith(('"', "'"), index):
                 index = literal(index, index)
                 continue
-            ledger.charge(8, 0, check)
-            if source[index] in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_':
+            if source.startswith(('a','b','c','d','e','f','g','h','i','j','k','l','m',
+                                  'n','o','p','q','r','s','t','u','v','w','x','y','z',
+                                  'A','B','C','D','E','F','G','H','I','J','K','L','M',
+                                  'N','O','P','Q','R','S','T','U','V','W','X','Y','Z','_'), index):
                 # Original start slot plus new branch-local setup/check work.
                 ledger.charge(24, 1, check)
                 begin = index
@@ -1288,8 +1288,9 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                     index = literal(begin, index)
                 continue
-            ledger.charge(24, 0, check)
-            if source[index] in '0123456789' or source[index] == '.' and index + 1 < end and source[index + 1] in '0123456789':
+            if (source.startswith(('0','1','2','3','4','5','6','7','8','9'), index)
+                    or source.startswith('.', index) and index + 1 < end
+                        and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
                 ledger.charge(24, 1, check)
                 begin = index
                 def digits(cursor: int) -> int:
@@ -1322,24 +1323,23 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 if index < end and (source[index].isascii() and (source[index].isalpha() or source[index] == '_')):
                     fail()
                 continue
-            ledger.charge(16, 0, check)
-            if source[index] in '([{':
+            if source.startswith(('(', '[', '{'), index):
                 if depth + len(stack) + 3 > 64:
                     raise _EvidenceCapacity('Python depth capacity refused')
                 ledger.charge(8, 1, check)
+                ledger.charge(8, 0, check)  # Still-indexed append lookup.
                 stack.append(source[index])
                 ledger.charge(16, 0, check)
                 index += 1
                 continue
-            ledger.charge(16, 0, check)
-            if source[index] in ')]}':
+            if source.startswith((')', ']', '}'), index):
+                ledger.charge(8, 0, check)  # Still-indexed closing lookup.
                 if not stack or '([{'.index(stack.pop()) != ')]}'.index(source[index]):
                     fail()
                 ledger.charge(16, 0, check)
                 index += 1
                 continue
-            ledger.charge(8, 0, check)
-            if source[index] == '\\':
+            if source.startswith('\\', index):
                 index += 1
                 if index < end and source[index] == '\r':
                     index += 1
@@ -1348,10 +1348,9 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 ledger.charge(16, 0, check)
                 index += 1
                 continue
-            ledger.charge(24, 0, check)
-            if source[index] not in ':.,;+-*/%&|^~<>=!@':
+            if not source.startswith((':','.',',',';','+','-','*','/','%','&','|','^','~','<','>','=','!','@'), index):
                 fail()
-            elif source[index] == '!' and (index + 1 == end or source[index + 1] != '='):
+            elif source.startswith('!', index) and (index + 1 == end or not source.startswith('=', index + 1)):
                 fail()
             index += 1
         if stack:
