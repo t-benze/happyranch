@@ -1027,6 +1027,19 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
     used = 0
     def put(text: str, string: bool = False) -> None:
         nonlocal used
+        if not string and text in ('{', '}', '[', ']', ',', ':'):
+            # Keep the original punctuation admission. It now joins the SAME
+            # ordered buffer instead of forcing every preceding field to hash
+            # a separate used-view slice. Only actual buffer flushes retain
+            # those two view references, prepaid before construction.
+            ledger.charge(35, 1, check)
+            if used == 4096:
+                ledger.charge(16, 2, check)
+                digest.update(view[:used])
+                used = 0
+            buffer[used] = ord(text)
+            used += 1
+            return
         ledger.charge(32, 0, check)  # Size selection plus possible chars dispatch.
         if string:
             # Size this same complete scalar without constructing span endpoints.
@@ -1037,13 +1050,16 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
             ledger.charge(24, 3, check)  # Conservative original nonstring setup.
             size = len(text)
         ledger.charge(2 * size, 1, check)  # All encoded writes and full hashing.
-        if string:
-            digest.update(b'"')
-        for index, char in enumerate(text):
+        # Include the two literal delimiters in the existing encoding loop.
+        # No extra iterator, string spelling or field-sized byte image exists.
+        # string_size already includes BOTH quotes in the prepaid byte work.
+        index = -1 if string else 0
+        while index < len(text) + (1 if string else 0):
             if index % 1024 == 0:
                 check()
+            char = '"' if string and (index == -1 or index == len(text)) else text[index]
             code = ord(char)
-            escaped = string and (code < 32 or char in '"\\')
+            escaped = string and 0 <= index < len(text) and (code < 32 or char in '"\\')
             pos = '"\\\b\f\n\r\t'.find(char) if escaped else -1
             width = (2 if pos >= 0 else 6) if escaped else (
                 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
@@ -1076,12 +1092,7 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
                 buffer[used + 2] = 128 | code >> 6 & 63
                 buffer[used + 3] = 128 | code & 63
             used += width
-        if used:
-            ledger.charge(16, 2, check)
-            digest.update(view[:used])
-            used = 0
-        if string:
-            digest.update(b'"')
+            index += 1
     def visit(value: object, depth: int = 0) -> None:
         # Only closed submit/completion facts reach this request digest. Keep
         # the actual CLI insertion order, including done and waiting arrays.
@@ -1089,30 +1100,21 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
             raise _EvidenceCapacity('request depth capacity refused')
         ledger.charge(16, 2, check)
         if type(value) is dict:
-            # Fixed punctuation needs no general spelling encoder or scratch.
-            # Keep its selection and full output debit before each hash update.
-            ledger.charge(35, 1, check)
-            digest.update(b'{')
+            put('{')
             for index, (key, child) in enumerate(value.items()):
                 if index:
-                    ledger.charge(35, 1, check)
-                    digest.update(b',')
+                    put(',')
                 put(key, True)
-                ledger.charge(35, 1, check)
-                digest.update(b':')
+                put(':')
                 visit(child, depth + 1)
-            ledger.charge(35, 1, check)
-            digest.update(b'}')
+            put('}')
         elif type(value) is list:
-            ledger.charge(35, 1, check)
-            digest.update(b'[')
+            put('[')
             for index, child in enumerate(value):
                 if index:
-                    ledger.charge(35, 1, check)
-                    digest.update(b',')
+                    put(',')
                 visit(child, depth + 1)
-            ledger.charge(35, 1, check)
-            digest.update(b']')
+            put(']')
         elif type(value) is str:
             put(value, True)
         else:
@@ -1122,6 +1124,9 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
         buffer = bytearray(4096)
         view = memoryview(buffer)
         visit(payload)
+        if used:
+            ledger.charge(16, 2, check)
+            digest.update(view[:used])
     finally:
         ledger.settle(4096, 0)  # Scratch only; reached output/hash work stays.
         buffer = view = None
@@ -4233,15 +4238,17 @@ class _EvidenceJSON:
             self.error()
         self.ledger.charge(8, 1, self.check)
         # The SAME Case row owns duplicate-key membership. Full rows already
-        # retain every scalar; projected rows keep charged key-only placeholders
-        # for the other columns. No second syntax set is populated. Required
-        # trees and unrelated syntax callers keep their original key storage.
+        # retain every scalar; projected scans keep charged key-only placeholders
+        # for the other columns. A complete row can also supply the required
+        # parsed dictionary itself: no second dictionary/key-value insertion.
+        # Projected required rows and unrelated syntax keep their own storage.
         borrowed_keys = False
         command_keys = None
-        if (not tree and char == '{' and isinstance(selected_owner, _EvidenceObservations)
+        if (char == '{' and isinstance(selected_owner, _EvidenceObservations)
                 and descendants is not None and descendants.__func__ is _EvidenceObservations.case_row_event):
             row = selected_owner.case['rows'][-1]
-            borrowed_keys = True
+            borrowed_keys = (not tree or row[1] == 'jobs'
+                or row[1] in ('tasks', 'results') and row[3] in ('parked', 'first_terminal'))
         if char == '{':
             command_owner = getattr(descendants, '__self__', None) if descendants is not None else selected_owner
             if isinstance(command_owner, _EvidenceSubmission) and (
@@ -4251,9 +4258,17 @@ class _EvidenceJSON:
                 shape = command_owner.shapes.get(() if descendants is not None else selected_path)
                 if shape is not None and type(shape[1]) is dict:
                     command_keys = shape[1]
-                    borrowed_keys = not tree
+                    # A Case copy must retain its closed finite command facts.
+                    # In required-tree mode those SAME maps can supply the
+                    # parsed objects, without a second scalar-key insertion.
+                    # Unknown/legacy canonical actions keep independent trees:
+                    # their normal release may clear their scratch maps.
+                    borrowed_keys = not tree or command_owner.copy
         if char == '{':
-            output = {} if tree else command_keys if command_keys is not None else row[4] if borrowed_keys else None if matching else set()
+            if tree:
+                output = (command_keys if command_keys is not None else row[4]) if borrowed_keys else {}
+            else:
+                output = command_keys if command_keys is not None else row[4] if borrowed_keys else None if matching else set()
         else:
             output = [] if tree else None
         proof = _EvidenceRelay(relay_context, self.ledger, self.check, relay_sanitize, depth) if route == 3 else None
@@ -4345,9 +4360,15 @@ class _EvidenceJSON:
                         expected=expected[key] if matching else _EvidenceUnsafe)
                     if proof is not None:
                         proof.field(key, child)
-                    if tree:
+                    if tree and (not borrowed_keys or command_keys is not None and type(child) in (dict, list)):
+                        # A borrowed command map already owns every scalar.
+                        # Replace only a container's existing unsafe placeholder
+                        # with the complete parsed child for the required tree.
+                        # Keep its original insertion debit for that reference.
+                        if borrowed_keys:
+                            self.ledger.charge(16, 1, self.check)
                         output[key] = child
-                    elif borrowed_keys and command_keys is None:
+                    elif not tree and borrowed_keys and command_keys is None:
                         # Known projected fields were retained by the row event.
                         # Only an otherwise unretained scalar needs a key slot;
                         # preserve its original syntax-set admission before the

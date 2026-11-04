@@ -3163,3 +3163,36 @@ created. That reservation replaces put's old8B/1fact scratch, rather than
 refunding reached work. No growing bytearray/string, new cache, module or
 safety reuse is introduced. All shared controls renew; these source changes
 alone establish neither complete positive fit nor a physical allocation bound.
+
+
+The same compact request buffer now spans every field and punctuation byte.
+Opening/closing quotes enter its existing encoding loop; fixed punctuation keeps
+its original35B/1fact debit before insertion. A field no longer constructs or
+hashes a separate used-view slice. Only a full-buffer flush and the final owner
+flush construct a view, each still prepaid16B/2facts. All per-value sizing,
+reference, node, original-byte encoding and complete hashing charges remain;
+the bounded4096B/1fact scratch and64B/8fact setup do not renew between fields.
+This changes hashing batches, never the ordered request bytes or full digest.
+
+For required-tree parsing, a complete original Case jobs row, or a parked/
+first-terminal task/result row, supplies its existing owned dictionary as the
+parsed row. The parser constructs no second row dictionary or second key/value
+insertion. Only that absent per-key16B/1fact admission ceases. Every original
+row opening, field dispatch, retained key/value/full-byte debit, own safety,
+SQL nested scan, array ordinal and distinct late full comparison stays. The
+same row contains every original key/value in original order; projected required
+rows keep their separate complete dictionaries. Collector scans remain scan-only.
+Complete original-cap controls and full typed/order reconciliation must establish
+the actual result; neither change by itself proves fit or native acceptance.
+
+
+The same required-tree fusion covers only Case-copy command object maps, whose
+closed finite facts must survive release. Each original scalar key is inserted
+once by its existing event/retention route, removing the parser's second
+16B/1fact scalar-key insertion. A container still gets its original unsafe
+placeholder before descent; replacing that slot with the complete parsed child
+keeps16B/1fact before assignment. Full returned values/types/key order, array
+storage, every own admission and all late comparisons remain. Canonical commands
+with late/unknown/legacy actions keep separate parsed dictionaries because their
+normal scratch release can clear those maps. No published reference, substituted
+content, new tree in collector scan mode or cross-occurrence safety reuse follows.
