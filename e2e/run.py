@@ -3632,12 +3632,10 @@ class _EvidenceJSON:
         cursor, size = start, 0
         chunk_size = slots = pieces = 0
         literal = False
-        unescaped = True
         while cursor < self.end and self.text[cursor] != '"':
             if cursor % 4096 == 0:
                 self.check()
             escaped = self.text[cursor] == "\\"
-            unescaped = unescaped and not escaped
             code, cursor = self.codepoint(cursor)
             width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
             if chunk_size + width > 1024:
@@ -3654,11 +3652,11 @@ class _EvidenceJSON:
         if cursor >= self.end:
             self.error()
         slots = max(slots, pieces)
-        # Pay the new fixed flag/selection slot at the construction-slot rate,
-        # independently of the retained scalar/chunk facts. Complete grammar/
-        # size preflight still precedes admission, as on the escaped path.
+        # Pay fixed branch selection at the construction-slot rate. Within
+        # one chunk, the existing preflight state identifies an empty string
+        # or one final literal span without extra per-codepoint tracking.
         self.ledger.charge(16, 0, self.check)
-        if unescaped and size <= 1021:
+        if size <= 1021 and (not size or pieces == 1 and literal):
             # A complete one-chunk literal needs only its retained slice.
             # Keep the existing multi-chunk construction policy for larger
             # scalars; this branch needs no arrays, chunk references or join.

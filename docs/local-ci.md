@@ -624,7 +624,7 @@ CRLF is preserved and refused returned work is never refunded. Character/UTF8
 annotations describe the actual decoded original. Early remaining-capacity
 refusal has no returned-slice/input-cap witness. After full grammar/size preflight,
 unescaped JSON strings fitting one conservative 1021-byte construction chunk
-use one precharged complete original scalar slice, with separate paid flag/branch
+use one precharged complete original scalar slice, with separate paid branch
 work and no intermediate construction or join. Larger and escaped JSON scalars
 use bounded local fragments and fixed reference slots.
 Within that path, literal-only chunks are direct original
@@ -2919,7 +2919,7 @@ controls and the intended equality-omission assertion must establish fit/proof.
 The shared JSON string method keeps its complete codepoint/quote/surrogate/size
 preflight. An unescaped original spelling of at most 1021 UTF8 bytes then pays
 8+UTF8-size bytes/one fact for its retained complete slice before creating it;
-flag/selection tracking pays another 16 bytes at the existing fixed
+branch selection pays another 16 bytes at the existing fixed
 construction-slot rate, with no additional
 retained scalar/chunk fact. No chunk/fragment arrays, intermediate chunks,
 chunk references or final join exist on that branch. Larger and escaped scalars

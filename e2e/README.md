@@ -2344,7 +2344,7 @@ out-of-bounds numeric input refuses. After the complete codepoint/quote/surrogat
 size preflight, an unescaped JSON string fitting one conservative 1021-byte
 construction chunk returns one complete original slice.
 Its retained storage remains charged at 8+UTF8-size bytes/one fact before slicing;
-new flag/selection work pays a separate 16 bytes at the existing fixed
+new branch selection pays a separate 16 bytes at the existing fixed
 construction-slot rate, with no additional retained scalar/chunk fact. That branch constructs
 no chunk/fragment arrays, chunk references, intermediate chunks or final join.
 Larger and escaped JSON scalars retain fixed bounded fragment slots instead of
