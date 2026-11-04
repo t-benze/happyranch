@@ -129,8 +129,10 @@ C12-only retains its independent64 ceiling and original proof meaning.
 
 Before product constructors the driver checks independent dimensions against
 selected independent caps and records the producer/table/multiplicity and any
-excess. The corrected selected fixture is source-admissible; the all-case ledger
-still returns incomplete2 while obligations are missing (FAIL1 wins for any
+excess. That historical selected table omitted current conditional builtin
+registration; the complete current selection is UNFIT/HELD and refuses before
+constructors as qualified below. The all-case ledger
+returns incomplete2 while obligations are missing (FAIL1 wins for any
 actual failure). No observed runtime exit or resource fit is claimed. It cannot
 construct a fixture by omission or by moving audits to another denominator.
 No writer, case, failure or allocation is
@@ -148,8 +150,11 @@ and check a fifth HTTP read for503/startup_reader_busy with no extra submission
 or connection. Actual coroutine cancellation of one queued waiter must cancel
 its genuine Future without native work and positively acknowledge retirement.
 The other cancellation occurs while its worker is inside original close: the
-connection/Future/slot stay owned until same-thread close returns, Future
-completion and callback retirement precede reuse. The other running read and
+connection/Future/slot stay owned until same-thread close returns. Worker-side
+retirement acknowledgement precedes callable/Future completion; the later Future
+callback is idempotent. These are distinct observations. The separate four-reader
+suite's older future-before-retired assertion remains ROOT-open and unproved;
+the selected S/failed keepers below do not supply its proof. The other running read and
 queued read expire concurrently against their original2s admission deadlines;
 original SQL is forwarded, no partial200 is accepted, and the queued selection
 expires before opening a connection. ONLY these intentional deadline HTTP
@@ -206,12 +211,25 @@ the selected implementation order and costs are described below. The first
 org's ORIGINAL authority reader executes under its actual native recovery thread and SAME database RLock.
 A narrowly scoped SQLite authorizer denies only READ of
 `main.authority_policy_v2_attempts` during original discovery. The pinned plain
-Database constructor and complete source setter inventory establish known-original
-None; unknown provenance refuses replacement. Original `_view`/`_read`/discovery
+Database constructor (current source SHA256
+`b4f078ad0ba79e9f68aa872b5bd0aea9a741a77a45e9291556f7dd26777a2e1d`),
+original SQLite connect and complete FOUR setter-owner/argument inventory establish
+known-original None; unknown provenance refuses replacement. The digest is source
+identity only. Seed/P0 effects precede this guard; its refusal proves no zero-effect
+fixture lifetime. Original `_view`/`_read`/discovery
 and owned rollback/check bodies run unchanged. Actual callback denial, original
-unavailable exception and underlying SQLite cause are observed separately from
-authority's normal None, the sweep's distinct first cause, exceptional native
-Future and coordinator completion. No query/cache flushing, fake result or
+unavailable wrapper and underlying SQLite E1/traceback are observed separately.
+Current authority rethrows that SAME original SQLite E1 through the sweep/native
+Future and coordinator failure, retaining cleanup and genuinely later errors,
+closed latch and ENTIRE final-batch suppression. The corrected
+`C05_failed_authority_original_sql_error` maps the historical stale
+`C05_failed_authority_normal_none` SQL oracle; historical failures are unchanged.
+Original normal-None/R2 remains OPEN/UNSELECTED: its real producer is authority's
+acquired discovery ValueError semantic-denial branch after original clean
+check/log/check, or an unanchored acquired exact semantic denial; `__main__`
+consumes that None into `startup_v2_discovery_unavailable`. SQL E1 reaches neither
+normal return nor that distinct negative. No in-cap original negative selection
+has been established. No query/cache flushing, fake result or
 normal-Future-negative-value credit follows.
 
 A successful matching listener observation is independent of recovery success,
@@ -232,8 +250,10 @@ repeated failed P0 (six native-writer audits per org) and zero request-induced
 writes; whole-lifetime zero writes is not claimed.
 
 Before the sole fresh reopen, original failed native Future/coordinator and sweep
-must settle, actual read-worker connection close/native return/callback retirement
-must complete, recovery/read executors must join, then original org/DB and
+must settle, actual read-worker connection close, worker-side retirement
+acknowledgement/removal, original callable exit/Future completion and the later
+idempotent callback must each complete. The same shutdown loop must resume and
+recovery/read executors must join, then original org/DB and
 server/socket close must succeed. First-cause and cleanup uncertainty remain;
 unknown authorizer restoration or retirement prohibits reopen. Original owner,
 read-domain, native Future, epoch and connections must be distinct in the fresh
@@ -290,9 +310,16 @@ healthy SQL/DTO/encoding must reach original worker close before cancellation.
 Cancellation targets that exact read waiter, retaining its native Future/lease/
 connection/slot. Original server stop closes admission and latch; OrgState.close
 refuses before Database.close while recovery stays owned. Reader close releases
-FIRST. Native/inline _retire is observed separately from actual request-loop
-resumption awaiting the ORIGINAL lease.retired while recovery remains held and
-shutdown awaits it. Recovery releases SECOND; original shutdown joins both
+FIRST. Original `_read` calls `_retire(lease)` in its finally: close precedes
+retired acknowledgement/removal, which precedes callable/worker exit and executor
+Future completion. Original `_retire(lease, future)` then observes that SAME
+completed Future idempotently; it is not a second release. S awaits BOTH original
+lease.retired and executor Future within the SAME existing one-second window,
+then observes its actual original-loop/task resumption while recovery remains
+held and shutdown awaits it. Acknowledgement alone proves no callable/Future
+completion. Failed-prefix keepers distinguish the same two retirement entries,
+positive close/removal and original executor joins before successor-store use.
+Recovery releases SECOND; original shutdown joins both
 executors before org/DB/socket close. Every Event releases in finally before
 shutdown waits; unknown close/restoration/retirement refuses another epoch.
 
@@ -623,14 +650,30 @@ callback replay, new row or epoch is added. C05_T_canonical_selected is strength
 C05_T_committed_prefix retains its assertions with the corrected result input.
 Both are NOT RUN; sensitivity PROOF NOT RUN under the unchanged allocation.
 
-The current selected preconstructor ledger is **124/128 history,241/245 logical
+The historical accepted step43 table is **124/128 history,241/245 logical
 INSERT identities and30 cumulative leases** (111/115 audits plus13 authority/
-selector rows). Three extra P0s add36 audits/12 leases, canonical T adds one each
+selector rows); it omitted the current conditional builtin registrar. Three extra P0s add36 audits/12 leases, canonical T adds one each
 task/root/result/recovery/job and its consumer adds two audits. Claim/binding/
 terminal/marker/job settlement UPDATE existing rows. Inserted/deleted leases stay
 charged:12 coherent recovery,12 synchronization,6 first-publication/selector.
-The independently reconstructed complete per-table source selection is required
-before constructors. Historical64,74/78,86/90 history and167/171,187/191 logical
+Cold load defers registration. After each positive original org sweep/publication,
+`recover_startup_native -> ensure_registered` can reserve its durable native writer
+and commit FOUR original release rows (identity/draft/version/identity-version)
+plus TWO active/settled audits per absent org. T's fixture-a and N's fixture-b may
+each register once; later existing-winner preflight returns without reservation
+or writes. Safe resource/native-safety preflight refusal also differs from an
+acquired uncertain writer; successful COMMIT prefixes remain charged even if a
+later tail fails. No additional publication lease follows.
+One successful absent registration conditionally implies126/130 history and
+247/251 logical identities (+6); both imply128/132 and253/257 (+12). These are
+source branch implications, not measured totals or approved replacement budgets.
+The current conservative complete plan includes both and the original four
+conditional root audits:132 history exceeds128 by4, and257 logical exceeds245
+by12 (even253 exceeds245 by8). It therefore refuses BEFORE product constructors
+as **UNFIT/HELD**, independently of512 causal rows,30 leases and five serial
+epochs. Equality with the preserved historical table cannot grant fit. No
+adequate in-cap selection is established; original cases and obligations remain
+OPEN. Historical64,74/78,86/90 history and167/171,187/191 logical
 allowances remain historical. All other caps, including512 cumulative rows,
 512MiB/600s, two orgs,16 roots/64 tasks and two simultaneous harmless provider
 children, remain. Three extra serial epochs and <=3s observation windows are

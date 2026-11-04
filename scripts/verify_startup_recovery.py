@@ -105,7 +105,7 @@ REMAINING = {
     "C01": "populated workflow/returned graph and real browser transcript/lock reuse",
     "C03": "genuine direct producers, final host marker and populated v2 causal controls",
     "C04": "two-org actual launch/release race and reader saturation",
-    "C05": "genuine negative native outcomes, first cause and unsafe tail fixture",
+    "C05": "OPEN: original authority normal-None/R2 from acquired discovery ValueError after clean check/log/check (or unanchored exact semantic denial) is UNSELECTED; selected SQL E1 is exceptional, not that negative; human negative, BOTH native-E1/waiter-cancel orders and unsafe tail remain open",
     "C06": "populated authenticated chronology/cutover/returned notification",
     "C07": "original Pause/move producer redelivery and actual harmless job",
     "C08": "interrupted original native tail/read/partial preparation joins",
@@ -169,7 +169,7 @@ CONSUMER_ASSERTIONS = (
 FAILURE_ASSERTIONS = {
     "C03": ("p0_expected_rows", "p0_immutable_records"),
     "C05": ("original_reader", "actual_denial", "owned_read_unavailable", "clean_connection",
-            "callback_restored", "authority_normal_none", "sweep_native_chain", "no_ready_consumers",
+            "callback_restored", "authority_original_sql_error", "sweep_native_chain", "no_ready_consumers",
             "no_provider", "listener", "health", "ready", "health_wire", "health_identity", "ready_wire", "ready_identity"),
     "C08": ("recovery_close", "reader_retirement", "reader_executor", "database_order",
             "server_socket", "observers_restored", "first_cause_retained", "durable_preserved"),
@@ -177,8 +177,9 @@ FAILURE_ASSERTIONS = {
 }
 
 
-# Independent ROOT step43 / TASK13326 reconstructed table, not product-derived.
-# This closed source selection is checked BEFORE any fixture constructor.
+# Historical accepted ROOT step43 / TASK13326 table:124/128 history,
+# 241/245 logical identities,30 leases. It omitted later builtin registration;
+# retain it for attribution, NEVER use its equality alone as current admission.
 NTS_SELECTED_ROWS = {
     "audit_log": 111,
     "authority_policy_active_selector": 2,
@@ -309,7 +310,7 @@ class Checks:
             for case, suffixes in FAILURE_ASSERTIONS.items():
                 self.expect(case + "_selected_failed_epoch", case, "recovery_failed",
                     tuple(case + "_failed_" + suffix for suffix in suffixes),
-                    "original authority None / exceptional native Future, actual listener and positive owner closure")
+                    "original SQL E1/traceback through authority and exceptional native Future (historical normal-None oracle corrected; R2 remains OPEN), actual listener and positive owner closure")
             for name in ("HX10.04", "HX10.11"):
                 self.expect(name + "_recovery_failed", "C05", "recovery_failed",
                     tuple(name + "_recovery_failed_" + suffix for suffix in
@@ -656,6 +657,23 @@ def fixture_accounting(case):
         tables.update(initialized)
         producers.append({"owner": "C12 Database/initialize_complete_org_schema(I)",
                           "multiplicity": 1, "tables": initialized})
+    historical_tables = dict(tables)
+    if case == "all":
+        # Cold OrgState.load defers this writer. Original recover_startup_native
+        # reaches it AFTER each positive org sweep/publication: T's fixture-a,
+        # then N's fixture-b may each register their absent packaged release.
+        # Preflight existing winner/refusal may write zero; an acquired writer
+        # and successful COMMIT prefix cannot be suppressed or counted as zero.
+        # Bound BOTH successful absent registrations conservatively, not as a
+        # measured/unconditional cost or an enlarged accepted allocation.
+        registration = {"owner": "recover_startup_native -> ensure_registered -> registration_rows + durable native_writer active/settled",
+                        "multiplicity": 2, "conditional": "safe packaged-resource/absent-release branch in each original org",
+                        "tables": {"workflow_template_identities": 1, "workflow_template_drafts": 1,
+                                   "workflow_template_versions": 1, "workflow_template_identity_versions": 1,
+                                   "audit_log": 2}}
+        producers.append(registration)
+        for table, count in registration["tables"].items():
+            tables[table] = tables.get(table, 0) + registration["multiplicity"] * count
     # Conditional maximum: TWO original terminal root reconciliation pairs.
     # Native bounded preservation can return without admission/start/finish;
     # never rely on deleting or omitting those retained tails for a fit.
@@ -683,7 +701,20 @@ def fixture_accounting(case):
                   "simultaneous_harmless_children": 0 if case == "C12" else 2,
                   "browser_contexts": 0, "listeners": 0 if case == "C12" else 2,
                   "concurrent_requests": 0 if case == "C12" else 8}
+    if case == "all":
+        # Independent ceilings:512 cannot absorb logical/history excess, and
+        # deleted leases remain charged. No executable revised plan is granted.
+        limits.update(logical_insert_identities=245, publication_leases=30, serial_epochs=5)
+        dimensions.update(logical_insert_identities=sum(upper.values()),
+                          publication_leases=upper["workflow_publication_leases"], serial_epochs=5)
     return {"kind": "SOURCE_ONLY_NOT_RUN", "producers": producers,
+            "historical_accepted_rows": historical_tables,
+            "historical_selected_source": {"history": [124, 128], "logical": [241, 245], "leases": 30},
+            "conditional_registration_source": {
+                "one_successful_absent_org": {"extra_INSERTs": 6, "history": [126, 130], "logical": [247, 251]},
+                "both_successful_absent_orgs": {"extra_INSERTs": 12, "history": [128, 132], "logical": [253, 257]},
+                "qualification": "conditional source implications ONLY; four template rows + two audits per success, no extra publication lease; existing winner/preflight refusal differs from post-reservation uncertainty"},
+            "selection_disposition": "UNFIT/HELD: no in-cap complete selection established" if case == "all" else "original C12 selection; no new allocation",
             "historical_success_allocation": {"history": [74, 78], "logical": [167, 171], "leases_written": 10},
             "corrected_success_source": {"history": [74, 78], "logical": [171, 175], "leases": 14},
             "prior_failed_reopen_source": {"history": [86, 90], "logical": [187, 191], "leases": 18},
@@ -713,19 +744,19 @@ def seed(checks):
               for name, count in fit["dimensions"].items() if count > fit["limits"][name]}
     fit["excess"] = excess
     checks.save()
-    if checks.args.case == "all" and fit["selected_path_rows"] != NTS_SELECTED_ROWS:
-        checks.missing("C03_canonical_history_fit", "incomplete five-epoch producer inventory; constructors refused")
+    if checks.args.case == "all" and fit["historical_accepted_rows"] != NTS_SELECTED_ROWS:
+        checks.missing("C03_canonical_history_fit", "historical step43 table changed; current admission still requires complete conditional accounting; constructors refused")
         return None
     if excess:
-        # Independent pre-constructor admission, not an unconditional all-case
-        # return. ROOT step43 accepts ONLY the complete five-epoch source plan:
-        # audit_log111 + authority/selector13 =124, conditional upper128.
-        # Logical241/245 includes30 cumulative publication leases.
+        # Independent pre-constructor refusal: historical step43's111/115 audits
+        # plus13 authority/selector rows and241/245 logical omitted registration.
+        # Current conservative branch:115/119 audits,128/132 history,253/257
+        # logical;128 history AND245 logical ceilings are unchanged.30 leases.
         # Historical step41:86/90,187/191,18; earlier64/74-78/167-171 retained.
         # Future allocating cases need their own canonical producer ledger;
         # removing writers/history or moving an excess to512 is not a repair.
         checks.missing("C03_canonical_history_fit", json.dumps({
-            "reason": "canonical fixture exceeds selected independent caps", "excess": excess,
+            "reason": "UNFIT/HELD: complete conditional fixture exceeds preserved independent caps; no runnable revised allocation", "excess": excess,
             "history_controls_lower": fit["history_controls_lower"],
             "minimum_history_excess": max(0, fit["history_controls_lower"] - fit["limits"]["history_controls"]),
             "table": "audit_log", "producers": fit["producers"]}, sort_keys=True))
@@ -2545,6 +2576,7 @@ class FailureObservation(EntryObservation):
         self.local = threading.local()
         self.events, self.denials, self.leases, self.sweeps = [], [], [], []
         self.errors, self.restoration_errors = [], []
+        self.sql_errors, self.authority_errors = [], []
         self.connection_closes = {}
         self.reader_handles = {}
         self.authority_returns, self.reader_checks = [], []
@@ -2555,7 +2587,12 @@ class FailureObservation(EntryObservation):
         self.watched = {fn.__code__: name for name, fn in (
             ("prepare", app_module._prepare_startup_consumers),
             ("submit", StartupRecovery.submit), ("negative", run_step._StartupSweepOwner.negative),
+            ("sweep_init", run_step._StartupSweepOwner.__init__),
+            ("sweep_fail", run_step._StartupSweepOwner.fail),
             ("finalize", run_step._StartupSweepOwner.finalize),
+            ("batch", run_step._root_worktree_batch), ("batch_impl", run_step._root_worktree_batch_impl),
+            ("reconcile", run_step._root_worktree_reconcile), ("cleanup", run_step._await_worktree_cleanup),
+            ("report", Database.admit_terminal_worktree_root), ("report", Database.append_terminal_worktree_audit),
             ("check", _V2StartupReads.check), ("read_worker", StartupReads._read),
             ("retire", StartupReads._retire), ("drain", StartupReads.drain),
             ("recovery_close", StartupRecovery.close), ("org_close", OrgState.close),
@@ -2587,15 +2624,35 @@ class FailureObservation(EntryObservation):
         if name is None or event not in ("call", "return"):
             return
         owner = frame.f_locals.get("self")
-        self.event(name + "_" + event, owner=id(owner), lease=id(frame.f_locals.get("lease")))
+        lease = frame.f_locals.get("lease")
+        values = {}
+        if name == "retire":
+            future = frame.f_locals.get("future")
+            values = {"phase": "worker" if future is None else "future_callback", "future": id(future),
+                      "future_done": future is not None and future.done(),
+                      "retired": id(lease.retired), "acknowledged": lease.retired.done(),
+                      "retirement_started": lease.retirement_started, "worker_finished": lease.worker_finished,
+                      "registered": any(current is lease for current in owner._leases)}
+        self.event(name + "_" + event, owner=id(owner), lease=id(lease), **values)
         if name == "read_worker" and event == "call":
             lease = frame.f_locals["lease"]
             if lease not in self.leases:
                 self.leases.append(lease)
+                lease.retired.add_done_callback(lambda done, lease=lease: self.event(
+                    "reader_retired_ack", owner=id(owner), lease=id(lease), retired=id(done)))
         if name == "check" and event == "return" and owner is self.reader:
             self.reader_checks.append((id(owner.conn), owner.conn.in_transaction, owner.unsafe is None, bool(self.errors)))
+            caller = frame.f_back
+            if caller.f_code.co_name == "_view":
+                self.event("view_check_return", cause=id(caller.f_locals.get("body_error")),
+                           clean=not owner.conn.in_transaction and owner.unsafe is None)
         if name == "negative" and event == "call" and owner not in self.sweeps:
             self.sweeps.append(owner)
+        if (name == "sweep_init" and event == "return"
+                and owner.orch._startup_recovery is self.state._startup_recovery and owner not in self.sweeps):
+            self.sweeps.append(owner)
+        if name == "sweep_fail" and event == "call" and owner in self.sweeps:
+            self.event("sweep_cause", owner=id(owner), cause=id(frame.f_locals["cause"]))
         if name == "executor_shutdown" and event == "return":
             self.event("executor_joined", owner=id(owner), shutdown=owner._shutdown,
                        threads_alive=any(thread.is_alive() for thread in owner._threads))
@@ -2604,23 +2661,34 @@ class FailureObservation(EntryObservation):
         # The pinned plain constructor plus a complete setter inventory establishes
         # known-original None. No unsupported callback getter or trial setter.
         from runtime.infrastructure.database import Database
+        import _sqlite3
         source = SOURCE / "runtime/infrastructure/database.py"
         if (hashlib.sha256(source.read_bytes()).hexdigest() !=
-                "618a751c120e4c36c2f00c6c42c8d9d45453f42e05785438b2b10701e7e371d6"
+                "b4f078ad0ba79e9f68aa872b5bd0aea9a741a77a45e9291556f7dd26777a2e1d"
                 or Database.__init__.__code__.co_filename != str(source)
                 or Database.__init__.__qualname__ != "Database.__init__"
-                or sqlite3.connect is not self.originals[2]):
+                or Database.__init__ is not self.originals[3]
+                or sqlite3.connect is not self.originals[2] or sqlite3.connect is not _sqlite3.connect):
             raise RuntimeError("original Database constructor/connection provenance changed")
         import ast
         setters = []
         for directory in (SOURCE / "runtime", SOURCE / "scripts"):
             for path in sorted(directory.rglob("*.py")):
                 tree = ast.parse(path.read_bytes(), filename=str(path))
+                parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "set_authorizer":
-                        setters.append((path.relative_to(SOURCE).as_posix(), node.lineno))
-        own_setters = [row for row in setters if row[0] == "scripts/verify_startup_recovery.py"]
-        if setters != own_setters or len(own_setters) != 4:
+                        enclosing, parent = [], node
+                        while parent in parents:
+                            parent = parents[parent]
+                            if isinstance(parent, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                                enclosing.append(parent.name)
+                        setters.append((path.relative_to(SOURCE).as_posix(), ".".join(reversed(enclosing)),
+                                        ast.unparse(node), node.lineno))
+        expected = {("scripts/verify_startup_recovery.py", owner, "conn.set_authorizer(" + argument + ")")
+                    for owner in ("FailureObservation.selected_discover", "SelectedObservation.handoff")
+                    for argument in ("authorize", "None")}
+        if len(setters) != 4 or {row[:3] for row in setters} != expected:
             raise RuntimeError("unknown SQLite authorizer owner; no callback replacement")
         self.checks.details["failed_authorizer_provenance"] = {
             "constructor_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -2646,6 +2714,11 @@ class FailureObservation(EntryObservation):
             self.authority_returns.append(value is None)
             self.event("authority_normal_return", is_none=value is None)
             return value
+        except BaseException as exc:
+            # Observe the ORIGINAL raise, never force a normal negative/result.
+            self.authority_errors.append((exc, BaseException.__getattribute__(exc, "__traceback__")))
+            self.event("authority_original_error", error=id(exc))
+            raise
         finally:
             del self.local.authority
 
@@ -2692,6 +2765,8 @@ class FailureObservation(EntryObservation):
             except BaseException as exc:
                 primary = exc
                 self.errors.append(exc)  # Retain object/cause/traceback, rethrow unchanged.
+                cause = BaseException.__getattribute__(exc, "__cause__")
+                self.sql_errors.append((cause, None if cause is None else BaseException.__getattribute__(cause, "__traceback__")))
                 self.event("discover_original_error", kind=type(exc).__name__)
                 raise
             finally:
@@ -3047,23 +3122,49 @@ async def stopped_reader(checks, observer, state, server, handle):
         checks.require("C08_S_close_refused", close_refusal is not None
             and str(close_refusal) == "startup_native_still_owned"
             and before_close == sum(row["name"] == "db_close_call" for row in observer.events) == 0)
-        # R1: _retire is native/inline. Only THIS actual loop coroutine resuming
-        # from the ORIGINAL retired Future is evidence that shutdown left it live.
-        read_observer.close_release.set()
+        # R1/F3: worker _retire acknowledges BEFORE callable/executor completion.
+        # Await BOTH original handles in the SAME existing one-second window;
+        # acknowledgement alone proves neither worker exit nor loop resumption.
         wrapped = asyncio.wrap_future(lease.retired, loop=loop)
-        await asyncio.wait_for(asyncio.shield(wrapped), timeout=max(.001, min(1, checks.started + 600 - time.monotonic())))
+        completed = asyncio.wrap_future(future, loop=loop)
+        deadline = min(checks.started + 600, time.monotonic() + 1)
+        read_observer.close_release.set()
+        outcomes = await asyncio.wait_for(asyncio.shield(asyncio.gather(wrapped, completed, return_exceptions=True)),
+                                         timeout=max(.001, deadline - time.monotonic()))
         observer.event("S_loop_retirement_observed", loop=id(asyncio.get_running_loop()), task=id(asyncio.current_task()),
-                       retired=id(lease.retired), wrapped=id(wrapped), native=id(gate._native))
+                       retired=id(lease.retired), wrapped=id(wrapped), future=id(future), completed=id(completed), native=id(gate._native))
+        worker_calls = [row for row in observer.events if row["name"] == "retire_call"
+                        and row["lease"] == id(lease) and row["phase"] == "worker"]
+        worker_returns = [row for row in observer.events if row["name"] == "retire_return"
+                          and row["lease"] == id(lease) and row["phase"] == "worker"]
+        callback_calls = [row for row in observer.events if row["name"] == "retire_call"
+                          and row["lease"] == id(lease) and row["phase"] == "future_callback"]
+        callback_returns = [row for row in observer.events if row["name"] == "retire_return"
+                            and row["lease"] == id(lease) and row["phase"] == "future_callback"]
         checks.require("C08_S_loop_retirement_ack", asyncio.get_running_loop() is loop and asyncio.current_task() is loop_task
-            and threading.get_ident() == original_thread and loop is gate._loop and wrapped.done()
-            and lease.retired.done() and future.done() and not future.cancelled()
+            and threading.get_ident() == original_thread and loop is gate._loop and wrapped.done() and completed.done()
+            and lease.retired.done() and future.done() and not future.cancelled() and lease.worker_finished
+            and outcomes[0] is None and isinstance(lease.worker_error, BaseException)
+            and outcomes[1] is lease.worker_error and future.exception() is lease.worker_error
+            and lease.retirement_error is None and actual["lease"] is lease and lease.future is future
             and lease.close_proven and lease.close_error is None and lease.connection is None and lease not in pool._leases
+            and len(worker_calls) == len(worker_returns) == len(callback_calls) == len(callback_returns) == 1
+            and all(row["owner"] == id(pool) and row["retired"] == id(lease.retired)
+                    for row in worker_calls + worker_returns + callback_calls + callback_returns)
+            and worker_calls[0]["worker_finished"] and worker_calls[0]["registered"]
+            and not worker_calls[0]["acknowledged"] and not worker_calls[0]["retirement_started"]
+            and worker_returns[0]["acknowledged"] and worker_returns[0]["retirement_started"] and not worker_returns[0]["registered"]
+            and all(row["owner"] == id(pool) and row["future"] == id(future) and row["future_done"]
+                    and row["acknowledged"] and row["retirement_started"] and not row["registered"]
+                    for row in callback_calls + callback_returns)
             and all(len(read_observer.seen("close", name)) == 1 for name in
                     ("open", "close_enter", "close_return", "worker_exit", "future_done", "retired"))
             and len({read_observer.seen("close", name)[0]["thread"] for name in
                     ("open", "close_enter", "close_return", "worker_exit")}) == 1
-            and read_observer.seen("close", "close_return")[0]["at"] <= read_observer.seen("close", "worker_exit")[0]["at"]
-                <= read_observer.seen("close", "future_done")[0]["at"] <= read_observer.seen("close", "retired")[0]["at"]
+            and read_observer.seen("close", "close_return")[0]["at"] <= worker_calls[0]["at"]
+                <= read_observer.seen("close", "retired")[0]["at"] <= worker_returns[0]["at"]
+                <= read_observer.seen("close", "worker_exit")[0]["at"] <= read_observer.seen("close", "future_done")[0]["at"]
+                <= callback_calls[0]["at"] <= callback_returns[0]["at"]
             and not observer.release.is_set() and not gate._native.done() and not handle.done()
             and gate._sweep_owner is sweep and not gate._closed)
         observer.event("S_read_before_recovery_release")
@@ -3311,7 +3412,6 @@ async def failed_prefix(checks, runtime, token):
     from runtime.daemon.app import create_app
     from runtime.daemon.startup_recovery import StartupUnavailable
     from runtime.infrastructure.db.authority_v2_attempts import _V2StartupEvidenceUnavailable
-    from runtime.orchestrator.run_step import _StartupSweepUnavailable
     baseline, paths = failed_counts(runtime), store_paths(runtime)
     immutable = immutable_records(runtime)
     state = daemon._build_state(Settings(project_root=SOURCE, session_timeout_seconds=15))
@@ -3367,15 +3467,30 @@ async def failed_prefix(checks, runtime, token):
             "orgs": {slug: id(org) for slug, org in orgs.items()},
             "connections": {slug: id(conn) for slug, conn in connections.items()}, "port": port}
         lower = observer.errors[0] if observer.errors else None
+        sql_error, sql_traceback = observer.sql_errors[0] if observer.sql_errors else (None, None)
         frames = []
         trace = None if lower is None else lower.__traceback__
         while trace is not None:
             frames.append(trace.tb_frame.f_code.co_qualname)
             trace = trace.tb_next
+        native_tracebacks = []
+        trace = None if first is None else BaseException.__getattribute__(first, "__traceback__")
+        while trace is not None:
+            native_tracebacks.append(trace)
+            trace = trace.tb_next
+        authority_error, authority_traceback = observer.authority_errors[0] if observer.authority_errors else (None, None)
+        checks.details["failed_assertion_correction_TASK14035"] = {
+            "C05_failed_authority_normal_none": "historical stale SQL-case oracle -> C05_failed_authority_original_sql_error; no historical FAIL regraded",
+            "C05_failed_sweep_native_chain": "SAME original SQLite E1/tb, not a distinct semantic-negative sweep error",
+            "original_R2_normal_None": REMAINING["C05"], "selected": False}
         checks.details["failed_lower_cause"] = {"kind": type(lower).__name__,
             "sqlite_kind": None if lower is None else type(lower.__cause__).__name__,
             "frames": frames, "first_sweep_kind": type(first).__name__,
-            "same_object": lower is first, "reader_checks": observer.reader_checks}
+            "same_object": lower is first, "original_sql_is_first": sql_error is first,
+            "original_sql_traceback_retained": any(node is sql_traceback for node in native_tracebacks),
+            "reader_checks": observer.reader_checks,
+            "later_recovery_errors": [{"identity": id(error), "kind": type(error).__name__} for error in recovery._secondary],
+            "authorizer_restoration_errors": [{"identity": id(error), "kind": type(error).__name__} for error in observer.restoration_errors]}
         checks.require("C05_failed_original_reader", observer.discoveries == 1
             and observer.reader.db is orgs["fixture-a"].db and observer.reader.conn is connections["fixture-a"])
         checks.require("C05_failed_actual_denial", bool(observer.denials) and all(
@@ -3387,17 +3502,28 @@ async def failed_prefix(checks, runtime, token):
             and all(name in frames for name in ("_V2StartupReads.discover", "_V2StartupReads._read", "_V2StartupReads._view")))
         checks.require("C05_failed_clean_connection", observer.reader is not None
             and observer.reader.unsafe is None and not connections["fixture-a"].in_transaction
-            and len(observer.reader_checks) >= 3 and all(not tx and safe for _, tx, safe, _ in observer.reader_checks)
-            and sum(post for _, _, _, post in observer.reader_checks) >= 2)
+            and len(observer.reader_checks) >= 3 and all(conn == id(connections["fixture-a"]) and not tx and safe
+                                                      for conn, tx, safe, _ in observer.reader_checks)
+            and any(row["name"] == "view_check_return" and row["cause"] == id(sql_error) and row["clean"]
+                    for row in observer.events)
+            and observer.reader._closed and not observer.reader._memo and not observer.reader._pending)
         checks.require("C05_failed_callback_restored", observer.restored and not observer.restoration_errors)
-        checks.require("C05_failed_authority_normal_none", observer.authority_returns, [True])
+        checks.require("C05_failed_authority_original_sql_error", isinstance(sql_error, sqlite3.DatabaseError)
+            and sql_error is lower.__cause__ and authority_error is sql_error and authority_traceback is not None
+            and len(observer.sql_errors) == len(observer.authority_errors) == 1 and not observer.authority_returns
+            and sql_traceback is not None and any(node is sql_traceback for node in native_tracebacks)
+            and any(node is authority_traceback for node in native_tracebacks)
+            and BaseException.__getattribute__(sql_error, "__dict__").get("_v2_pre_final_read_failure", (None,))[0] is lower)
         sweeps = observer.sweeps
         checks.require("C05_failed_sweep_native_chain", native is not None and native.done() and not native.cancelled()
-            and native.exception() is first and isinstance(first, _StartupSweepUnavailable)
-            and str(first) == "startup_v2_discovery_unavailable" and first is not lower
+            and native.exception() is first and first is sql_error and first is authority_error and first is not lower
             and recovery._error_code == "startup_sweep_failed" and len(sweeps) == 1
             and sweeps[0]._first is first and sweeps[0]._boundary_complete and sweeps[0]._sealed
-            and not sweeps[0]._batch_attempted
+            and not sweeps[0]._batch_attempted and sweeps[0].counts["negative"] == 0
+            and any(row["name"] == "sweep_cause" and row["owner"] == id(sweeps[0]) and row["cause"] == id(first)
+                    for row in observer.events)
+            and not any(row["name"] in ("negative_call", "batch_call", "batch_impl_call", "report_call", "reconcile_call", "cleanup_call")
+                        for row in observer.events)
             and sum(row["name"] == "submit_call" for row in observer.events) == 1
             and any(row["name"] == "finalize_return" and row["owner"] == id(sweeps[0]) for row in observer.events))
         checks.require("C05_failed_no_ready_consumers", snapshot["state"] == "recovery_failed"
@@ -3513,13 +3639,34 @@ async def failed_prefix(checks, runtime, token):
             handle = observer.reader_handles.get(id(lease))
             starts = [row for row in observer.events if row["name"] == "read_worker_call" and row["lease"] == id(lease)]
             ends = [row for row in observer.events if row["name"] == "read_worker_return" and row["lease"] == id(lease)]
-            retires = [row for row in observer.events if row["name"] == "retire_return" and row["lease"] == id(lease)]
-            return (lease.future is not None and lease.future.done() and lease.retired.done()
+            worker_calls = [row for row in observer.events if row["name"] == "retire_call"
+                            and row["lease"] == id(lease) and row["phase"] == "worker"]
+            worker_returns = [row for row in observer.events if row["name"] == "retire_return"
+                              and row["lease"] == id(lease) and row["phase"] == "worker"]
+            callback_calls = [row for row in observer.events if row["name"] == "retire_call"
+                              and row["lease"] == id(lease) and row["phase"] == "future_callback"]
+            callback_returns = [row for row in observer.events if row["name"] == "retire_return"
+                                and row["lease"] == id(lease) and row["phase"] == "future_callback"]
+            acknowledgements = [row for row in observer.events if row["name"] == "reader_retired_ack" and row["lease"] == id(lease)]
+            return (lease.future is not None and lease.future.done() and not lease.future.cancelled() and lease.retired.done()
+                    and lease.future.exception() is lease.worker_error
                     and lease.close_proven and lease.close_error is None and lease.connection is None
-                    and lease.started and handle is not None and handle["closed"]
-                    and len(starts) == len(ends) == len(retires) == 1
+                    and lease.started and lease.worker_finished and lease.retirement_error is None
+                    and lease not in reads._leases and handle is not None and handle["closed"]
+                    and len(starts) == len(ends) == len(worker_calls) == len(worker_returns)
+                        == len(callback_calls) == len(callback_returns) == len(acknowledgements) == 1
+                    and all(row["owner"] == id(reads) and row["retired"] == id(lease.retired)
+                            for row in worker_calls + worker_returns + callback_calls + callback_returns + acknowledgements)
                     and handle["thread"] == starts[0]["thread"] == ends[0]["thread"]
-                    and handle["at"] <= ends[0]["at"] <= retires[0]["at"])
+                        == worker_calls[0]["thread"] == worker_returns[0]["thread"] == acknowledgements[0]["thread"]
+                    and worker_calls[0]["worker_finished"] and worker_calls[0]["registered"]
+                    and not worker_calls[0]["acknowledged"] and not worker_calls[0]["retirement_started"]
+                    and worker_returns[0]["acknowledged"] and worker_returns[0]["retirement_started"] and not worker_returns[0]["registered"]
+                    and all(row["owner"] == id(reads) and row["future"] == id(lease.future) and row["future_done"]
+                            and row["acknowledged"] and row["retirement_started"] and not row["registered"]
+                            for row in callback_calls + callback_returns)
+                    and handle["at"] <= worker_calls[0]["at"] <= acknowledgements[0]["at"]
+                        <= worker_returns[0]["at"] <= ends[0]["at"] <= callback_calls[0]["at"] <= callback_returns[0]["at"])
         checks.require("C08_failed_reader_retirement", bool(observer.leases)
                        and all(positively_retired(lease) for lease in observer.leases))
         checks.require("C08_failed_reader_executor", reads._closed and not reads._leases
