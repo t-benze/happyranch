@@ -1018,7 +1018,15 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
     """Actual HTTPX compact UTF8 request, preserving producer insertion order."""
     ledger.charge(128, 16, check)
     digest = hashlib.sha256()
+    # One bounded encoding buffer replaces put()'s per-character bytes and
+    # escaped-spelling temporaries. Full hash traversal and byte writes remain
+    # prepaid. Reserve this owner's scratch before constructing the buffer.
+    ledger.charge(64, 8, check)
+    ledger.reserve(4096, 1, check)
+    buffer = view = None
+    used = 0
     def put(text: str, string: bool = False) -> None:
+        nonlocal used
         ledger.charge(32, 0, check)  # Size selection plus possible chars dispatch.
         if string:
             # Size this same complete scalar without constructing span endpoints.
@@ -1028,28 +1036,52 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
         else:
             ledger.charge(24, 3, check)  # Conservative original nonstring setup.
             size = len(text)
-        ledger.charge(3 * size, 1, check)
-        ledger.reserve(8, 1, check)
-        try:
-            if string:
-                digest.update(b'"')
-            for index, char in enumerate(text):
-                if index % 1024 == 0:
-                    check()
-                code = ord(char)
-                if string and (code < 32 or char in '"\\'):
-                    pos = '"\\\b\f\n\r\t'.find(char)
-                    if pos >= 0:
-                        data = ('\\' + '"\\bfnrt'[pos]).encode('ascii')
-                    else:
-                        data = ('\\u00' + '0123456789abcdef'[code >> 4] + '0123456789abcdef'[code & 15]).encode('ascii')
+        ledger.charge(2 * size, 1, check)  # All encoded writes and full hashing.
+        if string:
+            digest.update(b'"')
+        for index, char in enumerate(text):
+            if index % 1024 == 0:
+                check()
+            code = ord(char)
+            escaped = string and (code < 32 or char in '"\\')
+            pos = '"\\\b\f\n\r\t'.find(char) if escaped else -1
+            width = (2 if pos >= 0 else 6) if escaped else (
+                1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
+            if used + width > 4096:
+                ledger.charge(16, 2, check)  # Original view and bounded slice.
+                digest.update(view[:used])
+                used = 0
+            if escaped:
+                buffer[used] = 92
+                if pos >= 0:
+                    buffer[used + 1] = ord('"\\bfnrt'[pos])
                 else:
-                    data = char.encode('utf8', errors='strict')
-                digest.update(data)
-            if string:
-                digest.update(b'"')
-        finally:
-            ledger.settle(8, 0)
+                    buffer[used + 1] = 117
+                    buffer[used + 2] = 48
+                    buffer[used + 3] = 48
+                    buffer[used + 4] = ord('0123456789abcdef'[code >> 4])
+                    buffer[used + 5] = ord('0123456789abcdef'[code & 15])
+            elif code < 128:
+                buffer[used] = code
+            elif code < 2048:
+                buffer[used] = 192 | code >> 6
+                buffer[used + 1] = 128 | code & 63
+            elif code < 65536:
+                buffer[used] = 224 | code >> 12
+                buffer[used + 1] = 128 | code >> 6 & 63
+                buffer[used + 2] = 128 | code & 63
+            else:
+                buffer[used] = 240 | code >> 18
+                buffer[used + 1] = 128 | code >> 12 & 63
+                buffer[used + 2] = 128 | code >> 6 & 63
+                buffer[used + 3] = 128 | code & 63
+            used += width
+        if used:
+            ledger.charge(16, 2, check)
+            digest.update(view[:used])
+            used = 0
+        if string:
+            digest.update(b'"')
     def visit(value: object, depth: int = 0) -> None:
         # Only closed submit/completion facts reach this request digest. Keep
         # the actual CLI insertion order, including done and waiting arrays.
@@ -1086,7 +1118,13 @@ def _evidence_submit_digest(payload: dict, ledger: _EvidenceLedger, check: Calla
         else:
             put('null' if value is None else 'true' if value is True else 'false' if value is False
                 else _evidence_number(value, ledger, check))
-    visit(payload)
+    try:
+        buffer = bytearray(4096)
+        view = memoryview(buffer)
+        visit(payload)
+    finally:
+        ledger.settle(4096, 0)  # Scratch only; reached output/hash work stays.
+        buffer = view = None
     ledger.charge(64, 1, check)
     return digest.hexdigest()
 
@@ -2918,35 +2956,41 @@ class _EvidenceObservations:
                 if '\\' in text:
                     raise ValueError('Case decoded representation withheld')
                 _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
-            self.ledger.charge(32, 4, self.check)
-            audit_state = [0, None]
-            if table == 'tasks' and holder in ('parked', 'first_terminal') and column == 'blocked_on_job_ids':
+            # Only these original columns consume semantic events. Other
+            # columns still receive the complete syntax/ordinal/safety scan,
+            # without allocating an unused depth/key state or callback.
+            event = None
+            if table == 'audit' or (table == 'tasks' and holder in ('parked', 'first_terminal')
+                                   and column == 'blocked_on_job_ids'):
                 self.ledger.charge(32, 4, self.check)
-                links['blocked'] = []
-            def event(event_kind: str, item: object) -> None:
-                # The existing scan callback is syntax-only. Retain
-                # direct job discriminators/blocked IDs, never a JSON tree.
-                if event_kind == 'key' and audit_state[0] == 1:
-                    audit_state[1] = item
-                elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
-                      and event_kind not in ('key', 'end-object', 'end-array')):
-                    self.ledger.charge(16 + _evidence_utf8_size('job', self.check)
-                        + (_evidence_utf8_size(item, self.check)
-                           if event_kind == 'scalar' and type(item) is str else 8), 2, self.check)
-                    links['job'] = item if event_kind == 'scalar' else None
-                if (table == 'tasks' and holder in ('parked', 'first_terminal')
-                        and column == 'blocked_on_job_ids' and audit_state[0] == 1):
-                    if event_kind == 'scalar':
-                        if type(item) is not str:
-                            raise ValueError('Case blocked job type withheld')
-                        self.ledger.charge(16 + _evidence_utf8_size(item, self.check), 2, self.check)
-                        links['blocked'].append(item)
-                    elif event_kind in ('object', 'array'):
-                        raise ValueError('Case blocked job shape withheld')
-                if event_kind in ('object', 'array'):
-                    audit_state[0] += 1
-                elif event_kind in ('end-object', 'end-array'):
-                    audit_state[0] -= 1
+                audit_state = [0, None]
+                if table == 'tasks' and holder in ('parked', 'first_terminal') and column == 'blocked_on_job_ids':
+                    self.ledger.charge(32, 4, self.check)
+                    links['blocked'] = []
+                def event(event_kind: str, item: object) -> None:
+                    # The existing scan callback is syntax-only. Retain
+                    # direct job discriminators/blocked IDs, never a JSON tree.
+                    if event_kind == 'key' and audit_state[0] == 1:
+                        audit_state[1] = item
+                    elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
+                          and event_kind not in ('key', 'end-object', 'end-array')):
+                        self.ledger.charge(16 + _evidence_utf8_size('job', self.check)
+                            + (_evidence_utf8_size(item, self.check)
+                               if event_kind == 'scalar' and type(item) is str else 8), 2, self.check)
+                        links['job'] = item if event_kind == 'scalar' else None
+                    if (table == 'tasks' and holder in ('parked', 'first_terminal')
+                            and column == 'blocked_on_job_ids' and audit_state[0] == 1):
+                        if event_kind == 'scalar':
+                            if type(item) is not str:
+                                raise ValueError('Case blocked job type withheld')
+                            self.ledger.charge(16 + _evidence_utf8_size(item, self.check), 2, self.check)
+                            links['blocked'].append(item)
+                        elif event_kind in ('object', 'array'):
+                            raise ValueError('Case blocked job shape withheld')
+                    if event_kind in ('object', 'array'):
+                        audit_state[0] += 1
+                    elif event_kind in ('end-object', 'end-array'):
+                        audit_state[0] -= 1
             _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
             _EvidenceJSON(value, self.ledger, self.check).scan(top, scalar, event=event,
                 depth=self.depth + 4 + len(row_path) + 2, context=self.context, sanitize=self.sanitize)

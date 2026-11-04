@@ -3756,3 +3756,24 @@ scalar columns, private late joins and distinct full row comparisons remain.
 There is no replacement holder or shared safety result. Complete restored
 SOURCE controls must establish admission and all original refusals; this
 operation removal alone establishes no fit or physical allocation result.
+
+Case encoded SQL columns allocate semantic event state only for audit payloads
+and the parked/first-terminal blocked-job arrays. Other columns still undergo
+the same complete grammar, decoded-key/scalar safety and original-image scan,
+including the original 8B/1fact array ordinal admission for EVERY member. They
+no longer construct the unused depth/key state or callback, so only its
+32B/4fact allocation debit disappears. Audit discriminators, blocked-ID order,
+full row retention and every distinct late comparison keep their admissions.
+
+The compact request hasher uses one preallocated 4096-byte buffer and view
+inside its existing owner. It writes every complete UTF8 codepoint/JSON escape
+and hashes the used view before reusing the buffer. Per-character encoded bytes
+and escaped-spelling strings are absent; full sizing, original key/list order,
+scalar spelling, encoded writes and hashing remain. Each put retains two full
+encoded-byte passes instead of three; only temporary encoded-byte construction
+loses its size debit. Replacement setup costs64B/8facts, scratch reserves4096B/
+1fact before allocation, and EVERY used view/slice costs16B/2facts before it is
+created. That reservation replaces put's old8B/1fact scratch, rather than
+refunding reached work. No growing bytearray/string, new cache, module or
+safety reuse is introduced. All shared controls renew; these source changes
+alone establish neither complete positive fit nor a physical allocation bound.
