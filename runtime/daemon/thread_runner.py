@@ -52,9 +52,10 @@ from runtime.orchestrator.org_config import (
     resolve_org_timezone_display,
 )
 from runtime.orchestrator.workspace_adapters import (
+    _REPO_REFRESH_SECONDS,
     format_repo_refresh_note,
     materialize_workspace_skills,
-    refresh_workspace_repos_async,
+    refresh_workspace_repos,
     validate_workspace_skills_integrity,
     WorkspaceIntegrityError,
     SystemContractMaterializationError,
@@ -1416,12 +1417,16 @@ async def _run_invocation_owned(
 
     # THR-103: fast-forward-refresh every cloned repo so the agent has
     # fresh code regardless of executor (claude/codex/opencode/pi).
-    # Await the joined offload BEFORE executor launch, inside the SAME native
-    # effects scope. Failed/skipped refreshes warn of stale source; executed
-    # failures retain uncertainty. Cancellation waits for worker completion.
-    repo_refresh_results = await refresh_workspace_repos_async(workspace,
-        preparation=move_owner, host_supervisor=host_supervisor,
-        materialization=(settings, expected_specs))
+    # ONE original offload owns retention, batch AND its finally/completion tail.
+    # Freeze the existing deadline before submission, including pool queue delay.
+    # Only that whole callable's return can release native/DB and pair custody.
+    refresh_stop = move_owner.abort_control.preparation_stop
+    refresh_deadline = time.monotonic() + _REPO_REFRESH_SECONDS
+    repo_refresh_results = await _await_invocation_worker(org_state, move_owner,
+        lambda: refresh_workspace_repos(workspace,
+            preparation=move_owner, host_supervisor=host_supervisor,
+            materialization=(settings, expected_specs), _deadline=refresh_deadline,
+            _cancel_requested=refresh_stop))
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 

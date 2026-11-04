@@ -3349,16 +3349,30 @@ def refresh_workspace_repos(
     if preparation is not None:
         preparation._repository_worker_active = True
         preparation._repository_completion_active = True
+    failure = None
     try:
         results = _repo_refresh_batch(workspace, preparation, host_supervisor, deadline, cancel, work)
+    except BaseException as exc:
+        failure = (exc, exc.__traceback__)
     finally:
         if preparation is not None:
             preparation._repository_worker_active = False
         try:
             results = _repo_refresh_complete(preparation, results, work)
+        except BaseException as completion:
+            if failure is None:
+                raise
+            # Preserve the first batch cause/traceback and the actual secondary
+            # completion error, after attempting this original tail exactly once.
+            primary, traceback = failure
+            BaseException.add_note(primary, "repository refresh completion also failed; retained as cause")
+            raise BaseException.with_traceback(primary, traceback) from completion
         finally:
             if preparation is not None:
                 preparation._repository_completion_active = False
+    if failure is not None:
+        primary, traceback = failure
+        raise BaseException.with_traceback(primary, traceback)
     return results
 
 

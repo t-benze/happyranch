@@ -4082,8 +4082,12 @@ bytes, intents/results and uncertainty. No automatic restart/restore/resume/repl
 Founder thread abort (THR329 seq3/16) uses an early exact native invocation/SID/
 preparation control. Materialization, provider phases and native finish use
 joined offloads while the original runner/native-user lifetime and pair guard
-remain held. Refresh retains its original batch and completion owner; child
-command tokens attach to the same abort control before host admission. Stop
+remain held. Thread refresh uses ONE synchronous callable for materialization
+retention, batch and its original finally/completion tail under that same owned
+offload. Its original 30-second deadline is frozen before submission, including
+pool queue delay, and it receives the same preparation-stop event. Batch and
+completion errors preserve the first cause/traceback and actual secondary error.
+Child command tokens attach to the same abort control before host admission. Stop
 dispatch has capacity independent of blocked provider pools. Thread-only
 throttle/host waits observe the same fired token without resetting retry
 schedules or budgets. Contained running-stop uses existing backend controls;

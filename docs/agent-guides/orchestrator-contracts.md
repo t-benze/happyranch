@@ -6391,6 +6391,12 @@ return and native/backend settlement. The first observed cause and original
 traceback survive later cancellation/dispatch/worker/settlement errors, bound to
 the same INTEGER/permanent agent/thread/native SID/preparation generation. No
 missing Future authorizes a duplicate call or an uncertainty-clearing retry.
+Thread repository refresh submits the existing synchronous refresh function as
+one such original callable: materialization retention, batch and the entire
+original finally/completion tail precede its return acknowledgement. The original
+30-second deadline starts before submission and the same preparation-stop event
+crosses that boundary. A completion error cannot replace the first batch error
+or traceback; its actual secondary exception is retained with the primary.
 C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
 
 Unsupported-stop audit failure is retained without interrupting the original
