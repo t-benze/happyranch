@@ -3987,6 +3987,51 @@ class _EvidenceJSON:
             self.index = cursor + 1
             self.check()
             return value
+        if size <= 4096:
+            # Decode this SAME scalar into one bounded UTF8 buffer. The old
+            # fragment slices/chr strings, two reference lists and their
+            # intermediate/final joins do not exist in this branch. Keep
+            # BOTH complete byte writes (buffer and retained decoded scalar),
+            # the two live owners and fixed replacement dispatch/setup paid
+            # BEFORE allocation. Scratch never exceeds the original4096B.
+            self.ledger.charge(8 + 2 * size, 2, self.check)
+            self.ledger.charge(64, 0, self.check)
+            self.ledger.reserve(size, 0, self.check)
+            buffer = None
+            try:
+                buffer = bytearray(size)
+                index, position = start, 0
+                while index < cursor:
+                    if position % 1024 == 0:
+                        self.check()
+                    code, index = self.codepoint(index)
+                    width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+                    if position + width > size:
+                        raise _EvidenceUnsafe('JSON scalar decoding postcondition')
+                    if width == 1:
+                        buffer[position] = code
+                    elif width == 2:
+                        buffer[position] = 192 | code >> 6
+                        buffer[position + 1] = 128 | code & 63
+                    elif width == 3:
+                        buffer[position] = 224 | code >> 12
+                        buffer[position + 1] = 128 | code >> 6 & 63
+                        buffer[position + 2] = 128 | code & 63
+                    else:
+                        buffer[position] = 240 | code >> 18
+                        buffer[position + 1] = 128 | code >> 12 & 63
+                        buffer[position + 2] = 128 | code >> 6 & 63
+                        buffer[position + 3] = 128 | code & 63
+                    position += width
+                if position != size:
+                    raise _EvidenceUnsafe('JSON scalar decoding postcondition')
+                value = buffer.decode('utf-8', errors='strict')
+                self.index = cursor + 1
+            finally:
+                self.ledger.settle(size, 0)  # Scratch only; both copies stay spent.
+                buffer = None
+            self.check()
+            return value
         # Charge decoded storage, chunk references, and join BEFORE decoding.
         chunks = (size + 1020) // 1021
         self.ledger.charge(8 + 2 * size + 8 * chunks, 1 + chunks, self.check)

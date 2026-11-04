@@ -2347,7 +2347,14 @@ Its retained storage remains charged at 8+UTF8-size bytes/one fact before slicin
 new branch selection pays a separate 16 bytes at the existing fixed
 construction-slot rate, with no additional retained scalar/chunk fact. That branch constructs
 no chunk/fragment arrays, chunk references, intermediate chunks or final join.
-Larger and escaped JSON scalars retain fixed bounded fragment slots instead of
+Other JSON scalars of at most4096 decoded UTF8 bytes use one bounded byte buffer,
+then strict UTF8 decoding. Before allocation they pay 8+2*size bytes/two facts
+for the buffer writes and retained scalar,64 bytes for replacement setup, and
+reserve size bytes of scratch. No fragment slices, escaped-character strings,
+fragment/chunk lists or joins exist on this branch. Every original codepoint
+is still decoded after the full grammar/size preflight; each caller retains its
+own safety and complete comparison. Scratch release refunds no reached work.
+Scalars above4096 bytes retain fixed bounded fragment slots instead of
 repeated growing-string reconstruction. Within that path, a literal-only chunk
 is one direct original slice, paid with its final join; it creates no intermediate
 fragment or per-chunk join. Mixed/escaped fragments, slot storage/writes/clearing

@@ -652,7 +652,13 @@ pass debit, output-reference admission, strict output measurement, full equality
 residual-secret checks and the separate raw unchanged comparison remain. This
 does not change general transforming raw-text sanitation or grant decoded text
 permission elsewhere.
-Within that path, literal-only chunks are direct original
+For mixed or longer JSON scalars of at most4096 decoded UTF8 bytes, one bounded
+byte buffer and strict UTF8 decode replace all fragment strings/lists/chunk joins.
+Before allocation,8+2*size bytes/two facts cover both copies and64 bytes cover
+replacement setup; size bytes of scratch are reserved without refunding work.
+Complete grammar/size preflight, second codepoint decoding, occurrence safety,
+original type/order/content comparisons and array ordinal work still run.
+For larger scalars, literal-only chunks are direct original
 slices with no intermediate fragment/join. Mixed/escaped construction,
 slot storage/writes/clearing and join reference reads are paid before work,
 alongside retained chunks/final join and bounded scratch. Only the two
@@ -2947,9 +2953,10 @@ preflight. An unescaped original spelling of at most 1021 UTF8 bytes then pays
 branch selection pays another 16 bytes at the existing fixed
 construction-slot rate, with no additional
 retained scalar/chunk fact. No chunk/fragment arrays, intermediate chunks,
-chunk references or final join exist on that branch. Larger and escaped scalars
-retain the original construction, charges and shorter-chunk carry clearing,
-plus the explicit tracking charge. No retained-work rate or allowance changes.
+chunk references or final join exist on that branch. Other scalars up to4096
+decoded UTF8 bytes use the prepaid bounded buffer/strict decode described above.
+Above4096 bytes, the original construction, charges and shorter-chunk carry
+clearing remain, plus the explicit tracking charge. No retained-work rate or allowance changes.
 Required context/scenario trees, Controller preparation, raw/JSONL scans, Relay
 and Submission comparisons, and Case/final-snapshot SQL scans all depend on this
 method. Renew their full existing controls and reconcile every published result's
