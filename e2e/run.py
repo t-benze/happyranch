@@ -1138,6 +1138,27 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 decoded_size += 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
                 if decoded_size > 262144:
                     raise _EvidenceCapacity('Python literal output capacity refused')
+            # Selection follows the complete original grammar/size preflight.
+            # Pay temporary selection slots and the original-span search;
+            # no extra per-codepoint state or substring is needed to select.
+            ledger.charge(24, 0, check)
+            if decoded_size <= 1021:
+                ledger.charge(spelling_size, 0, check)
+                content_end = finish - (3 if triple else 1)
+                if (source.find('\\', opening, content_end) < 0
+                        and spelling_size - (opening - begin) - (finish - content_end) == decoded_size):
+                    # One literal slice needs no decoded chunks/concat/join.
+                    # Keep final scalar storage and ALL fixed admission; only
+                    # absent intermediate/chunk/scratch construction loses cost.
+                    ledger.charge(decoded_size + 32, 4, check)
+                    value = source[opening:content_end]
+                    try:
+                        if '\\' in value:
+                            fail()
+                        _evidence_original(value, context, ledger, check, sanitize)
+                    finally:
+                        value = None
+                    return finish
             chunks = (decoded_size + 1020) // 1021
             ledger.charge(2 * decoded_size + 8 * chunks + 32, chunks + 4, check)
             ledger.reserve(min(4096, 4 * decoded_size), 1, check)
