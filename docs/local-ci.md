@@ -3045,3 +3045,29 @@ Every field, insertion order, array member, number and complete request digest
 is still consumed. No full request buffer, cap/rate change or refund is added.
 All shared canonical/Case-copy controls renew; this operation elimination alone
 establishes no fit, independent QA or native acceptance.
+
+The original command owner now also supplies the submit proof directly. Case
+and read joins compare the same ten proof fields from its original payload and
+provider, plus the same three response fields; they construct no duplicate
+proof/response dictionaries or Case-submit carrier. Selection traverses the
+existing command population with its full traversal charge. Every distinct
+comparison and each occurrence's own safety still runs, with explicit admission
+for the new reference projections. Receipt-owned proof maps keep their meaning.
+
+Full original hashes use the existing digest primitive's one at-most4096-byte
+scratch buffer. Explicit UTF8 byte emission replaces temporary Unicode chunk
+slices and whole-chunk encoding. Entire hash traversal, original fixed admission,
+all byte writes, buffer/view/cursor setup and each bounded view are prepaid;
+releasing scratch refunds no work or facts. Empty/BMP/non-BMP/tail bytes remain
+part of the complete original hash. This changes no read, decode or string
+construction contract and certifies no allocation or native timing bound.
+
+Submission child-identity parsing scans the same twenty original stat tokens,
+but retains only the parent and start token strings. The eighteen unused
+substring/list-entry pairs are absent. The original byte admission stays,
+with16B setup added;64 facts become29:24 fixed plus four retained-token facts
+and one new counter fact. Full parent/start equality, original PID prefix,
+start grammar, twenty-token cardinality and occurrence safety remain. These
+construction removals establish no fit; complete original-cap SOURCE controls,
+full typed/ordered reconciliation and the intended omission/restoration are
+still required, separately from review, QA and native acceptance.

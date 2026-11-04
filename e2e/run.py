@@ -964,19 +964,52 @@ def _evidence_original(text: str, context: tuple | list, ledger: _EvidenceLedger
 
 
 def _evidence_digest(text: str, ledger: _EvidenceLedger, check: Callable[[], None]) -> tuple[int, str]:
-    """Hash the entire original UTF8 image in precharged <=4096-byte chunks."""
+    """Hash the entire original UTF8 image through one paid bounded buffer."""
     size = _evidence_utf8_size(text, check)
     ledger.charge(size + 96, 12, check)
     digest = hashlib.sha256()
-    # At most1024 codepoints, hence at most4096 encoded bytes. Both the slice
-    # and its conversion are reserved before either is allocated.
-    for index in range(0, len(text), 1024):
+    # No Unicode chunk slice or whole-chunk encode is constructed. As in the
+    # existing final encoder, prepay EVERY byte write, then reserve bounded
+    # output scratch. Hash traversal and fixed digest admission above stay.
+    ledger.charge(size, 1, check)
+    ledger.charge(64, 8, check)  # Buffer/view, cursor/code/width and dispatch slots.
+    scratch = min(4096, size)
+    ledger.reserve(scratch, 1, check)
+    try:
+        buffer = bytearray(scratch)
+        view = memoryview(buffer)
+        used = 0
+        for index, char in enumerate(text):
+            if index % 1024 == 0:
+                check()
+            code = ord(char)
+            width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
+            if used + width > scratch:
+                ledger.charge(16, 2, check)  # Original view reference plus its bounded slice.
+                digest.update(view[:used])
+                used = 0
+            if width == 1:
+                buffer[used] = code
+            elif width == 2:
+                buffer[used] = 192 | code >> 6
+                buffer[used + 1] = 128 | code & 63
+            elif width == 3:
+                buffer[used] = 224 | code >> 12
+                buffer[used + 1] = 128 | code >> 6 & 63
+                buffer[used + 2] = 128 | code & 63
+            else:
+                buffer[used] = 240 | code >> 18
+                buffer[used + 1] = 128 | code >> 12 & 63
+                buffer[used + 2] = 128 | code >> 6 & 63
+                buffer[used + 3] = 128 | code & 63
+            used += width
+        if used:
+            ledger.charge(16, 2, check)
+            digest.update(view[:used])
         check()
-        end = min(index + 1024, len(text))
-        ledger.charge(8 * (end - index), 2, check)
-        chunk = text[index:end].encode('utf8', errors='strict')
-        digest.update(chunk)
-        chunk = None
+    finally:
+        ledger.settle(scratch, 0)  # Byte writes/facts above are never refunded.
+        buffer = view = None
     ledger.charge(64, 1, check)
     return size, digest.hexdigest()
 
@@ -2080,10 +2113,14 @@ class _EvidenceSubmission:
         # Original /proc spelling is retained. Only indispensable child identity
         # fields are inspected; this is no liveness/process lookup.
         stat_text = m['child_stat']
-        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 64, 64, o.check)
+        # Only parent/start tokens are retained. Scan all twenty original
+        # positions, without eighteen unused substring/list-entry pairs.
+        # Keep the original byte admission and24 fixed facts; two retained
+        # pairs cost4 facts, and the new position counter costs one.
+        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 80, 29, o.check)
         close = stat_text.rfind(')')
-        fields, cursor = [], close + 2
-        while close >= 0 and cursor < len(stat_text) and len(fields) < 20:
+        fields, cursor, count = [], close + 2, 0
+        while close >= 0 and cursor < len(stat_text) and count < 20:
             while cursor < len(stat_text) and stat_text[cursor].isspace():
                 cursor += 1
             begin = cursor
@@ -2092,9 +2129,11 @@ class _EvidenceSubmission:
                 if cursor % 1024 == 0:
                     o.check()
             if cursor > begin:
-                fields.append(stat_text[begin:cursor])
-        if (not stat_text.startswith(str(m['child_pid']) + ' (') or len(fields) < 20
-                or fields[1] != str(provider['pid']) or fields[19] != m['child_start']
+                if count in (1, 19):
+                    fields.append(stat_text[begin:cursor])
+                count += 1
+        if (not stat_text.startswith(str(m['child_pid']) + ' (') or count < 20
+                or fields[0] != str(provider['pid']) or fields[1] != m['child_start']
                 or not m['child_start'].isascii() or not m['child_start'].isdigit()):
             raise ValueError('submission child identity withheld')
         # Each occurrence pays its own source scan; the file occurrence is not
@@ -2149,18 +2188,14 @@ class _EvidenceSubmission:
         # closed submit facts needed for that join, never another command tree.
         self.remember(p, 0 if refusal else 1)
         if not refusal:
-            o.ledger.charge(512, 64, o.check)
-            proof = dict(task_id=p['task_id'], agent_name=provider['agent'], title=p['title'], rationale=p['rationale'],
-                         script_text=p['script'], interpreter=p['interpreter'], cwd_hint=p['cwd_hint'],
-                         review_required=p['review_required'], persistent=p['persistent'], max_runtime_seconds=p['max_runtime_seconds'])
-            o.job_proofs.append((provider['task'], self.response['id'], proof))
-            # Case rows need the actual submit/start facts as well as SOURCE.
-            # Retain only these indispensable original references until close.
-            o.ledger.charge(104, 13, o.check)
+            # The closed original command already retains every proof scalar
+            # and response field. Keep that SAME owner for read/Case joins;
+            # do not construct duplicate proof/response dictionaries or a
+            # second Case submit carrier. Each consumer still compares all
+            # original fields, with its own comparison/traversal admission.
+            o.ledger.charge(32, 4, o.check)
             self.retain_command()
-            response = self.facts[4]
-            o.case_submits.append((provider, response['id'], proof,
-                {k: response[k] for k in ('created_at', 'started_at', 'cwd_resolved')}, self.facts))
+            o.job_proofs.append((provider['task'], self.facts[4]['id'], self.facts))
         else:
             self.retain_command()
         self.payload = {}
@@ -2338,10 +2373,14 @@ class _EvidenceSubmission:
                 or any(c not in '0123456789abcdef' for c in m['callback_sha256'])):
             raise ValueError('receipt command identity withheld')
         stat_text = m['child_stat']
-        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 64, 64, o.check)
+        # Only parent/start tokens are retained. Scan all twenty original
+        # positions, without eighteen unused substring/list-entry pairs.
+        # Keep the original byte admission and24 fixed facts; two retained
+        # pairs cost4 facts, and the new position counter costs one.
+        o.ledger.charge(3 * _evidence_utf8_size(stat_text, o.check) + 80, 29, o.check)
         close = stat_text.rfind(')')
-        fields, cursor = [], close + 2
-        while close >= 0 and cursor < len(stat_text) and len(fields) < 20:
+        fields, cursor, count = [], close + 2, 0
+        while close >= 0 and cursor < len(stat_text) and count < 20:
             while cursor < len(stat_text) and stat_text[cursor].isspace():
                 cursor += 1
             begin = cursor
@@ -2350,9 +2389,11 @@ class _EvidenceSubmission:
                 if cursor % 1024 == 0:
                     o.check()
             if cursor > begin:
-                fields.append(stat_text[begin:cursor])
-        if (not stat_text.startswith(str(m['child_pid']) + ' (') or len(fields) < 20
-                or fields[1] != str(p['pid']) or fields[19] != m['child_start']
+                if count in (1, 19):
+                    fields.append(stat_text[begin:cursor])
+                count += 1
+        if (not stat_text.startswith(str(m['child_pid']) + ' (') or count < 20
+                or fields[0] != str(p['pid']) or fields[1] != m['child_start']
                 or not m['child_start'].isascii() or not m['child_start'].isdigit()):
             raise ValueError('receipt child identity withheld')
 
@@ -2532,7 +2573,7 @@ class _EvidenceObservations:
         self.starts, self.manifests, self.pending = [], [], []
         self.attempts, self.submitted = [], {}
         self.job_proofs, self.read_jobs = [], []
-        self.cases, self.case_submits = [], []
+        self.cases = []
         self.commands, self.case_command = [], None
         self.case = None
         self.attempt = None
@@ -3029,11 +3070,12 @@ class _EvidenceObservations:
             self.ledger.charge(16, 2, self.check)
             first_command = second_command = None
             for number, job in enumerate(jobs):
-                self.ledger.charge(128 + 32 * (len(self.case_submits) + len(c['copies'])),
-                                    16 + 4 * (len(self.case_submits) + len(c['copies'])), self.check)
+                self.ledger.charge(128 + 32 * (len(self.commands) + len(c['copies'])),
+                                    16 + 4 * (len(self.commands) + len(c['copies'])), self.check)
                 copies = [f for slot,f in c['copies'] if slot == ('jobs', number, 'submit')]
                 actual_id = job.get('id') if 'id' in job else copies[0][4].get('id') if len(copies) == 1 else None
-                candidates = [s for s in self.case_submits if same(s[1], actual_id)]
+                candidates = [f for f in self.commands if f[0]['action'] == 'jobs-submit'
+                              and same(f[4].get('id'), actual_id)]
                 if (type(job.get('script')) is not str or type(job.get('script_sha256')) is not str
                         or type(job.get('code')) is not int or job['code'] != plan[number][1]
                         or job.get('label') != plan[number][0] or type(job.get('cap')) is not int
@@ -3060,16 +3102,19 @@ class _EvidenceObservations:
                     continue  # Original job exists before provider_cli returns.
                 if len(candidates) != 1:
                     raise ValueError('Case actual submit identity withheld')
-                provider, jid, proof, submitted, original_command = candidates[0]
+                self.ledger.charge(32, 4, self.check)
+                original_command = candidates[0]
+                provider, proof, submitted = original_command[1], original_command[2], original_command[4]
+                jid = submitted['id']
                 if (any(not same(provider.get(k), starts[0].get(k)) for k in provider)
-                        or not same(proof['script_text'], job['script']) or proof['task_id'] != m['task']
-                        or proof['agent_name'] != 'case_manager' or proof['interpreter'] != 'python3'
+                        or not same(proof['script'], job['script']) or proof['task_id'] != m['task']
+                        or provider['agent'] != 'case_manager' or proof['interpreter'] != 'python3'
                         or not same(proof['title'], m['variant'] + '/' + token)
                         or proof['review_required'] is not False or proof['persistent'] is not False
                         or not same(proof['max_runtime_seconds'], job['cap'])):
                     raise ValueError('Case full submitted SOURCE join withheld')
-                self.ledger.charge(24, 3, self.check)
-                owners.append((jid, proof, submitted)); ids.add(jid)
+                self.ledger.charge(16, 2, self.check)
+                owners.append((jid, original_command)); ids.add(jid)
                 self.ledger.charge(16, 2, self.check)
                 self.ledger.charge(8, 1, self.check)
                 if number == 0:
@@ -3235,7 +3280,9 @@ class _EvidenceObservations:
                 owner = first_owner if job_number == 0 else second_owner
                 if owner is None or number is None and job_number == 1 and not same(row['id'], owner[0]):
                     raise ValueError('Case SQL actual job withheld')
-                jid, proof, submitted = owner
+                self.ledger.charge(32, 4, self.check)
+                jid, original_command = owner
+                proof, submitted, provider = original_command[2], original_command[4], original_command[1]
                 job = jobs[job_number]
                 if (any(k not in row for k in self.job_columns)
                         or any(type(row.get(k)) is not str or not row[k] for k in
@@ -3246,8 +3293,11 @@ class _EvidenceObservations:
                         or any(type(row.get(k)) not in (int,type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds'))
                         or any(type(row.get(k)) is not int for k in ('review_required','persistent','max_output_bytes'))
                         or row['max_output_bytes'] <= 0
-                        or any(not same(row.get(k), int(v) if k in ('review_required','persistent') else v) for k,v in proof.items())
-                        or any(not same(row.get(k), v) for k,v in submitted.items())):
+                        or not same(row.get('agent_name'), provider['agent'])
+                        or any(not same(row.get('script_text' if k == 'script' else k),
+                                        int(proof[k]) if k in ('review_required','persistent') else proof[k])
+                               for k in _EvidenceSubmission.payload_fields if k != 'session_id')
+                        or any(not same(row.get(k), submitted[k]) for k in ('created_at','started_at','cwd_resolved'))):
                     raise ValueError('Case SQL full submitted row withheld')
                 self.ledger.charge(256 + 4 * (_evidence_utf8_size(manifest['root'], self.check)
                     + _evidence_utf8_size(jid, self.check)), 8, self.check)
@@ -3695,8 +3745,24 @@ class _EvidenceObservations:
                         continue
                     found = True
                     if detail is not None:
-                        for key, value in proof.items():
-                            other = detail.get(key)
+                        # Submit proofs are the existing closed command owner;
+                        # receipt proofs already own their original scalar map.
+                        self.ledger.charge(32, 4, self.check)
+                        submitted = type(proof) is tuple
+                        source = proof[2] if submitted else proof
+                        for key in source:
+                            if submitted and key == 'session_id':
+                                continue
+                            value = source[key]
+                            column = 'script_text' if submitted and key == 'script' else key
+                            other = detail.get(column)
+                            self.ledger.charge(32 + (_evidence_utf8_size(value, self.check) + _evidence_utf8_size(other, self.check)
+                                if type(value) is str and type(other) is str else 16), 2, self.check)
+                            if type(other) is not type(value) or other != value:
+                                raise ValueError('read original job proof equality withheld')
+                        if submitted:
+                            value = proof[1]['agent']
+                            other = detail.get('agent_name')
                             self.ledger.charge(32 + (_evidence_utf8_size(value, self.check) + _evidence_utf8_size(other, self.check)
                                 if type(value) is str and type(other) is str else 16), 2, self.check)
                             if type(other) is not type(value) or other != value:
@@ -3713,7 +3779,7 @@ class _EvidenceObservations:
         self.pending.clear(); self.starts.clear(); self.manifests.clear()
         self.attempts.clear(); self.submitted.clear(); self.attempt = None
         self.job_proofs.clear(); self.read_jobs.clear()
-        self.cases.clear(); self.case_submits.clear(); self.case = None
+        self.cases.clear(); self.case = None
         self.commands.clear()
         if self.case_command is not None:
             self.case_command.release(); self.case_command = None
