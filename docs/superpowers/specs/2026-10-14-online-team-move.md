@@ -493,8 +493,9 @@ filesystem bound or demonstrated dominant slow stage.
 Current CLI timeout amendment (Founder THR-296 seq239 approving seq238): this
 supersedes the preceding CLI-deadline sentence only for team-move preview. Its
 request uses a 300-second response-read/inactivity allowance, with connect,
-write and pool still 30 seconds; all other client requests retain 30-second
-timeouts. This is not a total wall deadline or completion guarantee. Native
+write and pool still 30 seconds. The shared client default and other team-move
+requests remain at 30 seconds; existing request-specific overrides elsewhere
+are unchanged. This is not a total wall deadline or completion guarantee. Native
 45-second awaits, drain and server deadlines remain. Preserve the same key and
 saved inputs after errors, without automatic retry; reconcile outstanding
 handler ownership before another authorized attempt. Source acceptance adds no

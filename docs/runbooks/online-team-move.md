@@ -90,7 +90,8 @@ Source and static evidence establish no complete responsiveness, behavioral
 readiness, filesystem deadline or dominant slow planning stage. Under Founder
 THR-296 seq239 approving seq238, the CLI team-move preview request alone has a
 300-second response-read/inactivity allowance; connect, write and pool remain
-30 seconds. All other client requests retain their existing 30-second timeouts.
+30 seconds. The shared client default and other team-move requests remain at
+30 seconds; existing request-specific overrides elsewhere are unchanged.
 This is not a total wall deadline or completion guarantee and changes no native
 45-second await, drain or server deadline. After timeout or error, preserve the
 same key and saved inputs; no automatic retry. Reconcile outstanding handler
