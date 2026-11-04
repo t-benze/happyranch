@@ -1160,14 +1160,47 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
         def fail() -> None:
             raise ValueError('Python lexical representation withheld')
 
-        def literal(begin: int, quote_at: int) -> int:
-            # Six original prefix/quote slots exist on every literal. The
-            # two decoder closures are created and paid only on the fallback.
-            ledger.charge(48, 6, check)
-            prefix = ''.join(source[n].lower() for n in range(begin, quote_at))
-            if prefix not in ('', 'u', 'b', 'r', 'br', 'rb'):
+        # The numeric grammar belongs to this one original SOURCE image.
+        # Pay its closure once before creation, rather than constructing it
+        # anew for every numeric token. Each invocation still uses that token's
+        # original begin index and performs the complete underscore/size scan.
+        ledger.charge(8, 1, check)
+        def digits(cursor: int) -> int:
+            count, underscore = 0, False
+            while cursor < end and source[cursor] in '0123456789_':
+                if cursor - begin >= 65536:
+                    raise _EvidenceCapacity('Python token capacity refused')
+                if cursor % 4096 == 0:
+                    check()
+                if source[cursor] == '_':
+                    if not count or underscore:
+                        fail()
+                    underscore = True
+                else:
+                    count += 1; underscore = False
+                cursor += 1
+            if underscore:
                 fail()
-            raw, binary = 'r' in prefix, 'b' in prefix
+            return cursor
+
+        def literal(begin: int, quote_at: int) -> int:
+            # No prefix generator, lowercase characters, join or prefix scalar.
+            # The five original flag/quote/opening slots and prefix selection
+            # remain paid; decoder closures still belong only to the fallback.
+            ledger.charge(40, 5, check)
+            if begin == quote_at:
+                raw = binary = False
+            elif quote_at == begin + 1:
+                if not source.startswith(('u', 'U', 'b', 'B', 'r', 'R'), begin):
+                    fail()
+                raw = source.startswith(('r', 'R'), begin)
+                binary = source.startswith(('b', 'B'), begin)
+            elif quote_at == begin + 2 and (
+                    source.startswith(('b', 'B'), begin) and source.startswith(('r', 'R'), begin + 1)
+                    or source.startswith(('r', 'R'), begin) and source.startswith(('b', 'B'), begin + 1)):
+                raw = binary = True
+            else:
+                fail()
             quote = source[quote_at]
             triple = source.startswith(quote * 3, quote_at)
             opening = quote_at + (3 if triple else 1)
@@ -1462,25 +1495,10 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
             if (source.startswith(('0','1','2','3','4','5','6','7','8','9'), index)
                     or source.startswith('.', index) and index + 1 < end
                         and source.startswith(('0','1','2','3','4','5','6','7','8','9'), index + 1)):
-                ledger.charge(24, 1, check)
+                # Keep the original begin fact and branch setup; only the
+                # per-token closure construction has moved to this source owner.
+                ledger.charge(16, 1, check)
                 begin = index
-                def digits(cursor: int) -> int:
-                    count, underscore = 0, False
-                    while cursor < end and source[cursor] in '0123456789_':
-                        if cursor - begin >= 65536:
-                            raise _EvidenceCapacity('Python token capacity refused')
-                        if cursor % 4096 == 0:
-                            check()
-                        if source[cursor] == '_':
-                            if not count or underscore:
-                                fail()
-                            underscore = True
-                        else:
-                            count += 1; underscore = False
-                        cursor += 1
-                    if underscore:
-                        fail()
-                    return cursor
                 index = digits(index)
                 if index < end and source[index] == '.':
                     index = digits(index + 1)

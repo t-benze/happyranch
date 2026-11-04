@@ -3602,8 +3602,10 @@ count still excludes newline normalization. The slice retains its full scalar
 debit and all fixed 32B/4facts; selection still pays 24B. Absent intermediate
 decoded storage, chunk references, per-codepoint concatenation and construction
 scratch remain absent. Unescaped grammar/size preflight traverses the original
-characters directly, including binary and CRLF checks. Six prefix/quote slots
-retain48B/6facts; only a fallback constructs the two decoder closures, paying
+characters directly, including binary and CRLF checks. Five flag/quote/opening
+slots retain40B/5facts; finite indexed prefix predicates construct no prefix
+generator, lowercase characters, join or prefix scalar. Only a fallback
+constructs the two decoder closures, paying
 16B/2facts before creation. Escaped or CRLF-normalized literals of at most4096
 decoded bytes use one bounded UTF8 buffer and strict decode instead of growing
 chr/concatenation, chunk references and a final join. Before allocation they pay
@@ -3864,3 +3866,18 @@ remain charged. Equal-length rows with a missing key still refuse, including a
 missing key whose original value is null. Unequal cardinality keeps the original
 admission. No local result holder, second traversal, new sentinel/cache/index,
 shared safety result or comparison is introduced or omitted.
+
+
+The SOURCE numeric digit scanner is now created once within each original
+SOURCE invocation, prepaid8B/1fact before construction. Each numeric token
+retains its16B branch setup and original begin fact; only the former per-token
+8B closure creation is absent. The original32B/1fact token admission, complete
+underscore/decimal/exponent/size grammar, literal spelling/decoded grammar and
+each occurrence's own original/decoded sanitation remain. No other occurrence
+or source supplies admission. Literal prefix predicates preserve exactly the
+case-insensitive empty/u/b/r/br/rb set, including mixed-case two-letter forms,
+without constructing a prefix value. These are actual local construction
+removals, not a changed token/scalar/retention/comparison rate or cap. Full
+restored5208 controls and ALL4572 typed ordered reconciliation, followed by the
+SAME one command-equality omission/restoration/final green, remain required to
+establish this candidate's result; source inspection supplies no fit claim.
