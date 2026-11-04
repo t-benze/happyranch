@@ -1251,14 +1251,14 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
         while index < end:
             if index % 1024 == 0:
                 check()
-            char = source[index]
-            if char in ' \t\f\r\n':
+            if source[index] in ' \t\f\r\n':
                 index += 1
                 continue
-            # Keep the character and fixed token admission. Only word/number
-            # grammars need a start alias; other tokens do not populate it.
-            ledger.charge(8, 2, check)
-            if char == '#':
+            # Direct indexed dispatch populates no retained character alias.
+            # Keep the fixed token fact and prepay up to 16 lookup/dispatch
+            # operations. Only the absent alias loses its 8B/1fact debit.
+            ledger.charge(128, 1, check)
+            if source[index] == '#':
                 while index < end and source[index] not in '\r\n':
                     if index % 4096 == 0:
                         check()
@@ -1266,10 +1266,10 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                     index += 1
                 continue
-            if char in "\"'":
+            if source[index] in "\"'":
                 index = literal(index, index)
                 continue
-            if char.isascii() and (char.isalpha() or char == '_'):
+            if source[index].isascii() and (source[index].isalpha() or source[index] == '_'):
                 # Original start slot plus new branch-local setup/check work.
                 ledger.charge(24, 1, check)
                 begin = index
@@ -1285,7 +1285,7 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                         fail()
                     index = literal(begin, index)
                 continue
-            if char in '0123456789' or char == '.' and index + 1 < end and source[index + 1] in '0123456789':
+            if source[index] in '0123456789' or source[index] == '.' and index + 1 < end and source[index + 1] in '0123456789':
                 ledger.charge(24, 1, check)
                 begin = index
                 def digits(cursor: int) -> int:
@@ -1318,23 +1318,23 @@ def _evidence_python(source: str, context: tuple | list, ledger: _EvidenceLedger
                 if index < end and (source[index].isascii() and (source[index].isalpha() or source[index] == '_')):
                     fail()
                 continue
-            if char in '([{':
+            if source[index] in '([{':
                 if depth + len(stack) + 3 > 64:
                     raise _EvidenceCapacity('Python depth capacity refused')
                 ledger.charge(8, 1, check)
-                stack.append(char)
-            elif char in ')]}':
-                if not stack or '([{'.index(stack.pop()) != ')]}'.index(char):
+                stack.append(source[index])
+            elif source[index] in ')]}':
+                if not stack or '([{'.index(stack.pop()) != ')]}'.index(source[index]):
                     fail()
-            elif char == '\\':
+            elif source[index] == '\\':
                 index += 1
                 if index < end and source[index] == '\r':
                     index += 1
                 if index == end or source[index] != '\n':
                     fail()
-            elif char not in ':.,;+-*/%&|^~<>=!@':
+            elif source[index] not in ':.,;+-*/%&|^~<>=!@':
                 fail()
-            elif char == '!' and (index + 1 == end or source[index + 1] != '='):
+            elif source[index] == '!' and (index + 1 == end or source[index + 1] != '='):
                 fail()
             index += 1
         if stack:

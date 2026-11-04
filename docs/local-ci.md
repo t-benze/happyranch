@@ -627,6 +627,12 @@ unescaped JSON strings fitting one conservative 1021-byte construction chunk
 use one precharged complete original scalar slice, with separate paid branch
 work and no intermediate construction or join. Larger and escaped JSON scalars
 use bounded local fragments and fixed reference slots.
+The SOURCE lexical token loop uses indexed character dispatch without populating
+a per-token character alias. Its fixed token fact remains, and 128B/0facts
+prepay up to 16 indexed lookup/dispatch operations. Only the absent 8B/1fact
+alias population disappears; token bytes increase. Word/number start aliases,
+all grammar/safety/comparisons and the original shared limits remain charged.
+This logical slot change certifies neither allocation bounds nor fit.
 Unchanged-original admission first rejects every original secret in that same
 occurrence. Its expected sanitation result is then the complete original, so it
 constructs no virtual replacement or comparison spans. Each actual sanitizer

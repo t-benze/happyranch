@@ -3629,13 +3629,16 @@ until the complete existing controls and required omission/restoration pass.
 
 SOURCE lexical scanning populates its token-start alias only in the existing
 identifier and numeric branches, where token-length and prefix checks use it.
-Comments, plain quoted literals, delimiters, operators and continuations keep
-the original character and fixed token admission (8B/2facts); only the absent
-start-reference population loses 8B/1fact. Identifier and numeric tokens pay
-the original start-reference 8B/1fact plus 16B/0facts for the new branch-local
-setup and check call, totaling 32B/3facts. These are nonrefundable logical slot
-operations: an earlier start value may still occupy the same local cell; no
-Python allocation or peak-memory saving is certified. Complete grammar,
+The lexical token loop dispatches directly on the original indexed characters,
+without populating a retained character alias per token. Its fixed token fact
+remains; up to 16 indexed lookup/dispatch operations prepay 128B/0facts. Only the
+absent alias population loses 8B/1fact. Comments, plain quoted literals,
+delimiters, operators and continuations therefore pay 128B/1fact. Identifier and
+numeric branches retain the start-reference 8B/1fact plus 16B/0facts for their
+branch-local setup/check, totaling 152B/2facts. These are nonrefundable logical
+slot operations: earlier start/preflight-character values may still occupy
+the same local cells; no Python allocation or peak-memory saving is certified.
+Complete grammar,
 token/line/literal/depth limits, periodic/end checks and every independent
 original-occurrence safety/comparison remain. All existing shared controls
 renew; complete green and the required omission/restoration remain necessary.
