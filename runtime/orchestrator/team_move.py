@@ -543,16 +543,27 @@ class TeamMoveCoordinator:
         Existing generation-aware queue owner decides dedup/eligibility. No
         result token consumption, task allocation or release of the operation.
         """
+        for task_id, metadata in self._released_task_notifications():
+            if not enqueue(task_id, metadata):
+                continue  # Refused/pending publication retains its notification.
+            self._ack_released_task(task_id, metadata)
+
+    def _released_task_notifications(self) -> tuple:
         with self.gate, self.store.db._lock:
             if self.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
-            deferred = tuple(self._deferred.items())
+            return tuple(self._deferred.items())
+
+    def _ack_released_task(self, task_id: str, metadata: dict | None) -> None:
+        with self.store.db._lock:
+            if self._deferred.get(task_id) is metadata:
+                self._deferred.pop(task_id, None)
+
+    async def _redeliver_tasks_native(self, enqueue: Any, *, native: Any) -> None:
+        deferred = await native(self._released_task_notifications)
         for task_id, metadata in deferred:
-            if not enqueue(task_id, metadata):
-                continue  # Refused/pending publication retains its notification.
-            with self.store.db._lock:
-                if self._deferred.get(task_id) is metadata:
-                    self._deferred.pop(task_id, None)
+            if await enqueue(task_id, metadata):
+                await native(lambda: self._ack_released_task(task_id, metadata))
 
     def project(self, identity: PermanentAgentIdentity) -> AdmissionProjection:
         if identity.org_slug != self.store.org_slug or not identity.agent_id:

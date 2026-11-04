@@ -76,7 +76,7 @@ def _sweep_enqueue(
 async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
     """Completed source discovery on the existing lifespan loop before workers."""
     import logging
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         try:
             await org.workflow_submissions.discover_completed_handoffs(state.queue)
         except Exception:
@@ -608,7 +608,7 @@ def _build_state(settings: Settings) -> DaemonState:
             return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings, move_diagnostics=move_diagnostics)
-    for org in state.orgs.values():
+    for org in state.orgs_snapshot().values():
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
         # server-owned permission-surface reader before any startup recovery or

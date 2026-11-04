@@ -1,13 +1,50 @@
 # Web And CLI
 
+## Built-in coding availability — ROOT13509 / THR320seq304
+
+Normally admitted orgs have the unchanged built-in coding v1 recipe without
+manual import. Pristine zero-basis Settings drafts bind authenticated available
+metadata locally once. Choose repositories, object formats and four distinct
+eligible org agents, then Save; initial Admission remains Disabled. No automatic
+PUT/key or first-use Adopt button is required. Edited/stale metadata requires
+explicit adoption; refresh, org/mount changes and obsolete replies cannot replace
+a draft or release the provider-owned original pending/uncertain save fence.
+
+The existing template list/show serializes genuine human publisher data or
+`{kind:system,component:coding-builtin,provenance_format:workflow-coding-builtin-registration@1}`.
+Human import GET on system state is404 `coding_release_import_not_found`; a fresh
+human POST is409 `coding_release_builtin_registered`, never a fabricated receipt.
+The normal guided setup uses read-only team and template listing for saved
+availability. Only real historical human originals require import readback;
+no new operation file, confirmation of import absence or importer POST occurs.
+A safe optional registration refusal logs a bounded reason and resource/original
+safety-owner remedy; it requires no Family coding-role choice or enablement.
+The registrar has separate cumulative native census 8192-row/16MiB/2097152-visit
+and original release/source/target 8192/16MiB/16384 allowances (native cells 16384).
+Admission deferral accepts only direct healthy `team_move_native_held` with a
+canonical producer operation identity, no cause/context/notes and the unchanged
+mounted owner; wrapped move schema/history/bounds/SQL failures and uncertain
+origins propagate unchanged, never as optional warnings.
+Deferral requires proven cursor/rollback/both outer cleanup and, after reservation,
+actual native settlement. SQL/full-history, entry/cleanup and COMMIT/publication
+uncertainty still propagate; a warning proves no registration or readiness.
+Saved history/admitted work remain readable without the current package; new
+configuration/start requires its captured exact bytes. No settings wire change,
+new endpoint or loaded-object attestation follows. Source is not host acceptance.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
 normally admitted org's supported document foundation. Fresh F plus coding is
 one `Database.workflow_schema_transaction`; existing complete storage is
-validation-only. Before any workflow DDL, the entire reserved coding family is
-observed. Partial, extra, case-changed, wrong-kind or malformed objects and real
-shared dependency failures refuse without repair or adoption. Body/interruption
+validation-only except for the retained org-owned installation of the complete
+canonical `workflow_owner_*` index set after full source validation. Complete
+unindexed and indexed layouts are both recognized; partial or noncanonical index
+sets refuse. The owning writer validates the complete target before COMMIT.
+Before any workflow DDL, the entire reserved coding family is observed. Partial,
+extra, case-changed, wrong-kind or malformed objects and real shared dependency
+failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Audit-watermark advances
 publish only after positive COMMIT under the same lock. Failed unpublished org
@@ -28,9 +65,9 @@ full validation and actual conflict queries. SQL/read/lock errors never mean
 absence. Mandatory F request bridges and other owners remain required.
 
 Historical F/E whole-reference constructors use literal foundation primitives,
-not operational startup. Independent coding companions and a private extension
-cache distinction reach both generic whole-reference consumers. Raw whole
-nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
+not operational startup. Independent coding companions and separate coding and
+owner-index cache dimensions reach both generic whole-reference consumers. Raw
+whole nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
 histories even after workflow's fifth-history cache fill, and authority-v2 stays
 observed-only. No reference preimage or saved pin is rewritten. Generic Database
 and runtime-audit remain workflow-free. Even empty F+coding requires compatible
@@ -50,7 +87,7 @@ health or disk HEAD alone is not loaded acceptance.
 
 This source contract supersedes earlier coding-only J/whole-org-equality and
 mandatory offline-chain instructions below, preserving attributed old evidence.
-Human deployment/restart, Founder original import/settings, independently loaded
+Human deployment/restart, Founder settings, independently loaded
 readiness and one genuine four-role scratch run remain separate root-owned
 acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
@@ -63,7 +100,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -2921,6 +2958,25 @@ before any future production save/activation. Rollback is compatible-code-only;
 this candidate performs no deployment, save, activation, or natural production
 continuation.
 
+### Authority policy no-continuation and retained waits (THR-328)
+
+An authenticated stored no-grant assessment closes the existing terminal
+J/task/exact-Q set with `policy_no_continue`. The existing current-episode
+`escalation_reason.primary` preserves the original manager reason; secondary
+copy is “The recorded assessment did not authorize automatic continuation.”
+Task notes and escalation audit shapes keep their bounded values. Only a fresh
+committed writer sends existing root notifications/thread surfacing with the
+original reason/summary; replay/pending never repeats them. Nonroot escalation
+continues to fail to its parent without a founder notification.
+
+A resumed task can retain `blocked_on_job_ids` as history. Terminal status alone
+permits the existing resume bridge, but authority eligibility separately requires
+complete original producer/submission/Pause/native custody; a preflight terminal
+before original native finish remains fenced. No callback field, UI/API shape,
+manual resume/settlement command or permission is added. New readers preserve old
+histories; old typed binaries reject policy_no_continue, compatible-code rollback
+only. Backend C1–C9 NOT RUN; Web rendering does not prove terminalization.
+
 ## Agent-Side Callbacks
 
 These are invoked by skills inside agent sessions. Do not invoke them by hand; doing so falsifies audit data.
@@ -3553,14 +3609,23 @@ is comparison only, never constructor input. Both old preimages remain literal.
 Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
 name before shared cache lookup even after workflow cache fill. Generic workflow reference consumers retain their whole-reference helper;
 coding import uses scoped storage validation. Cache identity includes
-`(layout,history,naming,Pause,team_move,coding_extension)`; ANY unavailable reference refuses
+`(layout,history,naming,Pause,team_move,coding_extension,owner_indexed)`; ANY unavailable reference refuses
 even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
 name participates, without normalization or object filtering. Authority-v2 stays
 observed-only; generic Database/runtime-audit remain workflow-free.
 
+Every reference first constructs the complete unindexed final layout, including
+coding where requested, then optionally adds ALL canonical owner indexes on that
+disposable reference and validates the final composition. Index counts without/with
+coding are F31/32, E34/35, G36/37, H37/38; I document-only has 39, I+coding is J
+with 40, and direct J has 40. Both wrappers default `owner_indexed=False` and reject
+non-Booleans before cache lookup. Live variant selection follows complete validation
+inside the same coherent read view; it never installs indexes on the live DB.
+
 Only fifth-history J uses whole seed → current Database → unchanged complete-I
-initializer → shipped canonical coding DDL in workflow_schema_transaction →
-require full validator J → unchanged Pause/team-move/naming order → raw digest.
+initializer with `owner_indexed=False` → shipped canonical coding DDL in
+workflow_schema_transaction → require full validator J → optional complete J
+owner indexes and full J validation → unchanged Pause/team-move/naming order → raw digest.
 Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
 retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
@@ -4329,9 +4394,9 @@ uncertain outcomes lock editing and offer only GET(original key), released only
 by a reconciled committed receipt (an absent key never authorizes a new write).
 Unchanged mappings are sent byte-identical (disabled-retain), including when
 current options are unavailable. The dedicated same-Founder-auth read-only
-`/settings/coding/options` supplies genuine imported release/current authority
+`/settings/coding/options` supplies the registered release/current authority
 and configured repository selectors through an independent per-org query.
-E0 requires explicit metadata adoption, four distinct role bindings and1..8
+E0 binds available metadata locally without adoption, then requires four distinct role bindings and1..8
 repositories with explicit sha1/sha256 choices; initial replacements are empty.
 Saved mappings keep repositories/replacements by default; explicit adoption can
 use newer authority for changed roles. Options loading/error/refresh never changes
@@ -4552,22 +4617,17 @@ material. No agent may run host setup effects. Managed/unknown attribution and
 current ownership or unavailable present exclusion refuse before stop/preparation; no environment
 marker stripping, credential copy or new grant is permitted.
 
-The coordinator reuses existing human `workflows coding release-import-show`
-and `release-import --from-file ABS --json`. There is no browser import button or
-startup import, and existing human server checks/CLI-only/browser/native remote
-exclusions remain. Only CLI1 with empty stdout and the exact stderr line
-`error (404): coding_release_import_not_found` means absence. Other404/409/auth/
-transport/history/receipt errors hold. A valid currently admitted saved receipt
-skips POST and is compared with any original default/explicit operation files.
+The coordinator observes saved availability through existing `teams list` and
+`workflows templates list --org ORG --team ACTUAL_TEAM --json`, comparing the
+fixed saved definition/IDs/digest/pins and truthful system or human publisher.
+No normal human-import POST, new operation file or import-absence confirmation
+is needed. A genuine human release or retained human original is reconciled by
+`release-import-show` and exact original-file comparison only. Unknown/partial
+originals retain their owner/key/body/digest; no replay or new key is authorized.
+System registration has no human receipt: import GET is404 and fresh POST409
+`coding_release_builtin_registered`. Existing endpoint exclusions remain.
 
-Fresh absence requires human confirmation of no earlier/uncertain effect,
-exclusive canonical original operation bytes, readback/fsync and the adjacent
-`.effect.json` send intent before one byte-preserving POST. Default original is
-`<daemon-home>/coding-ORG-v1-import.json`, preserving the historical
-`~/.happyranch/coding-happyranch-v1-import.json`. A saved file is not proof of no
-send. Lost output/send, crash, mismatch, existing original or later absence retains
-that original owner/key/body/digest and permits GET readback/original-owner
-reconciliation only, never automatic POST replay/new key. Private command receipts
+Private command receipts
 and backup manifest give exact commands/exits and recovery locations; uncertainty
 is not rewritten as success. After positive maintenance clearance/confirmation/
 revalidation, durable command intent precedes stop; failure/interruption retains
@@ -4580,7 +4640,7 @@ separate authenticated start/executable/source/home/ancestry identities; status
 and serving checks use the actual daemon PID/port with repeated pair validation.
 Missing/reused/moving identity holds, independently of loaded-source coverage.
 
-Import stays held when existing serving observations cannot establish required
+Setup stays held when existing serving observations cannot establish required
 loaded workflow owners or actual UI facts. Selected memory identity now observes
 twelve real already-loaded workflow objects, with OrgState alias and actual org import-store binding agreement, closed
 rows/hashes, unchanged budgets/bookends and recursive nested-code comparison.
@@ -4589,8 +4649,8 @@ finite identity proves neither startup invocation nor transitive workflow behavi
 Disk HEAD/health200/SPA fallback cannot fill an observation gap. No new verifier
 or attestation endpoint is supplied.
 
-After verified host/import preparation, open the actual printed
-`/orgs/ORG/settings/coding` URL, adopt current metadata, select repositories and
+After verified host/definition observation, open the actual printed
+`/orgs/ORG/settings/coding` URL, select repositories and
 sha1/sha256 formats and four distinct eligible org agents across teams, including
 an eligible final manager. Leave Admission Disabled, save and reopen; an uncertain
 save uses Check original save. The command chooses/saves/enables nothing. Real

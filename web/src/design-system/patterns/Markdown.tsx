@@ -36,10 +36,36 @@ function CodeOrMermaid(props: ComponentProps<'code'>): JSX.Element {
 interface SourceNode {
   type: string;
   value?: string;
+  lang?: string | null;
+  meta?: string | null;
   tagName?: string;
   children?: SourceNode[];
   properties?: Record<string, unknown>;
   position?: { start: { offset?: number }; end: { offset?: number } };
+}
+
+/**
+ * Local recovery convention: the parser accepts an info string starting with
+ * `<` as lang/meta, but here it is treated as markup typed on the opening line
+ * (```<a href…>…</a>). Show that raw source line, minus fence and leading
+ * whitespace (trailing spaces/tabs kept), as the first code line. Text, never HTML.
+ */
+function remarkOpeningLineMarkup() {
+  return (tree: SourceNode, file: { value: unknown }) => {
+    const source = String(file.value);
+    const visit = (node: SourceNode) => {
+      if (node.type === 'code' && node.lang?.startsWith('<')) {
+        const start = node.position?.start.offset;
+        const line = start === undefined ? undefined : source.slice(start).split(/\r\n|\r|\n/, 1)[0];
+        const info = line?.replace(/^[ \t]*(`{3,}|~{3,})[ \t]*/, '') ?? [node.lang, node.meta].filter(Boolean).join(' ');
+        node.value = node.value ? `${info}\n${node.value}` : info;
+        node.lang = null;
+        node.meta = null;
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
 }
 
 /** Syntax only: decorate proven raw intervals, never decoded text or identities. */
@@ -81,7 +107,7 @@ export function Markdown({ body, threadMentions = false, mermaidLoadingLabel = '
     <div className="gl-prose">
       <MermaidLoadingLabel.Provider value={mermaidLoadingLabel}>
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkBreaks]}
+          remarkPlugins={[remarkGfm, remarkBreaks, remarkOpeningLineMarkup]}
           rehypePlugins={[...(threadMentions ? [sourceMentions(body)] : []), [rehypeHighlight, { ignoreMissing: true, detect: true }]]}
           components={{ code: CodeOrMermaid }}
         >

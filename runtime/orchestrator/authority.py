@@ -86,7 +86,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Generator, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -181,6 +181,17 @@ class AuthorityHookV2RefusalOutcome(str):
         value.status = status
         value.task_disposition = task_disposition
         return value
+
+
+def _authority_hook_caller_transaction_owned(db) -> bool:
+    """Observe the original connection only; never diagnose or repair it."""
+    with db._lock:
+        conn = db._conn
+        owned = conn.in_transaction
+        if db._conn is not conn or type(owned) is not bool:
+            raise RuntimeError("authority hook connection ownership unavailable")
+        return owned
+
 
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
@@ -1923,47 +1934,50 @@ COMMIT;
 """
 
 
-_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int, bool, bool, bool, bool, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
     generic migrations, then the requested complete workflow installer before
     hashing every SQL object. No candidate schema is used as an input. No
     persistent generic or runtime-audit database is changed. Cache identity
-    includes layout, source history, naming version, pause layout and inert team-move layout;
+    includes layout, source history, naming version, pause layout, inert team-move
+    layout, coding extension, complete owner-index and task-mark variants;
     unavailable construction fails closed.
     """
     # Legacy admission must reject workflow-only histories BEFORE shared cache.
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool or type(owner_marked) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
 
 
-def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False) -> str:
+def _workflow_release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0, *, pause_layout: bool = False, team_move_layout: bool = False, coding_extension: bool = False, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Whole workflow references; legacy authority retains its four histories."""
     if history in _RELEASE_REFERENCE_HISTORIES:
         return _release_schema_digest(layout, history, naming_version,
-            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+            pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
     if (layout not in ("F", "E", "G", "H", "I", "J") or history not in _WORKFLOW_RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)
-            or type(coding_extension) is not bool):
+            or type(coding_extension) is not bool or type(owner_indexed) is not bool or type(owner_marked) is not bool):
         return "unavailable"
     return _build_release_schema_digest(layout, history, naming_version,
-        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension)
+        pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding_extension, owner_indexed=owner_indexed, owner_marked=owner_marked)
 
 
-def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool) -> str:
+def _build_release_schema_digest(layout: str, history: str, naming_version: int, *, pause_layout: bool, team_move_layout: bool, coding_extension: bool, owner_indexed: bool = False, owner_marked: bool = False) -> str:
     """Shared disposable lifetime, entered only after family-specific admission."""
     global _release_schema_digest_cache
+    if type(owner_indexed) is not bool or type(owner_marked) is not bool:
+        return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension)
+    key = (layout, history, naming_version, pause_layout, team_move_layout, coding_extension, owner_indexed, owner_marked)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
@@ -2005,19 +2019,32 @@ def _build_release_schema_digest(layout: str, history: str, naming_version: int,
                     # Real migrate_coding_schema would recurse through references.
                     from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I")
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout="I", owner_indexed=False)
                     with fresh.workflow_schema_transaction() as conn:
                         _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
                         if validate_workflow_schema(conn, expected_org_slug="release-reference") != "J":
                             raise ValueError("workflow_release_reference_requires_j")
                 else:
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout, owner_indexed=False)
                 if coding_extension and layout != "J":
                     from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
                     from runtime.infrastructure.workflow_schema import validate_workflow_schema
                     with fresh.workflow_schema_transaction() as conn:
                         _execute_ddl(conn, CANONICAL_WORKFLOW_CODING_DDL)
                         validate_workflow_schema(conn, expected_org_slug="release-reference")
+                # Finish the unindexed composition before adding indexes: I
+                # plus coding is J, including its coding-attempt owner index.
+                from runtime.infrastructure.workflow_schema import _install_owner_indexes, validate_workflow_schema
+                final_layout = "J" if layout == "I" and coding_extension else layout
+                with fresh.workflow_schema_transaction() as conn:
+                    if owner_indexed:
+                        _install_owner_indexes(conn, final_layout, coding_extension=coding_extension)
+                    if owner_marked:
+                        from runtime.infrastructure.workflow_task_ownership import OWNERSHIP_DDL, binding_view_ddl
+                        conn.execute(OWNERSHIP_DDL)
+                        conn.execute(binding_view_ddl(final_layout, coding_extension=coding_extension))
+                    if validate_workflow_schema(conn, expected_org_slug="release-reference") != final_layout:
+                        raise ValueError("workflow_release_reference_layout_mismatch")
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
                     install_pause_schema(fresh, org_slug="release-reference")
@@ -3236,8 +3263,11 @@ def _record_hook_outcome(
             task_id=task_id, agent=agent,
             action=AUDIT_ACTION_HOOK_OUTCOME, payload=payload,
         )
-    except Exception as exc:  # pragma: no cover - audit failure path
-        logger.warning("authority hook outcome row failed for %s: %s", task_id, exc)
+    except Exception as exc:
+        try:
+            logger.warning("authority hook outcome row failed for %s: %s", task_id, exc)
+        except BaseException:
+            raise exc
         return None
 
 
@@ -3432,7 +3462,7 @@ def _server_evidence(
     )
     live_schema_digest = "unavailable"
     try:
-        from runtime.infrastructure.workflow_schema import _read_workflow_schema
+        from runtime.infrastructure.workflow_schema import _read_workflow_schema, _owner_indexes_present
         with db.coherent_read_view() as conn:
             live_schema_digest = _live_schema_digest(db)
             layout, coding = _read_workflow_schema(conn, expected_org_slug=orch._slug)
@@ -3442,7 +3472,10 @@ def _server_evidence(
             names = validate_names(conn, org_slug=orch._slug)
             from runtime.infrastructure.team_move_store import validate_team_move_schema
             team_move_layout = validate_team_move_schema(conn, org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None) for history in _RELEASE_REFERENCE_HISTORIES)
+            owner_indexed = bool(_owner_indexes_present(conn))
+            from runtime.infrastructure.workflow_task_ownership import ownership_storage_present
+            owner_marked = ownership_storage_present(conn)
+        references = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout, team_move_layout=team_move_layout, coding_extension=coding is not None, owner_indexed=owner_indexed, owner_marked=owner_marked) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"
@@ -3604,11 +3637,18 @@ def refuse_authority_policy_v2_pre_final_on_startup(
             targets = reads.discover()
         except _V2StartupConnectionUnsafe:
             raise
-        except Exception:
-            reads.check()
-            _v2_startup_failure_log("discovery_unavailable")
-            reads.check()
-            return None
+        except Exception as primary:
+            try:
+                reads.check()
+                _v2_startup_failure_log("discovery_unavailable")
+                reads.check()
+                return None
+            except _V2StartupConnectionUnsafe as unsafe:
+                if all(cause is not primary for cause in unsafe.causes):
+                    unsafe.causes = (primary, *unsafe.causes)
+                raise
+            except BaseException:
+                raise primary
         fenced_roots: set[str] = set()
         failed_roots: set[str] = set()
         for discovered, anchor in targets:
@@ -3665,12 +3705,17 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         )
                     except _V2StartupConnectionUnsafe:
                         raise
-                    except Exception:
-                        # Missing/unreadable causal evidence fails closed through
-                        # the existing refusal path below.
-                        reads.invalidate()
-                        reads.check()
-                        non_escalate = False
+                    except Exception as primary:
+                        try:
+                            reads.invalidate()
+                            reads.check()
+                            non_escalate = False
+                        except _V2StartupConnectionUnsafe as unsafe:
+                            if all(cause is not primary for cause in unsafe.causes):
+                                unsafe.causes = (primary, *unsafe.causes)
+                            raise
+                        except BaseException:
+                            raise primary
                     if non_escalate:
                         # D2-B': the admission is inert residue.  Do not touch J,
                         # Q, audits, or the task, and do not fence later branches.
@@ -3691,6 +3736,10 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     manager_session_id=target.manager_session_id,
                     result_id=target.result_id,
                     refusal_code=refusal_code,
+                    max_revise_rounds=(
+                        int(authority_policy_v2_claim_eligibility(orchestrator).get("max_revise_rounds", 0))
+                        if orchestrator is not None else None
+                    ),
                 )
                 if outcome.status == "housekeeping_pending":
                     # A bounded writer disposition is not an exception/audit kind,
@@ -3707,7 +3756,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                             _task_matches_authority_v2_refusal_failure,
                             _maybe_post_thread_followup,
                         )
-                        expected_note = f"authority_v2_refusal:{refusal_code}"
+                        expected_note = f"authority_v2_refusal:{outcome.refusal_code}"
                         if outcome.receipt_settled:
                             _handoff_consumed_recovery_terminal_effects(
                                 orchestrator,
@@ -3763,10 +3812,19 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                         if result is not None and result.get("id") == target.result_id
                         else ""
                     )
+                    surface_reason = "authority_v2_refusal"
+                    if outcome.refusal_code == "policy_no_continue":
+                        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                        if result is None or result.get("id") != target.result_id:
+                            raise ValueError("policy terminal causal result unavailable")
+                        causal_report = completion_report_from_result_row(
+                            target.root_task_id, result, fallback_agent=target.manager_agent,
+                        )
+                        surface_reason = orchestrator._parse_next_step(causal_report).reason or "Escalated"
                     orchestrator.notify_escalated(
                         task_id=target.root_task_id,
                         agent=target.manager_agent,
-                        reason="authority_v2_refusal",
+                        reason=surface_reason,
                         last_summary=last_summary or "",
                     )
                     # Import lazily to preserve the authority/run_step module
@@ -3778,7 +3836,7 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     _maybe_post_thread_escalation(
                         orchestrator,
                         target.root_task_id,
-                        reason="authority_v2_refusal",
+                        reason=surface_reason,
                     )
                 reads.check()
             except _V2StartupConnectionUnsafe:
@@ -3787,21 +3845,28 @@ def refuse_authority_policy_v2_pre_final_on_startup(
                     failed_roots.add(discovered.root_task_id)
                 raise
             except BaseException as exc:
-                reads.invalidate()
-                if anchor is not None:
-                    fenced_roots.add(discovered.root_task_id)
-                    failed_roots.add(discovered.root_task_id)
-                if tail_started:
-                    # A tail can contain self-committing writers. Its escaping
-                    # failure supplies no affirmative cleanup/COMMIT disposition.
-                    reads._abort("postcommit_tail", exc)
-                reads.check()
-                if not isinstance(exc, Exception):
+                try:
+                    reads.invalidate()
+                    if anchor is not None:
+                        fenced_roots.add(discovered.root_task_id)
+                        failed_roots.add(discovered.root_task_id)
+                    if tail_started:
+                        # A tail can contain self-committing writers. Its escaping
+                        # failure supplies no affirmative cleanup/COMMIT disposition.
+                        reads._abort("postcommit_tail", exc)
+                    reads.check()
+                    if not isinstance(exc, Exception):
+                        raise
+                    _v2_startup_failure_log("exact_or_refusal_unavailable")
+                    reads.check()
+                    if anchor is None:
+                        return None
+                except _V2StartupConnectionUnsafe as unsafe:
+                    if all(cause is not exc for cause in unsafe.causes):
+                        unsafe.causes = (exc, *unsafe.causes)
                     raise
-                _v2_startup_failure_log("exact_or_refusal_unavailable")
-                reads.check()
-                if anchor is None:
-                    return None
+                except BaseException:
+                    raise exc
         return fenced_roots
 
 
@@ -3819,6 +3884,9 @@ def _v2_request_refusal(
     and a later discovery unit owns the bounded obligation.
     """
     db = orch._db
+    policy_terminal = code == "policy_no_continue"
+    if _authority_hook_caller_transaction_owned(db):
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     if result_row_id is None:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
@@ -3834,20 +3902,29 @@ def _v2_request_refusal(
             result_id=result_row_id,
             refusal_code=code,
             owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=int(authority_policy_v2_claim_eligibility(orch).get("max_revise_rounds", 0)),
         )
     except Exception as exc:
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            error=f"v2 refusal housekeeping failed: {exc}",
-        )
-        return HOOK_V2_PENDING
+        try:
+            if policy_terminal or _authority_hook_caller_transaction_owned(db):
+                return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 refusal housekeeping failed: {exc}",
+            )
+            return HOOK_V2_PENDING
+        except BaseException:
+            raise exc
     status = getattr(outcome, "status", None)
     if status in ("refused", "owner_lost", "already_refused"):
         return AuthorityHookV2RefusalOutcome(
             status=status,
             task_disposition=getattr(outcome, "task_disposition", None),
         )
-    # housekeeping_pending (or an unknown bounded value): prior state intact.
+    # A selected policy terminal owns task/J/exact-Q atomically. Pending
+    # cannot use the ordinary split escalation fallback or a postcommit tail.
+    if policy_terminal:
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     return HOOK_V2_PENDING
 
 
@@ -3870,6 +3947,8 @@ def _run_authority_hook_v2(
     adverse-review/partial-work/raw-DDL veto or second evaluator is introduced.
     """
     db = orch._db
+    if _authority_hook_caller_transaction_owned(db):
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     if result_row_id is None:
         return _v2_request_refusal(
             orch, task, agent, result_row_id=None, owner_attempt_id=None,
@@ -3905,16 +3984,20 @@ def _run_authority_hook_v2(
         # never a stage replay or a second mint.
         try:
             reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-        except Exception:
-            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        except Exception as primary:
+            try:
+                logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+            except BaseException:
+                raise primary
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
         )
         return HOOK_V2_CONTINUED
     if attempt.finalization_state in ("refused", "owner_lost"):
-        return AuthorityHookV2RefusalOutcome(
-            status="already_refused",
-            task_disposition=None,
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id,
+            code=attempt.refusal_code or "interrupted_pre_final",
         )
 
     from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -3931,52 +4014,86 @@ def _run_authority_hook_v2(
         owner_attempt_id=attempt.owner_attempt_id,
         max_revise_rounds=max_revise_rounds,
     )
-    for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
-        forwarder = getattr(store, forwarder_name)
-        try:
-            outcome = forwarder(**stage_kwargs)
-        except Exception as exc:
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 stage {stage_name} raised: {exc}",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id,
-                code="interrupted_pre_final",
-            )
-        status = getattr(outcome, "status", None)
-        if status == "refused":
-            code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
-                getattr(outcome, "refusal_code", None), "interrupted_pre_final",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id, code=code,
-            )
-        if status != expected_status:
-            _record_hook_outcome(
-                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-                error=f"v2 stage {stage_name} unexpected status {status!r}",
-            )
-            return _v2_request_refusal(
-                orch, task, agent, result_row_id=result_row_id,
-                owner_attempt_id=attempt.owner_attempt_id,
-                code="interrupted_pre_final",
-            )
+    if attempt.stage not in {"admitted", "consumed_audited"}:
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="interrupted_pre_final",
+        )
+    if attempt.stage == "admitted":
+        for stage_name, expected_status, forwarder_name in _V2_PRE_FINAL_STAGE_SEQUENCE:
+            forwarder = getattr(store, forwarder_name)
+            try:
+                outcome = forwarder(**stage_kwargs)
+            except Exception as exc:
+                try:
+                    transaction_owned = _authority_hook_caller_transaction_owned(db)
+                    if transaction_owned:
+                        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+                    _record_hook_outcome(
+                        db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                        error=f"v2 stage {stage_name} raised: {exc}",
+                    )
+                    return _v2_request_refusal(
+                        orch, task, agent, result_row_id=result_row_id,
+                        owner_attempt_id=attempt.owner_attempt_id,
+                        code="interrupted_pre_final",
+                    )
+                except BaseException:
+                    raise exc
+            status = getattr(outcome, "status", None)
+            if status == "refused":
+                code = _V2_STAGE_REFUSAL_TO_HOUSEKEEPING.get(
+                    getattr(outcome, "refusal_code", None), "interrupted_pre_final",
+                )
+                return _v2_request_refusal(
+                    orch, task, agent, result_row_id=result_row_id,
+                    owner_attempt_id=attempt.owner_attempt_id, code=code,
+                )
+            if status != expected_status:
+                _record_hook_outcome(
+                    db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                    error=f"v2 stage {stage_name} unexpected status {status!r}",
+                )
+                return _v2_request_refusal(
+                    orch, task, agent, result_row_id=result_row_id,
+                    owner_attempt_id=attempt.owner_attempt_id,
+                    code="interrupted_pre_final",
+                )
+    # Authenticate the ONCE-persisted consumed V before selecting its owner.
+    # Reentry after a3 never reclaims, re-evaluates or reconsumes the prefix.
+    try:
+        evaluation = store.get_authenticated_v2_consumed_evaluation(**stage_kwargs)
+    except Exception:
+        evaluation = None
+    if evaluation is None or evaluation.diagnostic_code == "binding_mismatch":
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="identity_mismatch",
+        )
+    if not (evaluation.outcome == "continue_applies" and evaluation.diagnostic_code is None):
+        return _v2_request_refusal(
+            orch, task, agent, result_row_id=result_row_id,
+            owner_attempt_id=attempt.owner_attempt_id, code="policy_no_continue",
+        )
     # ---- Final continuation (atomic; mints E/N/D and returns the root Pending) ----
     try:
         final = store.finalize_v2_continuation(**stage_kwargs)
     except Exception as exc:
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            error=f"v2 final continuation raised: {exc}",
-        )
-        return _v2_request_refusal(
-            orch, task, agent, result_row_id=result_row_id,
-            owner_attempt_id=attempt.owner_attempt_id,
-            code="final_commit_failed",
-        )
+        try:
+            transaction_owned = _authority_hook_caller_transaction_owned(db)
+            if transaction_owned:
+                return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                error=f"v2 final continuation raised: {exc}",
+            )
+            return _v2_request_refusal(
+                orch, task, agent, result_row_id=result_row_id,
+                owner_attempt_id=attempt.owner_attempt_id,
+                code="final_commit_failed",
+            )
+        except BaseException:
+            raise exc
     final_status = getattr(final, "status", None)
     if final_status not in ("continued", "already_continued"):
         final_reason = getattr(final, "reason", None)
@@ -3997,8 +4114,11 @@ def _run_authority_hook_v2(
     # post-final seam owns exact settlement and authenticated publication.
     try:
         reconcile_authority_policy_v2_post_final(orch, root_task_id=task.id)
-    except Exception:
-        logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+    except Exception as primary:
+        try:
+            logger.exception("v2 hook %s: post-final reconciliation failed", task.id)
+        except BaseException:
+            raise primary
     _record_hook_outcome(
         db, task_id=task.id, agent=agent, outcome=OUTCOME_CONTINUED_SAME_ROOT,
     )
@@ -4016,7 +4136,8 @@ def run_authority_hook(
     """The pre-escalation authority hook. Returns ``"continue_same_root"``
     (the named same-root permitted action was executed and audited) or
     ``"escalate"`` (fail closed — the caller proceeds through the exact
-    existing escalation path). Never raises into the caller.
+    existing escalation path). Opaque connection-ownership failures propagate;
+    they never become autocommit success or diagnostic/fallback writes.
 
     ``result_row_id`` is the immutable ``task_results`` row id whose
     CompletionReport produced this escalate decision — the causal event
@@ -4026,6 +4147,8 @@ def run_authority_hook(
     no immutable causality exists: the hook fails closed with a
     ``capture_failure`` outcome and never creates a candidate.
     """
+    if _authority_hook_caller_transaction_owned(orch._db):
+        return AuthorityHookV2RefusalOutcome(status="housekeeping_pending")
     policy = POLICY_BY_TEAM.get(task.team)
 
     db = orch._db
@@ -4047,11 +4170,14 @@ def run_authority_hook(
             agent_name=agent,
         )
     except Exception as exc:
-        _record_hook_outcome(
-            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
-            policy=policy, error=f"policy family resolution failed: {exc}",
-        )
-        return HOOK_ESCALATE
+        try:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                policy=policy, error=f"policy family resolution failed: {exc}",
+            )
+            return HOOK_ESCALATE
+        except BaseException:
+            raise exc
     binding_mode = (
         session_binding.get("mode") if isinstance(session_binding, dict) else None
     )
@@ -4720,6 +4846,52 @@ def publish_authority_policy_v2_notifications(
     This function performs no evaluation, no remint and no task mutation, and
     returns bounded per-target receipts for the caller.
     """
+    steps = _v2_publication_steps(orch, queue, limit=limit, root_task_id=root_task_id)
+    error = None
+    while True:
+        put, receipts = _advance_v2_publication(steps, error)
+        if put is None:
+            return receipts
+        error = None
+        try:
+            put()
+        except Exception as exc:
+            error = exc
+
+
+async def _publish_v2_notifications_native(
+    orch: Any, queue: Any, *, native: Callable, root_task_id: str,
+) -> list[dict]:
+    # The service owns/joins this whole publication. Every advance ends AFTER
+    # native DB transactions/leases have closed; only the raw put crosses out.
+    steps = _v2_publication_steps(orch, queue, root_task_id=root_task_id)
+    error = None
+    while True:
+        put, receipts = await native(lambda: _advance_v2_publication(steps, error))
+        if put is None:
+            return receipts
+        error = None
+        try:
+            put()  # Real asyncio queue insertion on its owning loop.
+        except Exception as exc:
+            error = exc
+
+
+def _advance_v2_publication(
+    steps: Generator, error: Exception | None,
+) -> tuple[Callable | None, list[dict] | None]:
+    # StopIteration never escapes an executor Future. This owner-specific
+    # iterator retains values only, never a cursor/transaction/native lease.
+    try:
+        return steps.send(error), None
+    except StopIteration as done:
+        return None, done.value
+
+
+def _v2_publication_steps(
+    orch: Any, queue: Any, *, limit: int | None = 32,
+    root_task_id: str | None = None,
+) -> Generator[Callable[[], None], Exception | None, list[dict]]:
     db = orch._db
     receipts: list[dict] = []
     try:
@@ -4767,7 +4939,7 @@ def publish_authority_policy_v2_notifications(
                 "notification_id": target.notification_id,
             })
             continue
-        try:
+        def put(target: Any = target, claim: Any = claim) -> None:
             queue.put_nowait(
                 orch._slug,
                 target.root_task_id,
@@ -4776,6 +4948,10 @@ def publish_authority_policy_v2_notifications(
                     "publication_attempt": claim.publication_attempt,
                 },
             )
+        try:
+            error = yield put
+            if error is not None:
+                raise error
         except Exception as exc:
             try:
                 failure = (
@@ -4794,6 +4970,10 @@ def publish_authority_policy_v2_notifications(
                 # ``publishing`` lease safely reclaimable and must not abort
                 # the pass; the original queue error stays authoritative.
                 reason = type(record_exc).__name__
+            except BaseException:
+                # The queue failure remains primary if its secondary
+                # publication-failure bookkeeping raises an opaque error.
+                raise exc
             receipts.append({
                 "status": "publish_failed",
                 "reason": reason,
@@ -4893,10 +5073,13 @@ def reconcile_authority_policy_v2_post_final(
         envelope = db.get_authority_policy_v2_continue_envelope_for_root(
             root_task_id
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: continuation envelope read failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: continuation envelope read failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return POST_FINAL_SETTLEMENT_REFUSED
     if envelope is None:
         return POST_FINAL_NOT_FINALIZED
@@ -4906,10 +5089,13 @@ def reconcile_authority_policy_v2_post_final(
             manager_session_id=envelope.manager_session_id,
             result_id=envelope.result_id,
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: settlement receipt identity read failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: settlement receipt identity read failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return POST_FINAL_SETTLEMENT_REFUSED
     settled = False
     committed_receipt = bool(identity) and not identity.get("conflict") and (
@@ -4946,10 +5132,13 @@ def reconcile_authority_policy_v2_post_final(
         settled = getattr(outcome, "status", None) in (
             "settled", "already_settled_exact",
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: continuation receipt settlement failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: continuation receipt settlement failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
     if not settled:
         # The transition-only settlement reader above requires N ``needed``; a
         # generation already ADMITTED (or admitted + settled) by a real consumer
@@ -4999,8 +5188,11 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
     """
     try:
         dispatch = db.get_authority_policy_v2_root_dispatch(root_task_id)
-    except Exception:
-        logger.exception("post-final %s: root dispatch read failed", root_task_id)
+    except Exception as primary:
+        try:
+            logger.exception("post-final %s: root dispatch read failed", root_task_id)
+        except BaseException:
+            raise primary
         return False
     if dispatch is None or getattr(dispatch, "state", None) != "admitted":
         return False
@@ -5011,10 +5203,13 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
         notification = db.get_authority_policy_v2_recovery_notification(
             generation_id
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: admitted generation read failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: admitted generation read failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return False
     if (
         notification is None
@@ -5034,10 +5229,13 @@ def _settle_admitted_generation_bookkeeping(db, *, root_task_id: str) -> bool:
             generation_id=generation_id,
             next_session_id=next_session_id,
         )
-    except Exception:
-        logger.exception(
-            "post-final %s: admitted generation settlement failed", root_task_id,
-        )
+    except Exception as primary:
+        try:
+            logger.exception(
+                "post-final %s: admitted generation settlement failed", root_task_id,
+            )
+        except BaseException:
+            raise primary
         return False
     return getattr(settlement, "status", None) in (
         "settled", "already_settled_exact",
@@ -5095,6 +5293,44 @@ def enqueue_task_generation_aware(
         else:
             _ordinary_enqueue(queue, slug, task_id, metadata)
 
+    classification = _classify_generation_enqueue(orch, task_id)
+    if classification == "pending":
+        receipts = publish_authority_policy_v2_notifications(
+            orch, queue, root_task_id=task_id,
+        )
+        return _v2_enqueue_receipt_status(receipts)
+    if classification == ENQUEUE_DISPATCH_ORDINARY:
+        _ordinary()
+    return classification
+
+
+async def _enqueue_task_generation_aware_native(
+    orch: Any, queue: Any, slug: str, task_id: str, *, native: Callable,
+    metadata: dict | None = None,
+) -> str:
+    """Team-move path only; native classification/claim and real loop put."""
+    if queue is None:
+        return ENQUEUE_DISPATCH_NO_QUEUE
+    classification = await native(lambda: _classify_generation_enqueue(orch, task_id))
+    if classification == "pending":
+        receipts = await _publish_v2_notifications_native(
+            orch, queue, native=native, root_task_id=task_id,
+        )
+        return _v2_enqueue_receipt_status(receipts)
+    if classification == ENQUEUE_DISPATCH_ORDINARY:
+        _ordinary_enqueue(queue, slug, task_id, metadata)
+    return classification
+
+
+def _v2_enqueue_receipt_status(receipts: list[dict]) -> str:
+    published = any(
+        isinstance(r, dict) and r.get("status") in ("published", "published_exact")
+        for r in receipts
+    )
+    return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+
+
+def _classify_generation_enqueue(orch: Any, task_id: str) -> str:
     db = getattr(orch, "_db", None)
     # Only a genuine durable ``Database`` carries the classification read.  A
     # duck-typed/mock orchestrator (a test double or an org with no durable
@@ -5102,26 +5338,18 @@ def enqueue_task_generation_aware(
     # so it keeps the unchanged ordinary path.
     classifier = _durable_dispatch_classifier(db)
     if classifier is None:
-        _ordinary()
         return ENQUEUE_DISPATCH_ORDINARY
     try:
         classification = classifier(task_id)
-    except Exception:
-        logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+    except Exception as primary:
+        try:
+            logger.exception("enqueue %s: v2 dispatch classification failed", task_id)
+        except BaseException:
+            raise primary
         return ENQUEUE_DISPATCH_REFUSED
     kind = getattr(classification, "kind", None)
     if kind == "pending":
-        # Route the EXACT pending generation through the authenticated publisher.
-        # The publisher performs the claim -> raw put -> ack itself; a refusal or
-        # an empty target set means NO queue call and NO ordinary fallback.
-        receipts = publish_authority_policy_v2_notifications(
-            orch, queue, root_task_id=task_id,
-        )
-        published = any(
-            isinstance(r, dict) and r.get("status") in ("published", "published_exact")
-            for r in receipts
-        )
-        return ENQUEUE_DISPATCH_PUBLISHED if published else ENQUEUE_DISPATCH_REFUSED
+        return "pending"
     if kind in ("admitted", "malformed", "unreadable"):
         logger.warning(
             "enqueue %s: v2 dispatch %s refuses ordinary enqueue", task_id, kind,
@@ -5131,7 +5359,6 @@ def enqueue_task_generation_aware(
     # kind can never become ordinary permission.
     if kind != "absent" and kind != "retired":
         return ENQUEUE_DISPATCH_REFUSED
-    _ordinary()
     return ENQUEUE_DISPATCH_ORDINARY
 
 

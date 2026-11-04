@@ -763,19 +763,23 @@ class ThreadMoveAdmission:
                     result.append(dict(code="thread_open_exchange", thread_id=row["thread_id"], exchange_id=row["exchange_id"]))
             return tuple(result)
 
-    async def bounded_drain(self, operation_id: str, *, timeout_seconds: float = 30.0) -> tuple[dict, ...]:
+    def _drain_blockers(self, operation_id: str) -> tuple[dict, ...]:
+        with self.move.gate, self.db._lock:
+            row = self.move.active_uncommitted()
+            if row is None or row["operation_id"] != operation_id or row["phase"] != "waiting":
+                raise DeferredTeamMove("team_move_thread_drain_owner")
+            if operation_id not in self.captured:
+                raise DeferredTeamMove("team_move_thread_capture_missing")
+            ids = _decode(MoveRequest, row["request_bytes"]).affected_agents
+            return tuple(b for b in self.census(ids) if b["code"] != "thread_pending_obligation")
+
+    async def bounded_drain(self, operation_id: str, *, timeout_seconds: float = 30.0, native=None) -> tuple[dict, ...]:
         if not 0 <= timeout_seconds <= 30:
             raise ValueError("thread drain deadline must be bounded by 30 seconds")
         deadline = time.monotonic() + timeout_seconds
         while True:
-            with self.move.gate, self.db._lock:
-                row = self.move.active_uncommitted()
-                if row is None or row["operation_id"] != operation_id or row["phase"] != "waiting":
-                    raise DeferredTeamMove("team_move_thread_drain_owner")
-                if operation_id not in self.captured:
-                    raise DeferredTeamMove("team_move_thread_capture_missing")
-                ids = _decode(MoveRequest, row["request_bytes"]).affected_agents
-                blockers = tuple(b for b in self.census(ids) if b["code"] != "thread_pending_obligation")
+            blockers = (self._drain_blockers(operation_id) if native is None
+                else await native(lambda: self._drain_blockers(operation_id)))
             if not blockers or time.monotonic() >= deadline:
                 return blockers  # D owns deadline refusal/forward decision.
             await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
@@ -836,11 +840,14 @@ class ThreadMoveAdmission:
             return tuple(inv.id for inv in self.db.list_pending_thread_invocations()
                 if self.preserve_recovery_uncommitted(inv))
 
-    async def redeliver_after_release(self, queue: Any) -> None:
+    def _released_tokens(self) -> tuple[str, ...]:
         with self.move.gate, self.db._lock:
             if self.move.active_uncommitted() is not None:
                 raise DeferredTeamMove("team_move_release_not_committed")
-            tokens = self.runnable_tokens()
+            return self.runnable_tokens()
+
+    async def redeliver_after_release(self, queue: Any, *, native=None) -> None:
+        tokens = self._released_tokens() if native is None else await native(self._released_tokens)
         from runtime.daemon.thread_queue import ThreadJob
         for token in tokens:
             await queue.put_once(ThreadJob(org_slug=self.move.store.org_slug, invocation_token=token))

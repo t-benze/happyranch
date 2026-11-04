@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import TracebackType
 from typing import Any, TypeVar
 
 from runtime.config import (
@@ -985,6 +987,69 @@ def _attempts_settled_quiescent(owner: Any) -> bool:
 _WorkerResult = TypeVar("_WorkerResult")
 
 
+class _InvocationWorker:
+    """Original callable custody, independent of executor/async bridge state."""
+
+    def __init__(self, owner: Any, function: Callable[[], Any]) -> None:
+        self.owner = owner
+        self.key = owner.abort_control.key
+        self.function = function
+        self.context = copy_context()
+        self.entered = threading.Event()
+        self.returned = threading.Event()
+        self.value: Any = None
+        self.original_error: BaseException | None = None
+        self.submission_error: BaseException | None = None
+        self.lock = threading.Lock()
+        self.errors: list[tuple[str, BaseException, TracebackType | None]] = []
+        self.cancellation: asyncio.CancelledError | None = None
+
+    def record(self, stage: str, exc: BaseException) -> None:
+        with self.lock:
+            if not any(error is exc for _, error, _ in self.errors):
+                self.errors.append((stage, exc, exc.__traceback__))
+
+    def run(self) -> None:
+        try:
+            self.context.run(self.call)
+        except BaseException as exc:
+            self.original_error = exc
+            self.record("original callable", exc)
+        finally:
+            # Only this original call publishes return, including context exit.
+            self.returned.set()
+
+    def call(self) -> None:
+        self.entered.set()
+        self.value = self.function()
+
+    def interrupt(self, stage: str, exc: BaseException) -> None:
+        if isinstance(exc, asyncio.CancelledError):
+            if self.cancellation is not None:
+                return
+            self.cancellation = exc
+        self.record(stage, exc)
+        if not isinstance(exc, asyncio.CancelledError):
+            self.owner.abort_control.record_failure(exc)
+        for action in (self.owner.abort_control.signal, self.owner.abort_control.dispatch):
+            try:
+                action()
+            except BaseException as secondary:
+                self.record("abort dispatch", secondary)
+                self.owner.abort_control.record_failure(secondary)
+
+    def result(self) -> Any:
+        with self.lock:
+            errors = tuple(self.errors)
+        if errors:
+            stage, first, traceback = errors[0]
+            first.add_note(f"thread original worker {self.key!r}: {stage}")
+            for stage, secondary, _ in errors[1:]:
+                first.add_note(f"thread original worker {self.key!r} secondary {stage}: {secondary!r}")
+            raise first.with_traceback(traceback)
+        return self.value
+
+
 async def _await_invocation_worker(
     org_state: Any, owner: Any, function: Callable[[], _WorkerResult],
 ) -> _WorkerResult:
@@ -993,35 +1058,49 @@ async def _await_invocation_worker(
     Native-user custody complements the runner lifetime. Stop dispatch uses an
     independent thread, so saturated provider pools cannot queue their own stop.
     """
-    native_owner = object()
+    # Construct the strong original owner/context/ack BEFORE submission. Python
+    # can enqueue and then throw without returning any Future. Neither that
+    # exception nor a done/cancelled bridge establishes original return.
+    native_owner = _InvocationWorker(owner, function)
     if not org_state._acquire_native_task(native_owner):
         raise RuntimeError("thread_native_admission_closed")
     worker = None
-    cancellation = None
+    observed = False
     try:
-        worker = asyncio.get_running_loop().run_in_executor(None, copy_context().run, function)
-        while not worker.done():
+        try:
+            worker = asyncio.get_running_loop().run_in_executor(None, native_owner.run)
+        except BaseException as exc:
+            native_owner.submission_error = exc
+            native_owner.interrupt("executor submission", exc)
+        while not native_owner.returned.is_set():
+            if worker is not None and worker.done() and not observed:
+                observed = True
+                try:
+                    worker.result()
+                except BaseException as exc:
+                    native_owner.interrupt("executor bridge", exc)
             try:
-                await asyncio.shield(worker)
+                # Observe the independent acknowledgement without blocking the
+                # loop or queueing a join behind the saturated provider pool.
+                # Unknown/no-Future admission retains this runner, pair guard,
+                # native DB pin and exact control indefinitely, with no replay.
+                await asyncio.sleep(0.05)
             except asyncio.CancelledError as exc:
-                cancellation = cancellation or exc
-                owner.abort_control.signal()
-                owner.abort_control.dispatch()
-            except BaseException:
-                break
-        if cancellation is not None:
-            try:
-                await owner.abort_control.join_dispatch()
-            except BaseException as exc:
-                cancellation.add_note(f"thread abort dispatch failed: {exc!r}")
+                native_owner.interrupt("waiter cancellation", exc)
+        if worker is not None and worker.done() and not observed:
             try:
                 worker.result()
             except BaseException as exc:
-                cancellation.add_note(f"thread original worker failed: {exc!r}")
-            raise cancellation
-        return worker.result()
+                native_owner.interrupt("executor bridge", exc)
+        try:
+            await owner.abort_control.join_dispatch()
+        except BaseException as exc:
+            native_owner.record("abort settlement", exc)
+            if not isinstance(exc, asyncio.CancelledError):
+                owner.abort_control.record_failure(exc)
+        return native_owner.result()
     finally:
-        if worker is None or worker.done() and not worker.cancelled():
+        if native_owner.returned.is_set():
             org_state._release_native_task(native_owner)
 
 

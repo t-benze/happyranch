@@ -1840,6 +1840,12 @@ or PID0 supplies no cleanup proof. Unknown native ownership remains a successor
 veto. No permission/auth/host contract changes. C1–C10 behavior/proof NOT RUN;
 integration INCLUDING callback SKIPPED24342, Python units RETIRED.
 
+The joined offload registers original callable/context/return custody before
+submission. Missing, done or cancelled Futures never substitute for that original
+return and native settlement. Queue-before-throw retains the exact native DB pin,
+pair serialization and controls without a duplicate invocation or false cleanup;
+later errors cannot replace its first cause. Both executor bodies stay unchanged.
+
 Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.
 The stop limitation is captured for the original running generation before

@@ -461,7 +461,8 @@ class Database(
     AuthorityV2ContinuationMixin,
 ):
     @classmethod
-    def _open_team_move_recovery(cls, db_path: Path, *, org_slug: str, require_active=True):
+    def _open_team_move_recovery(cls, db_path: Path, *, org_slug: str, require_active=True,
+                                 _handle_owner=None):
         """Restricted D owner: open an EXISTING validated org, no migrations.
 
         Never invokes __init__, schema bootstrap, compatibility writers, WAL
@@ -470,10 +471,13 @@ class Database(
         remain reachable before attachment. Neither handle admits producers.
         """
         from urllib.parse import quote
-        from runtime.infrastructure.team_move_store import inspect_team_move_database, TeamMoveError, _inspection_error
+        from runtime.infrastructure.team_move_store import (
+            inspect_team_move_database, TeamMoveError, _inspection_error, _close_team_move_recovery_handle,
+        )
         try:
             original_identity = db_path.lstat()
-            row = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
+            row = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True,
+                _handle_owner=_handle_owner)
         except (OSError, sqlite3.Error) as exc:
             raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
         if row is None and require_active:
@@ -491,6 +495,8 @@ class Database(
         try:
             mode = "rw" if require_active else "ro"
             owner._conn = sqlite3.connect("file:" + quote(str(db_path), safe="/") + "?mode=" + mode, uri=True, check_same_thread=False)
+            if _handle_owner is not None:
+                _handle_owner(owner)
             owner._conn.row_factory = sqlite3.Row
             owner._conn.execute("PRAGMA foreign_keys=ON")
             from runtime.infrastructure.workflow_schema import validate_workflow_schema
@@ -498,23 +504,22 @@ class Database(
             with owner._lock:
                 validate_workflow_schema(owner._conn, expected_org_slug=org_slug)
                 validate_team_move_schema(owner._conn, org_slug=org_slug)
-            fresh = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True)
+            fresh = inspect_team_move_database(db_path, org_slug=org_slug, require_existing=True,
+                _handle_owner=_handle_owner)
             acquired_identity = db_path.lstat()
             if fresh != row or (original_identity.st_dev, original_identity.st_ino) != (acquired_identity.st_dev, acquired_identity.st_ino):
                 raise TeamMoveError("team_move_recovery_acquisition_changed")
             return owner
         except (OSError, sqlite3.Error) as exc:
-            primary = exc
-            raise _inspection_error("team_move_recovery_database_unavailable", exc) from exc
+            primary = _inspection_error("team_move_recovery_database_unavailable", exc)
+            raise primary from exc
         except BaseException as exc:
             primary = exc
             raise
         finally:
             if primary is not None and owner._conn is not None:
-                try:
-                    owner._conn.close()
-                except sqlite3.Error as cleanup:
-                    primary.add_note("restricted move acquisition close failed: " + type(cleanup).__name__)
+                _close_team_move_recovery_handle(owner, code="team_move_recovery_database_close_failed",
+                    primary=primary, _handle_owner=_handle_owner)
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -1923,7 +1928,7 @@ class Database(
             drafts = getattr(self, "_workflow_drafts", None)
             from runtime.workflows.coding_authority_history import _Budget
             coding_budget = _Budget()
-            ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None,
+            ownership = classify_task(self, task_id, org_slug=getattr(self, "_task_ownership_org", None),
                                       budget=coding_budget)
             if ownership.kind == 'coding_attempt':
                 coding = getattr(self, '_workflow_coding_dispatch', None)
@@ -2636,6 +2641,7 @@ class Database(
                     task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
                 ),
             )
+            self._insert_task_owner_uncommitted(task.id)
             self._conn.commit()
             return thread_id
         except Exception:

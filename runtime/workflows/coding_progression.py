@@ -225,7 +225,7 @@ def _append(dispatcher: Any, conn: Any, entry: dict, kind: str, facts: dict,
     after['run'].update(cas_version=entry['run']['cas_version'] + 1, last_event_id=event_id)
     if kind == 'stage_queued':
         _check(task is not None and next_attempt is not None)
-        dispatcher.db._insert_task_row_uncommitted(task)
+        dispatcher.db._insert_task_row_uncommitted(task, ownership=('coding_attempt', next_attempt['id']))
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (now, now, task.id))
         names = ','.join(next_attempt)
         conn.execute(f"INSERT INTO workflow_coding_attempts ({names}) VALUES ({','.join('?' for _ in next_attempt)})", tuple(next_attempt.values()))
@@ -476,7 +476,23 @@ def return_in_writer(dispatcher: Any, conn: Any, entry: dict) -> None:
     _check(changed.rowcount == 1)
 
 
-def notify_returned(dispatcher: Any, instance: str) -> bool:
+class _ReturnedCallerQueue:
+    """Use existing caller helpers with this attachment's raw queue adapter.
+
+    All domain methods/owners remain the original orchestrator. Only helpers'
+    queue lookup is adapted; the live orchestrator and its identity never change.
+    """
+
+    def __init__(self, orchestrator: Any, queue: Any) -> None:
+        self._original = orchestrator
+        self._queue = queue
+        self._thread_queue = queue.thread_queue
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._original, name)
+
+
+def notify_returned(dispatcher: Any, instance: str, *, queue: Any = None) -> bool:
     """Read the committed return before idempotent native caller notifications."""
     from runtime.models import TaskStatus
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _maybe_post_thread_followup
@@ -487,6 +503,8 @@ def notify_returned(dispatcher: Any, instance: str) -> bool:
         source_id = entry['source']['task_id']
         carrier_id = entry['tasks'][entry['attempt']['task_id']]['parent_task_id']
     orch = dispatcher.org.orchestrator
+    if queue is not None:
+        orch = _ReturnedCallerQueue(orch, queue)
     orch._update_task_history(carrier_id)
     orch._update_task_history(source_id)
     _enqueue_parent_if_waiting(orch, source_id)

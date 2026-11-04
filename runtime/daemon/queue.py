@@ -10,13 +10,14 @@ forwarded unchanged to ``run_step`` and defaults to ``None`` when omitted.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import partial
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 if TYPE_CHECKING:
     from runtime.daemon.metrics import MetricsRegistry
@@ -87,6 +88,89 @@ class _TrackedAsyncQueue(asyncio.Queue[_QueueItem]):
             return item
 
 
+class _AttachmentNotificationQueue:
+    """Per-attachment adapter: native publisher, actual raw put on its loop.
+
+    The native caller waits for the SAME synchronous put result before its
+    acknowledgement/failure bookkeeping. No DB/profile work runs in the loop
+    callback and no queue/map mutex is held while waiting. A lost loop never
+    supplies retirement: the attachment's native worker remains owned.
+    """
+
+    def __init__(self, queue: TaskQueue, loop: asyncio.AbstractEventLoop, thread_queue: Any) -> None:
+        self._queue = queue
+        self._loop = loop
+        self.task_puts: list[Future] = []
+        self.thread_queue = _AttachmentThreadQueue(thread_queue)
+
+    def enqueue(self, *args: object, **kwargs: object) -> None:
+        result: Future = Future()
+        self.task_puts.append(result)  # retain BEFORE the thread-safe submission
+        def put() -> None:
+            try:
+                self._queue.enqueue(*args, **kwargs)
+            except BaseException as exc:
+                result.set_exception(exc)
+            else:
+                result.set_result(None)
+        # A submission exception leaves this actual outcome pending. A known
+        # callback failure completes it with that error instead. Neither path
+        # substitutes or wraps the original publisher exception.
+        self._loop.call_soon_threadsafe(put)
+        result.result()
+
+    def put_nowait(self, *args: object, **kwargs: object) -> None:
+        self.enqueue(*args, **kwargs)
+
+    def enqueue_if_absent(self, slug: str, task_id: str, *, metadata: dict | None = None, publisher: Callable | None = None) -> bool:
+        # Original reservation and generation publisher run natively. Their
+        # supplied publisher reaches this adapter only for the real raw put.
+        first_put = len(self.task_puts)
+        return self._queue.enqueue_if_absent(slug, task_id, metadata=metadata,
+            publisher=publisher or (lambda: self.enqueue(slug, task_id, metadata=metadata)),
+            _put_outcomes=lambda: tuple(self.task_puts[first_put:]))
+
+    def has_unretired_puts(self) -> bool:
+        return any(not done.done() or done.cancelled() for done in self._puts())
+
+    def _puts(self) -> tuple[Future, ...]:
+        return (*self.task_puts, *self.thread_queue.puts)
+
+    async def join_puts(self) -> None:
+        cancellation = None
+        for done in self._puts():
+            bridge = asyncio.wrap_future(done)
+            while not bridge.done():
+                try:
+                    await asyncio.shield(bridge)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+            bridge.result()
+        if cancellation is not None:
+            raise cancellation
+
+
+class _AttachmentThreadQueue:
+    """Retain the original notification's actual loop put until it returns."""
+
+    def __init__(self, queue: Any) -> None:
+        self._queue = queue
+        self.puts: list[Future] = []
+
+    def put(self, job: Any) -> Awaitable[None]:
+        done: Future = Future()
+        self.puts.append(done)  # before the original thread-safe submission
+        async def publish() -> None:
+            try:
+                await self._queue.put(job)
+            except BaseException as exc:
+                done.set_exception(exc)
+                raise
+            else:
+                done.set_result(None)
+        return publish()
+
+
 class TaskQueue:
     """Wrapper around asyncio.Queue + a worker pool."""
 
@@ -94,6 +178,9 @@ class TaskQueue:
         self._admission_lock = threading.RLock()
         self._pending_counts: Counter[tuple[str, str]] = Counter()
         self._admission_reservations: set[tuple[str, str]] = set()
+        # Only the team-move async publisher needs an insertion receipt that
+        # survives dequeue while its native generation acknowledgement runs.
+        self._native_publication_puts: dict[tuple[str, str], bool] = {}
         self._queue: asyncio.Queue[_QueueItem] = _TrackedAsyncQueue(
             self._admission_lock, self._record_dequeue,
         )
@@ -120,6 +207,8 @@ class TaskQueue:
                 return
             self._queue.put_nowait((slug, task_id, metadata))
             self._pending_counts[(slug, task_id)] += 1
+            if (slug, task_id) in self._native_publication_puts:
+                self._native_publication_puts[(slug, task_id)] = True
 
     def put_nowait(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
         self.enqueue(slug, task_id, metadata=metadata)
@@ -131,6 +220,7 @@ class TaskQueue:
         *,
         metadata: dict | None = None,
         publisher: Callable[[], None] | None = None,
+        _put_outcomes: Callable[[], tuple[Future, ...]] | None = None,
     ) -> bool:
         """Publish only when this task has no reservation or pending item.
 
@@ -142,10 +232,31 @@ class TaskQueue:
         callback without the lock: DB-aware publishers must never participate
         in a queue-lock/DB-lock cycle.  Concurrent bounded producers observe
         the reservation and lose until publication succeeds or refuses.  The
-        reservation is always released; a successful insertion remains owned
-        by the pending count until the same locked dequeue operation, so a
-        later qualifying wake is admitted.
+        reservation is released after a returned publisher outcome. An
+        uncertain attachment loop submission retains this SAME reservation;
+        only the actual put's positive retirement can qualify its release.
+        A successful insertion remains owned by the pending count until the
+        same locked dequeue operation, so a later qualifying wake is admitted.
         """
+        if not self._reserve_bounded_enqueue(slug, task_id):
+            return False
+        key = slug, task_id
+        try:
+            if publisher is None:
+                self.enqueue(slug, task_id, metadata=metadata)
+            else:
+                publisher()
+            with self._admission_lock:
+                return self._pending_counts[key] > 0
+        finally:
+            # The generation publisher can record/catch a raw-put exception.
+            # Its return therefore cannot retire an uncertain loop submission.
+            # Observe the SAME per-call outcomes even on that caught-error path;
+            # cancellation is never callback retirement. No late retry/clearance.
+            if _put_outcomes is None or all(done.done() and not done.cancelled() for done in _put_outcomes()):
+                self._release_bounded_enqueue(key)
+
+    def _reserve_bounded_enqueue(self, slug: str, task_id: str, *, track_put: bool = False) -> bool:
         key = slug, task_id
         with self._admission_lock:
             if self._stopping:
@@ -156,16 +267,38 @@ class TaskQueue:
             if self._pending_counts[key] or key in self._admission_reservations:
                 return False
             self._admission_reservations.add(key)
+            if track_put:
+                self._native_publication_puts[key] = False
+            return True
+
+    def _release_bounded_enqueue(self, key: tuple[str, str]) -> None:
+        with self._admission_lock:
+            self._admission_reservations.discard(key)
+            self._native_publication_puts.pop(key, None)
+
+    async def _enqueue_if_absent_native(
+        self, slug: str, task_id: str, *, publisher: Callable[[], Awaitable[str]],
+    ) -> bool:
+        """Same bounded reservation for the joined team-move publisher only."""
+        if not self._reserve_bounded_enqueue(slug, task_id, track_put=True):
+            return False
+        key = slug, task_id
+        retired = True
         try:
-            if publisher is None:
-                self.enqueue(slug, task_id, metadata=metadata)
-            else:
-                publisher()
+            await publisher()
             with self._admission_lock:
-                return self._pending_counts[key] > 0
+                return self._native_publication_puts[key]
+        except BaseException as exc:
+            # A private native submission/bridge failure retains the actual
+            # service owner. Do not release this SAME reservation underneath
+            # an uncertain publisher. Ordinary returned failures still release.
+            retired = not BaseException.__getattribute__(exc, "__dict__").get(
+                "_team_move_native_unretired", False,
+            )
+            raise
         finally:
-            with self._admission_lock:
-                self._admission_reservations.discard(key)
+            if retired:
+                self._release_bounded_enqueue(key)
 
     @staticmethod
     async def _heartbeat(work: _NativeWork) -> None:

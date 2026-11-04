@@ -33,7 +33,7 @@ from pathlib import Path
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
-    signature, snapshot,
+    signature, snapshot, trees_equal,
 )
 
 LOG = logging.getLogger(__name__)
@@ -402,7 +402,7 @@ def admit(candidate: dict, evidence: Evidence, deadline: float, *, now: float | 
     if candidate['phase'] == 'worktree' and _worktree_gate(candidate, deadline) != git_identity:
         raise Retain('git_identity_changed_during_admission')
     latest = snapshot(path, deadline, scratch=candidate['phase'] == 'scratch')
-    if {k: signature(v) for k, v in latest.items()} != {k: signature(v) for k, v in tree.items()}:
+    if not trees_equal(latest, tree, deadline):
         raise Retain('tree_changed_during_admission')
     check(deadline)
     # Re-open without following ancestors; bind complete observed root identity.
@@ -611,7 +611,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 phase['attribution_unknown'] = True
                 report_checkpoint()
                 fresh = admit(candidate, evidence, deadline, now=now)
-                if {k: signature(v) for k, v in tree.items()} != {k: signature(v) for k, v in fresh.items()}:
+                if not trees_equal(tree, fresh, deadline):
                     raise Retain('tree_changed_before_mutation')
                 if candidate['phase'] == 'scratch':
                     mutation_started = True
@@ -926,7 +926,7 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=started_at, deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
                   process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
-                  unreached_orgs=[str(org.root) for _, org in sorted(state.orgs.items())],
+                  unreached_orgs=[str(org.root) for _, org in sorted(state.orgs_snapshot().items())],
                   scheduled_admission=admission)
     if admission['state'] == 'suspended':
         report.update(outcome='suspended', finished_at=datetime.now().astimezone().isoformat())
@@ -942,7 +942,7 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
     # does not. Retain active evidence on process loss; D reads the same history.
     with ExitStack() as stack:
         roots, writers, dispositions, deferred = [], {}, {}, {}
-        for slug, org in sorted(state.orgs.items()):
+        for slug, org in sorted(state.orgs_snapshot().items()):
             check(deadline)
             try:
                 disposition = stack.enter_context(native_writer(org.db, publisher='disk_sweep'))
@@ -1045,7 +1045,7 @@ async def disk_sweeper_loop(state) -> None:
             # Existing audit interface and row shape, one summary per swept org.
             # No notification interface suitable for a disk alert exists here;
             # below-20% context is carried in this audit/JSON, as approved.
-            for slug, org in sorted(state.orgs.items()):
+            for slug, org in sorted(state.orgs_snapshot().items()):
                 item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
                 await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
             if cancelled is not None:

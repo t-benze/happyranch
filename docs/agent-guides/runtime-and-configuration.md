@@ -1,13 +1,80 @@
 # Runtime And Configuration
 
+## Authority terminal recovery and connection custody (THR-328)
+
+Startup's existing refusal owner may classify a fully consumed authenticated
+no-grant as `policy_no_continue` using current mechanical/parser context. It
+retains first failure obligations and uses the actual writer-returned code;
+old-boot continue remains refusal-only. Fresh committed writer alone surfaces
+the original reason/summary. Exact replay/zombie proof authenticates consumed
+J/R/K/P/V/a0–a3 without recreating tokens; old machinery refusals keep their
+original missing-failed-evidence reading. Policy pending retains J/task/exact-Q
+and never ordinary-escalates or reconciles Pending as success.
+
+The common consumer and accepted-recovery entry check the original connection
+before classifiers/audits/effects. Ambient ownership returns a private lost_owner
+held marker (housekeeping_pending/null disposition), propagated through callers
+without success/requeue/fallback/worktree tails. Public/direct-v2 hooks and the
+terminal writer guard their separate lower entries. No connection repair,
+replacement, BEGIN/COMMIT/ROLLBACK or diagnostic writer is allowed at these held
+entries. Opaque errors retain their cause. This is an entry precondition, not
+whole-runner/sweep isolation; original native finally/outer owners remain.
+Their cleanup attempts retain an escaping consumer's primary error; secondary
+failure does not certify settlement. Startup keeps its existing unsafe wrapper
+and retains original plus secondary causes. See the current orchestrator
+contract for the named stage/transaction/diagnostic boundaries and intentionally
+unchanged ordinary handling.
+
+Retained job IDs require complete original producer ALL-attempt/Pause/native
+custody and submission/SID joins; terminal preflight/Pause removal before native
+finish is insufficient. Missing evidence or layout never proves clearance.
+New readers preserve old histories; old typed binaries reject policy_no_continue.
+Rollback requires compatible code/drained old consumers. No schema, activation,
+live historical cleanup, loading, deployment or restart follows from publication.
+Behavior C1–C9 NOT RUN; causal/native/sentinel/rollback PROOF NOT RUN. Python units
+RETIRED, integration SKIPPED THR211seq270/271 + THR243seq42; static evidence only.
+## Built-in coding availability — ROOT13509 / THR320seq304
+
+The fixed coding v1 definition is registered automatically by the normal org
+recovery owner after move/Pause/cutover/naming/authority safety, outside early
+serving. Exactly four existing template rows carry closed system provenance
+`workflow-coding-builtin-registration@1`; there is no human import operation,
+admission or receipt. Package capture precedes locks. Native reservation,
+publisher/DB ownership, full source/target closure and positive-COMMIT watermark
+remain mandatory. Complete native history/suffixes/state/live/fixed safety work
+share ONE 8192-row/16MiB/2097152-visit census, with 16384-byte native cells; separate
+release/source/target allowance remains 8192/16MiB/16384 without phase resets.
+Only local pure refusal or direct healthy `team_move_native_held` may defer;
+the latter requires canonical producer operation identity, no cause/context/notes
+and the unchanged mounted owner. Wrapped move schema/history/bounds/SQL failures
+and uncertain origins propagate unchanged. Deferral requires successful cursor
+close, original rollback, both outer exits and identical usable connection/no notes.
+After reservation, exact validation marking follows cleanup inside the native interval;
+warning follows actual settlement/exit. SQL/full-history, entry, cleanup, COMMIT
+and later publication uncertainty propagate without no-effect/retry claims.
+Active/unknown owners defer;
+partial/mixed/foreign state refuses without repair. Constructors/references and
+reads never initialize. Existing human imports remain unchanged no-ops.
+Saved history/replays/admitted work use saved bytes despite package loss; fresh
+options/configuration/start need the captured matching resource. Even empty
+registration requires compatible readers, with no old-reader downgrade claim.
+Guided setup observes saved availability instead of invoking the human importer.
+The existing twelve loaded-object observations do not attest the new registrar.
+Founder settings Save, real loaded acceptance and scratch remain separate.
+
+
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
 normally admitted org's supported document foundation. Fresh F plus coding is
 one `Database.workflow_schema_transaction`; existing complete storage is
-validation-only. Before any workflow DDL, the entire reserved coding family is
-observed. Partial, extra, case-changed, wrong-kind or malformed objects and real
-shared dependency failures refuse without repair or adoption. Body/interruption
+validation-only except for the retained org-owned installation of the complete
+canonical `workflow_owner_*` index set after full source validation. Complete
+unindexed and indexed layouts are both recognized; partial or noncanonical index
+sets refuse. The owning writer validates the complete target before COMMIT.
+Before any workflow DDL, the entire reserved coding family is observed. Partial,
+extra, case-changed, wrong-kind or malformed objects and real shared dependency
+failures refuse without repair or adoption. Body/interruption
 and COMMIT failures preserve the primary cause and secondary cleanup errors;
 uncertain COMMIT is not success or proof of absence. Audit-watermark advances
 publish only after positive COMMIT under the same lock. Failed unpublished org
@@ -28,9 +95,9 @@ full validation and actual conflict queries. SQL/read/lock errors never mean
 absence. Mandatory F request bridges and other owners remain required.
 
 Historical F/E whole-reference constructors use literal foundation primitives,
-not operational startup. Independent coding companions and a private extension
-cache distinction reach both generic whole-reference consumers. Raw whole
-nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
+not operational startup. Independent coding companions and separate coding and
+owner-index cache dimensions reach both generic whole-reference consumers. Raw
+whole nonNULL SQL comparison stays unfiltered; legacy authority keeps its four
 histories even after workflow's fifth-history cache fill, and authority-v2 stays
 observed-only. No reference preimage or saved pin is rewritten. Generic Database
 and runtime-audit remain workflow-free. Even empty F+coding requires compatible
@@ -50,7 +117,7 @@ health or disk HEAD alone is not loaded acceptance.
 
 This source contract supersedes earlier coding-only J/whole-org-equality and
 mandatory offline-chain instructions below, preserving attributed old evidence.
-Human deployment/restart, Founder original import/settings, independently loaded
+Human deployment/restart, Founder settings, independently loaded
 readiness and one genuine four-role scratch run remain separate root-owned
 acceptance. Source/static checks prove no workflow behavior. Python units are
 RETIRED; integration including callback/lifespan/SessionTracker is SKIPPED24342;
@@ -63,7 +130,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete coding/shared storage and valid import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -2978,14 +3045,23 @@ is comparison only, never constructor input. Both old preimages remain literal.
 Legacy authority still admits ONLY fresh/v0/v2/v2-organic, rejecting the fifth
 name before shared cache lookup even after workflow cache fill. Generic workflow reference consumers retain their whole-reference helper;
 coding import uses scoped storage validation. Cache identity includes
-`(layout,history,naming,Pause,team_move,coding_extension)`; ANY unavailable reference refuses
+`(layout,history,naming,Pause,team_move,coding_extension,owner_indexed)`; ANY unavailable reference refuses
 even if another digest matches. All nonNULL raw sqlite_master SQL ordered by
 name participates, without normalization or object filtering. Authority-v2 stays
 observed-only; generic Database/runtime-audit remain workflow-free.
 
+Every reference first constructs the complete unindexed final layout, including
+coding where requested, then optionally adds ALL canonical owner indexes on that
+disposable reference and validates the final composition. Index counts without/with
+coding are F31/32, E34/35, G36/37, H37/38; I document-only has 39, I+coding is J
+with 40, and direct J has 40. Both wrappers default `owner_indexed=False` and reject
+non-Booleans before cache lookup. Live variant selection follows complete validation
+inside the same coherent read view; it never installs indexes on the live DB.
+
 Only fifth-history J uses whole seed → current Database → unchanged complete-I
-initializer → shipped canonical coding DDL in workflow_schema_transaction →
-require full validator J → unchanged Pause/team-move/naming order → raw digest.
+initializer with `owner_indexed=False` → shipped canonical coding DDL in
+workflow_schema_transaction → require full validator J → optional complete J
+owner indexes and full J validation → unchanged Pause/team-move/naming order → raw digest.
 Exceptions/unexpected layout remain unavailable. Other fifth-history layouts
 retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
@@ -3780,7 +3856,7 @@ terminal. `--org` is required. Strict optional flags are `--runtime-root ABS`
 (the existing literal active registered runtime; default read from runtimes.yaml),
 `--backup-dir ABS` (exclusive new private destination; default daemon-home/
 operator-backups/coding-ORG-UTC-random), `--ui-profile local|production` (local),
-and `--import-file ABS` (default daemon-home/coding-ORG-v1-import.json). Source is
+and `--import-file ABS` (a retained original for readback only; default daemon-home/coding-ORG-v1-import.json). Source is
 the checkout containing the script; daemon home retains its existing configured
 selection. No force/yes/skip/resume/rollback/key/revision override exists.
 
@@ -3828,7 +3904,7 @@ Start prints the uv wrapper PID; daemon.pid contains its Python child PID.
 The coordinator authenticates both against checked process observations, selected
 executables/source/home/custody, the pre-start boundary and direct parent/start
 relationship. Status must report the actual daemon PID and daemon.port value.
-Repeated pair/file observations bracket status and serving/import checks; absent,
+Repeated pair/file observations bracket status and serving/definition checks; absent,
 unrelated, reused or moving identities hold without restart. The saved
 receipts/started-processes.json contains only closed identity evidence.
 
@@ -3912,7 +3988,7 @@ a supported complete running observation, or the human operator must establish
 genuine positive stopped entry with existing controls. No error bypass or memory
 endpoint/reset is supplied. Final selected loaded-source/UI acceptance remains
 after restart, with all twelve actual selected objects, full D1 list validation,
-closed identity/budgets/bookends and human rendering before import.
+closed identity/budgets/bookends and human rendering before saved-definition observation.
 
 Stop's shutdown effects precede the full stopped backup; receipt-only evidence
 is incomplete. Full affected DB/config/source/environment/UI/shared-daemon recovery
@@ -4014,6 +4090,12 @@ schedules or budgets. Contained running-stop uses existing backend controls;
 direct/passthrough retains original exit/timeout waiting and an attributable
 could-not-stop audit. Original worker return and native/backend settlement
 precede successors; missing cleanup evidence keeps the predecessor veto.
+Each offload owns its original callable/context and return acknowledgement before
+executor submission. A submission may throw after queueing; a missing, done or
+cancelled Future proves neither no effects nor original return. Unknown admission
+retains the runner/native DB lifetime, pair guard and exact control without finish
+or resubmission until the original acknowledgement. Submission, original worker,
+dispatch and settlement errors retain their first cause and secondary context.
 C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
 
 Unsupported-stop audit failure is retained without interrupting the original

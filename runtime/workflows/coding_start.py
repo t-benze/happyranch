@@ -13,7 +13,7 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.org_config import load_org_config
 from runtime.orchestrator.task_pause import current_invocation
 from runtime.workflows._coding_import_support import CodingImportSupport, _capture
-from runtime.workflows._coding_release_history import read_release_import
+from runtime.workflows._coding_registered_release import read_registered_release
 from runtime.workflows._coding_settings_execution import _configuration, _read_json, _resolve_start
 from runtime.workflows.activation import author_capacity_blocked
 from runtime.workflows.coding_authority_history import _Budget
@@ -61,8 +61,8 @@ def require_start_ready(conn: sqlite3.Connection, org: Any, command: dict) -> No
         _check(_settings_family(command))
         budget = _Budget()
         layout, inventory = _read_workflow_schema(conn, expected_org_slug=org.slug, budget=budget)
-        _check(inventory is not None)
-        _resolve_start(command, inventory.mappings, inventory.imported, budget, fresh=True)
+        _check(inventory is not None and org.workflow_coding_builtin.available(inventory.release))
+        _resolve_start(command, inventory.mappings, inventory.release, budget, fresh=True)
     except (ValueError, TypeError, KeyError, sqlite3.Error, RecursionError, OverflowError):
         raise CodingStartError('coding_start_settings_unavailable') from None
     finally:
@@ -176,15 +176,11 @@ class CodingStartStore:
                              actor=actor, transitions=transitions)
 
     def guard_native_mutation(self, task_id: str) -> None:
-        # K3a has no standalone native mutation bridge. Preserve complete
-        # original observations; do not silently accept new PID/clock/status/
-        # counter/session/cancel drift or record a fabricated heartbeat owner.
-        conn = self.db._conn
-        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_coding_runs'").fetchone() is None:
-            return
-        if not conn.execute('SELECT 1 FROM workflow_coding_runs LIMIT 1').fetchone():
-            return
-        if task_id in queued_storage(conn, self.org.slug).owners:
+        # Ordinary updates must not enter queued_storage for an unrelated run.
+        # Actual coding mutations retain their own full reader/native journal.
+        from runtime.workflows.recovery import classify_task
+        owner = classify_task(self.db, task_id, org_slug=self.org.slug)
+        if owner.kind.startswith('coding_') or owner.kind == 'reconciliation_required':
             raise CodingStartError('coding_queued_mutation_unavailable')
 
     def consume(self, claim: RetryClaim, decision: NextStep, report: CompletionReport) -> str:
@@ -251,7 +247,7 @@ class CodingStartStore:
         # Complete schema/reference admission reconstructed these histories on
         # this connection/org/snapshot. Consume locally before any write; the
         # post-write validator below must reconstruct the changed state anew.
-        mappings, imported, saved = inventory.mappings, inventory.imported, inventory.queued
+        mappings, imported, saved = inventory.mappings, inventory.release, inventory.queued
         for instance, entry in saved.runs.items():
             old = entry['command']
             if (entry['source']['principal'], old['operation_key']) == (claim.assigned_agent, command['operation_key']):
@@ -261,6 +257,8 @@ class CodingStartStore:
                         or old != command):
                     raise CodingStartError('coding_start_operation_conflict')
                 return instance  # No admission/task/counter/event/pointer writes.
+        if not self.org.workflow_coding_builtin.available(inventory.release):
+            raise CodingStartError('coding_start_release_unavailable')
         source_before, callback, actual, native = self._native(conn, claim, invocation,
                                                              budget=inventory.budget)
         checkpoints = [*checkpoints, dict(source=encode_row(source_before), ancestors=native['ancestors'])]
@@ -314,7 +312,7 @@ class CodingStartStore:
             brief='Structural coding carrier ' + instance, status=TaskStatus.IN_PROGRESS,
             block_kind=BlockKind.DELEGATED, created_at=stamp, updated_at=stamp,
             session_timeout_seconds=source_before['session_timeout_seconds'])
-        self.db._insert_task_uncommitted(carrier)
+        self.db._insert_task_uncommitted(carrier, ownership=('coding_carrier', instance))
         leaf_id = self.db.next_task_id()
         leaf = TaskRecord(id=leaf_id, task_type='subtask', parent_task_id=carrier_id,
             assigned_agent=roles['implementer']['principal'], team=roles['implementer']['team'],
@@ -334,12 +332,14 @@ class CodingStartStore:
                 conn.execute(f'INSERT INTO {table} ({names}) VALUES ({marks})', tuple(row.values()))
         conn.execute('INSERT INTO workflow_coding_runs VALUES (?,?,1,0,?,NULL,NULL)',
                      (instance, selected.mapping_id, 'development'))
-        self.db._insert_task_row_uncommitted(leaf)
+        self.db._insert_task_row_uncommitted(leaf, ownership=('coding_attempt', attempt_id))
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (now, now, leaf_id))
         scope = _canonical(initial_scope(org=self.org.slug, instance=instance, attempt=attempt_id,
                                         command=command, roles=roles, context=context))
         conn.execute('INSERT INTO workflow_coding_attempts VALUES (?,?,1,?,1,1,NULL,?,?,NULL,NULL,NULL,NULL,?,?,?)',
                      (attempt_id, instance, 'development', leaf_id, roles['implementer']['principal'], 'queued', scope, _hash(scope)))
+        from runtime.infrastructure.workflow_task_ownership import adopt_coding_source_uncommitted
+        adopt_coding_source_uncommitted(self.db, claim.task_id, instance)
         conn.execute('UPDATE tasks SET block_kind=?,note=?,updated_at=? WHERE id=?',
                      ('delegated', 'coding-owned:' + instance, now, claim.task_id))
         conn.execute('UPDATE workflow_coding_runs SET current_attempt_id=? WHERE instance_id=?', (attempt_id, instance))

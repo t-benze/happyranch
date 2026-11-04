@@ -412,6 +412,84 @@ Unknown scope422; stale input/target/source/skill/charter/census or competing mo
 
 ## Approved acceptance and delivery limits
 
+The execution-boundary correction admits service-owned GET/POST request tasks
+before native submission and retains their actual original attached OrgState
+native-user lease; diagnostic-only requests retain the service's runtime barrier.
+Planning, current observations, error projection and response encoding use joined
+native intervals with ContextVars. Apply/recover's native preparation hands each
+successful reservation to a once-only loop-owned runner before cancellation can
+propagate. That runner shares the admitted original lease, including when shutdown
+has already fenced fresh org admission. Request loss cannot cancel that handoff.
+
+Operation forward/recovery mutation and each profile/canonical/move/DB lock
+interval stay synchronous on their acquiring native thread. Profile input
+preparation and complete drain census are native; the authority async writer
+lock, deadlines/sleeps and thread/producer queue publication stay on-loop. Native
+selection remains notification only; current reserve/claim revalidation grants
+admission. Restricted open results are captured even during cancellation, close
+is joined, failed closes retain original handles and primary failures survive
+cleanup/diagnostic errors. The actual restricted DB and both nested read-only
+inspection connections register under the SAME original service/native task at
+acquisition, before validation or constructor return. Each original helper attempts
+close once; affine inspection cleanup stays on its acquiring thread. Only positive
+original close removes a handle. Failed-close codes remain safe secondary facts in
+diagnostic readback, while the original owner/handle stays held. A later successful
+observation or saved terminal receipt never clears it or admits a new runner.
+Actual native return plus bridge retirement is required;
+cancelled Futures, timeouts and missing task-map entries prove no retirement.
+Close fences new requests, joins admitted handoffs, then cancels/joins runners;
+a shielded shared join survives repeated close-waiter cancellation.
+
+Task redelivery uses a service-owned child sharing the original org lease.
+Native discovery/classification/claim returns a value-only publication step;
+no cursor, transaction or native lease survives that return. The real queue put
+runs on-loop, followed by native exact claim acknowledgement or failure, using
+the same publisher state machine and receipt/error shapes as synchronous callers.
+The original metadata identity is removed only after actual pending publication.
+Cancellation joins the complete publication; uncertain submission/bridge return
+retains queue reservation and service/DB-close ownership. Discovery grants no
+admission and pending/admitted/malformed/unreadable never gain ordinary fallback.
+
+Dynamic attachment completes the source execution boundary through the original
+`OrgState.load` and selector/profile owners. A state-owned child and pre-submission
+native ticket retain actual unpublished/loaded DB handles. Loop wiring precedes
+native profile validation and insertion into the original shared map within the
+same profile interval; leases never leave their native thread or cross an await.
+A contended profile lease gives loop callers the existing
+`profile_coordinator_busy` refusal immediately; native callers retain their
+original bounded wait. The loop never sleeps behind the attachment worker.
+Short synchronized membership captures replace live-map iteration. Profile and
+metrics readers retain their actual OrgStates/DBs; ordinary request dependencies
+retain the selected attachment. Thread/task/job event responses end the endpoint
+reader before transport and capture the SAME attachment during lazy DB replay or
+job polling, without a reader over bus waits or sends. Their EventBus view shares
+the original lock/subscriber registry and reuses the original subscribe engine;
+only its synchronous history loader is guarded. Reads refuse detached/replaced
+OrgStates rather than resolving the slug into a new attachment. Materialized task
+attachment bytes and audit bodies require no transport reader; audit retains the
+original private deadline/identity fence without later SQL.
+Native publication, shutdown admission and close-capture
+fences share the state mutex, which contains no I/O, DB/profile acquisition, worker
+join or await. Removal/swap/close refuse active readers or uncertain native owners.
+Swap closes read admission before registry effects and rebinds the profile capture
+to the actual serving state, preserving map identity pins.
+Returned-coding rediscovery reuses the existing recovery/notification owner with
+actual task queue puts on the original loop before native exact ack/failure, and
+joined original thread puts. Both task and thread actual put outcomes are retained
+before submission and included in attachment retirement/join. An uncertain task
+put preserves the SAME bounded reservation even if generation failure bookkeeping
+catches the submission exception. Known callback failure remains a completed
+outcome with its original error; native return, cancelled wrappers or map absence
+never prove put retirement. No automatic uncertainty clearance is introduced.
+Post-publication errors preserve the map/DB owner;
+unpublished close failures retain the original handle and primary error. Fresh-org
+rollback cannot remove a published or uncertain attachment. Shutdown joins actual
+attachment children before host/DB close. Existing startup/scheduler business
+rules and final native admission remain. Source/static evidence establishes no
+whole-service responsiveness or behavioral acceptance. Native validation, the
+45-second native-await semantics and CLI deadlines remain; there is no hard
+filesystem bound or demonstrated dominant slow stage.
+
 Reuse TASK11307 section8's finite scenario/expected-observation map: exact eligible request; stale/wrong target/third member/concurrent writers; session-only worker refusal; causal pending work; captured threads/pending followups; task/thread/schedule races/retry/fallback; due schedules; file/reset/context/publication failures/timeouts; separately authorized process-loss restart; identical/changed-key replay; permission/skill differences; historical/natural postmove work; unrelated execution/draft staleness. Store/state handoff carries four answers for each applicable case (real seam, expected observation, actual static evidence, missing behavior). It adds no test cases/fixtures/campaign.
 
 NO new unit/integration cases/parameters/fixtures, retired Python run/import/collection/restoration, ad hoc Product E2E, protected mutation/process-kill/replay/restoration experiments, Jenkins, live synthetic task/DB operation/provider reset/roster move or reinstated four-control premerge gate. General integration SKIPPED THR243seq42. All unobserved behavior/migration/recovery scenarios remain UNEXECUTED. Source/static QA PASS is not behavioral PASS. Independent full final-head reviewer, honest scoped QA, normal hooks/nonforce publication and manager guarded merge remain; each push renews required gates. PR/main automation remains ONLY Source Boundary Lint and Web Lint(Node24), with standalone source-only dependency lint preserved.

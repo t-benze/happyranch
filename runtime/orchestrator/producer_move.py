@@ -661,23 +661,39 @@ class ProducerMoveAdmission:
                 add('native_writer_evidence_unknown', request.source_team, 'Repair native writer evidence under its owner')
         return tuple(blockers)
 
-    def redeliver_after_release(self, org):
-        """At-least-once notifications; queues dedup queued AND running owners."""
-        from runtime.daemon.dream_queue import DreamJob
-        from runtime.daemon.wake_queue import WakeJob
-        from runtime.daemon.schedule_queue import ScheduleJob
+    def _released_sources(self) -> tuple:
+        """Native notification selection only; never new launch permission."""
+        selected = []
         with self.move.gate, self.db._lock:
             if self.move.active_uncommitted() is not None:
                 raise DeferredTeamMove('team_move_release_not_committed')
             states = self.history_uncommitted()
-            for kind, queue, cls, field in (('dream', org.dream_queue, DreamJob, 'dream_id'),
-                    ('wake', org.wake_queue, WakeJob, 'work_hour_id'), ('schedule', org.schedule_queue, ScheduleJob, 'schedule_id')):
+            for kind in ('dream', 'wake', 'schedule'):
                 status = 'firing' if kind == 'schedule' else 'pending'
                 for row in self.db._conn.execute(f'SELECT * FROM {_TABLES[kind]}'):
                     state = self.state_for_uncommitted(kind, row, states)
                     safe = state is None or (state.deferred and state.producer_settled and not state.unknown)
                     if safe and (row['status'] == status or state and state.deferred and row['status'] == 'running'):
-                        queue.put_nowait(cls(org_slug=org.slug, **{field: row['id']}))
+                        selected.append((kind, row['id']))
+        return tuple(selected)
+
+    @staticmethod
+    def _publish_released_sources(org: Any, selected: tuple) -> None:
+        # Loop-owned queue/dedup mutation. Native reserve/claim still revalidates
+        # current release/history; a selected notification confers no admission.
+        from runtime.daemon.dream_queue import DreamJob
+        from runtime.daemon.wake_queue import WakeJob
+        from runtime.daemon.schedule_queue import ScheduleJob
+        queues = {'dream': (org.dream_queue, DreamJob, 'dream_id'),
+            'wake': (org.wake_queue, WakeJob, 'work_hour_id'),
+            'schedule': (org.schedule_queue, ScheduleJob, 'schedule_id')}
+        for kind, source_id in selected:
+            queue, cls, field = queues[kind]
+            queue.put_nowait(cls(org_slug=org.slug, **{field: source_id}))
+
+    def redeliver_after_release(self, org):
+        """Existing synchronous scheduler entry; queues retain dedup semantics."""
+        self._publish_released_sources(org, self._released_sources())
 
 
 async def run_native_producer(org, kind, source_id, action):

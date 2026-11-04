@@ -1,5 +1,35 @@
 # Features And Invariants
 
+## Built-in coding definition invariant — ROOT13509 / THR320seq304
+
+System-owned availability registers the fixed v1 definition in exactly four
+existing template tables with canonical `workflow-coding-builtin-registration@1`
+provenance; no human publication/admission operation or receipt exists. Saved
+human six-row originals and all settings/start/stage/return pins remain literal.
+Complete typed common release/queued/native validation rejects partial, mixed,
+foreign, malformed and orphan state; authentic bootstrap bindings are supported
+for either origin. No DDL/reference/history rewrite or old-reader downgrade.
+Registration runs once after the legitimate recovery/authority safety tail,
+never early serving, constructors or reads. Genuine native writer ownership,
+complete source/target validation and positive-COMMIT watermark apply. ONE local
+native census (all suffixes/state/live/fixed probes) shares 8192 rows/16MiB/2097152
+visits, separate from original source/release/target 8192/16MiB/16384; cells stay 16384.
+Only local pure refusal or direct healthy `team_move_native_held` may defer;
+the latter needs canonical producer operation identity, no cause/context/notes
+and the unchanged mounted owner. Wrapped move schema/history/bounds/SQL failures
+and uncertain origins propagate unchanged. Optional refusal requires explicit
+cursor close, original rollback, both outer exits and unchanged usable connection
+without notes. After reservation, exact native validation marking follows that
+cleanup; warning follows actual
+native settlement/exit. SQL/full-history, entry, cleanup, COMMIT and publication
+uncertainty propagate. Unknown owners remain owned, never retried/adopted.
+Package loss gates new work without stranding saved replay/admitted continuation;
+unchanged Disabled-retain keeps its exact mapping. First-use metadata hydration
+sends nothing, preserves empty roles/repos and Disabled, and cannot clear an
+original-save fence. Only Founder Save configures; availability starts nothing.
+Loaded identity, human persistence and genuine scratch remain separate acceptance.
+
+
 ## Current explicit coding execution and caller return — ROOT13015
 
 Founder THR320 seq194/196/225 and manager TASK-13015 authorize the bounded
@@ -7,7 +37,7 @@ coding integration. This current contract supersedes unconditional-disabled
 instructions in the historical K3/R2/revision/source checkpoints below; their
 original observations, failures, approvals and immutable encodings remain history.
 
-New starts require the mounted native queue/host/runtime, complete valid J/import,
+New starts require the mounted native queue/host/runtime, complete coding/shared storage and registered release,
 current canonical settings with Admission Explicit and matching settings/release/
 mapping pins, and the existing current-authority/native admission predicates.
 Missing, malformed or Disabled settings refuse before callback persistence, spend
@@ -3171,6 +3201,22 @@ Traps:
 
 ## Task Blocked By Job
 
+Authority-v2 eligibility treats retained wait IDs as history, not an active-wait
+veto. It strictly authenticates all owned terminal jobs, full all-attempt
+producer history, exact original submission/SID joins and Pause/native custody.
+A terminal preflight row plus removed Pause entry before original native finish
+still denies; genuine original settled no-launch can qualify. Missing evidence,
+launched nonquiescence, older uncertainty, deferred/failed cleanup and omitted
+owned work remain fenced. No history clearing, settlement or new budget follows.
+
+Authentic stored no-grant V closes J/task/exact-Q atomically as
+`policy_no_continue`; only continue_applies enters continuation. Policy pending
+never takes ordinary escalation fallback. Complete replay/zombie proof and fresh
+writer-only surfacing preserve the original human reason. See the current
+THR-328 [orchestrator contract](orchestrator-contracts.md). New readers preserve
+old histories; old typed binaries reject the new code, compatible-code rollback
+only. Behavior NOT RUN; custody/sentinel/rollback PROOF NOT RUN.
+
 Blocked-on-job tasks use `tasks.blocked_on_job_ids` plus `BlockKind.BLOCKED_ON_JOB`. Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`.
 
 Implementation touches `runtime/orchestrator/run_step.py`, `runtime/daemon/jobs_runner.py`, and `runtime/daemon/app.py`.
@@ -4696,6 +4742,12 @@ control return and native finish. Contained stop uses existing backend controls;
 direct/passthrough waits for original exit/timeout with a could-not-stop audit,
 while unknown cleanup retains a successor veto. C1–C10 behavior/proof NOT RUN;
 integration INCLUDING callback SKIPPED24342, Python units RETIRED.
+
+Offload ownership and original-return acknowledgement precede executor submission.
+Submission failure after queueing and missing/done/cancelled Futures do not permit
+finish, control removal, DB lifetime release or successor commitment. The same
+original callable is joined without resubmission; unresolved admission retains
+its native owner and pair guard, first cause and attributable secondary errors.
 
 Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.

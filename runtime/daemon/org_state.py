@@ -42,6 +42,7 @@ from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.coding_release_import import CodingReleaseImportStore
+from runtime.workflows.coding_builtin import CodingBuiltinStore
 from runtime.workflows.coding_roles import CodingRoleStore
 from runtime.workflows.coding_start import CodingStartStore
 from runtime.workflows.activation import WorkflowActivationStore
@@ -84,6 +85,7 @@ class OrgState:
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_coding_release_import: CodingReleaseImportStore = field(init=False)
+    workflow_coding_builtin: CodingBuiltinStore = field(init=False)
     workflow_coding_roles: CodingRoleStore = field(init=False)
     workflow_coding_start: CodingStartStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
@@ -247,6 +249,7 @@ class OrgState:
             teams=self.teams,
         )
         self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_coding_builtin = CodingBuiltinStore(self)
         self.workflow_coding_release_import = CodingReleaseImportStore(self)
         self.workflow_coding_roles = CodingRoleStore(self)
         self.workflow_coding_start = CodingStartStore(self)
@@ -386,13 +389,17 @@ class OrgState:
         return ts.isoformat()
 
     @classmethod
-    def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
+    def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
         paths = OrgPaths(root=root)
         from runtime.orchestrator.team_move_startup import before_org_attachment
         before_org_attachment(root, slug)
         from runtime.identities.schema import preflight
         naming_preflight = preflight(paths.db_path, org_slug=slug)
+        if attachment_owner is not None:
+            attachment_owner["db_construction_started"] = True
         db = Database(paths.db_path)
+        if attachment_owner is not None:
+            attachment_owner["load_db"] = db
         try:
             install_or_recover(db, expected_org_slug=slug)
             with db._lock:
@@ -419,6 +426,8 @@ class OrgState:
             db._task_pause_store = TaskPauseStore(db, slug)
             with db._lock:
                 validate_workflow_schema(db._conn, expected_org_slug=slug)
+            from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+            install_task_ownership(db, org_slug=slug)
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.
@@ -483,12 +492,19 @@ class OrgState:
                     "org %r: workflow authority startup publication remains fenced",
                     slug,
                 )
+            # Inert definition only, after the actual recovery/authority tail.
+            # A serving-before-recovery owner must defer this call with that tail.
+            state.workflow_coding_builtin.ensure_registered()
             return state
         except BaseException as primary:
             # Unpublished construction has no queue/runner admission yet.
             try:
                 db.close()
+                if attachment_owner is not None:
+                    attachment_owner["load_db_closed"] = True
             except BaseException as cleanup:
+                if attachment_owner is not None:
+                    attachment_owner["load_close_error"] = cleanup
                 primary.add_note("unpublished org close failed: " + type(cleanup).__name__)
             raise
 

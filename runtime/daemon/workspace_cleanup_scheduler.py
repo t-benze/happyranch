@@ -1443,7 +1443,7 @@ async def workspace_cleanup_scheduler_loop(
         now_utc = datetime.now(timezone.utc)
         uptime = t0 - boot_time
         if uptime >= warm_up_seconds:
-            for org in list(state.orgs.values()):
+            for org in list(state.orgs_snapshot().values()):
                 try:
                     await _tick_org(
                         org, state, now_utc,
