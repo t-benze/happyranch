@@ -12,9 +12,10 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from types import TracebackType
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
 STAGES = (
@@ -105,6 +106,85 @@ class _Span:
     outcome: str = "complete"
 
 
+def _ordinary_exception(error: BaseException) -> bool:
+    # Native hierarchy only: isinstance may consult an opaque error.__class__.
+    return any(base is Exception for base in type.__dict__["__mro__"].__get__(type(error)))
+
+
+class _ObservationErrors:
+    """One context's native occurrences; never retained by BootObservation."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+        self.last: dict[int, dict] = {}
+        self.first: dict | None = None
+        self.attachment_failed = False
+
+    def capture(self, phase: str, error: BaseException, *, optional: bool = False,
+                delivery: tuple | None = None, retain_prior: bool = True) -> dict:
+        # Freeze before hierarchy classification, prior links or any error sink.
+        record = dict(phase=phase, error=error,
+            arguments=BaseException.args.__get__(error),
+            traceback=BaseException.__traceback__.__get__(error),
+            context=BaseException.__context__.__get__(error),
+            cause=BaseException.__cause__.__get__(error),
+            suppress_context=BaseException.__suppress_context__.__get__(error),
+            owner=self, previous=None, nested=None, previous_occurrence=None,
+            observation=delivery is not None, delivery=delivery, handled=False)
+        self.records.append(record)
+        record["previous_occurrence"] = self.last.get(id(error))
+        self.last[id(error)] = record  # Link EACH throw, never deduplicate it.
+        record["handled"] = optional and _ordinary_exception(error)
+        if self.first is None and not record["handled"]:
+            self.first = record
+        if retain_prior:
+            try:
+                values = BaseException.__dict__["__dict__"].__get__(error)
+                record["previous"] = values.get("_startup_observation_outcome")
+                if record["previous_occurrence"] is None:
+                    record["previous_occurrence"] = values.get("_startup_observation_occurrence")
+                record["nested"] = (values.get("_workflow_schema_context"),
+                                    values.get("_coding_read_frame"),
+                                    values.get("_workflow_authority_failure"),
+                                    values.get("_native_writer_disposition"))
+            except BaseException as later:
+                self.capture("observer prior retention", later, retain_prior=False)
+        return record
+
+    def fault(self, observation: BootObservation) -> None:
+        try:
+            observation.fault()
+        except BaseException as error:
+            # The original fault policy already swallowed its optional Exception.
+            self.capture("observer fault delivery", error)
+
+    def deliver(self, inbound: BaseException | None = None) -> bool:
+        if self.first is None:
+            return False
+        first = self.first
+        error = first["error"]
+        try:
+            BaseException.__setattr__(error, "_startup_observation_outcome", self)
+            BaseException.__setattr__(error, "_startup_observation_occurrence", first)
+        except BaseException as later:
+            self.attachment_failed = True
+            self.capture("observer attachment", later)
+        try:
+            BaseException.args.__set__(error, first["arguments"])
+            BaseException.__traceback__.__set__(error, first["traceback"])
+            BaseException.__context__.__set__(error, first["context"])
+            BaseException.__cause__.__set__(error, first["cause"])
+            BaseException.__suppress_context__.__set__(error, first["suppress_context"])
+        except BaseException as later:
+            self.attachment_failed = True
+            self.capture("observer native restoration", later)
+        if error is inbound and not self.attachment_failed:
+            return False
+        # A failed external attachment leaves this real record in the delivery
+        # frame. Do not retry a sink or adopt stale attachments as current proof.
+        raise error
+
+
 class BootObservation:
     """Fixed-size totals, no retained operation/reader/connection or ID sets.
 
@@ -170,50 +250,8 @@ class BootObservation:
         except Exception:
             self.fault()
 
-    @contextmanager
-    def span(self, name: str) -> Iterator[_Span]:
-        # No application exception can be suppressed by this optional observer.
-        span, stack = _Span(0), None
-        try:
-            span.started_ns = observation_time_ns()
-            stack = getattr(self._stack, "spans", None)
-            if stack is None:
-                stack = self._stack.spans = []
-            stack.append(span)
-        except Exception:
-            stack = None
-            self.fault()
-        try:
-            yield span
-        except BaseException as exc:
-            span.outcome = "failed" if isinstance(exc, Exception) else "incomplete"
-            raise
-        finally:
-            if stack is not None:
-                try:
-                    stack.pop()  # Always release the retained span before fallible observation.
-                    ended = observation_time_ns()
-                    elapsed = None if ended is None or span.started_ns is None else ended - span.started_ns
-                    if stack:
-                        if elapsed is None:
-                            stack[-1].child_ns = None
-                        elif stack[-1].child_ns is not None:
-                            stack[-1].child_ns += elapsed
-                    with self._lock:
-                        item = self._stages[name]
-                        if elapsed is None:
-                            item["incomplete"] += 1
-                            self._faults += 1
-                        else:
-                            _add(item["inclusive_ns"], elapsed)
-                            if span.child_ns is not None:
-                                _add(item["exclusive_ns"], max(0, elapsed - span.child_ns))
-                            item[span.outcome] += 1
-                            if item["first_started_ns"] is None:
-                                item["first_started_ns"] = span.started_ns
-                            item["last_ended_ns"] = ended
-                except Exception:
-                    self.fault()
+    def span(self, name: str) -> AbstractContextManager[_Span]:
+        return _ObservedSpan(self, name)
 
     def record_interval(self, name: str, start: int | None, end: int | None, outcome: str = "complete") -> None:
         try:
@@ -284,13 +322,105 @@ class BootObservation:
             self.fault()  # Optional telemetry cannot replace a primary cause.
 
 
-@contextmanager
-def observed(observation: BootObservation | None, name: str) -> Iterator[_Span]:
-    if observation is None:
-        yield _Span(0)
-    else:
-        with observation.span(name) as span:
-            yield span
+class _ObservedSpan:
+    def __init__(self, observation: BootObservation | None, name: str) -> None:
+        self.observation, self.name = observation, name
+        self.span = _Span(0)
+        self.stack = None
+        self.errors = _ObservationErrors()
+
+    def __enter__(self) -> _Span:
+        observation, span = self.observation, self.span
+        if observation is not None:
+            try:
+                span.started_ns = observation_time_ns()
+                stack = getattr(observation._stack, "spans", None)
+                if stack is None:
+                    stack = observation._stack.spans = []
+                stack.append(span)
+                self.stack = stack
+            except BaseException as error:
+                self.errors.capture("span entry observation", error, optional=True)
+                if _ordinary_exception(error):
+                    self.errors.fault(observation)
+        self.errors.deliver()
+        return span
+
+    def _aggregate(self, elapsed: int | None, ended: int | None) -> None:
+        observation, span = self.observation, self.span
+        lock = observation._lock
+        lock_exit = type(lock).__exit__
+
+        def release(record: dict | None) -> tuple[bool, bool]:
+            try:
+                error = None if record is None else record["error"]
+                result = lock_exit(lock, None if record is None else type(error),
+                                   error, None if record is None else record["traceback"])
+                return True, False if record is None else bool(result)
+            except BaseException as later:
+                self.errors.capture("span lock exit", later, optional=True)
+                if _ordinary_exception(later):
+                    self.errors.fault(observation)
+                return False, False
+
+        type(lock).__enter__(lock)
+        try:
+            item = observation._stages[self.name]
+            if elapsed is None:
+                item["incomplete"] += 1
+                observation._faults += 1
+            else:
+                _add(item["inclusive_ns"], elapsed)
+                if span.child_ns is not None:
+                    _add(item["exclusive_ns"], max(0, elapsed - span.child_ns))
+                item[span.outcome] += 1
+                if item["first_started_ns"] is None:
+                    item["first_started_ns"] = span.started_ns
+                item["last_ended_ns"] = ended
+        except BaseException as later:
+            # Freeze the original aggregate error BEFORE its original lock exit.
+            record = self.errors.capture("span aggregate", later, optional=True)
+            released, suppressed = release(record)
+            if suppressed:
+                record["handled"] = True
+                self.errors.first = next((r for r in self.errors.records if not r["handled"]), None)
+            elif released and _ordinary_exception(later):
+                self.errors.fault(observation)
+        else:
+            release(None)
+
+    def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                 traceback: TracebackType | None) -> bool:
+        span, observation, stack = self.span, self.observation, self.stack
+        if error is not None:
+            # Runtime exit arguments are an inbound body observation, not a
+            # second throw inferred from an equal object or phase label.
+            self.errors.capture("span body delivery", error, delivery=(kind, traceback))
+            if observation is not None:
+                span.outcome = "failed" if _ordinary_exception(error) else "incomplete"
+        self.stack = None
+        if stack is not None:
+            try:
+                stack.pop()  # Original release precedes ALL fallible observation.
+                ended = observation_time_ns()
+                elapsed = None if ended is None or span.started_ns is None else ended - span.started_ns
+                if stack:
+                    if elapsed is None:
+                        stack[-1].child_ns = None
+                    elif stack[-1].child_ns is not None:
+                        stack[-1].child_ns += elapsed
+                self._aggregate(elapsed, ended)
+            except BaseException as later:
+                self.errors.capture("span exit observation", later, optional=True)
+                if _ordinary_exception(later):
+                    self.errors.fault(observation)
+        return self.errors.deliver(error)
+
+
+def observed(observation: BootObservation | None, name: str) -> AbstractContextManager[_Span]:
+    # No generator layer, including bootstrap without an observer. The real
+    # span context receives the caller's original runtime exit arguments once.
+    return _ObservedSpan(None, name) if observation is None else observation.span(name)
 
 
 @dataclass
@@ -299,28 +429,50 @@ class _ReaderObservation:
     outcome: str = "complete"
 
 
-@contextmanager
-def v2_lifetime(observation: BootObservation | None) -> Iterator[_ReaderObservation]:
-    owner = _ReaderObservation()
-    started_ns = observation_time_ns()
-    try:
-        yield owner
-    except BaseException as exc:
-        owner.outcome = "failed" if isinstance(exc, Exception) else "incomplete"
-        raise
-    finally:
-        if observation is not None:
-            try:
-                # __exit__ has invalidated caches before this outer scope exits.
-                ended_ns = observation_time_ns()
-                elapsed = None if started_ns is None or ended_ns is None else ended_ns - started_ns
-                if owner.reader is None or not owner.reader._closed:
-                    observation.reader({}, "incomplete", elapsed)
-                else:
-                    observation.reader(owner.reader.statistics(), owner.outcome, elapsed)
-            except Exception:
-                observation.fault()
-        owner.reader = None
+class _ObservedReader:
+    def __init__(self, observation: BootObservation | None) -> None:
+        self.observation = observation
+        self.owner = _ReaderObservation()
+        self.started_ns = None
+        self.errors = _ObservationErrors()
+
+    def __enter__(self) -> _ReaderObservation:
+        try:
+            self.started_ns = observation_time_ns()
+        except BaseException as error:
+            self.errors.capture("reader observation entry", error)
+            self.owner.reader = None
+            self.errors.deliver()
+        return self.owner
+
+    def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                 traceback: TracebackType | None) -> bool:
+        owner, observation = self.owner, self.observation
+        if error is not None:
+            self.errors.capture("reader body delivery", error, delivery=(kind, traceback))
+            owner.outcome = "failed" if _ordinary_exception(error) else "incomplete"
+        try:
+            if observation is not None:
+                try:
+                    # The real reader __exit__ has already invalidated caches.
+                    ended_ns = observation_time_ns()
+                    elapsed = None if self.started_ns is None or ended_ns is None else ended_ns - self.started_ns
+                    if owner.reader is None or not owner.reader._closed:
+                        observation.reader({}, "incomplete", elapsed)
+                    else:
+                        observation.reader(owner.reader.statistics(), owner.outcome, elapsed)
+                except BaseException as later:
+                    self.errors.capture("reader exit observation", later, optional=True)
+                    if _ordinary_exception(later):
+                        self.errors.fault(observation)
+        finally:
+            # Independently owed even when observation or fault delivery fails.
+            owner.reader = None
+        return self.errors.deliver(error)
+
+
+def v2_lifetime(observation: BootObservation | None) -> AbstractContextManager[_ReaderObservation]:
+    return _ObservedReader(observation)
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--launch-clock"]:

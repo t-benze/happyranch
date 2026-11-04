@@ -673,6 +673,12 @@ attachment counters distinguish diagnostic skips, refused loads, actual attaches
 nonfatal settings seed and fenced authority publication. Successful org attachment
 never claims a caught publication failure succeeded; the publication interval and
 fence counter preserve it. Original warning/cleanup/exception behavior remains.
+The span, bootstrap-without-observation and V2 lifetime adapters use explicit
+contexts, preserving the native FIRST object, arguments and traceback before
+opaque error access, classification or observer exit. Each actual later throw,
+including a repeated SAME object, keeps its own snapshot and prior/nested-owner
+links. Runtime body-delivery observations remain distinct from actual observer
+throws; equal objects or phase names never establish duplicate-event proof.
 
 The shell generates one fresh telemetry-only local late-exec marker AFTER its
 existing shell/uv/Python/settings preflight. Its closed token (<=60 characters)
@@ -753,6 +759,17 @@ acknowledgements unchanged. New observer/counter faults cannot skip native close
 retirement acknowledgement or invalidation, replace primary exceptions or open
 admission. Their optional observation failures remain counted when possible;
 original mandatory phase-log failures still fail closed.
+Span stack release precedes post-body timing, aggregate-lock and fault delivery;
+native hierarchy classification does not consult an opaque error's `__class__`.
+Ordinary optional Exception swallowing/counting keeps its original policy. The
+first unsuppressed entry/exit failure is FIRST when there is no body error.
+V2 statistics remain after the real reader exit, and the local reader reference
+is released even when statistics or observer fault delivery fails. Native error
+records belong only to the original call, never the boot-long scalar aggregate.
+Failed attachment or error delivery retains the actual record on that local
+owner/frame without retrying a sink or treating reused-error history as current
+proof. Observer completion, context return and successful caller delivery remain
+separate; none authorizes no-effect, replay, another close or native retirement.
 
 Instrumentation is O(1) per existing event with fixed categories, not O(1) whole
 startup. No per-query/root/row/request log is added. There are at most eight
