@@ -554,26 +554,126 @@ describe('THR-209 — Pinned section', () => {
   });
 
   test('row navigation reaches the detail Pin control and preserves the mutation', async () => {
-    // Stateful stub: the POST flips the durable pin state the GET returns.
+    // Modeled server state; the literal readback date cannot come from onMutate.
     const state = [mkThread('THR-A', 'Alpha subject')];
-    stubList(state);
-    stubDetail(state[0]);
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-A/pin`, () => {
-        state[0].pinned = true;
-        state[0].pinned_at = '2026-05-20T00:00:00Z';
-        return HttpResponse.json({ thread_id: 'THR-A', pinned: true });
-      }),
-    );
-    mountAt(`/orgs/${SLUG}/threads`);
-    await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
+    const posts: Array<{ method: string; url: string }> = [];
+    const bodies: unknown[] = [];
+    const readbacks: Array<{ url: string; pinned_at: string | null }> = [];
+    const optimistic: Array<{ pinned: boolean; pinned_at: string | null }> = [];
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const fetches: Completion[] = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[]) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => ({ status: 'rejected', reason } as const),
+      ));
+      return original;
+    };
+    const restores: (() => void)[] = [];
+    const recordPost = ({ request }: { request: Request }) => {
+      if (request.method === 'POST') posts.push({ method: request.method, url: request.url });
+    };
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    try {
+      server.events.on('request:start', recordPost);
+      stubList(state);
+      stubDetail(state[0]);
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-A/pin`, ({ request }) => {
+          const original = (async () => {
+            bodies.push(await request.json());
+            state[0].pinned = true;
+            state[0].pinned_at = '2026-05-20T00:00:00Z';
+            return HttpResponse.json({ thread_id: 'THR-A', pinned: true });
+          })();
+          return observe(original, handlers);
+        }),
+      );
+      mountAt(`/orgs/${SLUG}/threads`);
+      await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
 
-    expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
-    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
-    expect(await screen.findByRole('button', { name: 'Unpin' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
+      const client = mountedQueryClient!;
+      const detailKey = ['thread', SLUG, 'THR-A'];
+      const query = client.getQueryCache().find({ queryKey: detailKey, exact: true })!;
+      const originalFetch = query.fetch;
+      const fetchSpy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+        observe(originalFetch.apply(query, args), fetches));
+      restores.push(() => fetchSpy.mockRestore());
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'updated' || event.query !== query || posts.length) return;
+        const data = event.query.state.data as ReturnType<typeof mkThread> | undefined;
+        if (data?.pinned) optimistic.push({ pinned: data.pinned, pinned_at: data.pinned_at });
+      }));
+      restores.push(client.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations));
+        restores.push(() => spy.mockRestore());
+      }));
+      server.use(http.get(`/api/v1/orgs/${SLUG}/threads/THR-A`, ({ request }) => {
+        readbacks.push({ url: request.url, pinned_at: state[0].pinned_at });
+        return HttpResponse.json({
+          ...state[0], participants: ['agent_a'], messages: [mkMessage(1, 'hi')], reply_delivery: [],
+        });
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+      expect(await screen.findByRole('button', { name: 'Unpin' })).toBeInTheDocument();
+      await act(async () => {
+        for (const completion of mutations) await completion;
+        for (const completion of fetches) await completion;
+        for (const completion of handlers) await completion;
+      });
+      expect(posts).toEqual([{ method: 'POST', url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-A/pin` }]);
+      expect(bodies).toEqual([{ pinned: true }]);
+      expect(optimistic).toContainEqual({ pinned: true, pinned_at: expect.any(String) });
+      expect(optimistic.every((value) => value.pinned_at !== '2026-05-20T00:00:00Z')).toBe(true);
+      expect(await Promise.all(mutations)).toEqual([
+        { status: 'fulfilled', value: { thread_id: 'THR-A', pinned: true } },
+      ]);
+      expect(readbacks).toContainEqual({
+        url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-A`, pinned_at: '2026-05-20T00:00:00Z',
+      });
+      expect(await Promise.all(fetches)).toContainEqual({
+        status: 'fulfilled', value: expect.objectContaining({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      });
+      expect(client.getQueryData(detailKey)).toMatchObject({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' });
+      expect(client.getQueryState(detailKey)?.fetchStatus).toBe('idle');
+      expect(client.isMutating()).toBe(0);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try {
+        await act(async () => {
+          for (const [phase, ledger] of [['mutation', mutations], ['detail fetch', fetches], ['POST handler', handlers]] as const) {
+            for (const completion of ledger) {
+              const result = await completion;
+              if (result.status === 'rejected') later.push({ phase, error: result.reason });
+            }
+          }
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      try { server.events.removeListener('request:start', recordPost); }
+      catch (error) { later.push({ phase: 'request observation', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Pin navigation secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Pin navigation completion errors');
   });
 
   test('row navigation reaches detail rollback on a pin failure', async () => {
@@ -920,22 +1020,122 @@ describe('THR-209 — pin from detail', () => {
   }
 
   test('header Pin button pins optimistically and calls POST /pin', async () => {
-    const state = mountDetail(false);
-    await waitFor(() => expect(screen.getByText(/Subject/i)).toBeInTheDocument());
-    server.use(
-      http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/pin`, () => {
-        state.pinned = true;
-        state.pinned_at = '2026-05-20T00:00:00Z';
-        return HttpResponse.json({ thread_id: 'THR-1', pinned: true });
-      }),
-    );
+    const posts: Array<{ method: string; url: string }> = [];
+    const bodies: unknown[] = [];
+    const readbacks: Array<{ url: string; pinned_at: string | null }> = [];
+    const optimistic: Array<{ pinned: boolean; pinned_at: string | null }> = [];
+    type Completion = Promise<PromiseSettledResult<unknown>>;
+    const handlers: Completion[] = [];
+    const mutations: Completion[] = [];
+    const fetches: Completion[] = [];
+    const observe = <T,>(original: Promise<T>, ledger: Completion[]) => {
+      ledger.push(original.then(
+        (value) => ({ status: 'fulfilled', value } as const),
+        (reason: unknown) => ({ status: 'rejected', reason } as const),
+      ));
+      return original;
+    };
+    const restores: (() => void)[] = [];
+    const recordPost = ({ request }: { request: Request }) => {
+      if (request.method === 'POST') posts.push({ method: request.method, url: request.url });
+    };
+    let primary: { error: unknown } | undefined;
+    const later: Array<{ phase: string; error: unknown }> = [];
+    try {
+      server.events.on('request:start', recordPost);
+      const state = mountDetail(false);
+      await waitFor(() => expect(screen.getByText(/Subject/i)).toBeInTheDocument());
+      server.use(
+        http.post(`/api/v1/orgs/${SLUG}/threads/THR-1/pin`, ({ request }) => {
+          const original = (async () => {
+            bodies.push(await request.json());
+            state.pinned = true;
+            state.pinned_at = '2026-05-20T00:00:00Z';
+            return HttpResponse.json({ thread_id: 'THR-1', pinned: true });
+          })();
+          return observe(original, handlers);
+        }),
+      );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
-    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
-    // Optimistic flip + refetch persistence both read as Unpin.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
-    );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeEnabled());
+      const client = mountedQueryClient!;
+      const detailKey = ['thread', SLUG, 'THR-1'];
+      const query = client.getQueryCache().find({ queryKey: detailKey, exact: true })!;
+      const originalFetch = query.fetch;
+      const fetchSpy = vi.spyOn(query, 'fetch').mockImplementation((...args) =>
+        observe(originalFetch.apply(query, args), fetches));
+      restores.push(() => fetchSpy.mockRestore());
+      restores.push(client.getQueryCache().subscribe((event) => {
+        if (event.type !== 'updated' || event.query !== query || posts.length) return;
+        const data = event.query.state.data as ReturnType<typeof mkThread> | undefined;
+        if (data?.pinned) optimistic.push({ pinned: data.pinned, pinned_at: data.pinned_at });
+      }));
+      restores.push(client.getMutationCache().subscribe((event) => {
+        if (event.type !== 'added') return;
+        const mutation = event.mutation;
+        const execute = mutation.execute;
+        const spy = vi.spyOn(mutation, 'execute').mockImplementation((...args) =>
+          observe(execute.apply(mutation, args), mutations));
+        restores.push(() => spy.mockRestore());
+      }));
+      server.use(http.get(`/api/v1/orgs/${SLUG}/threads/THR-1`, ({ request }) => {
+        readbacks.push({ url: request.url, pinned_at: state.pinned_at });
+        return HttpResponse.json({
+          ...state, participants: ['agent_a'], messages: [mkMessage(1, 'hi')], reply_delivery: [],
+        });
+      }));
+      await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+      // Preserve the optimistic Unpin oracle independently of server readback.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
+      );
+      await act(async () => {
+        for (const completion of mutations) await completion;
+        for (const completion of fetches) await completion;
+        for (const completion of handlers) await completion;
+      });
+      expect(posts).toEqual([{ method: 'POST', url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-1/pin` }]);
+      expect(bodies).toEqual([{ pinned: true }]);
+      expect(optimistic).toContainEqual({ pinned: true, pinned_at: expect.any(String) });
+      expect(optimistic.every((value) => value.pinned_at !== '2026-05-20T00:00:00Z')).toBe(true);
+      expect(await Promise.all(mutations)).toEqual([
+        { status: 'fulfilled', value: { thread_id: 'THR-1', pinned: true } },
+      ]);
+      expect(readbacks).toContainEqual({
+        url: `${window.location.origin}/api/v1/orgs/alpha/threads/THR-1`, pinned_at: '2026-05-20T00:00:00Z',
+      });
+      expect(await Promise.all(fetches)).toContainEqual({
+        status: 'fulfilled', value: expect.objectContaining({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      });
+      expect(client.getQueryData(detailKey)).toMatchObject({ pinned: true, pinned_at: '2026-05-20T00:00:00Z' });
+      expect(client.getQueryState(detailKey)?.fetchStatus).toBe('idle');
+      expect(client.isMutating()).toBe(0);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeEnabled());
+    } catch (error) {
+      primary = { error };
+    } finally {
+      try {
+        await act(async () => {
+          for (const [phase, ledger] of [['mutation', mutations], ['detail fetch', fetches], ['POST handler', handlers]] as const) {
+            for (const completion of ledger) {
+              const result = await completion;
+              if (result.status === 'rejected') later.push({ phase, error: result.reason });
+            }
+          }
+        });
+      } catch (error) { later.push({ phase: 'React delivery', error }); }
+      try { server.events.removeListener('request:start', recordPost); }
+      catch (error) { later.push({ phase: 'request observation', error }); }
+      for (const restore of restores) {
+        try { restore(); } catch (error) { later.push({ phase: 'restore observation', error }); }
+      }
+    }
+    if (primary) {
+      if (later.length) console.error('Pin header secondary errors', later);
+      throw primary.error;
+    }
+    if (later.length === 1) throw later[0].error;
+    if (later.length > 1) throw new AggregateError(later.map(({ error }) => error), 'Pin header completion errors');
   });
 
   test('header keeps Pin/Unpin direct and does not duplicate it in an overflow menu', async () => {
