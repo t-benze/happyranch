@@ -2741,6 +2741,10 @@ def _repo_refresh_child(
     def not_admitted():
         evidence.emit("not_admitted", command=kind, request_ref=request_id, complete=True)
 
+    parent_abort = getattr(evidence.owner, "abort_control", None)
+    child_token = evidence.cancellation
+    if parent_abort is not None:
+        parent_abort.attach(child_token)  # Before FIFO; fired parent replays now.
     try:
         # The first validator is AFTER host FIFO admission and BEFORE backend
         # prepare. A queued timeout/cancel has no invented creation attempt.
@@ -2774,6 +2778,12 @@ def _repo_refresh_child(
             return None
         outcome.fail(exc)
         evidence.uncertain = True
+    finally:
+        # Only the ORIGINAL command may retire its attachment after genuine
+        # settlement/no-admission. Unknown children retain the original owner.
+        if parent_abort is not None and (outcome.tree_quiescent
+                or not attempted and outcome.failure is None):
+            parent_abort.detach(child_token)
     if not outcome.tree_quiescent:
         evidence.uncertain = True
         if outcome.failure is None:
@@ -3373,6 +3383,7 @@ def refresh_workspace_repos(
     workspace: Path, *, preparation=None, host_supervisor=None,
     materialization=None,
     _deadline: float | None = None, _cancel_requested: threading.Event | None = None,
+    _owner=None,
 ) -> dict[str, bool]:
     """One original30s cooperative batch before outer executor admission.
 
@@ -3381,6 +3392,11 @@ def refresh_workspace_repos(
     original caller closes evidence only after the worker function returned.
     Manual Git/hooks/other hosts and arbitrary same-UID writes do not cooperate.
     """
+    if _owner is not None:
+        if (not _owner.thread_binding or _owner.preparation is not preparation
+                or _owner.deadline != _deadline or _owner.cancel is not _cancel_requested):
+            raise RuntimeError("repository_refresh_callable_changed")
+        return _owner.run(workspace, host_supervisor, materialization=materialization)
     deadline = time.monotonic()+_REPO_REFRESH_SECONDS if _deadline is None else _deadline
     cancel = _cancel_requested if _cancel_requested is not None else threading.Event()
     work, results = [], {}
@@ -3389,23 +3405,37 @@ def refresh_workspace_repos(
     if preparation is not None:
         preparation._repository_worker_active = True
         preparation._repository_completion_active = True
+    failure = None
     try:
         results = _repo_refresh_batch(workspace, preparation, host_supervisor, deadline, cancel, work)
+    except BaseException as exc:
+        failure = (exc, exc.__traceback__)
     finally:
         if preparation is not None:
             preparation._repository_worker_active = False
         try:
             results = _repo_refresh_complete(preparation, results, work)
+        except BaseException as completion:
+            if failure is None:
+                raise
+            # Preserve the first batch cause/traceback and the actual secondary
+            # completion error, after attempting this original tail exactly once.
+            primary, traceback = failure
+            BaseException.add_note(primary, "repository refresh completion also failed; retained as cause")
+            raise BaseException.with_traceback(primary, traceback) from completion
         finally:
             if preparation is not None:
                 preparation._repository_completion_active = False
+    if failure is not None:
+        primary, traceback = failure
+        raise BaseException.with_traceback(primary, traceback)
     return results
 
 
 class _RepositoryRefreshOwner:
     """One original batch/finally, preparation, org and direct-DB lifetime."""
 
-    def __init__(self, org, preparation, loop, deadline, cancel, context):
+    def __init__(self, org, preparation, loop, deadline, cancel, context, *, thread_binding=False):
         self.org, self.preparation, self.loop = org, preparation, loop
         self.db = None if org is None else org.db
         self.admission = None if preparation is None else preparation.admission
@@ -3424,8 +3454,46 @@ class _RepositoryRefreshOwner:
             "handoff", "settlement", "retirement"))
         self.error_tracebacks = self.errors.copy()
         self.error_order, self.noted = [], set()
+        self.failure_occurrences = self.pending_failure = self.delivery_occurrence = None
+        self.thread_binding = thread_binding
+        self.native_worker = self.finish_native_worker = None
+        self.finish_body_completed = self.finish_worker_joined = False
+        self.submission_attempted = False
+        self.pin_acquisition_attempted = self.org_acquisition_attempted = False
+        self.org_acquired = self.org_release_attempted = self.org_released = False
+        self.pin_release_attempted = self.pin_released = False
+        if thread_binding:
+            if (asyncio.get_running_loop() is not loop or org is None or preparation is None
+                    or self.db is None or preparation.admission.db is not self.db
+                    or preparation.state.org_slug != org.slug or not preparation.owner_live
+                    or preparation._repository_refresh_owner is not None):
+                raise RuntimeError("repository_refresh_attachment_unavailable")
+            move = getattr(self.db, "_team_move_coordinator", None)
+            if (move is None or self.admission is not move.threads
+                    or self.admission.live.get(preparation.inv.id) is not preparation):
+                raise RuntimeError("repository_refresh_preparation_unavailable")
+            # Retain this SAME owner before either acquisition. An acquisition
+            # can take effect and raise, so an exception supplies no no-run repair.
+            preparation._repository_refresh_owner = self
+            self.pin_acquisition_attempted = True
+            try:
+                self.pin = self.db._acquire_repository_refresh_pin(self)
+                self.org_acquisition_attempted = True
+                self.org_acquired = org._acquire_native_task(self)
+            except BaseException as error:
+                self.fail("submission", error)
+                raise
+            if not self.org_acquired:
+                self.retire(no_run=True)
+                raise RuntimeError("repository_refresh_admission_closed")
+            preparation._repository_worker_active = True
+            preparation._repository_completion_active = True
 
     def _annotate_locked(self):
+        if self.thread_binding:
+            # Strong original preparation/worker custody and native traceback
+            # frames already retain this owner. No opaque diagnostic is needed.
+            return
         if self.primary is None:
             return
         try:
@@ -3436,41 +3504,84 @@ class _RepositoryRefreshOwner:
                         f"{type(self.errors[kind]).__name__[:128]}; actual exception retained by original owner")
                     self.noted.add(kind)
         except BaseException as error:
-            self.diagnostic_error = self.diagnostic_error or error
+            if self.diagnostic_error is None:
+                self.diagnostic_error = error
 
-    def fail(self, kind, error, *, traceback=None):
+    def fail(self, kind, error, *, traceback=None, origin=None):
+        # Capture the original helper observation before any diagnostic or
+        # attachment. Explicitly forwarded catches keep that SAME occurrence.
+        if self.thread_binding and self.native_worker is not None:
+            worker = self.finish_native_worker or self.native_worker
+            if origin is None:
+                origin = worker.record("repository refresh " + kind, error)
+            else:
+                worker.observe("repository refresh " + kind + " delivery", origin)
         with self.lock:
+            snapshot = (kind, error, BaseException.args.__get__(error),
+                BaseException.__traceback__.__get__(error) if traceback is None else traceback, origin)
+            self.pending_failure = snapshot
+            try:
+                self.failure_occurrences = (snapshot, self.failure_occurrences)
+            except BaseException as retention:
+                if self.diagnostic_error is None:
+                    self.diagnostic_error = retention
             if self.errors[kind] is None:
-                self.errors[kind] = error
-                self.error_tracebacks[kind] = error.__traceback__ if traceback is None else traceback
-                self.error_order.append(kind)  # Fixed actual errors cannot be evicted by cancellation.
+                self.errors[kind], self.error_tracebacks[kind] = error, snapshot[3]
+                try:
+                    self.error_order.append(kind)
+                except BaseException as retention:
+                    if self.diagnostic_error is None:
+                        self.diagnostic_error = retention
             self._annotate_locked()
 
     def remember_primary(self, error):
         with self.lock:
             if self.primary is None:
-                self.primary, self.traceback = error, error.__traceback__
+                self.primary, self.traceback = error, BaseException.__traceback__.__get__(error)
             self._annotate_locked()
 
-    def run(self, workspace, supervisor):
-        primary = traceback = None
+    def run(self, workspace, supervisor, *, materialization=None):
+        primary = traceback = primary_occurrence = None
+
+        def capture(stage: str, error: BaseException, frontier: object) -> tuple | None:
+            if not self.thread_binding or self.native_worker is None:
+                return None
+            # Only this original helper interval may supply a forwarded cause;
+            # unrelated earlier throws of the SAME object are not deduplicated.
+            cursor, origin = self.failure_occurrences, None
+            while cursor is not frontier and cursor is not None:
+                snapshot, cursor = cursor
+                if snapshot[1] is error and snapshot[4] is not None:
+                    origin = snapshot[4]
+            if origin is None:
+                return self.native_worker.record(stage, error)
+            self.native_worker.observe(stage + " delivery", origin)
+            return origin
+
         try:
+            frontier = self.failure_occurrences
             try:
+                if materialization is not None:
+                    _repo_retain_materialization(self.preparation, workspace, *materialization)
                 self.results = _repo_refresh_batch(workspace, self.preparation, supervisor,
                     self.deadline, self.cancel, self.work)
             except BaseException as error:
-                primary, traceback = error, error.__traceback__
-                self.fail("batch", error)
+                primary_occurrence = capture("repository batch", error, frontier)
+                primary, traceback = error, BaseException.__traceback__.__get__(error)
+                self.fail("batch", error, origin=primary_occurrence)
             finally:
                 if self.preparation is not None:
                     self.preparation._repository_worker_active = False
+                frontier = self.failure_occurrences
                 try:
                     self.results = _repo_refresh_complete(self.preparation, self.results,
                         self.work, _owner=self)
                 except BaseException as error:
-                    self.fail("completion", error)
+                    occurrence = capture("repository completion", error, frontier)
+                    self.fail("completion", error, origin=occurrence)
                     if primary is None:
-                        primary, traceback = error, error.__traceback__
+                        primary, traceback, primary_occurrence = (
+                            error, BaseException.__traceback__.__get__(error), occurrence)
                 finally:
                     if self.preparation is not None:
                         self.preparation._repository_completion_active = False
@@ -3480,20 +3591,28 @@ class _RepositoryRefreshOwner:
                     evidence.closed for evidence in self.preparation._repository_preparations.values()))
             if not self.closed:
                 error = RuntimeError("repository_refresh_closure_unavailable")
-                self.fail("closure", error)
+                occurrence = capture("repository closure refusal", error, self.failure_occurrences)
+                self.fail("closure", error, origin=occurrence)
                 if primary is None:
-                    primary, traceback = error, error.__traceback__
+                    primary, traceback, primary_occurrence = (
+                        error, BaseException.__traceback__.__get__(error), occurrence)
             if primary is not None:
-                raise primary.with_traceback(traceback)
+                self.delivery_occurrence = primary_occurrence
+                if primary_occurrence is not None:
+                    BaseException.args.__set__(primary, primary_occurrence[2])
+                    traceback = primary_occurrence[3]
+                raise BaseException.with_traceback(primary, traceback)
             return self.results
         finally:
             # A post that enqueues and then raises is not positive handoff.
             with self.lock:
                 self.finished = True
                 try:
-                    self.loop.call_soon_threadsafe(self.acknowledge)
+                    if self.thread_binding:
+                        self.loop.call_soon_threadsafe(self.acknowledge, True)
+                    else:
+                        self.loop.call_soon_threadsafe(self.acknowledge)
                 except BaseException as error:
-                    # fail() takes this same mutex, so record outside it below.
                     posting_error = error
                 else:
                     self.handed_off = True
@@ -3501,16 +3620,38 @@ class _RepositoryRefreshOwner:
             if posting_error is not None:
                 self.fail("handoff", posting_error)
 
-    def acknowledge(self):
+    def acknowledge(self, _native_callback=False):
         if asyncio.get_running_loop() is not self.loop:
             raise RuntimeError("repository_refresh_loop_changed")
         with self.lock:
+            if self.thread_binding and not _native_callback and not self.acknowledged:
+                return  # A waiter cannot replace a missing original callback.
             if not self.finished or not self.handed_off:
                 return
             self.acknowledged = True
             finish = self.finish_requested
             released = self.waiter_released
         if not self.closed or not (finish or released) or self.errors["settlement"] is not None:
+            return
+        if self.thread_binding:
+            # Native finish was already called once. Only the original loop may
+            # retire, after its native body AND bridge/waiter duties complete.
+            if (self.errors["submission"] is not None or self.errors["handoff"] is not None
+                    or self.errors["retirement"] is not None
+                    or self.native_worker is None or not self.native_worker.released):
+                return
+            if not finish and self.native_worker.first is not None:
+                return  # Failed/cancelled waiter still owes original native finish.
+            if finish and not (self.finish_started and self.finish_body_completed
+                    and self.finish_worker_joined and self.finish_native_worker is not None
+                    and self.finish_native_worker.released):
+                return
+            try:
+                self.retire()
+            except BaseException as error:
+                original = self.pending_failure
+                self.fail("retirement", error, origin=(original[4]
+                    if original is not None and original[1] is error else None))
             return
         try:
             if finish:
@@ -3523,7 +3664,15 @@ class _RepositoryRefreshOwner:
             self.fail("settlement" if finish else "retirement", error)
 
     def request_finish(self, *, deferred, failed):
-        if (asyncio.get_running_loop() is not self.loop
+        try:
+            on_loop = asyncio.get_running_loop() is self.loop
+        except RuntimeError:
+            on_loop = False
+        native_finish = (self.thread_binding and self.finish_native_worker is not None
+            and self.finish_native_worker.thread_id == threading.get_ident()
+            and self.finish_native_worker.entered.is_set()
+            and not self.finish_native_worker.returned.is_set())
+        if ((not on_loop and not native_finish)
                 or self.preparation._repository_refresh_owner is not self
                 or self.preparation.admission is not self.admission
                 or self.admission.db is not self.db
@@ -3533,19 +3682,39 @@ class _RepositoryRefreshOwner:
             if not self.finish_requested:
                 self.finish_requested = True
                 self.deferred = deferred
-                self.failed = failed or not self.acknowledged or not self.closed
+                self.failed = (self.failed or failed or not self.acknowledged or not self.closed
+                    or self.errors["settlement"] is not None)
             if (not self.acknowledged or not self.closed or self.finish_started
-                    or self.errors["settlement"] is not None):
+                    or not self.thread_binding and self.errors["settlement"] is not None):
                 return False
             self.finish_started = True
             return True
 
-    def retire(self):
-        if asyncio.get_running_loop() is not self.loop:
-            raise RuntimeError("repository_refresh_loop_changed")
+    def retire(self, *, no_run=False):
+        try:
+            on_loop = asyncio.get_running_loop() is self.loop
+        except RuntimeError:
+            on_loop = False
+        if not on_loop:
+            worker = self.finish_native_worker
+            if (not self.thread_binding or worker is None
+                    or worker.thread_id != threading.get_ident() or worker.returned.is_set()
+                    or not self.finish_started):
+                raise RuntimeError("repository_refresh_loop_changed")
+            # Positive original native finish body. No off-loop OrgState/Task
+            # mutation, callback retry, second finish or inferred bridge delivery.
+            self.finish_body_completed = True
+            return
         with self.lock:
-            if (not self.acknowledged or not self.closed or self.retirement_started
+            if no_run:
+                if (not self.thread_binding or self.submission_attempted
+                        or self.native_worker is not None and self.native_worker.entered.is_set()
+                        or self.pin is None):
+                    raise RuntimeError("repository_refresh_no_run_unavailable")
+            elif (not self.acknowledged or not self.closed or self.retirement_started
                     or self.errors["settlement"] is not None):
+                return
+            if self.retirement_started:
                 return
             self.retirement_started = True
         try:
@@ -3558,9 +3727,17 @@ class _RepositoryRefreshOwner:
                 if self.org.db is not self.db:
                     raise RuntimeError("repository_refresh_database_changed")
                 # Keep the direct-DB pin until org retirement itself succeeds.
-                self.org._release_native_task(self)
+                if not self.thread_binding or self.org_acquired:
+                    self.org_release_attempted = True
+                    self.org._release_native_task(self)
+                    self.org_released = True
+                self.pin_release_attempted = True
                 self.db._release_repository_refresh_pin(self.pin, self)
+                self.pin_released = True
             if self.preparation is not None:
+                if no_run:
+                    self.preparation._repository_worker_active = False
+                    self.preparation._repository_completion_active = False
                 self.preparation._repository_refresh_owner = None
             self.retired = True
         except BaseException as error:
@@ -3573,6 +3750,8 @@ class _RepositoryRefreshOwner:
                 for kind in self.error_order:
                     self.primary, self.traceback = self.errors[kind], self.error_tracebacks[kind]
                     break
+            if self.primary is None and self.pending_failure is not None:
+                self.primary, self.traceback = self.pending_failure[1], self.pending_failure[3]
             self._annotate_locked()
             return self.primary, self.traceback
 
@@ -3581,7 +3760,8 @@ async def refresh_workspace_repos_async(workspace: Path, *, preparation=None,
         host_supervisor=None, materialization=None, org=None) -> dict[str, bool]:
     """Own the original batch AND finally tail before the sole native submit."""
     loop = asyncio.get_running_loop()
-    cancel = threading.Event()
+    parent_abort = getattr(preparation, "abort_control", None)
+    cancel = parent_abort.preparation_stop if parent_abort is not None else threading.Event()
     deadline = time.monotonic()+_REPO_REFRESH_SECONDS
     owner = _RepositoryRefreshOwner(org, preparation, loop, deadline, cancel, copy_context())
     if org is not None:
@@ -3631,6 +3811,9 @@ async def refresh_workspace_repos_async(workspace: Path, *, preparation=None,
         except asyncio.CancelledError as error:
             owner.remember_primary(error)
             cancel.set()
+            if parent_abort is not None:
+                parent_abort.signal()
+                parent_abort.dispatch()
             if native.done():
                 break
         except BaseException as error:

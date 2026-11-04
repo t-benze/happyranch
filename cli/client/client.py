@@ -61,8 +61,10 @@ class OpcClient:
         return self.get(f"/api/v1/orgs/{slug}/team-moves/capability")
 
     def team_move_preview(self, slug: str, request_bytes: bytes) -> httpx.Response:
+        # Preview response-read allowance only; this is not a total deadline.
         return self.post(f"/api/v1/orgs/{slug}/team-moves/preview", content=request_bytes,
-                         headers={"Content-Type": "application/json"})
+                         headers={"Content-Type": "application/json"},
+                         timeout=httpx.Timeout(30.0, read=300.0))
 
     def team_move_apply(self, slug: str, request_bytes: bytes) -> httpx.Response:
         # Exact durable bytes; transport loss never triggers a second POST.

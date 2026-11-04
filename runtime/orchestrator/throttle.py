@@ -142,14 +142,30 @@ class ProviderThrottle:
         released and re-acquired — a backing-off session must not keep a slot
         (that would effectively lower the ceiling, which the founder forbade).
         """
+        from runtime.orchestrator.thread_move import current_thread_preparation
+        abort_owner = current_thread_preparation()
         sem = self._semaphore_for(provider)
         ceiling = self.ceiling_for(provider)
+        slot_owned = False
 
-        # Measure how long the launch waited for a slot (the burst signal).
+        def acquire_slot() -> None:
+            nonlocal slot_owned
+            if abort_owner is None:
+                sem.acquire()
+            else:
+                abort_owner.before_fifo()
+                while not sem.acquire(timeout=0.1):
+                    abort_owner.before_fifo()
+            slot_owned = True
+
         wait_seconds = 0.0
-        if not sem.acquire(blocking=False):
+        if abort_owner is not None:
+            abort_owner.before_fifo()
+        if sem.acquire(blocking=False):
+            slot_owned = True
+        else:
             t0 = self._monotonic()
-            sem.acquire()
+            acquire_slot()
             wait_seconds = self._monotonic() - t0
         if wait_seconds > 0 and on_event is not None:
             self._emit(
@@ -184,7 +200,11 @@ class ProviderThrottle:
                 first_attempt, schedule = thread_owner.retry_schedule("provider", tuple(schedule))
                 attempts = 1 + len(schedule)
             for attempt in range(first_attempt, attempts):
+                if abort_owner is not None:
+                    abort_owner.before_fifo()
                 self._spacing_gate(provider)
+                if abort_owner is not None:
+                    abort_owner.before_fifo()
                 result = launch()
                 # The reactive 429 retry fires ONLY for a launch that BOTH
                 # matched a rate-limit signature AND did not succeed. A
@@ -219,13 +239,17 @@ class ProviderThrottle:
                 # Release the slot during the sleep so the ceiling stays honest,
                 # then re-acquire for the retry.
                 sem.release()
-                try:
+                slot_owned = False
+                if abort_owner is not None:
+                    abort_owner.abort_control.token.wait(backoff)
+                    abort_owner.before_fifo()
+                else:
                     self._sleep(backoff)
-                finally:
-                    sem.acquire()
+                acquire_slot()
             return result
         finally:
-            sem.release()
+            if slot_owned:
+                sem.release()
 
     @staticmethod
     def _emit(on_event: OnThrottleEvent, action: str, payload: dict) -> None:

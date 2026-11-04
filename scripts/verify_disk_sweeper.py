@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import builtins
+import fcntl
 import io
 import json
 import logging
@@ -1220,9 +1221,16 @@ def damaged_registration(f, repo, path, kind):
         held=external/'held';target.rename(held);target.symlink_to(held,target_is_directory=kind=='entry_alias')
         restore.append(lambda: (target.unlink(),held.rename(target)))
     elif kind.startswith('unreadable_'):
-        target={'unreadable_admin':admin,'unreadable_entry':entry,'unreadable_gitdir':entry/'gitdir'}[kind]
+        target={'unreadable_admin':admin,'unreadable_entry':entry,'unreadable_gitdir':entry/'gitdir','unreadable_index':entry/'index'}[kind]
         old=target.stat().st_mode & 0o777;target.chmod(0)
         restore.append(lambda: target.chmod(old))
+    elif kind in ('pointer_hardlink', 'index_hardlink'):
+        target = entry / ('gitdir' if kind == 'pointer_hardlink' else 'index')
+        alias = external / 'hardlink'; os.link(target, alias)
+        restore.append(alias.unlink)
+    elif kind == 'duplicate_target':
+        target = admin / 'duplicate'; shutil.copytree(entry, target)
+        restore.append(lambda: shutil.rmtree(target))
     elif kind=='extra_entry':
         target=admin/'unexpected';target.mkdir();(target/'keep').write_text('not a registration')
         restore.append(lambda: ((target/'keep').unlink(),target.rmdir()))
@@ -1297,13 +1305,201 @@ def descendant_snapshot(f, repo, *trees):
                 porcelain=f.git(repo, 'worktree', 'list', '--porcelain', '-z'))
 
 
+def registration_lock_peer():
+    """C19-R: settle a real Git writer only at its observed lock read."""
+    with fixture() as f:
+        repo, a = f.worktree('TASK-1'); _, b = f.worktree('TASK-2')
+        entry = repo / '.git/worktrees' / a.name
+        b_entry = repo / '.git/worktrees' / b.name
+        lock = entry / 'index.lock'
+        deadline = time.monotonic() + 20
+        assert set(ds.registrations(repo, deadline)) == {str(repo), str(a), str(b)}
+        for path in (a, b):
+            ds.admit(dict(path=str(path), repo=str(repo), workspace=str(f.workspace), phase='worktree'),
+                     ds.Evidence(f.org, deadline, writing=True), deadline, now=NOW)
+        refs = f.git(repo, 'show-ref'); a_before = candidate_contents(a)
+        index_before = (entry / 'index').read_bytes()
+        record = f.git(a, 'ls-tree', 'HEAD', '--', 'source').encode()
+        assert record.startswith(b'100644 blob ') and record.endswith(b'\tsource\n')
+        writer = None
+        events = []; witnessed = []; delegated = []
+        real_snapshot, real_metadata = ds.snapshot, ds._metadata_file
+        previous_alarm = signal.getsignal(signal.SIGALRM)
+        def timeout(signum, frame):
+            raise TimeoutError('C19-R original witness budget; missing witness is not RED/PASS')
+        signal.signal(signal.SIGALRM, timeout)
+        signal.setitimer(signal.ITIMER_REAL, max(.001, deadline - time.monotonic() - 3))
+        try:
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+            writer = subprocess.Popen(['git', '-C', str(a), 'update-index', '--index-info'],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            capacity = fcntl.fcntl(writer.stdin.fileno(), fcntl.F_GETPIPE_SZ)
+            payload = record * (capacity // len(record) + 2)
+            assert len(payload) > capacity
+            writer.stdin.write(payload); writer.stdin.flush()
+            assert writer.poll() is None
+            stamp = fs.signature(lock.lstat())
+            events.append('actual writer owns lock')
+            def snapshot(path, limit, **kwargs):
+                captured = real_snapshot(path, limit, **kwargs)
+                if not delegated and Path(path) in (repo / '.git/worktrees', entry):
+                    relative = a.name + '/index.lock' if Path(path) != entry else 'index.lock'
+                    assert relative in captured, 'actual census did not observe the pending lock'
+                    assert fs.signature(captured[relative]) == stamp
+                    witnessed.append(True); events.append('real census observed exact lock')
+                return captured
+            def metadata(path, limit, **kwargs):
+                if Path(path) == lock and not delegated:
+                    assert witnessed and fs.signature(lock.lstat()) == stamp and writer.poll() is None
+                    events.append('original reader reached exact lock')
+                    writer.stdin.close(); writer.stdin = None
+                    _, stderr = writer.communicate(timeout=max(.001, min(5, deadline - time.monotonic())))
+                    assert writer.returncode == 0, stderr
+                    events.append('exact writer exit0 and reaped')
+                    try: lock.lstat()
+                    except FileNotFoundError as exc: assert exc.errno == 2
+                    else: raise AssertionError('Git did not release its lock')
+                    delegated.append(True); events.append('literal lock disappeared')
+                    try: return real_metadata(path, limit, **kwargs)
+                    except ds.Retain as exc:
+                        assert isinstance(exc.__cause__, FileNotFoundError) and exc.__cause__.errno == 2, exc
+                        events.append('real reader native ENOENT'); raise
+                return real_metadata(path, limit, **kwargs)
+            with patch.object(ds, 'snapshot', snapshot), patch.object(ds, '_metadata_file', metadata):
+                report = f.sweep(seconds=max(.001, deadline - time.monotonic()))
+            assert witnessed and delegated and events[-1] == 'real reader native ENOENT', (events, report)
+            # This is the intended baseline failure, after the actual witness.
+            assert not os.path.lexists(b) and not os.path.lexists(b_entry), ('C19-R eligible B was not physically removed/unregistered AFTER real lock witness', events, report)
+            assert str(b) not in f.git(repo, 'worktree', 'list', '--porcelain', '-z')
+            assert row(report, b)['state'] == 'removed', report
+            retained(report, a, str(lock))
+            assert 'No such file' in row(report, a)['reason'], report
+            assert a_before == candidate_contents(a) and refs == f.git(repo, 'show-ref')
+            assert not os.path.lexists(lock) and writer.returncode == 0
+            assert report['discovery'] == 'partial' and report['unreached'] is None, report
+            return dict(case='C19-R', events=events, peer='physically absent/admin absent/unregistered/ref retained',
+                        writer_exit=writer.returncode, index_rewritten_by_git=index_before != (entry / 'index').read_bytes())
+        finally:
+            # Always inside fixture lifecycle: reap ONLY this exact owned child.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_alarm)
+            if writer is not None:
+                close_error = None
+                if writer.stdin is not None:
+                    try: writer.stdin.close()
+                    except OSError as exc: close_error = exc
+                    finally: writer.stdin = None
+                try: writer.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    try: writer.terminate()
+                    except ProcessLookupError: pass
+                    try: writer.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        try: writer.kill()
+                        except ProcessLookupError: pass
+                        writer.communicate(timeout=1)
+                if close_error is not None: raise close_error
+
+
+def registration_local_peers():
+    """C19-L/E/P: a proven local unknown never grants or vetoes peer eligibility."""
+    observations = []
+    scenarios = [('unreadable_index', None), ('missing_head', None), ('changed_note', None)]
+    scenarios += [('unreadable_index', protection) for protection in
+                  ('active_owner', 'active_root', 'pending', 'queued', 'running', 'dirty', 'untracked')]
+    for kind, protection in scenarios:
+        for preview in (False, True):
+            with fixture() as f, ExitStack() as changes:
+                repo, a = f.worktree('TASK-1'); _, b = f.worktree('TASK-2')
+                entry = repo / '.git/worktrees' / a.name
+                note = entry / 'fixture-note'
+                if kind == 'changed_note': note.write_text('before\n')
+                c = None
+                if protection:
+                    _, c = f.worktree('TASK-3')
+                    if protection == 'active_owner':
+                        f.db.execute("UPDATE tasks SET status='in_progress' WHERE id='TASK-3'")
+                    elif protection == 'active_root':
+                        f.task('TASK-90', status='in_progress')
+                        f.db.execute("UPDATE tasks SET parent_task_id='TASK-90' WHERE id='TASK-3'")
+                    elif protection in ('pending', 'queued', 'running'):
+                        f.db.execute('INSERT INTO jobs VALUES(?,?)', ('TASK-3', protection))
+                    elif protection == 'dirty': (c / 'source').write_text('changed tracked bytes\n')
+                    else: (c / 'untracked').write_text('keep nonignored\n')
+                    f.db.commit()
+                refs = f.git(repo, 'show-ref')
+                before = candidate_contents(a, entry, *([c] if c else []))
+                if kind != 'changed_note':
+                    damage = changes.enter_context(damaged_registration(f, repo, a, kind))
+                    sentinel = candidate_contents(damage['external'])
+                    if kind == 'unreadable_index':
+                        try: (entry / 'index').read_bytes()
+                        except PermissionError as exc: assert exc.errno == 13
+                        else: raise AssertionError('ordinary UID did not observe actual index EACCES')
+                changed = []; calls = []; real_snapshot, realgit = ds.snapshot, ds.git
+                def snapshot(path, deadline, **kwargs):
+                    tree = real_snapshot(path, deadline, **kwargs)
+                    if kind == 'changed_note' and Path(path) == repo / '.git/worktrees' and not changed:
+                        with note.open('a') as stream: stream.write('actual append\n')
+                        changed.append(True)
+                    return tree
+                def git(root, deadline, *args):
+                    calls.append((str(root), args)); return realgit(root, deadline, *args)
+                with patch.object(ds, 'snapshot', snapshot), patch.object(ds, 'git', git):
+                    if preview:
+                        with refuse_mutations():
+                            if kind == 'unreadable_index' and protection is None:
+                                projected, summary = policy_sweep(f, dry_run=True)
+                                ds._manual_audit(projected, [str(f.org)], summary)
+                                report = projected['orgs'][0]
+                                saved = f.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+                                assert len(saved) == 1 and saved[0][:2] == ('', 'daemon')
+                                assert json.loads(saved[0][2])['org'] == report
+                                assert json.loads(summary.read_text()) == projected
+                            else: report = f.sweep('dry_run')
+                    else: report = f.sweep()
+                target = entry / ('HEAD' if kind == 'missing_head' else 'fixture-note' if kind == 'changed_note' else 'index')
+                retained(report, a, str(target))
+                reason = row(report, a)['reason']
+                assert ('Permission denied' if kind == 'unreadable_index' else 'No such file' if kind == 'missing_head' else 'metadata_changed:') in reason, reason
+                assert report['discovery'] == 'partial' and report['unreached'] is None, report
+                assert report['known_unreached_count'] == 0 and report['known_candidate_count'] == (3 if c else 2), report
+                assert row(report, a).get('allocated_bytes') is None and report['physical_freed_bytes'] is None, report
+                assert any(scope['path'] == str(a) and str(target) in scope['reason'] and scope['candidate_count'] is None for scope in report['discovery_scopes']), report
+                if preview:
+                    assert row(report, b)['state'] == 'eligible' and b.exists()
+                else:
+                    assert row(report, b)['state'] == 'removed' and not os.path.lexists(b)
+                    assert not os.path.lexists(repo / '.git/worktrees' / b.name)
+                    assert str(b) not in f.git(repo, 'worktree', 'list', '--porcelain', '-z')
+                    assert row(report, b)['removed_attributable_bytes'] > 0
+                if c:
+                    expected = 'task_or_root_not_terminal' if protection in ('active_owner', 'active_root') else 'active_job:' + protection if protection in ('pending', 'queued', 'running') else 'dirty_or_untracked'
+                    retained(report, c, expected)
+                    if protection in ('dirty', 'untracked'): assert row(report, c)['dirty_paths']
+                assert not any(args[:2] == ('worktree', 'prune') for _, args in calls), calls
+                assert not any(args[:2] == ('worktree', 'remove') and str(a) in args for _, args in calls), calls
+                if kind != 'changed_note':
+                    assert sentinel == candidate_contents(damage['external'])
+                    changes.close()
+                else:
+                    assert changed and note.read_text() == 'before\nactual append\n'
+                    before[str(note)] = (note.lstat().st_mode, b'before\nactual append\n')
+                assert before == candidate_contents(a, entry, *([c] if c else []))
+                assert refs == f.git(repo, 'show-ref')
+                observations.append(dict(case='C19-E' if protection else 'C19-L', kind=kind, protection=protection,
+                                         preview=preview, cause=reason, peer='eligible/preserved' if preview else 'root/admin/registration absent; refs retained'))
+    return observations
+
+
 def c19():
     """Git exit0 omissions must not create empty/complete inventories."""
-    observed=[]
-    for kind in ('unreadable_admin','unreadable_entry','unreadable_gitdir','missing_admin','missing_entry','missing_gitdir','missing_commondir','missing_head','malformed_head','malformed_gitdir','extra_entry'):
+    observed=[registration_lock_peer(), *registration_local_peers()]
+    for kind in ('unreadable_admin','unreadable_entry','unreadable_gitdir','missing_admin','missing_entry','missing_gitdir','missing_commondir','malformed_head','malformed_gitdir','extra_entry'):
         with fixture() as f:
             p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2','a-uncertain')
             safe,z=f.worktree('TASK-3','z-safe')
+            peer = f.worktree('TASK-4', 'a-uncertain')[1] if kind == 'missing_gitdir' else None
             before=candidate_contents(q,repo/'.git/worktrees')
             registered=f.git(repo,'worktree','list','--porcelain')
             calls=[];real=ds.git
@@ -1318,14 +1514,16 @@ def c19():
                 assert any(s['path']==str(repo) and s['candidate_count'] is None and str(repo/'.git/worktrees') in s['reason'] for s in dry['discovery_scopes']),dry
                 assert all(c['path']!=str(q) for c in dry['candidates'])
                 assert p.exists() and z.exists() and q.exists()
+                if peer: assert peer.exists()
                 with patch.object(ds,'git',trace):r=f.sweep()
                 assert r['discovery']=='partial' and r['outcome']=='incomplete' and r['unreached'] is None,r
                 assert all(row(r,x)['state']=='removed' and not x.exists() for x in (p,z)),r
                 assert q.exists() and damaged['sentinel'].read_bytes()==b'external control'
+                if peer: assert peer.exists()
                 assert not any(root==str(repo) for root,args in calls),calls
                 assert not any(args[:2]==('worktree','prune') for root,args in calls),calls
                 if kind.startswith('unreadable_'): assert target_mode(repo,q,kind)==0
-                observed.append(dict(kind=kind,git_omitted=str(q) not in git_output,dry='preserved/no mutation',on='independent scratch/repo removed',bad_repo_git_calls=0,unknown_total=None))
+                observed.append(dict(case='C19-U',kind=kind,git_omitted=str(q) not in git_output,dry='preserved/no mutation',on='independent scratch/repo removed',bad_repo_git_calls=0,unknown_total=None))
             assert before==candidate_contents(q,repo/'.git/worktrees')
             assert registered==f.git(repo,'worktree','list','--porcelain')
             assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-2')
@@ -1371,9 +1569,11 @@ def target_mode(repo,path,kind):
 def c20():
     """Valid alias escape and pointer conflicts stop BEFORE Git consumes them."""
     observed=[]
-    for kind in ('admin_alias','entry_alias','gitdir_alias','commondir_alias','backlink_alias','conflicting_backlink'):
+    for kind in ('admin_alias','entry_alias','gitdir_alias','commondir_alias','backlink_alias','conflicting_backlink','pointer_hardlink','index_hardlink','duplicate_target'):
         with fixture() as f:
             p=f.scratch('TASK-1');repo,q=f.worktree('TASK-2')
+            peer = f.worktree('TASK-3')[1] if kind in ('pointer_hardlink','index_hardlink','duplicate_target') else None
+            refs = f.git(repo, 'show-ref')
             # Preserve valid Git meaning even after the admin-directory move.
             (repo/'.git/worktrees'/q.name/'commondir').write_text(str(repo/'.git')+'\n')
             before=candidate_contents(q,repo/'.git/worktrees')
@@ -1387,14 +1587,17 @@ def c20():
                     actual=f.git(repo,'worktree','list','--porcelain')
                     assert str(q) in actual and 'HEAD 0000000000000000000000000000000000000000' not in actual
                 with patch.object(ds,'git',trace),refuse_mutations():dry=f.sweep('dry_run')
+                assert not any(root==str(repo) for root,args in calls), ('C20-U unsafe census reached Git', kind, 'preview', calls)
                 with patch.object(ds,'git',trace):r=f.sweep()
+                assert not any(root==str(repo) for root,args in calls), ('C20-U unsafe census reached Git', kind, calls)
                 assert dry['discovery']==r['discovery']=='partial' and r['outcome']=='incomplete',r
                 assert r['unreached'] is None and row(r,p)['state']=='removed' and q.exists(),r
                 assert r['discovery_scopes'][0]['path']==str(repo) and r['discovery_scopes'][0]['candidate_count'] is None,r
-                assert not any(root==str(repo) for root,args in calls),calls
                 assert not any(args[:2] in (('worktree','remove'),('worktree','prune')) for root,args in calls),calls
+                if peer: assert peer.exists()
+                assert refs == f.git(repo, 'show-ref')
                 assert protected==candidate_contents(damaged['external'])
-                observed.append(dict(kind=kind,git_calls=0,external_bytes_modes='unchanged',registration_worktree_branch='preserved'))
+                observed.append(dict(case='C20-U',kind=kind,git_calls=0,external_bytes_modes='unchanged',registration_worktree_branch='preserved'))
             assert before==candidate_contents(q,repo/'.git/worktrees')
             assert registered==f.git(repo,'worktree','list','--porcelain')
             assert f.git(repo,'show-ref','--verify','refs/heads/task/TASK-2')
@@ -1456,19 +1659,26 @@ def descendant_cases():
         assert not any(args[:2] == ('worktree', 'prune') for args in calls), calls
         observations.append(dict(case='C2', state='removed', positive_attribution=True, sibling='locked TASK-10 preserved', prune=0))
     # C3: deterministic introductions AFTER each named successful admission.
-    for boundary in ('initial_to_final', 'final_to_remove', 'failure_to_admission',
-                     'retry_to_repair', 'repaired_to_retry'):
-        with fixture() as f:
+    transitions = ('initial_to_final', 'final_to_remove', 'failure_to_admission',
+                   'retry_to_repair', 'repaired_to_retry')
+    for boundary, uncertain in ([(b, False) for b in transitions] +
+                                [(b, True) for b in ('final_to_remove', 'retry_to_repair', 'repaired_to_retry')]):
+        with fixture() as f, ExitStack() as changes:
             repo, outer, baseline, outer_head, base_head = descendant_setup(f, nested=False)
             readonly = outer / 'ignored/readonly'
             if boundary == 'repaired_to_retry': readonly.mkdir(); readonly.chmod(0o555)
-            calls = []; repairs = []; introductions = []; censuses = []; admits = []; mode_changes = []
+            calls = []; repairs = []; repair_attempts = []; introductions = []; censuses = []; admits = []; mode_changes = []
             realgit, realadmit, realmutate, realrows = ds.git, ds.admit, ds.mutate, ds.registrations
             def introduce():
                 assert not introductions
                 descendant_add(f, repo, baseline, base_head)
                 descendant_ready(f, repo, outer, baseline, outer_head, base_head)
                 introductions.append(descendant_snapshot(f, repo, outer, baseline))
+                if uncertain:
+                    changes.enter_context(damaged_registration(f, repo, baseline, 'unreadable_index'))
+                    try: (repo / '.git/worktrees' / baseline.name / 'index').read_bytes()
+                    except PermissionError as exc: assert exc.errno == 13
+                    else: raise AssertionError('uncertain descendant index did not deny the real read')
             def admit(candidate, evidence, deadline, **kwargs):
                 result = realadmit(candidate, evidence, deadline, **kwargs)
                 admits.append(len(admits) + 1)
@@ -1478,7 +1688,11 @@ def descendant_cases():
                 return result
             def registrations(root, deadline, **kwargs):
                 result = realrows(root, deadline, **kwargs)
-                if introductions and str(baseline) in result: censuses.append(len(admits))
+                if introductions and str(baseline) in result:
+                    assert result.linked[str(baseline)] == repo / '.git/worktrees' / baseline.name
+                    if uncertain:
+                        assert str(repo / '.git/worktrees' / baseline.name / 'index') in result.errors[str(baseline)]
+                    censuses.append(len(admits))
                 return result
             def git(root, deadline, *args):
                 if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')): calls.append(args)
@@ -1493,6 +1707,7 @@ def descendant_cases():
                 return realgit(root, deadline, *args)
             def mutate(path, tree, deadline, *, remove):
                 assert not remove
+                repair_attempts.append(str(path))
                 old = readonly.stat() if boundary == 'repaired_to_retry' else None
                 result = realmutate(path, tree, deadline, remove=False)
                 repairs.append(result)
@@ -1519,6 +1734,7 @@ def descendant_cases():
             assert censuses[0] == expected_admits, (boundary, censuses)
             removes = [args for args in calls if args[:2] == ('worktree', 'remove')]
             assert len(removes) == (0 if boundary in ('initial_to_final', 'final_to_remove') else 1), calls
+            assert len(repair_attempts) == (1 if boundary == 'repaired_to_retry' else 0), ('C21-T unexpected repair attempt', boundary, uncertain, repair_attempts, report)
             assert len(repairs) == (1 if boundary == 'repaired_to_retry' else 0), repairs
             assert not any(args[:2] == ('worktree', 'prune') for args in calls), calls
             current = row(report, outer)
@@ -1529,18 +1745,184 @@ def descendant_cases():
             if removes:
                 assert current['first_remove_error'].startswith('git_failed:')
                 assert report['phases']['worktree']['attribution_unknown'] is True
+            changes.close()
             assert introductions[0] == descendant_snapshot(f, repo, outer, baseline)
-            observations.append(dict(case='C3', boundary=boundary, remove_attempts=len(removes),
-                                     completed_repairs=len(repairs), retry_attempts=0,
+            observations.append(dict(case='C21-T' if uncertain else 'C3', uncertain_descendant=uncertain, canonical_descendant=str(baseline), boundary=boundary, remove_attempts=len(removes),
+                                     repair_attempts=len(repair_attempts), completed_repairs=len(repairs), retry_attempts=0,
                                      completed_admissions=len(admits), last_census_reached=True,
                                      state=current['state'], earlier_owned_mode_changes=mode_changes))
+    return observations
+
+
+def uncertain_descendants():
+    """C21-N/P: retain actual canonical nested paths even with local unknowns."""
+    observations = []
+    for kind in ('unreadable_index', 'missing_gitdir'):
+        for preview in (False, True):
+            with fixture() as f:
+                repo, outer, baseline, _, _ = descendant_setup(f)
+                _, sibling = f.worktree('TASK-10')
+                entry = repo / '.git/worktrees' / baseline.name
+                before = candidate_contents(outer, repo / '.git/worktrees' / outer.name, entry)
+                refs = f.git(repo, 'show-ref'); calls = []; real = ds.git
+                def trace(root, deadline, *args):
+                    calls.append((str(root), args)); return real(root, deadline, *args)
+                with damaged_registration(f, repo, baseline, kind):
+                    with patch.object(ds, 'git', trace):
+                        if preview:
+                            with refuse_mutations(): report = f.sweep('dry_run')
+                        else: report = f.sweep()
+                    assert report['discovery'] == 'partial' and report['unreached'] is None, report
+                    if kind == 'unreadable_index':
+                        retained(report, outer, 'linked_descendant:' + str(baseline))
+                        assert any(scope['path'] == str(baseline) and str(entry / 'index') in scope['reason']
+                                   and 'Permission denied' in scope['reason'] for scope in report['discovery_scopes']), report
+                        assert row(report, sibling)['state'] == ('eligible' if preview else 'removed'), report
+                        if not preview:
+                            assert not os.path.lexists(sibling) and not os.path.lexists(repo / '.git/worktrees' / sibling.name)
+                            assert str(sibling) not in f.git(repo, 'worktree', 'list', '--porcelain', '-z')
+                    else:
+                        assert not any(root == str(repo) for root, _ in calls), calls
+                        assert outer.exists() and sibling.exists()
+                        assert any(scope['path'] == str(repo) for scope in report['discovery_scopes']), report
+                    assert not any(args[:2] == ('worktree', 'prune') for _, args in calls), calls
+                    assert baseline.exists()
+                assert before == candidate_contents(outer, repo / '.git/worktrees' / outer.name, entry)
+                assert refs == f.git(repo, 'show-ref')
+                observations.append(dict(case='C21-N', kind=kind, preview=preview, canonical_descendant=str(baseline),
+                                         sibling='protected/shared' if kind == 'missing_gitdir' else 'eligible' if preview else 'removed'))
+    return observations
+
+
+def local_registration_transitions():
+    """C21-T/P: late local errors, sibling churn and independent removal credit."""
+    observations = []
+    for when, kind, preview in (('after_discovery', 'unreadable_index', False),
+                                ('after_discovery', 'unreadable_index', True),
+                                ('during_B_census', 'unreadable_index', True),
+                                ('post_remove', 'unreadable_index', False),
+                                ('post_remove', 'missing_gitdir', False)):
+        with fixture() as f, ExitStack() as changes:
+            repo, a = f.worktree('TASK-1'); _, b = f.worktree('TASK-2')
+            entry = repo / '.git/worktrees' / a.name; b_entry = repo / '.git/worktrees' / b.name
+            note = entry / 'fixture-note'; note.write_text('before\n')
+            before = candidate_contents(a, entry); refs = f.git(repo, 'show-ref')
+            if when == 'post_remove': os.utime(b, (time.time() - 7200, time.time() - 7200))
+            events = []; damage = []; calls = []; churn = []; captured = []
+            realgit, realdiscover, real_snapshot = ds.git, ds.discover, ds.snapshot
+            fixture_chmod = os.chmod
+            def change():
+                # The input action alone may chmod; sweeper execution remains
+                # under preview's normal mutation prohibitions.
+                with patch.object(os, 'chmod', fixture_chmod):
+                    damage.append(changes.enter_context(damaged_registration(f, repo, a, kind)))
+                events.append('only A damaged')
+            def discover(*args, **kwargs):
+                result = realdiscover(*args, **kwargs)
+                captured.append(kwargs['inventory'])
+                order = [c['path'] for c in result]
+                if when == 'post_remove':
+                    assert order.index(str(b)) < order.index(str(a)), order
+                    events.append('actual discovery B before A')
+                elif when == 'after_discovery': change()
+                return result
+            def snapshot(path, deadline, **kwargs):
+                tree = real_snapshot(path, deadline, **kwargs)
+                if when == 'during_B_census' and Path(path) == b and not damage:
+                    assert row(captured[0], a)['state'] == 'eligible'
+                    events.append('A previously eligible in preview')
+                    change()
+                if when == 'after_discovery' and Path(path) == b:
+                    with note.open('a') as stream: stream.write('ordinary sibling churn\n')
+                    churn.append(True)
+                return tree
+            def git(root, deadline, *args):
+                calls.append(args)
+                result = realgit(root, deadline, *args)
+                if when == 'post_remove' and args[:2] == ('worktree', 'remove') and args[-1] == str(b):
+                    assert a.exists() and entry.is_dir()
+                    current = ds.registrations(repo, deadline)
+                    assert str(a) in current and str(a) in current.linked and not current.errors, current.errors
+                    assert (a / '.git').read_text() == 'gitdir: ' + str(entry) + '\n'
+                    assert (entry / 'gitdir').read_text() == str(a / '.git') + '\n'
+                    assert (entry / 'commondir').read_text() == '../..\n'
+                    events.append('actual B remove success; A still physically present/registered/reciprocal')
+                    assert not os.path.lexists(b) and not os.path.lexists(b_entry)
+                    assert str(b) not in current and refs == f.git(repo, 'show-ref')
+                    events.append('independent B root/admin/registration absence and retained ref')
+                    change()
+                return result
+            with patch.object(ds, 'discover', discover), patch.object(ds, 'snapshot', snapshot), patch.object(ds, 'git', git):
+                if preview:
+                    with refuse_mutations(): report = f.sweep('dry_run')
+                else: report = f.sweep()
+            assert len(damage) == 1 and report['discovery'] == 'partial' and report['unreached'] is None, report
+            assert a.exists() and not any(args[:2] == ('worktree', 'prune') for args in calls), calls
+            if when == 'during_B_census':
+                assert events == ['A previously eligible in preview', 'only A damaged'], events
+                assert row(report, a)['state'] == 'retained', ('C21-P late local census retained an eligible label', report)
+                assert row(report, b)['state'] == 'eligible' and a.exists() and b.exists(), report
+            elif when == 'after_discovery':
+                assert churn, 'B admission never reached genuine sibling auxiliary churn'
+                assert row(report, b)['state'] == ('eligible' if preview else 'removed'), report
+                if not preview:
+                    assert not os.path.lexists(b) and not os.path.lexists(b_entry)
+                    assert str(b) not in f.git(repo, 'worktree', 'list', '--porcelain', '-z')
+                before[str(note)] = (note.lstat().st_mode, b'before\n' + b'ordinary sibling churn\n' * len(churn))
+            else:
+                assert events[-1] == 'only A damaged' and len(events) == 4, events
+                assert not os.path.lexists(b) and not os.path.lexists(b_entry)
+                assert str(b) not in f.git(repo, 'worktree', 'list', '--porcelain', '-z')
+                if kind == 'unreadable_index':
+                    assert row(report, b)['state'] == 'removed' and row(report, b)['removed_attributable_bytes'] > 0, report
+                else:
+                    assert row(report, b)['state'] == 'partial_or_unknown' and row(report, b).get('removed_attributable_bytes') is None, report
+                    assert report['phases']['worktree']['removed_attributable_bytes'] == 0, report
+            if kind == 'unreadable_index': retained(report, a, str(entry / 'index'))
+            changes.close()
+            assert before == candidate_contents(a, entry) and refs == f.git(repo, 'show-ref')
+            observations.append(dict(case='C21-T', when=when, kind=kind, preview=preview, events=events,
+                                     sibling_auxiliary_changes=len(churn), B_state=row(report, b)['state']))
+    # Same final reader must block its OWN newly-local error before first Git.
+    with fixture() as f, ExitStack() as changes:
+        repo, path = f.worktree('TASK-1'); entry = repo / '.git/worktrees' / path.name
+        before = candidate_contents(path, entry); refs = f.git(repo, 'show-ref')
+        admits = []; censuses = []; calls = []; repairs = []
+        realadmit, realrows, realgit, realmutate = ds.admit, ds.registrations, ds.git, ds.mutate
+        def admit(candidate, evidence, deadline, **kwargs):
+            tree = realadmit(candidate, evidence, deadline, **kwargs)
+            admits.append(True)
+            if len(admits) == 2:
+                changes.enter_context(damaged_registration(f, repo, path, 'unreadable_index'))
+            return tree
+        def registrations(root, deadline, **kwargs):
+            result = realrows(root, deadline, **kwargs)
+            if len(admits) == 2:
+                assert str(entry / 'index') in result.errors[str(path)]
+                censuses.append(True)
+            return result
+        def git(root, deadline, *args):
+            if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')): calls.append(args)
+            return realgit(root, deadline, *args)
+        def mutate(*args, **kwargs):
+            repairs.append(True); return realmutate(*args, **kwargs)
+        with patch.object(ds, 'admit', admit), patch.object(ds, 'registrations', registrations), \
+                patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+            report = f.sweep()
+        assert censuses and len(admits) == 2, report
+        assert not calls and not repairs, ('C21-T self final local error reached Git/repair', calls, repairs, report)
+        retained(report, path, str(entry / 'index'))
+        assert report['discovery'] == 'partial' and row(report, path).get('removed_attributable_bytes') is None, report
+        changes.close()
+        assert before == candidate_contents(path, entry) and refs == f.git(repo, 'show-ref')
+        observations.append(dict(case='C21-T', when='self_final_to_remove', final_census_reached=True, remove_or_repair=0))
     return observations
 
 
 def c21():
     """Transitions wrap actual shipping boundaries, with real Git failures."""
     from contextlib import ExitStack
-    observations=descendant_cases()
+    observations=[*descendant_cases(), *uncertain_descendants(), *local_registration_transitions()]
     for when in ('after_discovery','after_failure','after_repair','partial_failure'):
         for kind in ('admin_alias','unreadable_admin','conflicting_backlink'):
             with fixture() as f, ExitStack() as changes:

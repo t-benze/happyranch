@@ -193,8 +193,18 @@ host receipt with no survivors/cleanup error are separate facts. Capture stays
 private/bounded4096B with draining and at most two exit-tail reads. An admitted
 unsettled probe cannot become a harmless unsupported-configuration skip. Async
 cancellation stops admission and joins the real worker under its original OrgState
-lifetime before evidence completion and lease release. Completion runs in the
-same joined off-loop executor mechanism after the actual batch worker returns.
+lifetime before evidence completion and lease release. The thread caller submits
+ONE synchronous callable containing the batch and its original completion tail,
+with the original frozen deadline and preparation-stop event. Its SAME captured
+Database refresh pin is acquired before submission, independently of OrgState
+native-user custody. Native return, successful loop posting, owning-loop
+acknowledgement, bridge completion, waiter duties and retirement are distinct.
+The pin survives every original evidence/lease/finish duty; an off-loop finish
+records its own positive body return while only the owning loop retires after
+that original worker is acknowledged and joined. Failed acquisition/release,
+enqueued-then-raised submission/posting and missing/cancelled acknowledgement
+retain the same owner/pin and UNKNOWN without retry, second finish or inferred
+no-run. Positive pre-submit refusal creates no native work.
 Repository custody precedes binding, root/Pause, move and short DB arbitration.
 Worker and completion acquisition, including native owner rechecks, binding/root
 gate-map lookups and failure attribution, uses the original remaining deadline;

@@ -3245,7 +3245,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_
 
 ## Executor Throttle
 
-A process-wide, **per-provider** throttle (`runtime/orchestrator/throttle.py`, issue #85) gates every agent-subprocess launch at the single chokepoint `executors._run_command`, which both the task `run_step` pool and the thread-reply pool reach on an OS thread. It caps concurrency, de-bursts launches, and absorbs transient 429s — without resizing either pool (they stay as producers; the semaphore is the consumer-side cap). Decision record: [`docs/adr/0001-per-provider-executor-throttle.md`](../adr/0001-per-provider-executor-throttle.md).
+A process-wide, **per-provider** throttle (`runtime/orchestrator/throttle.py`, issue #85) gates every agent-subprocess launch through both built-in `executors._run_command` and the independent `CustomAdapterExecutor.run`, reached by task and thread workers on OS threads. Claude delegates to the common helper; custom adapters own separate selflaunch, communication/parser and throttle bodies, so common-helper evidence does not cover the custom body. It caps concurrency, de-bursts launches, and absorbs transient 429s — without resizing either pool (they stay as producers; the semaphore is the consumer-side cap). Decision record: [`docs/adr/0001-per-provider-executor-throttle.md`](../adr/0001-per-provider-executor-throttle.md).
 
 Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating one provider never blocks another:
 
@@ -3659,11 +3659,23 @@ inside an admitted worktree remain disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
 never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
 linked-admin census reconciles entries, metadata pointers and worktree backlinks
-with Git output and literal task roots. Missing/unreadable/aliased/conflicting
-metadata retains that entire repository as a literal unknown scope with null
-candidate count; independent scopes continue within the same deadline. Identities
-are refreshed before Git removal, repair, retry and prune; earlier partial effects
-stay unknown rather than becoming zero-effect success. A genuinely absent admin
+with Git output and literal task roots. Founder THR307seq235 approving234 permits
+ordinary local index/HEAD/auxiliary read/change errors to retain exactly their
+proven registration, with its metadata path/native cause, while independently
+validated same-repository peers progress. Complete literal names, fresh identities,
+canonical unique reciprocal mappings and containment must first be proven BEFORE
+Git. Missing mapping/enumeration/entry, alias/hardlink/special metadata, conflict,
+unknown descendant location or unexplained output discrepancies retain the shared
+repository scope. All proven paths, including locally uncertain ignored/detached/
+non-task descendants, protect containing trees. Local retention is latched for the
+attempt, never clearance; lost attribution widens refusal. Fresh topology/pointers,
+containment and own metadata govern every admission and final remove/repair/retry/
+confirmation; ordinary sibling auxiliary churn does not poison own admission.
+Local discovery remains partial with exact scoped causes, known-only counts and
+null uncertain allocation/physical freed space. Earlier effects remain honest:
+confirmed root/admin/registration absence permits credit despite a sibling-local
+error; shared confirmation uncertainty preserves effects without unverified credit.
+A genuinely absent admin
 with primary-only inventory and no task roots remains valid. Partial discovery
 and uncertain Git-prune scope prohibit prune.
 
@@ -5655,3 +5667,32 @@ A returned command
 is not stage acceptance; a failed command remains failed despite later effect
 observation. Persistence failure prevents continuation and retains original keys,
 bytes, intents/results and uncertainty. No automatic restart/restore/resume/replay.
+
+
+Founder thread abort (THR329 seq3/16) uses an early exact native invocation/SID/
+preparation control. Materialization, provider phases and native finish use
+joined offloads while the original runner/native-user lifetime and pair guard
+remain held. Thread refresh uses ONE synchronous callable for materialization
+retention, batch and its original finally/completion tail under that same owned
+offload. Its original 30-second deadline is frozen before submission, including
+pool queue delay, and it receives the same preparation-stop event. Batch and
+completion errors preserve the first cause/traceback and actual secondary error.
+Child command tokens attach to the same abort control before host admission. Stop
+dispatch has capacity independent of blocked provider pools. Thread-only
+throttle/host waits observe the same fired token without resetting retry
+schedules or budgets. Contained running-stop uses existing backend controls;
+direct/passthrough retains original exit/timeout waiting and an attributable
+could-not-stop audit. Original worker return and native/backend settlement
+precede successors; missing cleanup evidence keeps the predecessor veto.
+Each offload owns its original callable/context and return acknowledgement before
+executor submission. A submission may throw after queueing; a missing, done or
+cancelled Future proves neither no effects nor original return. Unknown admission
+retains the runner/native DB lifetime, pair guard and exact control without finish
+or resubmission until the original acknowledgement. Submission, original worker,
+dispatch and settlement errors retain their first cause and secondary context.
+C1–C10 behavior/proof NOT RUN; integration INCLUDING callback SKIPPED24342.
+
+Unsupported-stop audit failure is retained without interrupting the original
+executor wait; the once-only dispatch and final native settlement report it.
+The stop limitation is captured for the original running generation before
+dispatch, and an ended attempt is not relabeled running during retry backoff.

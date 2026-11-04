@@ -90,9 +90,18 @@ the original bounded reservation and attachment owner even if the generation
 publisher catches its error; native return or cancelled wrappers prove no put
 retirement. Known callback failures preserve their original failure behavior.
 Source and static evidence establish no complete responsiveness, behavioral
-readiness, filesystem deadline or dominant slow planning stage. Keep the existing
-client deadline and same-key custody after timeout. No extra preview/apply/recover
-allocation follows from source correction.
+readiness, filesystem deadline or dominant slow planning stage. Under Founder
+THR-296 seq239 approving seq238, the CLI team-move preview request alone has a
+300-second response-read/inactivity allowance; connect, write and pool remain
+30 seconds. The shared client default and other team-move requests remain at
+30 seconds; existing request-specific overrides elsewhere are unchanged.
+This is not a total wall deadline or completion guarantee and changes no native
+45-second await, drain or server deadline. After timeout or error, preserve the
+same key and saved inputs; no automatic retry. Reconcile outstanding handler
+ownership before considering another authorized attempt. Source acceptance adds
+no operation allocation. The task-bound seq239 grant belongs only to ROOT14014:
+up to two same-key/saved-input previews, stopping on the first successful result
+for review; apply/recover remain excluded. Existing human/auth boundaries remain.
 
 The following command forms are source-supported; none were run against the live
 feature here. Local argument validation precedes connecting. Outputs are JSON,

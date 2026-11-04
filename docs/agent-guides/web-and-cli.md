@@ -5209,3 +5209,11 @@ observation. Genuine human originals retain file/intent/receipt/readback and
 historical send evidence under their original operation; no importer send is
 created for system registration. Failed commands never become successful from a later
 effect observation; uncertainty permits no next effect or replay/new key.
+
+A Founder abort terminalizes the original thread invocation token. Do not send
+another reply/decline or reuse that token for a later arrival; its stale callback
+retains the existing409 refusal. The abort response count covers actual pending
+REPLY/BOOTSTRAP/TASK_FOLLOWUP transitions, not process exits. Contained stop uses
+existing backend controls; direct/passthrough work waits for original exit/timeout
+and records an attributable could-not-stop audit. Neither an abort response nor
+an audit proves process cleanup. New arrivals retain their own native identities.
