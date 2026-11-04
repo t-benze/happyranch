@@ -759,6 +759,12 @@ acknowledgements unchanged. New observer/counter faults cannot skip native close
 retirement acknowledgement or invalidation, replace primary exceptions or open
 admission. Their optional observation failures remain counted when possible;
 original mandatory phase-log failures still fail closed.
+The original unpublished-load close scope includes database-observer exit after
+successful construction. The returned handle is captured before owner forwarding;
+that same invocation retains native FIRST and each later close/retention failure
+before delivery. Failed or unreturned close, including a completed SQLite body
+with failed wrapper exit, keeps UNKNOWN and its handle. Local error custody does
+not settle outer attachment forwarding or authorize another close or retirement.
 Span stack release precedes post-body timing, aggregate-lock and fault delivery;
 native hierarchy classification does not consult an opaque error's `__class__`.
 Ordinary optional Exception swallowing/counting keeps its original policy. The
@@ -1021,6 +1027,11 @@ postcommit rollback. Audit-watermark advances publish only after positive COMMIT
 AND context exit under the same lock; a body-local result alone cannot publish
 watermarks, ownership or registration success. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
+Only a returned Database creates the load's one original close duty, including
+later owner-forwarding or observer-exit failure. Constructor nonreturn creates
+no outer close, and normal load returns the exact state without closing. Close
+attempt, returned close and successful load delivery remain distinct; actual
+lower same-call evidence and failed sinks stay on the original load frame.
 The schema read contexts capture native first and later occurrences before
 cleanup or opaque exception access. A snapshot uses the same connection, joins
 caller BEGIN/SAVEPOINT without transaction cleanup, and owes one rollback only

@@ -308,6 +308,16 @@ map absence prove no retirement, and no automatic uncertainty clearance is added
 Published attachments survive later errors;
 unknown submission/return/constructor close retains its original handle and blocks
 shutdown/removal/swap, without a second speculative close.
+The synchronous load captures its returned Database before owner forwarding or
+database-observer exit; every later unpublished failure owes its one original
+close attempt. Preconstruction refusal or a constructor that never returned
+creates no outer close duty, and successful load does not close. The same local
+frame freezes FIRST native arguments/traceback before close and retains actual
+later occurrences, failed sinks and the original owner/DB. A returned SQLite
+body with failed wrapper delivery remains UNKNOWN; only returned close can set
+`load_db_closed`. Local custody supplies no native retirement certificate. Outer
+attachment forwarding and dynamic second-close enforcement remain separate open
+corrections; this load-local repair does not establish those guarantees.
 All shared-map iterations use finite captures. The state mutex covers only map
 membership and in-memory reader bookkeeping, never I/O/DB/profile acquisition,
 worker join or await. Native profile/metrics readers and ordinary request

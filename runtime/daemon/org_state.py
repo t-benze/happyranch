@@ -447,13 +447,58 @@ class OrgState:
             before_org_attachment(root, slug)
             from runtime.identities.schema import preflight
             naming_preflight = preflight(paths.db_path, org_slug=slug)
-        with observed(observation, "database"):
+        # This invocation owns only a Database whose constructor returned.
+        # Keep custody here even if forwarding to the original owner fails.
+        load_outcome: dict[str, Any] = dict(
+            attachment_owner=attachment_owner, db=None, state=None,
+            close_attempted=False, close_returned=False, close_error=None,
+            close_outcome=None, first=None, occurrences=[])
+        db: Database | None = None
+
+        def capture(phase: str, error: BaseException, *, observation: bool = False,
+                    retain_history: bool = True) -> dict:
+            # Native snapshots precede close, opaque attributes and all sinks.
+            record = dict(phase=phase, error=error,
+                arguments=BaseException.args.__get__(error),
+                traceback=BaseException.__traceback__.__get__(error),
+                context=BaseException.__context__.__get__(error),
+                cause=BaseException.__cause__.__get__(error),
+                suppress_context=BaseException.__suppress_context__.__get__(error),
+                observation=observation, delivery=None, previous_occurrence=None, history=None)
+            if observation:
+                record["delivery"] = (type(error), record["traceback"])
+            load_outcome["occurrences"].append(record)
+            if load_outcome["first"] is None:
+                load_outcome["first"] = record
+            for previous in reversed(load_outcome["occurrences"][:-1]):
+                if previous["error"] is error:
+                    record["previous_occurrence"] = previous
+                    break
+            if retain_history:
+                try:
+                    # Prior attachments are history, never current close proof.
+                    record["history"] = BaseException.__dict__["__dict__"].__get__(error).copy()
+                except BaseException as later:
+                    capture("load prior retention", later, retain_history=False)
+            return record
+
+        def retain(key: str, value: Any) -> dict | None:
             if attachment_owner is not None:
-                attachment_owner["db_construction_started"] = True
-            db = Database(paths.db_path)
-            if attachment_owner is not None:
-                attachment_owner["load_db"] = db
+                try:
+                    attachment_owner[key] = value
+                except BaseException as later:
+                    # One attempt per sink; never recurse into a failed owner.
+                    return capture("load owner " + key, later)
+            return None
+
         try:
+            with observed(observation, "database"):
+                if attachment_owner is not None:
+                    attachment_owner["db_construction_started"] = True
+                db = Database(paths.db_path)
+                load_outcome["db"] = db
+                if attachment_owner is not None:
+                    attachment_owner["load_db"] = db
             with observed(observation, "workflow_install"):
                 install_or_recover(db, expected_org_slug=slug)
             with observed(observation, "workflow_validate"):
@@ -536,6 +581,7 @@ class OrgState:
                     settings=settings,
                     orchestrator=orchestrator,
                 )
+                load_outcome["state"] = state
             if attachment_owner is not None:
                 attachment_owner["org"] = state
             from runtime.identities.registry import read_name_metadata, refresh_names
@@ -574,18 +620,63 @@ class OrgState:
                 state.workflow_coding_builtin.ensure_registered()
             return state
         except BaseException as primary:
-            # Unpublished construction has no queue/runner admission yet.
+            # This catch observes actual lower delivery; it is not another
+            # inferred throw. Its traceback retains the actual child frames.
+            first = capture("load failure delivery", primary, observation=True)
+            retain("load_outcome", load_outcome)
+            if db is not None:
+                # Unpublished construction has no queue/runner admission yet.
+                # Diagnostics/owner failures cannot skip this original duty.
+                load_outcome["close_attempted"] = True
+                retain("load_close_attempted", True)
+                try:
+                    db.close()
+                except BaseException as cleanup:
+                    record = capture("load close delivery", cleanup, observation=True)
+                    load_outcome["close_error"] = cleanup
+                    try:
+                        # Only the immediate, actual SAME-call wrapper frame
+                        # supplies lower evidence. Reused-error attrs do not.
+                        lower = record["traceback"].tb_next
+                        if lower is not None and lower.tb_frame.f_code is Database.close.__code__:
+                            values = lower.tb_frame.f_locals
+                            outcome = values.get("failure")
+                            if (values.get("self") is db and type(outcome) is dict
+                                    and outcome.get("method") is Database.close.__wrapped__):
+                                load_outcome["close_outcome"] = outcome
+                    except BaseException as later:
+                        capture("load close evidence", later)
+                else:
+                    # Positive returned close differs from SQLite body return.
+                    load_outcome["close_returned"] = True
+                    delivery = retain("load_db_closed", True)
+                    if delivery is not None:
+                        load_outcome["close_error"] = delivery["error"]
+                cleanup = load_outcome["close_error"]
+                if cleanup is not None:
+                    retain("load_close_error", cleanup)
+                    try:
+                        BaseException.__setattr__(primary, "_org_load_close_error", cleanup)
+                    except BaseException as later:
+                        capture("load close attachment", later)
+                    try:
+                        BaseException.add_note(primary, "unpublished org close failed")
+                    except BaseException as later:
+                        capture("load close note", later)
             try:
-                db.close()
-                if attachment_owner is not None:
-                    attachment_owner["load_db_closed"] = True
-            except BaseException as cleanup:
-                if attachment_owner is not None:
-                    attachment_owner["load_close_error"] = cleanup
-                # Keep the actual later exception attached to the original cause.
-                primary._org_load_close_error = cleanup
-                BaseException.add_note(primary, "unpublished org close failed: " + type(cleanup).__name__)
-            raise
+                BaseException.__setattr__(primary, "_org_load_outcome", load_outcome)
+            except BaseException as later:
+                capture("load outcome attachment", later)
+            try:
+                BaseException.args.__set__(primary, first["arguments"])
+                BaseException.__context__.__set__(primary, first["context"])
+                BaseException.__cause__.__set__(primary, first["cause"])
+                BaseException.__suppress_context__.__set__(primary, first["suppress_context"])
+            except BaseException as later:
+                capture("load native restoration", later)
+            # No virtual traceback setter/with_traceback, truth test or format.
+            # Failed attachments retain this SAME owner/DB/record on this frame.
+            raise BaseException.with_traceback(primary, first["traceback"])
 
     def close(self) -> None:
         self._runner_admission_closed = True

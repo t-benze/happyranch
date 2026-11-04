@@ -128,6 +128,13 @@ postcommit rollback. Audit-watermark advances publish only after positive COMMIT
 AND context exit under the same lock; a body-local result alone cannot publish
 watermarks, ownership or registration success. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
+Load captures the returned Database before owner forwarding/observer exit and
+owes one original close on any later unpublished failure. Constructor nonreturn
+owes no outer close; normal load returns its exact state without closing. Native
+FIRST and separately captured later/failed-delivery evidence survive that close
+on the same owner/frame. SQLite body completion alone grants no returned-close,
+second-close, attachment-retirement or public shutdown proof; outer attachment
+forwarding and dynamic close enforcement remain separate open corrections.
 The schema read contexts capture native first and later occurrences before
 cleanup or opaque exception access. A snapshot uses the same connection, joins
 caller BEGIN/SAVEPOINT without transaction cleanup, and owes one rollback only
