@@ -627,6 +627,14 @@ unescaped JSON strings fitting one conservative 1021-byte construction chunk
 use one precharged complete original scalar slice, with separate paid branch
 work and no intermediate construction or join. Larger and escaped JSON scalars
 use bounded local fragments and fixed reference slots.
+Unchanged-original admission first rejects every original secret in that same
+occurrence. Its expected sanitation result is then the complete original, so it
+constructs no virtual replacement or comparison spans. Each actual sanitizer
+pass still pays its whole scalar, including aliases; actual sanitation, strict
+output measurement, full original-output equality and residual-secret checks
+still run. Original scalar/output-reference and comparison work remain charged.
+General transforming sanitation retains its original span planner. This local
+fusion establishes no fit or native acceptance without completed controls.
 Within that path, literal-only chunks are direct original
 slices with no intermediate fragment/join. Mixed/escaped construction,
 slot storage/writes/clearing and join reference reads are paid before work,

@@ -938,8 +938,27 @@ def _evidence_original(text: str, context: tuple | list, ledger: _EvidenceLedger
             ledger.charge(8, 1, check)
             if secret in text:
                 raise ValueError("original evidence content withheld")
-        if _evidence_safe(text, size, sanitize, context, ledger, check) != text:
-            raise _EvidenceUnsafe("original unchanged postcondition")
+        # THIS occurrence has no original secret. Its expected literal
+        # replacement result is therefore the complete original itself: no
+        # virtual span plan or comparison-span holder needs construction.
+        # Keep every actual sanitizer pass's scalar work, including aliases.
+        ledger.charge(16, 0, check)
+        for secret in context:
+            ledger.charge(size, 1, check)
+        ledger.reserve(0, 1, check)  # Original output-reference admission stays.
+        try:
+            safe = sanitize(text)
+            try:
+                actual = _evidence_utf8_size(safe, check, size)
+            except ValueError as exc:
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+            ledger.charge(64, 0, check)  # Full comparison and local setup stay paid.
+            if actual != size or safe != text or any(secret in safe for secret in context):
+                raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+            check()
+        finally:
+            ledger.settle(0, 0)
+            safe = None
     finally:
         text = None
 

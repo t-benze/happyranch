@@ -2360,6 +2360,13 @@ file/stdout comparison and Case/final-snapshot SQL-column scans. Their own full
 syntax, safety, type/order/content comparisons and original limits remain.
 Complete existing controls and full typed/ordered published-result reconciliation
 must establish fit; a static check supplies no capacity or native proof.
+Unchanged-original admission rejects every original secret before sanitation.
+For that SAME occurrence the expected result is the complete original; no
+virtual replacement or comparison-span holder is constructed. Actual sanitizer
+passes still pay their full scalar work even when aliasing, and actual output
+measurement, complete original-output equality and residual-secret checks remain.
+Original scalar/output-reference and comparison charges remain. Transforming
+sanitation still uses the original planner; this fusion alone proves no fit.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
 one charged longest-first view preserves the original context list for identity
