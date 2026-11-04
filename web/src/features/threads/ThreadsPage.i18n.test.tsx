@@ -25,7 +25,6 @@ import { seedReadyHealth, startupHealth, stubReadyHealth } from '@/test/startup'
 import { makeQueryClient } from '@/design-system/providers/AppProvider';
 import { getCommittedThreadPageRuns } from '@/design-system/providers/_real-threads';
 import { HEALTH_QUERY_KEY } from '@/lib/startup';
-import { ApiError } from '@/lib/api/client';
 import { translate } from '@/lib/i18n';
 
 const mermaidChunk = vi.hoisted(() => {
@@ -440,8 +439,9 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
               // State identity excludes a different pre-request/callback/finally error.
               return query.queryKey.length === 3 && slug === SLUG && id === 'THR-9'
                 && (kind === 'thread' || kind === 'thread-messages') && responses.has(kind)
-                && error instanceof ApiError && error.status === 500 && error.code === null
-                && error.detail === 'nope' && query.state.error === error;
+                && error instanceof Error && error.name === 'ApiError'
+                && 'status' in error && error.status === 500 && 'code' in error && error.code === null
+                && 'detail' in error && error.detail === 'nope' && query.state.error === error;
             }));
           restores.push(() => spy.mockRestore());
         }
