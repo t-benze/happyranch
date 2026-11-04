@@ -2367,6 +2367,12 @@ passes still pay their full scalar work even when aliasing, and actual output
 measurement, complete original-output equality and residual-secret checks remain.
 Original scalar/output-reference and comparison charges remain. Transforming
 sanitation still uses the original planner; this fusion alone proves no fit.
+The registered raw JSON/JSONL decoded-scalar callback uses the same local
+unchanged-result rule only after that occurrence rejects every original secret
+and decoded backslash. It builds no virtual replacement or comparison spans;
+actual sanitation, every full pass debit, strict output measurement, complete
+equality and residual-secret checks remain, including the separate raw unchanged
+comparison. Other transforming raw-text sanitation retains the general planner.
 Original-plus-safe projection bytes remain charged even for borrowed objects,
 aliases and no-match strings. Every replacement pass pays its whole safe scalar;
 one charged longest-first view preserves the original context list for identity

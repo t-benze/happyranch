@@ -635,6 +635,13 @@ output measurement, full original-output equality and residual-secret checks
 still run. Original scalar/output-reference and comparison work remain charged.
 General transforming sanitation retains its original span planner. This local
 fusion establishes no fit or native acceptance without completed controls.
+The registered raw JSON/JSONL decoded-scalar callback also omits its virtual
+replacement and comparison-span holders after rejecting original secrets and
+decoded backslashes in that SAME occurrence. Actual sanitation, every whole
+pass debit, output-reference admission, strict output measurement, full equality,
+residual-secret checks and the separate raw unchanged comparison remain. This
+does not change general transforming raw-text sanitation or grant decoded text
+permission elsewhere.
 Within that path, literal-only chunks are direct original
 slices with no intermediate fragment/join. Mixed/escaped construction,
 slot storage/writes/clearing and join reference reads are paid before work,

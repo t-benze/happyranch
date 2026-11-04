@@ -4515,7 +4515,27 @@ def collect_evidence(root: Path | None, root_identity: tuple | None, receipt: di
                                     if secret in value:
                                         raise ValueError("raw decoded content withheld")
                                 size = _evidence_utf8_size(value, eligible)
-                                safe = _evidence_safe(value, size, sanitize, ordered, ledger, eligible)
+                                # THIS decoded occurrence already rejected every
+                                # original secret. Its expected safe value is
+                                # the complete original, without a virtual plan
+                                # or either comparison-span holder. Keep every
+                                # actual pass, output reference and comparison.
+                                ledger.charge(16, 0, eligible)
+                                for secret in ordered:
+                                    ledger.charge(size, 1, eligible)
+                                ledger.reserve(0, 1, eligible)
+                                try:
+                                    safe = sanitize(value)
+                                    try:
+                                        actual = _evidence_utf8_size(safe, eligible, size)
+                                    except ValueError as exc:
+                                        raise _EvidenceUnsafe("unsafe evidence sanitation postcondition") from exc
+                                    ledger.charge(64, 0, eligible)
+                                    if actual != size or safe != value or any(secret in safe for secret in ordered):
+                                        raise _EvidenceUnsafe("unsafe evidence sanitation postcondition")
+                                    eligible()
+                                finally:
+                                    ledger.settle(0, 0)
                                 ledger.charge(8, 1, eligible)
                                 if safe != value:
                                     raise _EvidenceUnsafe("raw unchanged postcondition")
