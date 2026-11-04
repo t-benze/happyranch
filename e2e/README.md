@@ -3810,3 +3810,34 @@ storage, every own admission and all late comparisons remain. Canonical commands
 with late/unknown/legacy actions keep separate parsed dictionaries because their
 normal scratch release can clear those maps. No published reference, substituted
 content, new tree in collector scan mode or cross-occurrence safety reuse follows.
+
+
+The raw/required-tree parser's existing complete Case-row member loop now owns
+ordinary primitive retention directly. It no longer calls the row callback,
+reselects that SAME current row for each field, or performs the post-event
+membership lookup. The existing parent row/output/key references suffice; no
+new owner, helper, cache, index, or retained selector is introduced. Replacement
+branch/validation work costs32B/0facts before descent:16B before selection and
+16B before direct scalar decoding/validation. Selection keeps its16B charge
+also on an encoded/container fallback. The direct path replaces the absent
+row-event8B/1fact and deferred row-selection8B/1fact for strings; scan-only rows
+also omit their post-event16B/0fact lookup. Every original scalar-node/array-ordinal debit,
+full key/value bytes and retained16B/2fact pair remains. SOURCE and encoded SQL
+columns, projected rows, containers and all typed callers retain their existing
+event path. Each original key/value still undergoes its own strict grammar,
+duplicate-before-value, depth and sanitizer checks; every distinct late full-row
+comparison remains. This is actual callback/selection elimination, not reduced
+rates for retained work, safety reuse, a capacity theorem or allocation proof.
+Complete unchanged SOURCE controls must establish fit and all original refusals.
+
+
+The complete Case-row comparator now uses one right-hand original value lookup
+with the existing unsafe sentinel, instead of a membership probe followed by a
+second value lookup. Its removed membership key/receiver pair costs16B/2facts;
+the new default sentinel reference pays8B/1fact before lookup. The right-side
+term therefore becomes24B/3facts per key. Left traversal, the original value
+lookup, both full operand byte passes and strict builtin-type/value comparison
+remain charged. Equal-length rows with a missing key still refuse, including a
+missing key whose original value is null. Unequal cardinality keeps the original
+admission. No local result holder, second traversal, new sentinel/cache/index,
+shared safety result or comparison is introduced or omitted.

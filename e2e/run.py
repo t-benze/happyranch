@@ -3102,10 +3102,15 @@ class _EvidenceObservations:
             # Key iteration removes items()'s temporary (key, value) pair
             # (16B/2facts per left entry). Pay the new left lookup (8B/1fact),
             # retaining every other traversal and full scalar comparison cost.
-            self.ledger.charge(24 * len(left) + 32 * len(right),
-                               3 * len(left) + 4 * len(right), self.check)
+            # One original value lookup also detects a missing key. Omit
+            # the separate right membership key/receiver pair16B/2facts;
+            # retain its value-lookup pair and add the default sentinel
+            # reference8B/1fact BEFORE get(). same() still compares every
+            # complete builtin type/value; the sentinel cannot equal null.
+            self.ledger.charge(24 * len(left) + 24 * len(right),
+                               3 * len(left) + 3 * len(right), self.check)
             for key in left:
-                if key not in right or not same(left[key], right[key]):
+                if not same(left[key], right.get(key, _EvidenceUnsafe)):
                     return False
             return True
         for c in self.cases:
@@ -4349,34 +4354,67 @@ class _EvidenceJSON:
                         self.whitespace()
                         if self.index >= self.end or self.text[self.index] != '"':
                             raise ValueError("Relay response text withheld")
-                    child = self.value(depth + 1, None if proof is not None and key == "response_text" else scalar,
-                        tree=tree, route=2 if route == 1 and key == "relay" else 0,
-                        event=(proof.response_event if key == "response" else proof.request_event
-                               if key == "request" else None) if proof is not None else event,
-                        relay_context=relay_context, relay_sanitize=relay_sanitize,
-                        selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') else descendants if descendants is not None else selected if selected_children else None,
-                        selected_path=() if route == 1 or descendants is not None else selected_path,
-                        selected_field=key, submission_identity=submission_identity,
-                        expected=expected[key] if matching else _EvidenceUnsafe)
-                    if proof is not None:
-                        proof.field(key, child)
-                    if tree and (not borrowed_keys or command_keys is not None and type(child) in (dict, list)):
-                        # A borrowed command map already owns every scalar.
-                        # Replace only a container's existing unsafe placeholder
-                        # with the complete parsed child for the required tree.
-                        # Keep its original insertion debit for that reference.
-                        if borrowed_keys:
-                            self.ledger.charge(16, 1, self.check)
-                        output[key] = child
-                    elif not tree and borrowed_keys and command_keys is None:
-                        # Known projected fields were retained by the row event.
-                        # Only an otherwise unretained scalar needs a key slot;
-                        # preserve its original syntax-set admission before the
-                        # SAME row takes ownership for decoded duplicates.
+                    # A complete Case row is already this member loop's
+                    # original output owner. Ordinary primitive columns need
+                    # no recursive row callback or fresh current-row selection.
+                    # Keep SOURCE/encoded SQL columns and container refusals on
+                    # their original event route. No array ordinal is elided.
+                    if (borrowed_keys and command_keys is None
+                            and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
+                                 and row[3] in ('parked', 'first_terminal'))):
+                        self.ledger.charge(16, 0, self.check)  # Selection BEFORE its column/character checks.
+                        self.whitespace()
+                    if (borrowed_keys and command_keys is None
+                            and (row[1] == 'jobs' or row[1] in ('tasks', 'results')
+                                 and row[3] in ('parked', 'first_terminal'))
+                            and not (row[1] == 'jobs' and key == 'script_text')
+                            and (row[1] == 'jobs' or not any(key == column for column, _ in selected_owner.sql_columns[row[1]]))
+                            and self.index < self.end and self.text[self.index] not in '[{'):
+                        # Replacement branch/validation work is prepaid before
+                        # descent. Retain the original scalar node admission
+                        # and the SAME full key/value pair below. This replaces
+                        # the absent row8B/1fact and, for strings, deferred
+                        # current-row8B/1fact selections. Scan-only rows also
+                        # lose the post-event16B/0fact lookup. Selection above
+                        # keeps its debit even on the original event route.
                         self.ledger.charge(16, 0, self.check)
-                        if key not in output:
-                            self.ledger.charge(16, 1, self.check)
-                            output[key] = None
+                        child = self.value(depth + 1, scalar, tree=tree, event=event,
+                            relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            submission_identity=submission_identity)
+                        if type(child) not in (str, int, float, type(None)):
+                            raise ValueError('Case SQL scalar withheld')
+                        self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
+                            + (_evidence_utf8_size(child, self.check) if type(child) is str else 8), 2, self.check)
+                        output[key] = child
+                    else:
+                        child = self.value(depth + 1, None if proof is not None and key == "response_text" else scalar,
+                            tree=tree, route=2 if route == 1 and key == "relay" else 0,
+                            event=(proof.response_event if key == "response" else proof.request_event
+                                   if key == "request" else None) if proof is not None else event,
+                            relay_context=relay_context, relay_sanitize=relay_sanitize,
+                            selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') else descendants if descendants is not None else selected if selected_children else None,
+                            selected_path=() if route == 1 or descendants is not None else selected_path,
+                            selected_field=key, submission_identity=submission_identity,
+                            expected=expected[key] if matching else _EvidenceUnsafe)
+                        if proof is not None:
+                            proof.field(key, child)
+                        if tree and (not borrowed_keys or command_keys is not None and type(child) in (dict, list)):
+                            # A borrowed command map already owns every scalar.
+                            # Replace only a container's existing unsafe placeholder
+                            # with the complete parsed child for the required tree.
+                            # Keep its original insertion debit for that reference.
+                            if borrowed_keys:
+                                self.ledger.charge(16, 1, self.check)
+                            output[key] = child
+                        elif not tree and borrowed_keys and command_keys is None:
+                            # Known projected fields were retained by the row event.
+                            # Only an otherwise unretained scalar needs a key slot;
+                            # preserve its original syntax-set admission before the
+                            # SAME row takes ownership for decoded duplicates.
+                            self.ledger.charge(16, 0, self.check)
+                            if key not in output:
+                                self.ledger.charge(16, 1, self.check)
+                                output[key] = None
                     child = None
                 else:
                     self.ledger.charge(8, 1, self.check)
