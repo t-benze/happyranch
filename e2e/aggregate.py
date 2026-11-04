@@ -4356,22 +4356,44 @@ def failure_result_controls() -> dict:
                 previous = {p.name:p.read_bytes() for p in output.iterdir()}; tree = copy.deepcopy(state['safe_scenario'])
                 scenario = (root/'scenario.json').read_bytes(); old_buffer = staged[name]
                 if boundary in ('writer','prefix'):
+                    fatal_owner_loss = case_name == 'wrong-owner' and boundary == 'prefix'
+                    original_fatal = None
+                    if fatal_owner_loss:
+                        assert writer.redaction_ready and writer._evidence_fatal is None
+                        writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
                     if boundary == 'prefix': source = root/'raw/observations.json'; source.write_bytes(original_image)
                     try:
                         if boundary == 'writer': writer._atomic_json(destination,image)
                         else: writer._prepare_original_evidence(destination,source)
-                    except (ValueError,AssertionError):
+                    except (ValueError,AssertionError) as exc:
                         if writer._evidence_fatal is not None:
-                            # Preserve the first actual fatal cause instead of
-                            # masking it with the later sibling-readiness error.
                             error, tb = writer._evidence_fatal
-                            error.add_note('Case refusal: '+case_name+'/'+boundary)
-                            raise error.with_traceback(tb)
+                            if (not fatal_owner_loss or type(exc) is not AssertionError
+                                    or str(exc) != 'original evidence owner/path unavailable; observed=None'):
+                                # Unexpected fatal causes must remain visible.
+                                error.add_note('Case refusal: '+case_name+'/'+boundary)
+                                raise error.with_traceback(tb)
+                            original_fatal = writer._evidence_fatal
+                            assert error is exc and tb is not None and not writer.redaction_ready
+                        elif fatal_owner_loss:
+                            raise
                     else: raise AssertionError('Case unsafe member admitted: '+case_name+'/'+boundary)
                     assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
                     if boundary == 'prefix': assert source.read_bytes() == original_image
-                    writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
-                    assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                    if fatal_owner_loss:
+                        assert original_fatal is not None
+                        try: writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        except AssertionError as later:
+                            assert str(later) == 'unsafe evidence withheld without full redaction context; observed=None'
+                            assert writer._evidence_fatal is original_fatal
+                            assert original_fatal[0] is error and original_fatal[1] is tb and not writer.redaction_ready
+                        else: raise AssertionError('fatal Case owner/path allowed continuation: '+case_name+'/'+boundary)
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
+                        assert not (root/'raw/eligible-case.txt.tmp').exists()
+                    else:
+                        writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                        assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
                 else:
                     destination.write_bytes(original_image); (root/'raw/eligible-case.txt').write_bytes(b'eligible ordinary Case sibling\n')
                     complete,error = acquire(); drain()

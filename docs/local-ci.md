@@ -3323,10 +3323,14 @@ characters still use the original strict decoder, including surrogate pairs.
 Both bounded-buffer and long-fragment construction keep their original full
 storage/copy/work/fact admissions and checks. No accounting saving is claimed
 for the removed, previously unpriced call/return temporaries; no rate or limit
-changes. The existing Case refusal control rethrows the first latched fatal
-writer error, with its original object/traceback and case/boundary note, before
-an eligible-sibling attempt could mask it. Ordinary refusals keep every original
-sibling/preservation assertion; fixtures, names and expected values stay exact.
+changes. The existing Case wrong-owner/prefix control checks its eligible sibling
+before the exact owner/path AssertionError stops detailed writes. Its actual
+later sibling-write attempt must refuse, preserving the complete prior sibling
+bytes, readiness false and the SAME first fatal tuple/error/traceback. A later
+readiness AssertionError may be a different object. Unexpected fatal causes
+still rethrow the original error/traceback with the exact case/boundary note.
+Ordinary refusals keep every original successful later sibling and preservation
+assertion; fixtures, names and expected values stay exact.
 A failure remains FAIL. Full restored5208/ALL4572 reconciliation, the SAME one
 command-comparison omission, exact restoration/final green and committed-head
 static checks remain required; this correction establishes no fit or acceptance.
