@@ -2135,11 +2135,23 @@ inside an admitted worktree remain disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
 never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
 linked-admin census reconciles entries, metadata pointers and worktree backlinks
-with Git output and literal task roots. Missing/unreadable/aliased/conflicting
-metadata retains that entire repository as a literal unknown scope with null
-candidate count; independent scopes continue within the same deadline. Identities
-are refreshed before Git removal, repair, retry and prune; earlier partial effects
-stay unknown rather than becoming zero-effect success. A genuinely absent admin
+with Git output and literal task roots. Founder THR307seq235 approving234 permits
+ordinary local index/HEAD/auxiliary read/change errors to retain exactly their
+proven registration, with its metadata path/native cause, while independently
+validated same-repository peers progress. Complete literal names, fresh identities,
+canonical unique reciprocal mappings and containment must first be proven BEFORE
+Git. Missing mapping/enumeration/entry, alias/hardlink/special metadata, conflict,
+unknown descendant location or unexplained output discrepancies retain the shared
+repository scope. All proven paths, including locally uncertain ignored/detached/
+non-task descendants, protect containing trees. Local retention is latched for the
+attempt, never clearance; lost attribution widens refusal. Fresh topology/pointers,
+containment and own metadata govern every admission and final remove/repair/retry/
+confirmation; ordinary sibling auxiliary churn does not poison own admission.
+Local discovery remains partial with exact scoped causes, known-only counts and
+null uncertain allocation/physical freed space. Earlier effects remain honest:
+confirmed root/admin/registration absence permits credit despite a sibling-local
+error; shared confirmation uncertainty preserves effects without unverified credit.
+A genuinely absent admin
 with primary-only inventory and no task roots remains valid. Partial discovery
 and uncertain Git-prune scope prohibit prune.
 

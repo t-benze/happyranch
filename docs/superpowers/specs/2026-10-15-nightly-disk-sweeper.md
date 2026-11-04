@@ -85,8 +85,16 @@ and `repos/.happyranch` are reported uncertain without walking their contents.
 Workspace/repository/metadata aliases are not followed. Before trusting Git's
 list, a complete no-follow linked-admin census reconciles each registration
 and its reciprocal worktree pointer; Git exit0 can silently omit unreadable or
-missing records. A failed census retains the entire repository scope, including
-otherwise readable worktrees. Missing optional `task-tmp`/`repos` directories
+missing records. Founder THR307seq235 approving234 isolates ordinary local file
+errors only after complete literal entry/name observation, fresh common/admin/entry
+identities, canonical unique reciprocal pointers and literal task-root reconciliation
+prove attribution and containment. An unreadable ordinary index, missing HEAD or
+changed/disappeared auxiliary file retains that proven registration with the exact
+metadata path and native cause; independently validated same-repository peers can
+progress. Missing mapping/entry/enumeration, aliases/hardlinks/special objects,
+conflicts and unknown descendant location retain the shared scope BEFORE Git;
+unexplained Git output discrepancies also refuse shared scope. Missing optional
+`task-tmp`/`repos` directories
 are absent; inaccessible or invalid ones are unknown.
 
 Independent known scopes continue within the SAME deadline. Completed traversal
@@ -227,10 +235,15 @@ Only actual Git registrations exactly under an owner's
 `repos/*/.claude/worktrees/TASK-*` qualify. Require matching guard task/worktree/
 primary-root ownership, ordinary no-follow primary `.git`, and a complete
 `.git/worktrees` inventory reconciled with Git output and literal task-worktree
-roots. The linked-admin directory, each entry and its files must be readable,
-ordinary and unaliased, with matching `gitdir`, `commondir`, `HEAD` and worktree
-`.git` backlinks. Missing, malformed, redirected, conflicting or unexpected
-metadata is unknown; no worktree from that uncertain repository is salvaged.
+roots. The common/admin/entry directories and exhaustive file/name census must
+be ordinary and unaliased, with canonical unique matching `gitdir`, `commondir`
+and worktree `.git` backlinks. Unknown mapping or unsafe metadata refuses the
+shared scope before Git; unexplained Git output differences also refuse shared
+scope. With this proof, ordinary
+local read/change errors protect only their proven registration. A missing HEAD's
+actual zero-HEAD/detached Git diagnostic stays protected; it never grants eligibility.
+Per-attempt local retention is latched even if the file later heals; this caches no
+clearance. Lost attribution widens refusal to the shared repository.
 A genuinely absent linked-admin directory with primary-only Git inventory and
 no surviving task-worktree roots is a valid empty control. Conservative pointer
 validation accepts canonical absolute backlinks and ordinary `../..` or exact
@@ -242,8 +255,9 @@ re-read after slow common inspections. Dirty paths are reported. Unique detached
 commits remain. Local branches/remotes preserve committed work without GitHub
 publication. Any different linked registration strictly beneath a candidate
 retains that containing worktree, including ignored paths, detached HEADs and
-nonmatching task-root names. Every row in the successfully returned complete
-reciprocal census is consumed with the existing deadline; discovery's selected
+nonmatching task-root names. Every proven canonical path in the complete
+reciprocal census, including locally uncertain registrations, is consumed with
+the existing deadline; discovery's selected
 task-root subset is insufficient. Literal path components define ancestry, self
 is excluded and siblings such as TASK-1/TASK-10 do not contain one another.
 Other Git-ignored contents inside an admitted tree are disposable.
@@ -256,11 +270,20 @@ before removal, repair, retry and prune, including after the first Git failure.
 The descendant guard consumes each existing final complete-census result before
 first remove (before mutation starts), contained repair and single retry, even
 when a complete admission just succeeded. There is no alias resolution or new
-deletion authority. Valid descendants retain the candidate; an incomplete census
-still refuses the entire repository.
-A metadata transition marks the repository scope unknown with null total counts,
-retains its remaining worktrees and prohibits prune; earlier partial effects and
-verified completed removals retain their actual accounting. This Git version
+deletion authority. Valid and locally uncertain mapped descendants retain the
+candidate at every final boundary. Candidate-local metadata errors also block its
+own remove/repair/retry. Fresh admission binds shared topology/pointer/conflict
+facts and the candidate's own metadata; ordinary sibling auxiliary churn does not
+poison that equality. An incomplete mapping census still refuses the shared scope.
+Local unknowns are reported against their proven worktree and exact metadata
+cause, including non-task descendants; discovery stays partial, uncertain totals
+and physical freed space stay null, and only known reached/unreached counts are
+reported. Any partial/unknown/shared scope or remaining registration prohibits
+repository-wide prune. Post-remove credit requires independently confirmed root
+and registration/admin absence; a sibling's new local error cannot erase verified
+credit, while shared confirmation uncertainty preserves the physical partial effect
+without unverified credit. Earlier verified effects retain their actual accounting.
+This Git version
 can unregister a worktree on permission failure;
 that partial/unregistered root fails fresh admission and is retained, with no
 re-registration, generic rm or stronger retry. Timeout aborts the entire worker,
@@ -313,6 +336,29 @@ Seven actual on-night records of attributable results, retained/unknown/eligible
 ~50GiB is provisional; output growth or operator deletions cannot determine PASS.
 
 ## Finite disposable verification
+
+ROOT13983's registration-isolation correction extends the existing real-Git driver
+with C19-R/L/E/U/P, C20-U and C21-N/T/P. R runs first within c19: the actual census
+observes Git's pending index.lock, the original reader reaches that exact inode,
+then the exact writer exits0/is reaped and its lock disappears before the real read.
+Only the subsequent B physical-removal/administrative-unregistration assertion is
+the intended baseline failure. No synthetic exception, manual lock deletion or
+setup failure is a witness. Writer cleanup stays inside fixture lifecycle on every
+exit; genuine index rewrite is a separate Git fixture effect. Local index EACCES,
+missing HEAD and actual changed auxiliary note protect A while eligible B progresses;
+owner/root/jobs/dirty C remains protected. Unsafe mapping/hardlink/duplicate controls
+refuse before Git. Canonical uncertain descendants cover final_to_remove,
+retry_to_repair and repaired_to_retry, preserving all five valid transitions and
+actual earlier failure/repair effects. Ordered post-remove cases independently
+confirm B effects before testing local versus shared A damage. Preview covers only
+reachable static/discovery states, and the local JSON/existing audit projection
+retains scoped causes and honest unknown counts. C17/C22 keep locked/primary-only
+and original-deadline controls. Focused selection (frozen Python3.14/Node24/Git,
+ordinary UID, actual task-tmp; outside retired units/general integration):
+
+```bash
+TMPDIR=/absolute/actual-child-task-tmp PYTHONDONTWRITEBYTECODE=1 /absolute/locked-env/bin/python scripts/verify_disk_sweeper.py --cases 7 8 10 17 19 20 21 22
+```
 
 ROOT13755's comparison correction extends existing c12 with tiny real Fixture
 rows at BOTH admission and cross-admission comparisons: reordered equal captures

@@ -100,6 +100,19 @@ stat/allocation and contained unlink with metadata-only O_PATH descriptors,
 never endpoint/content I/O. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
+Founder THR307seq235 approving234 permits registration-local retention only after
+exhaustive literal no-follow names, fresh common/admin/entry identities, canonical
+unique reciprocal mappings and task-root/containment reconciliation before Git.
+An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
+its exact metadata path/native cause; independently validated same-repository peers
+can progress. Missing mapping/enumeration/entry, unsafe alias/hardlink/special
+objects, conflict or unknown descendant location retains the shared scope.
+All proven paths, including locally uncertain non-task descendants, protect
+containing trees at every final remove/repair/retry boundary. Retention is latched
+for the attempt, never clearance; own metadata and shared topology stay fresh.
+Reports keep local discovery partial, known-only counts and unknown allocation;
+any partial/unknown scope or remaining registration prohibits repository-wide prune.
+This changes none of this skill's legacy gates or agent cleanup authority.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put
 regenerable fixture/cache trees in runtime task-tmp; retain only concise evidence
 in output. Do not run historical cleanup, change live configuration, deploy/
