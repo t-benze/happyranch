@@ -668,8 +668,7 @@ class Database(
             finally:
                 self._lock.release()
 
-    @contextmanager
-    def workflow_schema_transaction(self):
+    def workflow_schema_transaction(self) -> Any:
         """Yield the shared connection for the one org-load schema unit.
 
         U1A installs and validates the workflow-owned layout only through
@@ -683,31 +682,177 @@ class Database(
         workflow layout is a complete atomic unit and must never be committed
         or rolled back as an accidental side effect of another owner.
         """
-        self._lock.acquire(blocking=True)
-        try:
-            if self._conn.in_transaction:
-                raise ValueError("workflow_schema_caller_transaction_not_allowed")
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield self._conn
-                self._conn.commit()
-            except BaseException as primary:
-                try:
-                    self._conn.rollback()
-                    if self._conn.in_transaction:
-                        raise RuntimeError("workflow_schema_rollback_incomplete")
-                except BaseException as cleanup:
-                    primary.add_note("workflow schema rollback failed: " + type(cleanup).__name__)
+        database = self
+
+        class _SchemaTransaction:
+            """Original schema interval, also retained by failed-delivery frames."""
+
+            def __init__(self) -> None:
+                self.lock = self.conn = None
+                self.acquired = self.begun = self.committed = False
+                self.commit_attempted = False
+                self.rollback_attempted = self.rollback_returned = False
+                self.rollback_complete = False
+                self.close_attempted = self.close_returned = False
+                self.invalidation_attempted = self.invalidated = False
+                self.release_attempted = self.release_returned = False
+                self.attachment_attempted = self.note_attempted = False
+                self.first = None
+                self.occurrences: list[dict] = []
+                self.dirty = False
+
+            def capture(self, phase: str, error: BaseException, *, observation: bool = False,
+                        retain_prior: bool = True) -> None:
+                # Interpreter-owned descriptors only, before any opaque access.
+                occurrence = dict(phase=phase, error=error,
+                    traceback=BaseException.__traceback__.__get__(error),
+                    arguments=BaseException.args.__get__(error),
+                    context=BaseException.__context__.__get__(error),
+                    cause=BaseException.__cause__.__get__(error),
+                    suppress_context=BaseException.__suppress_context__.__get__(error),
+                    observation=observation, previous=None)
+                self.occurrences.append(occurrence)
+                if self.first is None:
+                    self.first = occurrence
+                # Link repeated throws; do not collapse them by object or phase.
+                for prior in reversed(self.occurrences[:-1]):
+                    if prior['error'] is error:
+                        occurrence['previous'] = prior
+                        break
+                if retain_prior:
                     try:
-                        self._conn.close()
-                    except BaseException as close_error:
-                        primary.add_note("workflow schema close failed: " + type(close_error).__name__)
-                    # Never return an unsafe connection to any later DB owner,
-                    # including when SQLite close itself was unsuccessful.
-                    self._conn = None
-                raise
-        finally:
-            self._lock.release()
+                        values = BaseException.__dict__['__dict__'].__get__(error)
+                        occurrence['prior_attributes'] = values.copy()
+                    except BaseException as later:
+                        self.dirty = True
+                        # Retain this error without calling the failed sink again.
+                        self.capture('prior attribute retention', later, retain_prior=False)
+
+            def release(self) -> None:
+                if self.acquired and not self.release_attempted:
+                    self.release_attempted = True
+                    try:
+                        self.lock.release()
+                        self.release_returned = True
+                    except BaseException as error:
+                        self.dirty = True
+                        self.capture('release', error)
+
+            def rollback(self) -> None:
+                if self.rollback_attempted:
+                    return
+                self.rollback_attempted = True
+                try:
+                    self.conn.rollback()
+                    self.rollback_returned = True
+                    if self.conn.in_transaction:
+                        raise RuntimeError("workflow_schema_rollback_incomplete")
+                    self.rollback_complete = True
+                except BaseException as error:
+                    self.dirty = True
+                    self.capture('rollback', error)
+                finally:
+                    if not self.rollback_complete:
+                        # Close, invalidation and release are independent duties;
+                        # neither diagnostics nor a failed close may skip them.
+                        self.close_attempted = True
+                        try:
+                            self.conn.close()
+                            self.close_returned = True
+                        except BaseException as error:
+                            self.capture('close', error)
+                        finally:
+                            self.invalidation_attempted = True
+                            try:
+                                database._conn = None
+                                self.invalidated = True
+                            except BaseException as error:
+                                self.capture('invalidation', error)
+
+            def retain(self) -> None:
+                if self.first is None:
+                    return
+                error = self.first['error']
+                # One sink attempt only. A failed attachment stays on this SAME
+                # owner, reachable through the outward native traceback frame.
+                self.attachment_attempted = True
+                try:
+                    BaseException.__setattr__(error, '_workflow_schema_transaction_failure', self)
+                except BaseException as later:
+                    self.dirty = True
+                    self.capture('attachment', later)
+                if self.dirty:
+                    self.note_attempted = True
+                    try:
+                        BaseException.add_note(error,
+                            'workflow schema exit failed; actual errors retained by original transaction owner')
+                    except BaseException as later:
+                        self.capture('diagnostic', later)
+
+            def deliver(self, inbound: BaseException | None = None) -> bool:
+                if self.first is None:
+                    return False
+                error = self.first['error']
+                BaseException.args.__set__(error, self.first['arguments'])
+                BaseException.__traceback__.__set__(error, self.first['traceback'])
+                BaseException.__context__.__set__(error, self.first['context'])
+                BaseException.__cause__.__set__(error, self.first['cause'])
+                BaseException.__suppress_context__.__set__(error, self.first['suppress_context'])
+                if error is inbound and not self.dirty:
+                    # A genuinely clean rollback/refusal keeps its original
+                    # classification and positive _ExitProof return evidence.
+                    return False
+                # Raising even the SAME inbound cause is essential: a dirty
+                # exit must not make _ExitProof.exited or no-effect proof true.
+                raise error
+
+            def __enter__(self) -> sqlite3.Connection:
+                phase = 'lock selection'
+                try:
+                    self.lock = database._lock
+                    phase = 'acquire'
+                    if self.lock.acquire(blocking=True) is not True:
+                        raise RuntimeError('workflow_schema_lock_acquisition_not_acknowledged')
+                    self.acquired = True
+                    phase = 'connection selection'
+                    self.conn = database._conn
+                    phase = 'caller transaction check'
+                    if self.conn.in_transaction:
+                        raise ValueError("workflow_schema_caller_transaction_not_allowed")
+                    phase = 'BEGIN IMMEDIATE'
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.begun = True
+                    return self.conn
+                except BaseException as error:
+                    self.capture(phase, error)
+                finally:
+                    if not self.begun:
+                        self.release()
+                self.retain()
+                self.deliver()
+
+            def __exit__(self, kind: type[BaseException] | None, error: BaseException | None,
+                         traceback: Any) -> bool:
+                try:
+                    if error is not None:
+                        # This is delivery of the original body occurrence, not
+                        # an invented second throw at the transaction boundary.
+                        self.capture('body delivery', error, observation=True)
+                    else:
+                        self.commit_attempted = True
+                        try:
+                            self.conn.commit()
+                            self.committed = True
+                        except BaseException as failure:
+                            self.capture('COMMIT', failure)
+                    if not self.committed:
+                        self.rollback()
+                finally:
+                    self.release()
+                self.retain()
+                return self.deliver(error)
+
+        return _SchemaTransaction()
 
 
     @_synchronized

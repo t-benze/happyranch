@@ -983,10 +983,26 @@ unindexed and indexed layouts are both recognized; partial or noncanonical index
 sets refuse. The owning writer validates the complete target before COMMIT.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
-failures refuse without repair or adoption. Body/interruption
-and COMMIT failures preserve the primary cause and secondary cleanup errors;
-uncertain COMMIT is not success or proof of absence. Audit-watermark advances
-publish only after positive COMMIT under the same lock. Failed unpublished org
+failures refuse without repair or adoption. The raw schema transaction binds
+its original RLock and connection. It captures the first actual body/interruption,
+COMMIT or exit error with native arguments and traceback before cleanup; actual
+later errors and repeated throws of the same object remain separate occurrences.
+Only a returned BEGIN IMMEDIATE creates rollback duty on body/interruption or
+COMMIT failure. Caller BEGIN/SAVEPOINT refusal and failed BEGIN owe only the
+acquired release; failed acquisition adds no rollback or close. Failed or
+incomplete rollback still attempts the one original SQLite close, invalidation
+and release, independently
+of failed diagnostics. Invalidation forbids reuse and proves no close or native
+retirement; the original handle and failed/unknown close remain retained.
+Opaque causes bypass virtual contextlib traceback restoration. Failed cleanup,
+retention or diagnostics raises the original first cause rather than returning
+clean exit proof, even when notes or attachments are unavailable. A genuinely
+clean refused body retains its original classification and successful exit.
+Uncertain COMMIT is not success or proof of absence; successful COMMIT followed
+by failed release remains a committed prefix with failed delivery, without a
+postcommit rollback. Audit-watermark advances publish only after positive COMMIT
+AND context exit under the same lock; a body-local result alone cannot publish
+watermarks, ownership or registration success. Failed unpublished org
 construction closes/refuses before attachment; later installers are separate.
 
 Coding validates its canonical inventory and actual shared columns, keys, FKs,
