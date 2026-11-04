@@ -4175,11 +4175,6 @@ class _EvidenceJSON:
         self.index += 1
         self.whitespace()
         member_index = 0
-        # A scan-only array without a selected/expected descendant has no
-        # consumer for member indices. Tree entry storage remains separately
-        # admitted even when its append does not need an index.
-        self.ledger.charge(24, 1, self.check)  # Dispatch plus the new fixed flag.
-        indexed_array = matching or selected is not None and selected_children
         previous_key = None
         expected_keys = None
         if matching and char == '{' and ordered:
@@ -4271,17 +4266,15 @@ class _EvidenceJSON:
                             output[key] = None
                     child = None
                 else:
-                    if tree or indexed_array:
-                        self.ledger.charge(8, 1, self.check)
+                    self.ledger.charge(8, 1, self.check)
                     if matching and member_index >= len(expected):
                         raise ValueError('completion complete waiting equality withheld')
                     child = self.value(depth + 1, scalar, tree=tree, route=3 if route == 2 else 0,
                                        event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
                                        selected=selected if selected_children else None, selected_path=selected_path,
-                                       selected_field=member_index if indexed_array else None, submission_identity=submission_identity,
+                                       selected_field=member_index, submission_identity=submission_identity,
                                        expected=expected[member_index] if matching else _EvidenceUnsafe)
-                    if indexed_array:
-                        member_index += 1
+                    member_index += 1
                     if tree:
                         output.append(child)
                     child = None

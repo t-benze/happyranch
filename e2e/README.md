@@ -3694,11 +3694,9 @@ syntax-set insertion disappears for already retained fields; the field rates,
 unknown-key slots, duplicate-before-value rule, own safety and late full-row
 comparisons remain. New post-child membership/dispatch pays 16B per field.
 
-An unselected scan-only array no longer constructs unused member indices.
-Selected/expected index consumers and retained tree entries keep their existing
-8B/1fact admission; dispatch and the new fixed flag pay 24B/1fact per container.
-Every member's grammar,
-depth and scalar checks still run. The raw scalar callback also omits its second
+Every array keeps its original member ordinal traversal and 8B/1fact admission,
+including scan-only arrays. Every member's grammar, depth and scalar checks
+still run. The raw scalar callback omits its second
 identical unchanged-value comparison after the first full builtin-string
 comparison and final eligibility check. Only that duplicate's 8B/1fact debit
 ceases; every original/safe secret pass, sanitizer pass, reference admission and
