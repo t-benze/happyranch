@@ -3743,3 +3743,16 @@ key/list order, scalar contents, argv/waits and distinct complete command/row
 comparisons remain paid. These are logical operation removals, not a physical
 allocation measurement or proof of fit; complete original-cap SOURCE controls
 and full result reconciliation must establish the actual result.
+
+Case SQL scalar retention now writes directly in the existing row owner. It no
+longer creates a per-scalar `retain` closure or forwards the original key and
+value into that helper's two argument slots. The stored key/value pair keeps
+16B/2facts, every full key and scalar byte stays charged, and the original
+row-field dispatch remains. Only the absent forwarding references lose
+16B/2facts per retained scalar. The audit job discriminator uses the same
+direct insertion, preserving its original null/container rejection behavior.
+All row SOURCE/encoded-column/sanitizer checks, duplicate-key storage, unknown
+scalar columns, private late joins and distinct full row comparisons remain.
+There is no replacement holder or shared safety result. Complete restored
+SOURCE controls must establish admission and all original refusals; this
+operation removal alone establishes no fit or physical allocation result.

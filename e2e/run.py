@@ -2887,19 +2887,23 @@ class _EvidenceObservations:
             raise ValueError('Case SQL scalar withheld')
         if field is None:
             field = local[0]
-        def retain(target: dict, key: str, item: object) -> None:
-            self.ledger.charge(32 + _evidence_utf8_size(key, self.check)
-                + (_evidence_utf8_size(item, self.check) if type(item) is str else 8), 4, self.check)
-            target[key] = item
         # Pair task/results compare the complete original parked
         # rows, including unknown scalar columns, after late closure.
         if table == 'jobs' or table in ('tasks', 'results') and holder in ('parked', 'first_terminal'):
-            retain(row, field, value)
+            # Store this occurrence directly. The former per-scalar retain()
+            # closure forwarded field/value into two additional argument
+            # slots. Keep the stored key/value pair and ALL original bytes;
+            # only those absent forwarding references lose 16B/2facts.
+            self.ledger.charge(16 + _evidence_utf8_size(field, self.check)
+                + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+            row[field] = value
         else:
             required = tuple(k for k, _ in self.sql_identity[table]) + (
                 ('assigned_agent', 'current_session_id') if table == 'tasks' else ())
             if field in required or any(field == k for k, _ in self.sql_columns.get(table, ())):
-                retain(row, field, value)
+                self.ledger.charge(16 + _evidence_utf8_size(field, self.check)
+                    + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 2, self.check)
+                row[field] = value
         if table == 'jobs' and field == 'script_text':
             if type(value) is not str:
                 raise ValueError('Case row SOURCE type withheld')
@@ -2926,7 +2930,10 @@ class _EvidenceObservations:
                     audit_state[1] = item
                 elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
                       and event_kind not in ('key', 'end-object', 'end-array')):
-                    retain(links, 'job', item if event_kind == 'scalar' else None)
+                    self.ledger.charge(16 + _evidence_utf8_size('job', self.check)
+                        + (_evidence_utf8_size(item, self.check)
+                           if event_kind == 'scalar' and type(item) is str else 8), 2, self.check)
+                    links['job'] = item if event_kind == 'scalar' else None
                 if (table == 'tasks' and holder in ('parked', 'first_terminal')
                         and column == 'blocked_on_job_ids' and audit_state[0] == 1):
                     if event_kind == 'scalar':
