@@ -2973,11 +2973,17 @@ class _EvidenceObservations:
             # below pay for their two references; all original full primitive
             # comparisons use the existing direct same() debit.
             shapes, other_shapes = left[8], right[8]
-            self.ledger.charge(32 * (len(shapes) + len(other_shapes)),
-                               4 * (len(shapes) + len(other_shapes)), self.check)
             if len(shapes) != len(other_shapes):
+                self.ledger.charge(32 * (len(shapes) + len(other_shapes)),
+                                   4 * (len(shapes) + len(other_shapes)), self.check)
                 return False
-            for path, (kind, keys) in shapes.items():
+            # As in full_row, original-key iteration removes the left
+            # items() pair (16B/2facts); its new lookup pays 8B/1fact.
+            # Right lookup/traversal and every full comparison stay paid.
+            self.ledger.charge(24 * len(shapes) + 32 * len(other_shapes),
+                               3 * len(shapes) + 4 * len(other_shapes), self.check)
+            for path in shapes:
+                kind, keys = shapes[path]
                 # Paths are synthesized selectors, not another original value.
                 # Each original container's ordered keys already determine its
                 # position; lookup replaces recursive selector/order replay.
@@ -3026,8 +3032,12 @@ class _EvidenceObservations:
                         return False
             return True
         def same(left: object, right: object) -> bool:
-            self.ledger.charge(32 + sum(_evidence_utf8_size(v, self.check) if type(v) is str else 8
-                                      for v in (left, right)), 4, self.check)
+            # Size both original operands directly. No temporary two-reference
+            # tuple or generator traversal remains. Keep the original operands'
+            # 16B/2facts and ALL full scalar bytes/type/value comparison work;
+            # only the absent tuple's two 8B/1fact reference slots disappear.
+            self.ledger.charge(16 + (_evidence_utf8_size(left, self.check) if type(left) is str else 8)
+                + (_evidence_utf8_size(right, self.check) if type(right) is str else 8), 2, self.check)
             return type(left) is type(right) and left == right
         def full_row(left: dict, right: dict) -> bool:
             if len(left) != len(right):

@@ -3729,3 +3729,17 @@ from every original builtin scalar. A receipt's required literal-null `payload`
 and `payload_file` therefore cannot match empty containers retained for key
 order. Scalar insertion keeps the actual original value and type. Placeholder
 storage keeps its original charge; this distinction claims no capacity credit.
+
+Case late scalar equality sizes its two original operands directly, without a
+temporary two-reference tuple or a generator/sum traversal. Every full UTF8
+operand size, builtin type and complete value comparison still runs. The two
+original operand references retain16B/2facts; only the absent tuple references
+lose16B/2facts. No new holder, lookup or per-occurrence safety shortcut replaces
+them. The same command-shape traversal now iterates original keys instead of
+constructing items() pairs: each absent16B/2fact pair is replaced by an8B/1fact
+original lookup, exactly as in the existing full-row traversal. Unequal shape
+cardinality keeps the original conservative admission. All paths, kinds, keys,
+key/list order, scalar contents, argv/waits and distinct complete command/row
+comparisons remain paid. These are logical operation removals, not a physical
+allocation measurement or proof of fit; complete original-cap SOURCE controls
+and full result reconciliation must establish the actual result.
