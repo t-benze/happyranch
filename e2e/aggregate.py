@@ -197,6 +197,7 @@ def failure_result_controls() -> dict:
     import time
     import shutil
     import threading
+    import traceback as traceback_module
     from typing import Iterator
     from contextlib import contextmanager
     from controller import Controller
@@ -3840,7 +3841,37 @@ def failure_result_controls() -> dict:
                 rejection_drain=dict(row=copy.deepcopy(terminal),audits=[copy.deepcopy(audit)],outputs=copy.deepcopy(outputs)),
                 out=terminal['stdout_head'],err=terminal['stderr_head'])
             job['terminal'] = copy.deepcopy(terminal)
+            job['submit'] = copy.deepcopy(command)
             jobs.append(job)
+        # These are independently specified fixture commands at the actual
+        # jobs.py assignments. They are copies, not extra executions/attempts.
+        # The former complete SQL subjects omitted these reached assignments.
+        def completion(start: dict, blocked: bool, child: int) -> dict:
+            command = copy.deepcopy(finite_input(root,'completion','block' if blocked else 'final',late=False)['provider_commands'][0])
+            summary = ('waiting for genuine IDs' if blocked else (
+                'E04_OK completed exit0','E04_REVIEW_REQUIRED_REFUSED no job submitted',
+                'E04_EXIT7 completed exit7; operation nonzero','E04_TIMEOUT failed timeout exit-9',
+                'E04_PAIR A completed exit0; B completed exit7','E04_PAIR A completed exit0; B completed exit7')[index])
+            payload = dict(status='blocked' if blocked else 'completed',confidence=90,summary=summary)
+            if blocked: payload['waiting_on_job_ids'] = [j['id'] for j in jobs]
+            else: payload['decision'] = dict(action='done',summary=summary)
+            payload.update(task_id=start['task'],session_id=start['session'],agent=start['agent'])
+            text = json.dumps(payload,sort_keys=True); data = text.encode(); digest = hashlib.sha256(data).hexdigest()
+            path = str(root/'coord'/(digest+'.json'))
+            body = dict(session_id=start['session'],agent=start['agent'],status=payload['status'],confidence=90,
+                output_summary=summary,risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+            if blocked: body['waiting_on_job_ids'] = list(payload['waiting_on_job_ids'])
+            else: body['decision'] = dict(payload['decision'])
+            command.update(provider={k:start[k] for k in ('task','session','agent','org','pid')},payload=payload,
+                payload_file=dict(path=path,text=text,bytes=len(data),sha256=digest),
+                argv=[str(root/'bin/happyranch'),'report-completion','--org','alpha','--from-file',path],
+                child_pid=child,child_start=str(child+500),child_parent=start['pid'],
+                child_stat=str(child)+' (python) S '+str(start['pid'])+' '+'0 '*17+str(child+500)+'\n',
+                entered=20. if blocked else 30.,finished=20.5 if blocked else 30.5,execution_deadline=29. if blocked else 39.)
+            command['wire'] = [dict(path='/api/v1/orgs/alpha/tasks/'+start['task']+'/completion',method='POST',
+                body_sha256=hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+                status=200,response=dict(ok=True),dropped=False)]
+            return command
         def snapshot(terminal: bool, session: str) -> dict:
             value = copy.deepcopy(sql_rows)
             value['tasks'][0].update(id=first['task'],brief=variant,current_session_id=session,
@@ -3866,6 +3897,11 @@ def failure_result_controls() -> dict:
             case['first_terminal'] = copy.deepcopy(parked)
             case['first_terminal']['jobs'] = [copy.deepcopy(jobs[0]['oracle']['row']),copy.deepcopy(jobs[1]['pending'][-1]['row'])]
         case['final_snapshot'] = snapshot(True,starts[-1]['session'])
+        if index != 1:
+            block = completion(first,True,410)
+            commands.append(block); case['block'] = copy.deepcopy(block)
+        final = completion(starts[-1],False,411)
+        commands.append(final); case['final_callback'] = copy.deepcopy(final)
         image['starts'],image['provider_commands'] = starts,commands
         image['durable'].append(dict(jobs_cases=[case]))
         if late:
@@ -3889,7 +3925,11 @@ def failure_result_controls() -> dict:
     case_stages = {f'terminal-index{i}-{order}': (i,order) for i in (0,2,3) for order in ('early','late')}
     case_stages.update({f'pair-index{i}-{order}': (i,order) for i in (4,5)
                        for order in ('early','late','jobs-last','store-id-order','audit-append')})
-    for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages):
+    case_copy_positive = {f'copy-index{i}-{order}': (i,order)
+                          for i in range(6) for order in ('early','late','jobs-last','repeated','command-order','attempts-after-copies')}
+    case_copy_positive.update({f'copy-partial-{stage}': (0,stage) for stage in
+        ('pre-submit','submit-before-id','submit-only','block-before-parked','final-before-snapshot')})
+    for spec in case_full + list(case_partials) + ['repeated'] + list(case_stages) + list(case_copy_positive):
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
@@ -3897,6 +3937,51 @@ def failure_result_controls() -> dict:
                     index,late,mode = spec
                     image = case_input(root,index,late=late,mode=mode)
                     label = f'C5-Case-full-index{index}-'+('late' if late else 'early')+'-'+mode+'-'+boundary
+                elif spec in case_copy_positive:
+                    index,order = case_copy_positive[spec]
+                    image = case_input(root,index,late=order != 'early')
+                    holder = image['durable'][0 if order != 'early' else -1]
+                    case = holder['jobs_cases'][0]
+                    if order == 'jobs-last': case['jobs'] = case.pop('jobs')
+                    if order == 'repeated': holder['jobs_cases'].append(copy.deepcopy(case))
+                    if order == 'command-order':
+                        for command in image['provider_commands']:
+                            items = list(command.items()); command.clear(); command.update(reversed(items))
+                        for number,job in enumerate(case['jobs']): job['submit'] = copy.deepcopy(image['provider_commands'][number])
+                        if index != 1: case['block'] = copy.deepcopy(image['provider_commands'][-2])
+                        case['final_callback'] = copy.deepcopy(image['provider_commands'][-1])
+                    if order == 'attempts-after-copies':
+                        attempts,offset = [],0
+                        for number,command in enumerate(image['provider_commands']):
+                            provider = next(s for s in image['starts'] if s['session'] == command['provider']['session'])
+                            payload = {k:copy.deepcopy(v) for k,v in command['payload'].items() if k not in ('task_id','session_id','agent')}
+                            attempts.append(dict(provider=copy.deepcopy(provider),instruction=dict(action=command['action'],
+                                deadline=command['execution_deadline']+1,execution_deadline=command['execution_deadline'],payload=payload),
+                                entered=command['entered']-.25,wire_begin=offset,wire_end=offset+len(command['wire']),
+                                finished=command['finished']+.25,command_index=number))
+                            offset += len(command['wire'])
+                        image['provider_attempts'] = attempts
+                    if spec.startswith('copy-partial-'):
+                        case.pop('final_snapshot')
+                        if order != 'final-before-snapshot':
+                            case.pop('final_callback'); case.pop('live_s2')
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-final']
+                            case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
+                        if order in ('pre-submit','submit-before-id','submit-only','block-before-parked'):
+                            case.pop('parked')
+                        if order in ('pre-submit','submit-before-id','submit-only','block-before-parked'):
+                            job = case['jobs'][0]
+                            for field in ('terminal','oracle','rejection_drain'): job.pop(field)
+                        if order in ('pre-submit','submit-before-id','submit-only'):
+                            case.pop('block')
+                            image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] != 'jobs-block']
+                            job = case['jobs'][0]
+                            job.pop('running')
+                            job['pending'] = []
+                            if order in ('pre-submit','submit-before-id'): job.pop('id')
+                            if order == 'pre-submit': job.pop('submit'); image['provider_commands'] = []
+                        label = f'C5-Case-copy-partial-{order}-{boundary}'
+                    else: label = f'C5-Case-copy-positive-index{index}-{order}-{boundary}'
                 elif spec in case_stages:
                     index,order = case_stages[spec]
                     image = case_input(root,index,late=order == 'late')
@@ -3921,6 +4006,26 @@ def failure_result_controls() -> dict:
                             return value
                         image = exchange(image)
                         case = image['durable'][-1]['jobs_cases'][0]
+                        # Explicit fixture ID exchange also changes encoded
+                        # command occurrences. Reseal their independent fields;
+                        # never derive expectations from shipping admission.
+                        for command in image['provider_commands']:
+                            payload = command['payload']; text = json.dumps(payload,sort_keys=True)
+                            file = command['payload_file']; digest = hashlib.sha256(text.encode()).hexdigest()
+                            file.update(text=text,bytes=len(text.encode()),sha256=digest,path=str(root/'coord'/(digest+'.json')))
+                            command['argv'][-2 if command['action'] == 'jobs-submit' else -1] = file['path']
+                            if command['action'] == 'jobs-submit':
+                                body = payload
+                                command['stdout'] = json.dumps(command['wire'][0]['response'],sort_keys=True)+'\n'
+                            else:
+                                body = dict(session_id=payload['session_id'],agent=payload['agent'],status=payload['status'],confidence=90,
+                                    output_summary=payload['summary'],risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+                                if command['action'] == 'jobs-block': body['waiting_on_job_ids'] = list(payload['waiting_on_job_ids'])
+                                else: body['decision'] = dict(payload['decision'])
+                            command['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                        for number,job in enumerate(case['jobs']): job['submit'] = copy.deepcopy(image['provider_commands'][number])
+                        case['block'] = copy.deepcopy(image['provider_commands'][-2])
+                        case['final_callback'] = copy.deepcopy(image['provider_commands'][-1])
                         for holder in (case['parked'],case['first_terminal'],case['live_s2']['snapshot'],case['final_snapshot']):
                             holder['jobs'].reverse()
                         for holder in (case['parked'],case['first_terminal']):
@@ -3932,6 +4037,8 @@ def failure_result_controls() -> dict:
                     if spec == 'repeated': image['durable'][0]['jobs_cases'].append(case)
                     else:
                         case.pop('parked',None); case.pop('live_s2',None); case.pop('final_snapshot',None)
+                        case.pop('block',None); case.pop('final_callback',None)
+                        image['provider_commands'] = [c for c in image['provider_commands'] if c['action'] == 'jobs-submit']
                         case['starts'] = case['starts'][:1]; image['starts'] = image['starts'][:1]
                         if spec in ('empty','refusal-no-job'): case['jobs'] = []; image['provider_commands'] = []
                         else:
@@ -3958,7 +4065,13 @@ def failure_result_controls() -> dict:
                         writer._replace_evidence(destination,content); expected_image = original_image
                     else: destination.write_bytes(original_image); expected_image = original_image
                     complete,error = acquire(); drain()
-                    assert not complete and error is None and not state['fatal'] and not errors
+                    assert not complete and error is None and not state['fatal'] and not errors, (
+                        label, complete, error, state['fatal'], errors, failures,
+                        [(frame.f_code.co_name, line,
+                          {'requested':{key:frame.f_locals[key] for key in ('size','facts')},
+                           'ledger':{key:getattr(frame.f_locals['self'],key) for key in ('work','reserved','facts')}}
+                          if frame.f_code.co_name == 'reserve' else None)
+                         for frame,line in traceback_module.walk_tb(error[1])] if error is not None else None)
                     assert len(failures) == 2 and all(cause is None and traceback is None and category == 'other'
                         and annotation[:2] == ('REQUIRED','MISSING') for cause,traceback,category,window,annotation in failures)
                 except (ValueError,AssertionError) as error:
@@ -4003,16 +4116,91 @@ def failure_result_controls() -> dict:
     case_stage_refusals.update({f'stage-pair-{key}-index{i}': (i,'pair',key)
                                for key in case_stage_pair for i in (4,5)})
     case_refusals += list(case_stage_refusals)
+    copy_shared = ('outer-order','payload-order','provider-order','wire-order','entered','stdout','stderr',
+        'file-text','wire-body','response','argv-org','argv-payload-file',
+        'canonical-missing','canonical-foreign','canonical-ambiguous','required-copy','early-contradiction')
+    case_copy_refusals = {f'copy-{family}-{key}-index{index}': (index,family,key)
+        for index,family in ((0,'submit'),(0,'block'),(0,'final'),(1,'final')) for key in copy_shared}
+    case_copy_refusals.update({f'copy-submit-{key}-index{i}': (i,'submit',key)
+        for i in (0,4,5) for key in ('script-hash-only','job-swap','task-swap','sid-swap','child-swap',
+            'action','operation','missing-field','field-type','python','source','file-count')})
+    case_copy_refusals.update({f'copy-{family}-{key}-index{i}': (i,family,key)
+        for i in (4,5) for family,key in (('block','waiting-order'),('block','waiting-foreign'),
+            ('final','done-summary'),('final','sid-swap'),('block','canonical-waiting-order'),
+            ('block','canonical-waiting-foreign'),('final','canonical-done-summary'))})
+    case_refusals += list(case_copy_refusals)
     for case_name in case_refusals:
         for boundary in ('writer','raw','raw-prefix','prefix'):
             with fixture() as (writer,root,output,state,staged,published,failed_members,failures,errors,row,check,acquire,drain,commit):
                 writer.revision = row['source_sha'] = old_source
                 image = case_input(root,case_stage_refusals[case_name][0] if case_name in case_stage_refusals else
+                                   case_copy_refusals[case_name][0] if case_name in case_copy_refusals else
                                    case_missing_jobs[case_name][1] if case_name in case_missing_jobs else 0,late=True)
-                case = image['durable'][0]['jobs_cases'][0]; job = case['jobs'][0]
-                snapshot = case['final_snapshot']; sql_job = job['oracle']['row']
+                case = image['durable'][0]['jobs_cases'][0]; job = case['jobs'][0] if case['jobs'] else None
+                snapshot = case['final_snapshot']; sql_job = job['oracle']['row'] if job is not None else None
                 column_case = next(((t,c,top,case_name[len(t+'.'+c+'-'):]) for t,c,top in sql_columns if case_name.startswith(t+'.'+c+'-')),None)
-                if case_name in case_stage_refusals:
+                if case_name in case_copy_refusals:
+                    _,family,key = case_copy_refusals[case_name]
+                    command = job['submit'] if family == 'submit' else case['block' if family == 'block' else 'final_callback']
+                    action = 'jobs-'+family; position = next(n for n,c in enumerate(image['provider_commands']) if c['action'] == action)
+                    reseal = False
+                    if key == 'outer-order':
+                        items = list(command.items()); command.clear(); command.update(reversed(items))
+                    elif key == 'payload-order': command['payload'] = dict(reversed(list(command['payload'].items()))); reseal = True
+                    elif key == 'provider-order': command['provider'] = dict(reversed(list(command['provider'].items())))
+                    elif key == 'wire-order': command['wire'][0] = dict(reversed(list(command['wire'][0].items())))
+                    elif key == 'entered': command['entered'] += .125
+                    elif key in ('stdout','stderr'): command[key] += 'different full original output\n'
+                    elif key == 'file-text': command['payload_file']['text'] += ' '
+                    elif key == 'file-count': command['payload_file']['bytes'] += 1
+                    elif key == 'wire-body': command['wire'][0]['body_sha256'] = '0'*64
+                    elif key == 'response': command['wire'][0]['response']['id' if family == 'submit' else 'ok'] = 'JOB-999' if family == 'submit' else False
+                    elif key == 'argv-org': command['argv'][4 if family == 'submit' else 3] = 'beta'
+                    elif key == 'argv-payload-file': command['argv'][-2 if family == 'submit' else -1] += '.foreign'
+                    elif key == 'canonical-missing': image['provider_commands'].pop(position)
+                    elif key == 'canonical-foreign': image['provider_commands'][position]['provider']['task'] = 'TASK-999'
+                    elif key == 'canonical-ambiguous': image['provider_commands'].insert(position,copy.deepcopy(image['provider_commands'][position]))
+                    elif key == 'required-copy':
+                        if family == 'submit': del job['submit']
+                        else: del case['block' if family == 'block' else 'final_callback']
+                    elif key == 'early-contradiction':
+                        image['durable'][0]['jobs_cases'].append(copy.deepcopy(case))
+                        command['entered'] += .125
+                    elif key == 'script-hash-only': command['payload']['script'] += '# changed full copy with unchanged claimed job SOURCE hash\n'; reseal = True
+                    elif key == 'job-swap':
+                        if len(case['jobs']) == 2: job['submit'] = copy.deepcopy(case['jobs'][1]['submit'])
+                        else:
+                            command['wire'][0]['response']['id'] = 'JOB-999'
+                            command['wire'][0]['response']['events_url'] = '/api/v1/orgs/alpha/jobs/JOB-999/events'
+                            command['stdout'] = json.dumps(command['wire'][0]['response'],sort_keys=True)+'\n'
+                    elif key == 'task-swap': command['provider']['task'] = 'TASK-999'
+                    elif key == 'sid-swap': command['provider']['session'] = case['starts'][0]['session'] if family == 'final' else 'sess-foreign'
+                    elif key == 'child-swap': command['child_pid'] = 999
+                    elif key == 'action': command['action'] = 'jobs-read'
+                    elif key == 'operation': command['operation'] = 'receipt'
+                    elif key == 'missing-field': del command['execution_deadline']
+                    elif key == 'field-type': command['exit'] = False
+                    elif key == 'python': command['python'] += '.foreign'
+                    elif key == 'source': command['source_sha'] = '0'*40
+                    elif key in ('waiting-order','canonical-waiting-order'): command['payload']['waiting_on_job_ids'].reverse(); reseal = True
+                    elif key in ('waiting-foreign','canonical-waiting-foreign'): command['payload']['waiting_on_job_ids'][-1] = 'JOB-999'; reseal = True
+                    elif key in ('done-summary','canonical-done-summary'):
+                        command['payload']['summary'] += ' altered'
+                        command['payload']['decision']['summary'] = command['payload']['summary']; reseal = True
+                    else: raise AssertionError(key)
+                    if reseal:
+                        payload = command['payload']; text = json.dumps(payload,sort_keys=True); digest = hashlib.sha256(text.encode()).hexdigest()
+                        file = command['payload_file']; file.update(text=text,bytes=len(text.encode()),sha256=digest,path=str(root/'coord'/(digest+'.json')))
+                        command['argv'][-2 if family == 'submit' else -1] = file['path']
+                        if family == 'submit': body = payload
+                        else:
+                            body = dict(session_id=payload['session_id'],agent=payload['agent'],status=payload['status'],confidence=90,
+                                output_summary=payload['summary'],risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+                            if family == 'block': body['waiting_on_job_ids'] = list(payload['waiting_on_job_ids'])
+                            else: body['decision'] = dict(payload['decision'])
+                        command['wire'][0]['body_sha256'] = hashlib.sha256(json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                        if key.startswith('canonical-'): image['provider_commands'][position] = copy.deepcopy(command)
+                elif case_name in case_stage_refusals:
                     _,family,key = case_stage_refusals[case_name]
                     if family == 'terminal':
                         selected = job['terminal']
@@ -4176,6 +4364,8 @@ def failure_result_controls() -> dict:
                     else: raise AssertionError('Case unsafe member admitted: '+case_name+'/'+boundary)
                     assert destination.read_bytes() == prior and staged[name] is old_buffer and not state['fatal']
                     if boundary == 'prefix': assert source.read_bytes() == original_image
+                    writer._atomic_text(root/'raw/eligible-case.txt','eligible ordinary Case sibling\n')
+                    assert (root/'raw/eligible-case.txt').read_bytes() == b'eligible ordinary Case sibling\n'
                 else:
                     destination.write_bytes(original_image); (root/'raw/eligible-case.txt').write_bytes(b'eligible ordinary Case sibling\n')
                     complete,error = acquire(); drain()

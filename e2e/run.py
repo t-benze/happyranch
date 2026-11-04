@@ -1269,15 +1269,96 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
         return text
     def visit(item: object, depth: int = 0, *, key: bool = False, route: int = 0,
               event: Callable | None = None, encoded: bool = False,
-              selected: Callable | None = None, selected_path: tuple = ()) -> None:
+              selected: Callable | None = None, selected_path: tuple = (),
+              selected_field: str | int | None = None) -> None:
         nonlocal authenticated, changed
         if depth > 64:
             raise _EvidenceCapacity("evidence depth capacity refused")
         ledger.charge(0, 1, check)
+        selected_children = True
+        selected_owner = getattr(selected, '__self__', None)
+        row_field = (selected_field is not None and type(item) not in (dict, list)
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_row_event)
+        primitive_field = (selected_field is not None and type(item) not in (dict, list)
+            and isinstance(selected_owner, _EvidenceSubmission)
+            and (selected_owner.copy or selected_owner.metadata.get('action') in
+                 ('jobs-submit', 'jobs-block', 'jobs-final')))
+        case_field = (selected_field is not None and type(item) not in (dict, list)
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_event
+            and (not selected_path and selected_field in ('method', 'variant', 'index', 'source_sha', 'task')
+                 or len(selected_path) == 2 and type(selected_path[1]) is int
+                    and (selected_path[0] == 'starts' or selected_path[0] == 'jobs'
+                         and selected_field in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))))
         if selected is not None:
-            ledger.charge(8 * len(selected_path), len(selected_path), check)
-            selected(selected_path, 'object' if type(item) is dict else 'array' if type(item) is list else 'scalar', item if type(item) not in (dict, list) else None)
-            encoded = encoded or _EvidenceObservations.encoded(selected_path)
+            if row_field:
+                # The row event pays for this original field reference. No
+                # one-element selector tuple is constructed by this caller.
+                selected(selected_path, 'scalar', item, field=selected_field)
+            elif primitive_field or case_field:
+                ledger.charge(8, 1, check)  # Existing field reference, no ancestor-path copy.
+                selected(selected_path, 'scalar', item, field=selected_field)
+            else:
+                if selected_field is not None:
+                    selected_path = selected_path + (selected_field,)
+                ledger.charge(8 * len(selected_path), len(selected_path), check)
+                selected_children = selected(selected_path, 'object' if type(item) is dict else 'array' if type(item) is list else 'scalar', item if type(item) not in (dict, list) else None) is not False
+            if isinstance(selected_owner, _EvidenceSubmission):
+                if primitive_field:
+                    encoded = encoded or (selected_path == () and selected_field == 'stdout'
+                        or selected_path == ('payload',) and selected_field == 'script'
+                        or selected_path == ('payload_file',) and selected_field == 'text')
+                else:
+                    encoded = encoded or (selected_path in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
+                        or not selected_owner.copy and len(selected_path) in (4, 5)
+                            and selected_path[0] == 'wire' and selected_path[2] == 'response'
+                            and selected_path[-1] == 'script_text'
+                            and (len(selected_path) == 4 or selected_path[3] == 'job'))
+            elif isinstance(selected_owner, _EvidenceObservations) and selected.__func__ is _EvidenceObservations.case_event:
+                if case_field:
+                    encoded = encoded or (bool(selected_path) and selected_path[0] == 'jobs' and selected_field == 'script')
+                else:
+                    encoded = encoded or selected_owner.case_encoded(selected_path)
+            elif isinstance(selected_owner, _EvidenceObservations) and selected.__func__ is _EvidenceObservations.case_row_event:
+                row = selected_owner.case['rows'][-1]
+                column = selected_field if row_field else selected_path[0] if len(selected_path) == 1 else None
+                encoded = encoded or (column is not None and (row[1] == 'jobs' and column == 'script_text'
+                    or any(column == name for name, _ in selected_owner.sql_columns.get(row[1], ()))))
+            else:
+                encoded = encoded or _EvidenceObservations.encoded(selected_path)
+        descendants = None
+        selected_end = not (isinstance(selected_owner, _EvidenceSubmission)
+            and (selected_owner.copy or selected_owner.metadata.get('action') in
+                 ('jobs-submit', 'jobs-block', 'jobs-final')))
+        if type(item) is dict and isinstance(selected_owner, _EvidenceObservations):
+            if selected.__func__ is _EvidenceObservations.case_event:
+                if selected_owner.case_command_slot(selected_path) == selected_path:
+                    ledger.charge(32, 4, check)
+                    descendants = selected_owner.case_command.event
+                elif selected_owner.case is not None and selected_owner.case['rows']:
+                    ledger.charge(32, 4, check)
+                    if selected_owner.case['rows'][-1][0] == selected_path:
+                        descendants = selected_owner.case_row_event
+            elif len(selected_path) == 2 and selected_path[0] == 'provider_commands':
+                ledger.charge(32, 4, check)
+                descendants = selected_owner.current.event
+            elif (len(selected_path) == 4 and selected_path[0] == 'durable'
+                    and selected_path[2] == 'jobs_cases'):
+                ledger.charge(32, 4, check)
+                descendants = selected_owner.case_event
+        # A finite command's existing scalar map owns its order as well as its
+        # values. Scalar insertion below registers the key once; only a
+        # container needs a placeholder before descending into its children.
+        command_keys = None
+        if type(item) is dict:
+            command_owner = getattr(descendants, '__self__', None) if descendants is not None else selected_owner
+            if isinstance(command_owner, _EvidenceSubmission) and (command_owner.copy
+                    or command_owner.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')):
+                ledger.charge(16, 2, check)
+                shape = command_owner.shapes.get(() if descendants is not None else selected_path)
+                if shape is not None and type(shape[1]) is dict:
+                    command_keys = shape[1]
         if route == 2 and type(item) is not list or route == 3 and type(item) is not dict:
             raise ValueError("Relay entry shape withheld")
         if type(item) is str:
@@ -1310,8 +1391,11 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                         if type(name) is not str:
                             raise ValueError("evidence key unavailable")
                         visit(name, depth + 1, key=True)
-                        if selected is not None:
-                            selected(selected_path, 'key', name)
+                        if command_keys is None or type(child) in (dict, list):
+                            if descendants is not None:
+                                descendants((), 'key', name)
+                            elif selected is not None:
+                                selected(selected_path, 'key', name)
                         if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') and selection is None:
                             selection = _EvidenceObservations(context, ledger, check, sanitize, depth, submission_identity)
                         if event is not None:
@@ -1323,15 +1407,16 @@ def _evidence_json(value: object, context: tuple[str, ...], ledger: _EvidenceLed
                               event=(proof.response_event if name == "response" else proof.request_event
                                      if name == "request" else None) if proof is not None else event,
                               encoded=proof is not None and name == "response_text",
-                              selected=selection.event if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') else selected,
-                              selected_path=(name,) if route == 1 else selected_path + (name,) if selected is not None else ())
+                              selected=selection.event if route == 1 and name in ('starts', 'durable', 'provider_commands', 'provider_attempts') else descendants if descendants is not None else selected if selected_children else None,
+                              selected_path=() if route == 1 or descendants is not None else selected_path,
+                              selected_field=name)
                     else:
                         visit(member, depth + 1, route=3 if route == 2 else 0, event=event,
-                              selected=selected, selected_path=selected_path + (index,) if selected is not None else ())
+                              selected=selected if selected_children else None, selected_path=selected_path, selected_field=index)
                 retain("syntax", "}" if type(item) is dict else "]")
                 if event is not None:
                     event("end-object" if type(item) is dict else "end-array", None)
-                if selected is not None:
+                if selected is not None and selected_end:
                     selected(selected_path, 'end-object' if type(item) is dict else 'end-array', None)
                 if selection is not None:
                     capture = selection.close()
@@ -1627,7 +1712,7 @@ class _EvidenceSubmission:
     result_fields = ('id', 'status', 'created_at', 'started_at', 'cwd_resolved', 'timeout_seconds',
                      'events_url', 'authentication')
 
-    def __init__(self, owner: _EvidenceObservations, depth: int) -> None:
+    def __init__(self, owner: _EvidenceObservations, depth: int, *, copy: bool = False) -> None:
         owner.ledger.charge(128, 16, owner.check)
         self.owner, self.depth = owner, depth
         self.metadata, self.payload, self.provider, self.file = {}, {}, {}, {}
@@ -1635,58 +1720,129 @@ class _EvidenceSubmission:
         self.shapes, self.deferred = {}, False
         self.receipts, self.read_invalid = [], False
         self.decision, self.waits = {}, []
+        self.copy, self.facts = copy, None
 
-    def event(self, path: tuple, kind: str, value: object) -> None:
-        ledger, check = self.owner.ledger, self.owner.check
-        ledger.charge(16, 2, check)
-        if path and path[0] == 'wire':
-            self.read_event(path[1:], kind, value)
-        # Only named source-owned holders can retain facts. Unsupported holders
-        # record a shape error; they cannot create an arbitrary subtree/index.
-        if kind in ('object', 'array'):
-            if path in ((), ('provider',), ('payload',), ('payload_file',), ('wire',), ('argv',),
-                        ('wire', 0), ('wire', 0, 'response'), ('wire', 0, 'response', 'authentication'),
-                        ('payload', 'decision'), ('payload', 'waiting_on_job_ids')):
-                ledger.charge(16, 2, check)
-                self.shapes[path] = [kind, []]
-            else:
-                self.deferred = True
+    def retain_command(self) -> None:
+        """Transfer only the closed command's finite original facts, not a tree.
+
+        Shapes retain every original container/key order; the named scalar maps
+        retain every field and builtin type, including full encoded occurrences.
+        Nothing is decoded again. Scratch release never refunds the shared work.
+        """
+        if self.metadata.get('action') not in ('jobs-submit', 'jobs-block', 'jobs-final'):
             return
-        if kind == 'key':
+        o = self.owner
+        o.ledger.charge(128, 16, o.check)
+        self.facts = (self.metadata, self.provider, self.payload, self.file, self.response,
+                      self.authentication, self.wire, self.argv, self.shapes, self.decision, self.waits)
+        if not self.copy:
+            o.ledger.charge(16, 2, o.check)
+            o.commands.append(self.facts)
+        # Ownership moves to the late join. release() must not clear these
+        # original maps/lists; it still releases duplicate wire-reader scratch.
+        self.metadata, self.provider, self.payload, self.file = {}, {}, {}, {}
+        self.response, self.authentication, self.wire, self.argv = {}, {}, {}, []
+        self.shapes, self.decision, self.waits = {}, {}, []
+
+    def event(self, path: tuple, kind: str, value: object, *, field: str | int | None = None) -> None:
+        ledger, check = self.owner.ledger, self.owner.check
+        # A finite command key has just one consumer: its original ordered
+        # shape list. Retain it directly before entering general value/legacy
+        # routing; unknown canonical actions still use discovery below.
+        if field is None and kind == 'key' and (self.copy or self.metadata.get('action') in
+                              ('jobs-submit', 'jobs-block', 'jobs-final')):
             if path in self.shapes:
                 ledger.charge(16 + _evidence_utf8_size(value, check), 2, check)
-                self.shapes[path][1].append(value)
+                keys = self.shapes[path][1]
+                if type(keys) is dict:
+                    keys[value] = None
+                else:
+                    keys.append(value)
             return
-        if kind.startswith('end-'):
-            return
+        # Case copies can only select submit/block/final. Their complete wire
+        # checks below consume the command facts, never the receipt-reader
+        # envelope. A canonical action not yet seen keeps legacy discovery.
+        # A direct primitive caller already supplies its parent and original
+        # field. It does not forward a general syntax event, classify a holder,
+        # discover legacy wire readers, or split another path. Only that absent
+        # general dispatch loses its debit; all scalar/reference retention below
+        # and the caller's direct-field debit remain unchanged.
+        if field is None:
+            ledger.charge(16, 2, check)
+            if (path and path[0] == 'wire' and not self.copy
+                    and self.metadata.get('action') not in ('jobs-submit', 'jobs-block', 'jobs-final')):
+                self.read_event(path[1:], kind, value)
+            # Only named source-owned holders can retain facts. Unsupported
+            # holders cannot create an arbitrary subtree/index.
+            if kind in ('object', 'array'):
+                if path in ((), ('provider',), ('payload',), ('payload_file',), ('wire',), ('argv',),
+                            ('wire', 0), ('wire', 0, 'response'), ('wire', 0, 'response', 'authentication'),
+                            ('payload', 'decision'), ('payload', 'waiting_on_job_ids')):
+                    ledger.charge(16, 2, check)
+                    # A finite command already owns these insertion-ordered
+                    # scalar maps. Their original keys also supply its shape,
+                    # including container/unknown keys before value parsing.
+                    keys = (self.metadata if not path else self.payload if path == ('payload',)
+                        else self.provider if path == ('provider',)
+                        else self.file if path == ('payload_file',)
+                        else self.wire if path == ('wire', 0)
+                        else self.response if path == ('wire', 0, 'response')
+                        else self.authentication if path == ('wire', 0, 'response', 'authentication')
+                        else self.decision if path == ('payload', 'decision') else None) if kind == 'object' and (
+                            self.copy or self.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')) else None
+                    self.shapes[path] = [kind, keys if keys is not None else []]
+                else:
+                    self.deferred = True
+                return
+            if kind == 'key':
+                if path in self.shapes:
+                    ledger.charge(16 + _evidence_utf8_size(value, check), 2, check)
+                    self.shapes[path][1].append(value)
+                return
+            if kind.startswith('end-'):
+                return
         if type(value) is str:
             ledger.charge(_evidence_utf8_size(value, check), 1, check)
-        if len(path) == 1 and path[0] in self.fields:
-            self.metadata[path[0]] = value
-        elif len(path) == 2 and path[0] == 'provider' and path[1] in ('task','session','agent','org','pid'):
-            self.provider[path[1]] = value
-        elif len(path) == 2 and path[0] == 'payload' and path[1] in self.payload_fields + self.completion_fields:
-            self.payload[path[1]] = value
-        elif len(path) == 3 and path[:2] == ('payload', 'decision') and path[2] in ('action', 'summary'):
-            self.decision[path[2]] = value
-        elif len(path) == 3 and path[:2] == ('payload', 'waiting_on_job_ids') and path[2] == len(self.waits):
+        if field is None:
+            # Nonlocal/legacy callers retain their complete path. Account for
+            # the new parent slice before making it; finite primitive callers
+            # need neither this slice nor a rebuilt full path.
+            ledger.charge(8 * max(0, len(path) - 1), max(0, len(path) - 1), check)
+            parent, field = path[:-1], path[-1] if path else None
+        else:
+            parent = path
+        if not parent and field in self.fields:
+            self.metadata[field] = value
+        elif parent == ('provider',) and field in ('task','session','agent','org','pid'):
+            self.provider[field] = value
+        elif parent == ('payload',) and field in self.payload_fields + self.completion_fields:
+            self.payload[field] = value
+        elif parent == ('payload', 'decision') and field in ('action', 'summary'):
+            self.decision[field] = value
+        elif parent == ('payload', 'waiting_on_job_ids') and field == len(self.waits):
             ledger.charge(8, 1, check)
             self.waits.append(value)
-        elif len(path) == 2 and path[0] == 'payload_file' and path[1] in ('path','text','bytes','sha256'):
-            self.file[path[1]] = value
-        elif len(path) == 2 and path[0] == 'argv' and path[1] == len(self.argv):
+        elif parent == ('payload_file',) and field in ('path','text','bytes','sha256'):
+            self.file[field] = value
+        elif parent == ('argv',) and field == len(self.argv):
             ledger.charge(8, 1, check)
             self.argv.append(value)
-        elif path[:2] == ('wire', 0):
-            if len(path) == 3 and path[2] in ('path','method','body_sha256','status','dropped'):
-                self.wire[path[2]] = value
-            elif len(path) == 4 and path[2] == 'response' and path[3] in self.result_fields + ('deferred','code','ok'):
-                self.response[path[3]] = value
-            elif len(path) == 5 and path[2:4] == ('response', 'authentication') and path[4] in ('task_id','session_id'):
-                self.authentication[path[4]] = value
-            else:
-                self.deferred = True
+        elif parent == ('wire', 0) and field in ('path','method','body_sha256','status','dropped'):
+            self.wire[field] = value
+        elif parent == ('wire', 0, 'response') and field in self.result_fields + ('deferred','code','ok'):
+            self.response[field] = value
+        elif parent == ('wire', 0, 'response', 'authentication') and field in ('task_id','session_id'):
+            self.authentication[field] = value
         else:
+            # Unknown scalar keys must still enter the same ordered map: a
+            # later decoded duplicate refuses before parsing its value even
+            # when this first unknown field already makes the command invalid.
+            if self.copy or self.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final'):
+                ledger.charge(16, 2, check)  # New owner/shape selection on this refusal path.
+                shape = self.shapes.get(parent)
+                if shape is not None and type(shape[1]) is dict and field not in shape[1]:
+                    ledger.charge(16 + _evidence_utf8_size(field, check), 2, check)
+                    shape[1][field] = value
             self.deferred = True
 
     def ordinary(self, text: str) -> None:
@@ -1702,74 +1858,41 @@ class _EvidenceSubmission:
             _evidence_original(text, o.context, o.ledger, o.check, o.sanitize)
             if not text.startswith('{') or not text.endswith('}\n' if stdout else '}'):
                 raise ValueError('submission original framing withheld')
-            o.ledger.charge(128 + 32 * len(expected), 16 + 4 * len(expected), o.check)
-            frames, field = [], None
-            def compare(kind: str, value: object) -> None:
-                nonlocal field
+            # The existing parser's recursion carries each expected holder.
+            # Strict sorted/original key order and complete cardinality own
+            # duplicate rejection, so no second key set or event-frame stack
+            # is retained for this comparison. Each decoded occurrence still
+            # receives its own ordinary/SOURCE admission below.
+            o.ledger.charge(128, 16, o.check)
+            root_depth = self.depth + (2 if stdout else 3)
+            def compare(kind: str, value: object, wanted: object, field: str | int | None, depth: int) -> None:
                 o.ledger.charge(24, 3, o.check)
                 if kind == 'object':
-                    if not frames:
-                        frames.append((expected, list(expected) if ordered else sorted(expected), 0))
-                    elif (len(frames) == 1 and not script and
+                    if type(wanted) is not dict or not (depth == root_depth or
+                          (depth == root_depth + 1 and not script and
                           (field == 'authentication' or receipt and field in ('job', 'output')
-                           or completion and field == 'decision')
-                          and type(expected.get(field)) is dict):
-                        child = expected[field]
-                        o.ledger.charge(32 * len(child), 4 * len(child), o.check)
-                        frames.append((child, sorted(child), 0))
-                    else:
+                           or completion and field == 'decision'))):
                         raise ValueError('submission nested shape withheld')
-                elif kind == 'array' and completion and len(frames) == 1 and field == 'waiting_on_job_ids':
-                    child = expected.get(field)
-                    if type(child) is not list:
+                elif kind == 'array':
+                    if (not completion or depth != root_depth + 1 or field != 'waiting_on_job_ids'
+                            or type(wanted) is not list):
                         raise ValueError('completion waiting shape withheld')
-                    o.ledger.charge(24, 3, o.check)
-                    frames.append((child, None, 0))
-                elif kind == 'end-array' and frames and frames[-1][1] is None:
-                    wanted, _, position = frames.pop()
-                    if position != len(wanted):
-                        raise ValueError('completion complete waiting equality withheld')
-                    field = None
-                elif kind == 'end-object':
-                    wanted, keys, position = frames.pop()
-                    if position != len(keys):
-                        raise ValueError('submission complete equality withheld')
-                    if frames:
-                        field = None
-                elif kind == 'key':
-                    self.ordinary(value)
-                    wanted, keys, position = frames[-1]
-                    if position >= len(keys) or value != keys[position]:
-                        raise ValueError('submission sorted fields withheld')
-                    frames[-1] = (wanted, keys, position + 1)
-                    field = value
                 elif kind == 'scalar':
-                    wanted, keys, position = frames[-1]
-                    if keys is None:
-                        if position >= len(wanted) or type(value) is not type(wanted[position]) or value != wanted[position]:
-                            raise ValueError('completion ordered waiting equality withheld')
-                        if type(value) is str:
-                            self.ordinary(value)
-                        frames[-1] = (wanted, None, position + 1)
-                        return
                     if type(value) is str:
                         o.ledger.charge(_evidence_utf8_size(value, o.check) +
-                            (_evidence_utf8_size(wanted.get(field), o.check) if type(wanted.get(field)) is str else 0), 1, o.check)
-                    if field not in wanted or type(value) is not type(wanted[field]) or value != wanted[field]:
-                        raise ValueError('submission complete equality withheld')
+                            (_evidence_utf8_size(wanted, o.check) if type(wanted) is str else 0), 1, o.check)
+                    if type(value) is not type(wanted) or value != wanted:
+                        raise ValueError('completion ordered waiting equality withheld' if type(field) is int
+                                         else 'submission complete equality withheld')
                     if type(value) is str:
                         if script and field == 'script' or receipt and field == 'script_text':
                             _evidence_python(value, o.context, o.ledger, o.check, o.sanitize, self.depth + 4)
                         else:
                             self.ordinary(value)
-                    field = None
                 else:
                     raise ValueError('submission nested shape withheld')
-            # Keys and values are checked in their one event stream. The parser
-            # still detects decoded duplicate keys BEFORE attempting their values.
-            _EvidenceJSON(text, o.ledger, o.check).scan('{', None, depth=self.depth + (2 if stdout else 3), event=compare)
-            if frames:
-                raise ValueError('submission unresolved equality withheld')
+            _EvidenceJSON(text, o.ledger, o.check).scan('{', self.ordinary,
+                depth=root_depth, event=compare, expected=expected, ordered=ordered)
         finally:
             text = None
 
@@ -1886,6 +2009,9 @@ class _EvidenceSubmission:
                 raise ValueError('submission public result withheld')
             r['authentication'] = self.authentication
             self.object(m['stdout'], r, script=False, stdout=True)
+        if self.copy:
+            self.retain_command()
+            return True
         o.ledger.charge(128, 16, o.check)
         o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
                           self.argv, f['path'], f['sha256'], m['child_pid'], self.response.get('id'), None))
@@ -1900,9 +2026,13 @@ class _EvidenceSubmission:
             o.job_proofs.append((provider['task'], self.response['id'], proof))
             # Case rows need the actual submit/start facts as well as SOURCE.
             # Retain only these indispensable original references until close.
-            o.ledger.charge(96, 12, o.check)
-            o.case_submits.append((provider, self.response['id'], proof,
-                {k: self.response[k] for k in ('created_at', 'started_at', 'cwd_resolved')}))
+            o.ledger.charge(104, 13, o.check)
+            self.retain_command()
+            response = self.facts[4]
+            o.case_submits.append((provider, response['id'], proof,
+                {k: response[k] for k in ('created_at', 'started_at', 'cwd_resolved')}, self.facts))
+        else:
+            self.retain_command()
         self.payload = {}
         # Only owner identities and closed submit-payload references remain
         # until root/attempt closure; other command scratch is released now.
@@ -1928,7 +2058,7 @@ class _EvidenceSubmission:
         blocked = m['action'] == 'jobs-block'
         required = ('status', 'confidence', 'summary', 'task_id', 'session_id', 'agent') + (('waiting_on_job_ids',) if blocked else ('decision',))
         got = self.shapes.get(('payload',), ['', []])[1]
-        if (self.deferred or self.read_invalid or len(self.receipts) != 1
+        if (self.deferred
                 or m.get('operation', False) is not None or not shape(('payload',), 'object')
                 or any(k not in got for k in required)
                 or any(k not in required + ('verdict',) + (('decision',) if blocked else ()) for k in got)
@@ -1961,7 +2091,6 @@ class _EvidenceSubmission:
         self.object(f['text'], p, script=False, completion=True)
         # tasks.cmd_report_completion sends no discovery GET. The wire is the
         # complete actual callback, unlike jobs-read's discovery+owned request.
-        actual = self.receipts[0]
         o.ledger.charge(512 + 4 * _evidence_utf8_size(provider['task'], o.check), 64, o.check)
         body = dict(session_id=p['session_id'], agent=p['agent'], status=p['status'], confidence=p['confidence'],
                     output_summary=p['summary'], risks_flagged=[], dependencies=[], suggested_reviewer_focus=[])
@@ -1969,19 +2098,23 @@ class _EvidenceSubmission:
             body['decision'] = p['decision']
         if blocked:
             body['waiting_on_job_ids'] = p['waiting_on_job_ids']
-        if (actual['invalid'] or not shape(('wire', 0), 'object', ('path', 'method', 'body_sha256', 'status', 'response', 'dropped'))
-                or self.shapes.get(('wire', 0, 'response')) != ['object', ['ok']]
-                or actual['detail'] != {'ok': True} or actual['detail'].get('ok') is not True
+        if (not shape(('wire', 0), 'object', ('path', 'method', 'body_sha256', 'status', 'response', 'dropped'))
+                or not shape(('wire', 0, 'response'), 'object', ('ok',))
+                or self.response != {'ok': True} or self.response.get('ok') is not True
                 or self.wire.get('path') != '/api/v1/orgs/alpha/tasks/' + provider['task'] + '/completion'
                 or self.wire.get('method') != 'POST' or type(self.wire.get('status')) is not int or self.wire['status'] != 200
                 or self.wire.get('dropped') is not False
                 or self.wire.get('body_sha256') != _evidence_submit_digest(body, o.ledger, o.check)):
             raise ValueError('completion complete wire identity withheld')
         self.ordinary(m['stdout']); self.ordinary(m['stderr'])
+        if self.copy:
+            self.retain_command()
+            return True
         o.ledger.charge(128, 16, o.check)
         o.pending.append((provider, m['source_sha'], m['python'], m['callback_sha256'],
                           self.argv, f['path'], f['sha256'], m['child_pid'], None, m['action']))
         self.remember(p, 1)
+        self.retain_command()
         self.provider, self.argv, self.payload, self.decision, self.waits = {}, [], {}, {}, []
         return True
 
@@ -2055,7 +2188,8 @@ class _EvidenceSubmission:
         o.ledger.charge(2048, 256, o.check)
         def shape(shapes: dict, path: tuple, kind: str, keys: tuple | None = None) -> bool:
             got = shapes.get(path)
-            return got is not None and got[0] == kind and (keys is None or got[1] == list(keys))
+            return got is not None and got[0] == kind and (keys is None or
+                len(got[1]) == len(keys) and all(a == b for a, b in zip(got[1], keys)))
         if (not shape(self.shapes, (), 'object')
                 or len(self.shapes[()][1]) != len(self.fields) or set(self.shapes[()][1]) != set(self.fields)
                 or not shape(self.shapes, ('provider',), 'object', ('task', 'session', 'agent', 'org', 'pid'))
@@ -2269,6 +2403,7 @@ class _EvidenceObservations:
         self.attempts, self.submitted = [], {}
         self.job_proofs, self.read_jobs = [], []
         self.cases, self.case_submits = [], []
+        self.commands, self.case_command = [], None
         self.case = None
         self.attempt = None
         self.command_index = None
@@ -2329,11 +2464,19 @@ class _EvidenceObservations:
         return None
 
     @staticmethod
-    def case_encoded(path: tuple) -> bool:
-        if (len(path) < 4 or path[0] != 'durable' or type(path[1]) is not int
-                or path[2] != 'jobs_cases' or type(path[3]) is not int):
-            return False
-        local = path[4:]
+    def case_command_slot(local: tuple) -> tuple | None:
+        if local[:1] in (('block',), ('final_callback',)):
+            return local[:1]
+        if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'submit':
+            return local[:3]
+        return None
+
+    @staticmethod
+    def case_encoded(local: tuple) -> bool:
+        command = _EvidenceObservations.case_command_slot(local)
+        if command is not None:
+            tail = local[len(command):]
+            return tail in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
         if len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int and local[2] == 'script':
             return True
         slot = _EvidenceObservations.case_row(local)
@@ -2343,7 +2486,9 @@ class _EvidenceObservations:
 
     @staticmethod
     def encoded(path: tuple) -> bool:
-        return (_EvidenceObservations.case_encoded(path)
+        return (len(path) >= 4 and path[0] == 'durable' and type(path[1]) is int
+                    and path[2] == 'jobs_cases' and type(path[3]) is int
+                    and _EvidenceObservations.case_encoded(path[4:])
                 or len(path) == 6 and path[0] == 'durable' and type(path[1]) is int
                     and path[2] == 'snapshot' and path[3] in _EvidenceObservations.sql_columns
                     and type(path[4]) is int
@@ -2358,21 +2503,76 @@ class _EvidenceObservations:
                 or len(path) == 5 and path[0] == 'provider_attempts'
                     and path[2:] == ('instruction', 'payload', 'script'))
 
-    def case_event(self, path: tuple, kind: str, value: object) -> None:
-        if len(path) < 3 or path[2] != 'jobs_cases':
-            return
-        if len(path) == 3:
-            if kind not in ('array', 'end-array'):
-                raise ValueError('Case ledger shape withheld')
-            return
-        local = path[4:]
+    def case_event(self, local: tuple, kind: str, value: object, *, field: str | None = None) -> bool | None:
         if not local and kind == 'object':
-            self.ledger.charge(160, 20, self.check)
+            self.ledger.charge(256, 32, self.check)
+            self.ledger.charge(64, 8, self.check)
             self.case = dict(meta={}, starts=[], jobs=[], rows=[], snapshots={}, used=False,
-                             entry=self.snapshot_entry, jobs_shape=False)
+                             entry=self.snapshot_entry, jobs_shape=False, copies=[], final_reached=False,
+                             block_reached=False, submitted_stages=set(),
+                             running_first=None, oracle_first=None, pending_first=None,
+                             running_second=None, oracle_second=None, pending_second=None)
         c = self.case
         if c is None:
             raise ValueError('Case record shape withheld')
+        if field is not None:
+            # The typed/raw primitive caller selected this named scalar from
+            # its parent. Retain the same field without rebuilding an ancestor
+            # path or running command/snapshot/row selector discovery.
+            self.ledger.charge(32 + _evidence_utf8_size(field, self.check)
+                + (_evidence_utf8_size(value, self.check) if type(value) is str else 8), 4, self.check)
+            if not local:
+                c['meta'][field] = value
+            elif local[0] == 'starts':
+                if local[1] >= len(c['starts']):
+                    raise ValueError('Case start fact withheld')
+                c['starts'][local[1]][field] = value
+            else:
+                if local[1] >= len(c['jobs']):
+                    raise ValueError('Case job selector withheld')
+                c['jobs'][local[1]][field] = value
+                if field in ('out', 'err') and type(value) is not str:
+                    raise ValueError('Case literal output type withheld')
+                if field == 'script':
+                    c['used'] = True
+                    if type(value) is not str:
+                        raise ValueError('Case SOURCE type withheld')
+                    _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                                     self.depth + 4 + len(local) + 2)
+            return
+        if not local and kind == 'key' and value in ('final_snapshot', 'finished', 'commands_end', 'task_browser'):
+            c['final_reached'] = True
+        if not local and kind == 'key' and value in ('parked','waiting_browser','first_terminal',
+                'first_terminal_cli','first_terminal_browser','live_s2'):
+            c['block_reached'] = True
+        if (len(local) == 2 and local[0] == 'jobs' and kind == 'key'
+                and value in ('id','running','running_browser','terminal','action','oracle','browser','reads','rejection_drain')):
+            self.ledger.charge(16, 2, self.check)
+            c['submitted_stages'].add(local[1])
+        command = self.case_command_slot(local)
+        if command is not None:
+            c['used'] = True
+            if local == command and kind == 'object':
+                if self.case_command is not None:
+                    raise ValueError('Case command overlapping owner withheld')
+                self.case_command = _EvidenceSubmission(self, self.depth + 4 + len(local), copy=True)
+            if self.case_command is None:
+                raise ValueError('Case command shape withheld')
+            selected = self.case_command
+            closing = local == command and kind == 'end-object'
+            if not closing:
+                selected.event(local[len(command):], kind, value)
+            if closing:
+                try:
+                    action = 'jobs-submit' if len(command) == 3 else 'jobs-block' if command[0] == 'block' else 'jobs-final'
+                    if selected.metadata.get('action') != action or not selected.close() or selected.facts is None:
+                        raise ValueError('Case assigned command family withheld')
+                    self.ledger.charge(32, 4, self.check)
+                    c['copies'].append((command, selected.facts))
+                finally:
+                    selected.release()
+                    self.case_command = None
+            return
         def retain(target: dict, key: str, item: object) -> None:
             self.ledger.charge(32 + _evidence_utf8_size(key, self.check)
                 + (_evidence_utf8_size(item, self.check) if type(item) is str else 8), 4, self.check)
@@ -2413,7 +2613,7 @@ class _EvidenceObservations:
                     if type(value) is not str:
                         raise ValueError('Case SOURCE type withheld')
                     _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
-                                     self.depth + len(path) + 1)
+                                     self.depth + 4 + len(local) + 1)
             if ((len(local) == 3 and local[2] == 'pending'
                  or len(local) == 5 and local[2] == 'pending' and local[4] == 'audit'
                  or len(local) == 4 and local[2] in ('oracle','rejection_drain') and local[3] == 'audits')
@@ -2446,6 +2646,26 @@ class _EvidenceObservations:
             if local == row_path and kind == 'object':
                 self.ledger.charge(80, 10, self.check)
                 c['rows'].append((row_path, table, job_index, holder, {}, {}))
+                # Keep the same six canonical row references at their original
+                # opening events. Every field and own safety check still runs;
+                # closure validates these rows before accepting any comparison.
+                # This moves selection/retention, without another row index or
+                # a new pass. The former reference-retention debit is unchanged.
+                if table == 'jobs' and job_index in (0, 1) and holder in ('running', 'oracle', 'pending'):
+                    self.ledger.charge(80, 10, self.check)
+                    if job_index == 0:
+                        if holder == 'running':
+                            c['running_first'] = c['rows'][-1]
+                        elif holder == 'oracle':
+                            c['oracle_first'] = c['rows'][-1]
+                        else:
+                            c['pending_first'] = c['rows'][-1]
+                    elif holder == 'running':
+                        c['running_second'] = c['rows'][-1]
+                    elif holder == 'oracle':
+                        c['oracle_second'] = c['rows'][-1]
+                    else:
+                        c['pending_second'] = c['rows'][-1]
             elif local == row_path and kind not in ('key', 'end-object'):
                 raise ValueError('Case SQL row shape withheld')
             elif len(local) > len(row_path):
@@ -2454,63 +2674,166 @@ class _EvidenceObservations:
                     raise ValueError('Case SQL scalar withheld')
                 if not c['rows'] or c['rows'][-1][0] != row_path:
                     raise ValueError('Case SQL row owner withheld')
-                row, links = c['rows'][-1][4:]
-                # Pair task/results compare the complete original parked
-                # rows, including unknown scalar columns, after late closure.
-                required = self.job_columns if table == 'jobs' else tuple(k for k, _ in self.sql_identity[table]) + (
-                    ('assigned_agent', 'current_session_id') if table == 'tasks' else ())
-                if (table == 'jobs' or table in ('tasks', 'results') and holder in ('parked', 'first_terminal')
-                        or local[-1] in required or any(local[-1] == k for k, _ in self.sql_columns.get(table, ()))):
-                    retain(row, local[-1], value)
-                if table == 'jobs' and local[-1] == 'script_text':
-                    if type(value) is not str:
-                        raise ValueError('Case row SOURCE type withheld')
-                    _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
-                                     self.depth + len(path) + 1)
-                for column, top in self.sql_columns.get(table, ()):
-                    if local[-1] != column or value is None:
-                        continue
-                    if type(value) is not str:
-                        raise ValueError('Case SQL column type withheld')
-                    def scalar(text: str) -> None:
-                        if '\\' in text:
-                            raise ValueError('Case decoded representation withheld')
-                        _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
-                    self.ledger.charge(32, 4, self.check)
-                    audit_state = [0, None]
-                    if table == 'tasks' and holder in ('parked', 'first_terminal') and column == 'blocked_on_job_ids':
-                        self.ledger.charge(32, 4, self.check)
-                        links['blocked'] = []
-                    def event(event_kind: str, item: object) -> None:
-                        # The existing scan callback is syntax-only. Retain
-                        # direct job discriminators/blocked IDs, never a JSON tree.
-                        if event_kind == 'key' and audit_state[0] == 1:
-                            audit_state[1] = item
-                        elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
-                              and event_kind not in ('key', 'end-object', 'end-array')):
-                            retain(links, 'job', item if event_kind == 'scalar' else None)
-                        if (table == 'tasks' and holder in ('parked', 'first_terminal')
-                                and column == 'blocked_on_job_ids' and audit_state[0] == 1):
-                            if event_kind == 'scalar':
-                                if type(item) is not str:
-                                    raise ValueError('Case blocked job type withheld')
-                                self.ledger.charge(16 + _evidence_utf8_size(item, self.check), 2, self.check)
-                                links['blocked'].append(item)
-                            elif event_kind in ('object', 'array'):
-                                raise ValueError('Case blocked job shape withheld')
-                        if event_kind in ('object', 'array'):
-                            audit_state[0] += 1
-                        elif event_kind in ('end-object', 'end-array'):
-                            audit_state[0] -= 1
-                    _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
-                    _EvidenceJSON(value, self.ledger, self.check).scan(top, scalar, event=event,
-                        depth=self.depth + len(path) + 1, context=self.context, sanitize=self.sanitize)
+                self.case_row_event((), kind, value, field=local[-1])
         if not local and kind == 'end-object':
             self.ledger.charge(8, 1, self.check)
             self.cases.append(c)
             self.case = None
 
+        # These ordinary containers have no selected Case descendants. Their
+        # opening event and reached-stage keys above still run. Returning False
+        # removes descendant selector paths/callbacks only; the original typed
+        # visitor or raw parser still owns every syntax/depth/scalar safety check.
+        # Keep pending/output and live-snapshot prefixes: they have late leaves.
+        if kind in ('object', 'array') and (
+                len(local) == 1 and local[0] not in
+                    ('starts', 'jobs', 'parked', 'first_terminal', 'final_snapshot', 'live_s2')
+                or len(local) == 2 and local[0] == 'live_s2' and local[1] != 'snapshot'
+                or len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int
+                    and local[2] not in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap',
+                                        'out', 'err', 'running', 'terminal', 'pending', 'oracle', 'rejection_drain')
+                or len(local) == 5 and local[0] == 'jobs' and type(local[1]) is int
+                    and local[2] == 'pending' and type(local[3]) is int and local[4] not in ('row', 'audit')
+                or len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int
+                    and local[2] in ('oracle', 'rejection_drain') and local[3] not in ('row', 'audits', 'outputs')):
+            return False
+
+    def case_row_event(self, local: tuple, kind: str, value: object, *, field: str | None = None) -> None:
+        """Descendants of the already opened original row; no ancestor replay."""
+        if kind == 'key' and not local:
+            return
+        self.ledger.charge(8, 1, self.check)
+        c = self.case
+        row_path, table, job_index, holder, row, links = c['rows'][-1]
+        if ((len(local) != 1 if field is None else bool(local)) or kind != 'scalar'
+                or type(value) not in (str, int, float, type(None))):
+            raise ValueError('Case SQL scalar withheld')
+        if field is None:
+            field = local[0]
+        def retain(target: dict, key: str, item: object) -> None:
+            self.ledger.charge(32 + _evidence_utf8_size(key, self.check)
+                + (_evidence_utf8_size(item, self.check) if type(item) is str else 8), 4, self.check)
+            target[key] = item
+        # Pair task/results compare the complete original parked
+        # rows, including unknown scalar columns, after late closure.
+        if table == 'jobs' or table in ('tasks', 'results') and holder in ('parked', 'first_terminal'):
+            retain(row, field, value)
+        else:
+            required = tuple(k for k, _ in self.sql_identity[table]) + (
+                ('assigned_agent', 'current_session_id') if table == 'tasks' else ())
+            if field in required or any(field == k for k, _ in self.sql_columns.get(table, ())):
+                retain(row, field, value)
+        if table == 'jobs' and field == 'script_text':
+            if type(value) is not str:
+                raise ValueError('Case row SOURCE type withheld')
+            _evidence_python(value, self.context, self.ledger, self.check, self.sanitize,
+                             self.depth + 4 + len(row_path) + 2)
+        for column, top in self.sql_columns.get(table, ()):
+            if field != column or value is None:
+                continue
+            if type(value) is not str:
+                raise ValueError('Case SQL column type withheld')
+            def scalar(text: str) -> None:
+                if '\\' in text:
+                    raise ValueError('Case decoded representation withheld')
+                _evidence_original(text, self.context, self.ledger, self.check, self.sanitize)
+            self.ledger.charge(32, 4, self.check)
+            audit_state = [0, None]
+            if table == 'tasks' and holder in ('parked', 'first_terminal') and column == 'blocked_on_job_ids':
+                self.ledger.charge(32, 4, self.check)
+                links['blocked'] = []
+            def event(event_kind: str, item: object) -> None:
+                # The existing scan callback is syntax-only. Retain
+                # direct job discriminators/blocked IDs, never a JSON tree.
+                if event_kind == 'key' and audit_state[0] == 1:
+                    audit_state[1] = item
+                elif (table == 'audit' and audit_state[0] == 1 and audit_state[1] == 'script_request_id'
+                      and event_kind not in ('key', 'end-object', 'end-array')):
+                    retain(links, 'job', item if event_kind == 'scalar' else None)
+                if (table == 'tasks' and holder in ('parked', 'first_terminal')
+                        and column == 'blocked_on_job_ids' and audit_state[0] == 1):
+                    if event_kind == 'scalar':
+                        if type(item) is not str:
+                            raise ValueError('Case blocked job type withheld')
+                        self.ledger.charge(16 + _evidence_utf8_size(item, self.check), 2, self.check)
+                        links['blocked'].append(item)
+                    elif event_kind in ('object', 'array'):
+                        raise ValueError('Case blocked job shape withheld')
+                if event_kind in ('object', 'array'):
+                    audit_state[0] += 1
+                elif event_kind in ('end-object', 'end-array'):
+                    audit_state[0] -= 1
+            _evidence_original(value, self.context, self.ledger, self.check, self.sanitize)
+            _EvidenceJSON(value, self.ledger, self.check).scan(top, scalar, event=event,
+                depth=self.depth + 4 + len(row_path) + 2, context=self.context, sanitize=self.sanitize)
+
     def close_cases(self, manifest: dict) -> None:
+        def command_sequence(left: object, right: object) -> bool:
+            # Closed argv/wait holders contain only primitive members. Keep
+            # the original sequence/type/cardinality and member traversal
+            # debits, then use the existing direct full-scalar comparator.
+            # No recursive dict/sequence classification runs for each leaf.
+            self.ledger.charge(32, 4, self.check)
+            if type(left) is not type(right) or type(left) is not list:
+                return False
+            self.ledger.charge(16 * (len(left) + len(right)), 2 * (len(left) + len(right)), self.check)
+            return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+        def command_equal(left: tuple, right: tuple) -> bool:
+            # One traversal of the original ordered shapes owns BOTH key and
+            # scalar equality. The former second traversal zipped eleven fact
+            # holders and then every scalar map, rebuilding reference pairs for
+            # fields already visited in the shape traversal. Direct lookups
+            # below pay for their two references; all original full primitive
+            # comparisons use the existing direct same() debit.
+            shapes, other_shapes = left[8], right[8]
+            self.ledger.charge(32 * (len(shapes) + len(other_shapes)),
+                               4 * (len(shapes) + len(other_shapes)), self.check)
+            if len(shapes) != len(other_shapes):
+                return False
+            for path, (kind, keys) in shapes.items():
+                # Paths are synthesized selectors, not another original value.
+                # Each original container's ordered keys already determine its
+                # position; lookup replaces recursive selector/order replay.
+                self.ledger.charge(16 * len(path) + 32, 2 * len(path) + 4, self.check)
+                other = other_shapes.get(path)
+                if other is None or not same(kind, other[0]) or len(keys) != len(other[1]):
+                    return False
+                if kind == 'array':
+                    # Only argv/waits carry primitive array members. Wire's
+                    # original member shape is compared at its own path.
+                    if path == ('argv',):
+                        if not command_sequence(left[7], right[7]):
+                            return False
+                    elif path == ('payload', 'waiting_on_job_ids'):
+                        if not command_sequence(left[10], right[10]):
+                            return False
+                    continue
+                number = (0 if not path else 1 if path == ('provider',) else
+                    2 if path == ('payload',) else 3 if path == ('payload_file',) else
+                    6 if path == ('wire', 0) else 4 if path == ('wire', 0, 'response') else
+                    5 if path == ('wire', 0, 'response', 'authentication') else
+                    9 if path == ('payload', 'decision') else None)
+                if number is None:
+                    return False
+                a, b = left[number], right[number]
+                # Retain the original ordered-list traversal and per-key full
+                # comparison charges. Only the separate scalar-map traversal
+                # and its reference-pair construction have disappeared.
+                self.ledger.charge(32, 4, self.check)
+                self.ledger.charge(16 * (len(keys) + len(other[1])),
+                                   2 * (len(keys) + len(other[1])), self.check)
+                for key, other_key in zip(keys, other[1]):
+                    if not same(key, other_key):
+                        return False
+                    if (number == 0 and key in ('provider', 'payload', 'payload_file', 'argv', 'wire')
+                            or number == 2 and key in ('decision', 'waiting_on_job_ids')
+                            or number == 6 and key == 'response'
+                            or number == 4 and key == 'authentication'):
+                        continue
+                    self.ledger.charge(16, 2, self.check)
+                    if not same(a[key], b[other_key]):
+                        return False
+            return True
         def same(left: object, right: object) -> bool:
             self.ledger.charge(32 + sum(_evidence_utf8_size(v, self.check) if type(v) is str else 8
                                       for v in (left, right)), 4, self.check)
@@ -2547,22 +2870,44 @@ class _EvidenceObservations:
             plan = ((('OK',0),), (), (('EXIT7',7),), (('TIMEOUT',-9),), (('A',0),('B',7)), (('B',7),('A',0)))[index]
             if len(jobs) > len(plan):
                 raise ValueError('Case submitted job count withheld')
-            owners, ids = [], set()
+            owners, ids, assigned_ids = [], set(), []
+            first_owner = second_owner = None
+            self.ledger.charge(16, 2, self.check)
+            first_command = second_command = None
             for number, job in enumerate(jobs):
-                self.ledger.charge(128 + 32 * len(self.case_submits), 16 + 4 * len(self.case_submits), self.check)
-                candidates = [s for s in self.case_submits if same(s[1], job.get('id'))]
-                if (len(candidates) != 1 or type(job.get('script')) is not str or type(job.get('script_sha256')) is not str
+                self.ledger.charge(128 + 32 * (len(self.case_submits) + len(c['copies'])),
+                                    16 + 4 * (len(self.case_submits) + len(c['copies'])), self.check)
+                copies = [f for slot,f in c['copies'] if slot == ('jobs', number, 'submit')]
+                actual_id = job.get('id') if 'id' in job else copies[0][4].get('id') if len(copies) == 1 else None
+                candidates = [s for s in self.case_submits if same(s[1], actual_id)]
+                if (type(job.get('script')) is not str or type(job.get('script_sha256')) is not str
                         or type(job.get('code')) is not int or job['code'] != plan[number][1]
                         or job.get('label') != plan[number][0] or type(job.get('cap')) is not int
-                        or job['cap'] != (5 if job['code'] == -9 else 30) or job.get('id') in ids):
+                        or job['cap'] != (5 if job['code'] == -9 else 30) or actual_id is not None and actual_id in ids):
                     raise ValueError('Case actual submit identity withheld')
-                provider, jid, proof, submitted = candidates[0]
                 _, digest = _evidence_digest(job['script'], self.ledger, self.check)
                 self.ledger.charge(256 + 3 * sum(_evidence_utf8_size(v, self.check)
                     for v in (m['source_sha'], starts[0]['session'], job['label'])), 12, self.check)
                 token = hashlib.sha256((m['source_sha'] + starts[0]['session'] + job['label']).encode()).hexdigest()[:24]
-                if (not same(digest, job['script_sha256']) or not same(job.get('token'), token)
-                        or any(not same(provider.get(k), starts[0].get(k)) for k in provider)
+                if not same(digest, job['script_sha256']) or not same(job.get('token'), token):
+                    raise ValueError('Case full original SOURCE identity withheld')
+                # Only an absent-ID partial can still scan the original row
+                # population here. Complete jobs no longer perform that scan.
+                if 'id' not in job:
+                    self.ledger.charge(32 * len(c['rows']), 4 * len(c['rows']), self.check)
+                if 'id' not in job and (number != len(jobs) - 1 or len(starts) != 1 or c['snapshots']
+                        or c['final_reached'] or c['block_reached'] or number in c['submitted_stages']
+                        or any(n == number for _,_,n,_,_,_ in c['rows'])
+                        or any(slot[0] in ('block','final_callback') for slot,_ in c['copies'])):
+                    raise ValueError('Case unreached submit stage withheld')
+                self.ledger.charge(16, 2, self.check)
+                assigned_ids.append(actual_id)
+                if actual_id is None and 'id' not in job and not copies:
+                    continue  # Original job exists before provider_cli returns.
+                if len(candidates) != 1:
+                    raise ValueError('Case actual submit identity withheld')
+                provider, jid, proof, submitted, original_command = candidates[0]
+                if (any(not same(provider.get(k), starts[0].get(k)) for k in provider)
                         or not same(proof['script_text'], job['script']) or proof['task_id'] != m['task']
                         or proof['agent_name'] != 'case_manager' or proof['interpreter'] != 'python3'
                         or not same(proof['title'], m['variant'] + '/' + token)
@@ -2571,70 +2916,141 @@ class _EvidenceObservations:
                     raise ValueError('Case full submitted SOURCE join withheld')
                 self.ledger.charge(24, 3, self.check)
                 owners.append((jid, proof, submitted)); ids.add(jid)
+                self.ledger.charge(16, 2, self.check)
+                self.ledger.charge(8, 1, self.check)
+                if number == 0:
+                    first_owner, first_command = owners[-1], original_command
+                else:
+                    second_owner, second_command = owners[-1], original_command
+            self.ledger.charge(128 + 32 * (len(c['copies']) + len(jobs)), 16 + 4 * (len(c['copies']) + len(jobs)), self.check)
+            slots = set()
+            for slot, facts in c['copies']:
+                meta, provider, payload, _, response = facts[:5]
+                submit, block = len(slot) == 3, slot[0] == 'block'
+                if (slot in slots or submit and slot[1] >= len(jobs) or block and index == 1
+                        or not submit and not block and len(starts) != (1 if index == 1 else 2)):
+                    raise ValueError('Case assigned command stage withheld')
+                self.ledger.charge(128, 16, self.check)
+                original_start = starts[0] if submit or block else starts[-1]
+                if any(not same(provider.get(k), original_start.get(k)) for k in provider):
+                    raise ValueError('Case command original start withheld')
+                if submit:
+                    # The unique actual-ID submit join above already selected
+                    # this complete original command. Reuse only that join,
+                    # never another occurrence's safety or comparison result.
+                    self.ledger.charge(8, 1, self.check)
+                    original = first_command if slot[1] == 0 else second_command
+                else:
+                    self.ledger.charge(32 * len(self.commands), 4 * len(self.commands), self.check)
+                    matches = [f for f in self.commands if same(f[0]['action'], meta['action'])
+                               and same(f[1]['task'], provider['task']) and same(f[1]['session'], provider['session'])]
+                    original = matches[0] if len(matches) == 1 else None
+                if original is None or not command_equal(facts, original):
+                    raise ValueError('Case full original command equality withheld')
+                if submit:
+                    job = jobs[slot[1]]
+                    if not same(response.get('id'), assigned_ids[slot[1]]) or not same(payload.get('script'), job.get('script')):
+                        raise ValueError('Case command full submitted SOURCE withheld')
+                elif block:
+                    self.ledger.charge(32 * len(jobs), 4 * len(jobs), self.check)
+                    if not command_sequence(payload.get('waiting_on_job_ids'), [j.get('id') for j in jobs]) or not jobs:
+                        raise ValueError('Case command actual waiting order withheld')
+                else:
+                    self.ledger.charge(512, 64, self.check)
+                    summary = ('E04_OK completed exit0', 'E04_REVIEW_REQUIRED_REFUSED no job submitted',
+                        'E04_EXIT7 completed exit7; operation nonzero', 'E04_TIMEOUT failed timeout exit-9',
+                        'E04_PAIR A completed exit0; B completed exit7', 'E04_PAIR A completed exit0; B completed exit7')[index]
+                    if not same(payload.get('summary'), summary):
+                        raise ValueError('Case command actual done summary withheld')
+                self.ledger.charge(16, 2, self.check)
+                slots.add(slot)
+            for number, job in enumerate(jobs):
+                self.ledger.charge(32, 4, self.check)
+                if assigned_ids[number] is not None and ('jobs', number, 'submit') not in slots:
+                    raise ValueError('Case required submit copy unavailable')
+            if (index != 1 and (c['block_reached'] or c['snapshots'] or len(starts) == 2 or c['final_reached']) and ('block',) not in slots
+                    or c['final_reached'] and ('final_callback',) not in slots):
+                raise ValueError('Case required completion copy unavailable')
             # A genuine partial keeps absent stages absent. An oracle is
             # recorded only after run_script's terminal row; S2 follows the
             # pair first-terminal barrier. Missing those direct edges is not
             # an earlier partial input.
-            for number, job in enumerate(jobs):
-                self.ledger.charge(32 * len(c['rows']), 4 * len(c['rows']), self.check)
-                terminal_count = sum(t == 'jobs' and n == number and h == 'terminal'
-                                     for _,t,n,h,_,_ in c['rows'])
-                if (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
-                        or any(t == 'jobs' and n == number and h == 'oracle' for _,t,n,h,_,_ in c['rows'])) and terminal_count != 1:
-                    raise ValueError('Case required terminal row unavailable')
             early = ('first_terminal',) in c['snapshots']
             if index >= 4 and (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
                     or any(t == 'jobs' and n == 1 and h == 'oracle' for _,t,n,h,_,_ in c['rows'])) and not early:
                 raise ValueError('Case required first-terminal holder unavailable')
+            # The row-validation traversal below also selects the four pair
+            # holders and closes contiguous snapshot membership/order. No
+            # per-holder R-wide selection lists or snapshot rescans remain.
+            # These are current local references, never an index or a proof
+            # shared across occurrences. Keep the fixed admissions and every
+            # distinct full comparison after selection.
+            parked_task = current_task = parked_result = current_result = None
+            parked_tasks = current_tasks = parked_results = current_results = 0
             if early:
-                self.ledger.charge(128 + 64 * len(c['rows']), 16 + 8 * len(c['rows']), self.check)
+                self.ledger.charge(128, 16, self.check)
                 if index < 4 or len(jobs) != 2 or ('parked',) not in c['snapshots']:
                     raise ValueError('Case first-terminal pair owner withheld')
                 self.ledger.charge(64 + 4 * sum(_evidence_utf8_size(jid, self.check) for jid in ids), 8, self.check)
                 ordered_ids = sorted(ids)
-                for table in ('tasks', 'results'):
-                    parked = [r for r in c['rows'] if r[1] == table and r[3] == 'parked']
-                    current = [r for r in c['rows'] if r[1] == table and r[3] == 'first_terminal']
-                    if len(parked) != 1 or len(current) != 1 or not full_row(parked[0][4], current[0][4]):
-                        raise ValueError('Case complete parked row equality withheld')
-                    row, links = current[0][4:]
-                    if table == 'tasks':
-                        if (row.get('status') != 'in_progress' or row.get('current_session_id') != starts[0]['session']
-                                or row.get('block_kind') != 'blocked_on_job'
-                                or not same(row.get('orchestration_step_count'), 1)
-                                or links.get('blocked') != ordered_ids):
-                            raise ValueError('Case original parked task withheld')
-                    elif row.get('status') != 'blocked' or row.get('session_id') != starts[0]['session']:
-                        raise ValueError('Case original parked S1 result withheld')
-                if any(t == 'audit' and h == 'first_terminal' and r.get('action') == 'task_resumed_from_jobs'
-                       for _,t,_,h,r,_ in c['rows']):
-                    raise ValueError('Case first-terminal premature resume withheld')
-            for base, keys in c['snapshots'].items():
-                self.ledger.charge(64 + 32 * len(c['rows']), 8 + 4 * len(c['rows']), self.check)
-                if len(keys) != 4 or set(keys) != {'tasks','results','audit','jobs'}:
-                    raise ValueError('Case complete Store.jobs holder withheld')
-                task_count, job_count, previous = 0, 0, None
-                for path, table, _, _, row, _ in c['rows']:
-                    if path[:len(base)] != base:
-                        continue
+            self.ledger.charge(64, 8, self.check)
+            terminals_first = terminals_second = 0
+            active_snapshot, snapshot_count = None, 0
+            task_count = job_count = 0
+            previous = None
+            for fact in c['rows']:
+                path, table, number, holder, row, links = fact
+                # Rows of each original snapshot are contiguous in the strict
+                # original traversal, regardless of its table/key order.
+                # Direct job facts have an INTEGER slot; snapshot rows do not.
+                self.ledger.charge(16, 2, self.check)
+                base = (('parked',) if holder == 'parked' else
+                        ('first_terminal',) if holder == 'first_terminal' else
+                        ('final_snapshot',) if holder == 'final_snapshot' else
+                        ('live_s2', 'snapshot')) if number is None else None
+                if base != active_snapshot:
+                    if active_snapshot is not None:
+                        if task_count != 1:
+                            raise ValueError('Case snapshot original task unavailable')
+                        if job_count != len(owners):
+                            raise ValueError('Case complete Store.jobs membership withheld')
+                    active_snapshot = base
+                    task_count = job_count = 0
+                    previous = None
+                    if base is not None:
+                        self.ledger.charge(64, 8, self.check)
+                        keys = c['snapshots'].get(base)
+                        if keys is None or len(keys) != 4 or set(keys) != {'tasks','results','audit','jobs'}:
+                            raise ValueError('Case complete Store.jobs holder withheld')
+                        self.ledger.charge(8, 1, self.check)
+                        snapshot_count += 1
+                if base is not None:
                     if table == 'tasks':
                         task_count += 1
-                    if table == 'jobs':
+                    elif table == 'jobs':
                         self.ledger.charge(8, 1, self.check)
                         job_count += 1
                         jid = row.get('id')
                         if type(jid) is not str or previous is not None and jid <= previous:
                             raise ValueError('Case original Store.jobs order withheld')
                         previous = jid
-                if task_count != 1:
-                    raise ValueError('Case snapshot original task unavailable')
-                # Strict original order excludes duplicates; each row below
-                # must join an actual submitted owner. Equal counts therefore
-                # close the complete membership without rebuilding the array.
-                if job_count != len(owners):
-                    raise ValueError('Case complete Store.jobs membership withheld')
-            for path, table, number, holder, row, links in c['rows']:
-                self.ledger.charge(128 + 32 * len(owners), 16 + 4 * len(owners), self.check)
+                if early:
+                    if table in ('tasks', 'results') and holder in ('parked', 'first_terminal'):
+                        self.ledger.charge(16, 2, self.check)
+                        if table == 'tasks' and holder == 'parked':
+                            parked_task, parked_tasks = fact, parked_tasks + 1
+                        elif table == 'tasks':
+                            current_task, current_tasks = fact, current_tasks + 1
+                        elif holder == 'parked':
+                            parked_result, parked_results = fact, parked_results + 1
+                        else:
+                            current_result, current_results = fact, current_results + 1
+                    elif table == 'audit' and holder == 'first_terminal' and row.get('action') == 'task_resumed_from_jobs':
+                        raise ValueError('Case first-terminal premature resume withheld')
+                # Preserve the former non-job precharge. Only the explicit
+                # match-list work actually removed for job rows loses its term.
+                self.ledger.charge(128 + (32 * len(owners) if table != 'jobs' else 0),
+                                   16 + (4 * len(owners) if table != 'jobs' else 0), self.check)
                 if table != 'jobs':
                     required = self.sql_identity[table]
                     if (any(type(row.get(k)) is not typ or typ is str and not row[k]
@@ -2650,10 +3066,23 @@ class _EvidenceObservations:
                                 or number is not None and not same(links['job'], jobs[number].get('id')))):
                         raise ValueError('Case SQL complete owner join withheld')
                     continue
-                found = [o for o in owners if same(o[0], row.get('id'))]
-                if len(found) != 1 or number is not None and not same(row.get('id'), jobs[number].get('id')):
+                # Existing submitted-id membership rejects foreign rows here.
+                # Full own validation occurs in the existing per-job traversal
+                # below, without constructing one owners match-list per row.
+                if (type(row.get('id')) is not str or row['id'] not in ids
+                        or number is not None and not same(row['id'], jobs[number].get('id'))):
                     raise ValueError('Case SQL actual job withheld')
-                jid, proof, submitted = found[0]
+                # Select each original job's owner in this sole row traversal.
+                # The six existing canonical references are already selected by
+                # original row events, including late/jobs-last input order.
+                self.ledger.charge(16, 2, self.check)
+                job_number = number if number is not None else (
+                    0 if first_owner is not None and same(row['id'], first_owner[0]) else 1)
+                owner = first_owner if job_number == 0 else second_owner
+                if owner is None or number is None and job_number == 1 and not same(row['id'], owner[0]):
+                    raise ValueError('Case SQL actual job withheld')
+                jid, proof, submitted = owner
+                job = jobs[job_number]
                 if (any(k not in row for k in self.job_columns)
                         or any(type(row.get(k)) is not str or not row[k] for k in
                                ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
@@ -2673,7 +3102,6 @@ class _EvidenceObservations:
                                for k,suffix in (('stdout','.out'),('stderr','.err')))):
                     raise ValueError('Case SQL original execution owner withheld')
                 running = holder in ('running','pending','parked') or holder == 'first_terminal' and same(jid, jobs[1].get('id'))
-                job = next(j for j in jobs if same(j.get('id'), jid))
                 code = job['code']
                 if running:
                     if row['status'] != 'running' or any(row[k] is not None for k in
@@ -2684,30 +3112,75 @@ class _EvidenceObservations:
                         or not row['finished_at'] or type(row['duration_ms']) is not int or row['duration_ms'] < 0
                         or any(k in job and not same(row[stream + '_head'], job[k]) for k,stream in (('out','stdout'),('err','stderr')))):
                     raise ValueError('Case SQL original terminal state withheld')
-                # When present, the SAME original running/oracle row owns each
-                # snapshot/pending/drain copy in that state. Compare every
-                # original scalar, including unknown columns, without rewriting
-                # either occurrence's own key order or requiring absent stages.
-                self.ledger.charge(64 * len(c['rows']), 8 * len(c['rows']), self.check)
-                if holder == 'first_terminal':
-                    # Role comes from the actual submitted ID, independently
-                    # of the original strict Store ORDER BY id array order.
-                    originals = [r for r in c['rows'] if r[1] == 'jobs' and r[2] == (1 if running else 0)
-                                 and r[3] == ('pending' if running else 'oracle')]
-                    if not originals:
-                        raise ValueError('Case first-terminal original row unavailable')
-                    if running and originals[-1][0][3] != jobs[1].get('last_pending'):
-                        raise ValueError('Case first-terminal last pending row unavailable')
-                    original = originals[-1][4]
-                    if not full_row(row, original):
-                        raise ValueError('Case first-terminal complete original row equality withheld')
+                if number is not None:
+                    if holder == 'terminal':
+                        self.ledger.charge(8, 1, self.check)
+                        if job_number == 0:
+                            terminals_first += 1
+                        else:
+                            terminals_second += 1
+                # Fuse the former second row traversal into this occurrence's
+                # own validation. Keep its peer-reference debit and EVERY full
+                # comparison, including complete unknown scalar columns.
+                if holder in ('running', 'oracle'):
                     continue
-                for _, other_table, _, other_holder, original, _ in c['rows']:
-                    if (other_table != 'jobs' or other_holder != ('running' if running else 'oracle')
-                            or not same(original.get('id'), jid)):
-                        continue
-                    if not full_row(row, original):
-                        raise ValueError('Case complete original row equality withheld')
+                self.ledger.charge(24, 3, self.check)
+                if job_number == 0:
+                    running_original, oracle_original, pending_original = c['running_first'], c['oracle_first'], c['pending_first']
+                else:
+                    running_original, oracle_original, pending_original = c['running_second'], c['oracle_second'], c['pending_second']
+                comparing_running = holder in ('pending', 'parked') or holder == 'first_terminal' and job_number == 1
+                original = running_original if comparing_running else oracle_original
+                if holder == 'first_terminal':
+                    original = pending_original if comparing_running else oracle_original
+                    if original is None:
+                        raise ValueError('Case first-terminal original row unavailable')
+                    if comparing_running and original[0][3] != job.get('last_pending'):
+                        raise ValueError('Case first-terminal last pending row unavailable')
+                    if not full_row(row, original[4]):
+                        raise ValueError('Case first-terminal complete original row equality withheld')
+                elif original is not None and not full_row(row, original[4]):
+                    raise ValueError('Case complete original row equality withheld')
+            if active_snapshot is not None:
+                if task_count != 1:
+                    raise ValueError('Case snapshot original task unavailable')
+                if job_count != len(owners):
+                    raise ValueError('Case complete Store.jobs membership withheld')
+            # An empty snapshot has no row event and still must refuse. Strict
+            # original keys prevent a holder from reappearing after closure.
+            if snapshot_count != len(c['snapshots']):
+                raise ValueError('Case snapshot original task unavailable')
+            if early:
+                for table in ('tasks', 'results'):
+                    parked, current, parked_count, current_count = (
+                        (parked_task, current_task, parked_tasks, current_tasks) if table == 'tasks' else
+                        (parked_result, current_result, parked_results, current_results))
+                    if parked_count != 1 or current_count != 1 or not full_row(parked[4], current[4]):
+                        raise ValueError('Case complete parked row equality withheld')
+                    row, links = current[4:]
+                    if table == 'tasks':
+                        if (row.get('status') != 'in_progress' or row.get('current_session_id') != starts[0]['session']
+                                or row.get('block_kind') != 'blocked_on_job'
+                                or not same(row.get('orchestration_step_count'), 1)
+                                or links.get('blocked') != ordered_ids):
+                            raise ValueError('Case original parked task withheld')
+                    elif row.get('status') != 'blocked' or row.get('session_id') != starts[0]['session']:
+                        raise ValueError('Case original parked S1 result withheld')
+            # Canonical references were selected during the same validation
+            # traversal. A genuine pre-submit partial still has no owner/rows.
+            self.ledger.charge(64, 8, self.check)
+            for number, owner in ((0, first_owner), (1, second_owner)):
+                self.ledger.charge(16, 2, self.check)
+                if owner is None:
+                    continue
+                self.ledger.charge(16, 2, self.check)
+                if number == 0:
+                    terminal_count, oracle_original = terminals_first, c['oracle_first']
+                else:
+                    terminal_count, oracle_original = terminals_second, c['oracle_second']
+                if (('live_s2', 'snapshot') in c['snapshots'] or ('final_snapshot',) in c['snapshots']
+                        or oracle_original is not None) and terminal_count != 1:
+                    raise ValueError('Case required terminal row unavailable')
 
     def snapshot_event(self, path: tuple, kind: str, value: object) -> None:
         """Active entry/row facts only; late selectors close before publication.
@@ -2932,7 +3405,12 @@ class _EvidenceObservations:
         self.ledger.charge(8, 1, self.check)
         if path[0] == 'durable':
             self.snapshot_event(path, kind, value)
-            self.case_event(path, kind, value)
+            if len(path) >= 3 and path[2] == 'jobs_cases':
+                if len(path) == 3:
+                    if kind not in ('array', 'end-array'):
+                        raise ValueError('Case ledger shape withheld')
+                else:
+                    self.case_event(path[4:], kind, value)
         if path[0] == 'provider_attempts':
             self.attempt_event(path, kind, value)
         elif path[0] == 'provider_commands':
@@ -2947,8 +3425,10 @@ class _EvidenceObservations:
                 self.current = _EvidenceSubmission(self, self.depth + 2)
             if self.current is None:
                 raise ValueError('submission command shape withheld')
-            self.current.event(path[2:], kind, value)
-            if len(path) == 2 and kind == 'end-object':
+            closing = len(path) == 2 and kind == 'end-object'
+            if not closing:
+                self.current.event(path[2:], kind, value)
+            if closing:
                 try:
                     selected = self.current.close()
                     self.captured = selected or self.captured
@@ -3080,6 +3560,9 @@ class _EvidenceObservations:
         self.attempts.clear(); self.submitted.clear(); self.attempt = None
         self.job_proofs.clear(); self.read_jobs.clear()
         self.cases.clear(); self.case_submits.clear(); self.case = None
+        self.commands.clear()
+        if self.case_command is not None:
+            self.case_command.release(); self.case_command = None
         self.start = self.manifest = None
         self.snapshot_entry = self.snapshot_row = None
 
@@ -3149,10 +3632,12 @@ class _EvidenceJSON:
         cursor, size = start, 0
         chunk_size = slots = pieces = 0
         literal = False
+        unescaped = True
         while cursor < self.end and self.text[cursor] != '"':
             if cursor % 4096 == 0:
                 self.check()
             escaped = self.text[cursor] == "\\"
+            unescaped = unescaped and not escaped
             code, cursor = self.codepoint(cursor)
             width = 1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4
             if chunk_size + width > 1024:
@@ -3169,6 +3654,19 @@ class _EvidenceJSON:
         if cursor >= self.end:
             self.error()
         slots = max(slots, pieces)
+        # Pay the new fixed flag/selection slot at the construction-slot rate,
+        # independently of the retained scalar/chunk facts. Complete grammar/
+        # size preflight still precedes admission, as on the escaped path.
+        self.ledger.charge(16, 0, self.check)
+        if unescaped:
+            # One complete original slice IS the retained scalar. There are
+            # no chunk/fragment arrays, chunk references, or final join here.
+            # Keep the original retained-scalar storage and fact admission.
+            self.ledger.charge(8 + size, 1, self.check)
+            value = self.text[start:cursor]
+            self.index = cursor + 1
+            self.check()
+            return value
         # Charge decoded storage, chunk references, and join BEFORE decoding.
         chunks = (size + 1020) // 1021
         self.ledger.charge(8 + 2 * size + 8 * chunks, 1 + chunks, self.check)
@@ -3279,7 +3777,9 @@ class _EvidenceJSON:
               *, tree: bool = True, route: int = 0, event: Callable | None = None,
               relay_context: tuple | list = (), relay_sanitize: Callable | None = None,
               selected: Callable | None = None, selected_path: tuple = (),
-              submission_identity: tuple | None = None) -> Any:
+              selected_field: str | int | None = None,
+              submission_identity: tuple | None = None,
+              expected: object = _EvidenceUnsafe, ordered: bool = False) -> Any:
         self.check()
         if depth > 64:
             raise _EvidenceCapacity("JSON depth capacity refused")
@@ -3288,22 +3788,106 @@ class _EvidenceJSON:
             self.error()
         self.ledger.charge(0, 1, self.check)
         char = self.text[self.index]
-        if selected is not None:
-            self.ledger.charge(8 * len(selected_path), len(selected_path), self.check)
+        matching = expected is not _EvidenceUnsafe
+        selected_children = True
+        selected_owner = getattr(selected, '__self__', None)
+        row_field = (selected_field is not None and char not in '[{'
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_row_event)
+        primitive_field = (selected_field is not None and char not in '[{'
+            and isinstance(selected_owner, _EvidenceSubmission)
+            and (selected_owner.copy or selected_owner.metadata.get('action') in
+                 ('jobs-submit', 'jobs-block', 'jobs-final')))
+        case_field = (selected_field is not None and char not in '[{'
+            and isinstance(selected_owner, _EvidenceObservations)
+            and selected.__func__ is _EvidenceObservations.case_event
+            and (not selected_path and selected_field in ('method', 'variant', 'index', 'source_sha', 'task')
+                 or len(selected_path) == 2 and type(selected_path[1]) is int
+                    and (selected_path[0] == 'starts' or selected_path[0] == 'jobs'
+                         and selected_field in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap', 'out', 'err'))))
+        # case_row_event pays for a direct field reference; it needs no path copy.
+        if selected is not None and not row_field:
+            if primitive_field or case_field:
+                self.ledger.charge(8, 1, self.check)  # Existing field reference only.
+            else:
+                if selected_field is not None:
+                    selected_path = selected_path + (selected_field,)
+                self.ledger.charge(8 * len(selected_path), len(selected_path), self.check)
             if char in '[{':
-                selected(selected_path, 'object' if char == '{' else 'array', None)
-        deferred = selected is not None and _EvidenceObservations.encoded(selected_path)
+                selected_children = selected(selected_path, 'object' if char == '{' else 'array', None) is not False
+        descendants = None
+        # For these finite commands the selected end notification has no
+        # consumer: event() returns without retaining or closing anything.
+        # Syntax events and enclosing Observations/Case close remain separate.
+        # An unknown canonical action retains legacy wire discovery unchanged.
+        selected_end = not (isinstance(selected_owner, _EvidenceSubmission)
+            and (selected_owner.copy or selected_owner.metadata.get('action') in
+                 ('jobs-submit', 'jobs-block', 'jobs-final')))
+        if char == '{' and isinstance(selected_owner, _EvidenceObservations):
+            # The root has already opened its original owner. Route only its
+            # descendants locally: no enclosing Case path is copied/reselected
+            # for each command field. Root close still performs the late join.
+            if selected.__func__ is _EvidenceObservations.case_event:
+                if selected_owner.case_command_slot(selected_path) == selected_path:
+                    self.ledger.charge(32, 4, self.check)
+                    descendants = selected_owner.case_command.event
+                elif selected_owner.case is not None and selected_owner.case['rows']:
+                    self.ledger.charge(32, 4, self.check)
+                    if selected_owner.case['rows'][-1][0] == selected_path:
+                        descendants = selected_owner.case_row_event
+            elif len(selected_path) == 2 and selected_path[0] == 'provider_commands':
+                self.ledger.charge(32, 4, self.check)
+                descendants = selected_owner.current.event
+            elif (len(selected_path) == 4 and selected_path[0] == 'durable'
+                    and selected_path[2] == 'jobs_cases'):
+                self.ledger.charge(32, 4, self.check)
+                descendants = selected_owner.case_event
+        if isinstance(selected_owner, _EvidenceSubmission):
+            if primitive_field:
+                deferred = (selected_path == () and selected_field == 'stdout'
+                    or selected_path == ('payload',) and selected_field == 'script'
+                    or selected_path == ('payload_file',) and selected_field == 'text')
+            else:
+                deferred = (selected_path in (('stdout',), ('payload', 'script'), ('payload_file', 'text'))
+                    or not selected_owner.copy and (
+                        len(selected_path) == 5 and selected_path[0] == 'wire'
+                            and selected_path[2:] == ('response', 'job', 'script_text')
+                        or len(selected_path) == 4 and selected_path[0] == 'wire'
+                            and selected_path[2:] == ('response', 'script_text')))
+        elif (isinstance(selected_owner, _EvidenceObservations)
+                and selected.__func__ is _EvidenceObservations.case_event):
+            if case_field:
+                deferred = bool(selected_path) and selected_path[0] == 'jobs' and selected_field == 'script'
+            else:
+                deferred = selected_owner.case_encoded(selected_path)
+        elif (isinstance(selected_owner, _EvidenceObservations)
+                and selected.__func__ is _EvidenceObservations.case_row_event):
+            deferred = False
+            if char == '"':
+                self.ledger.charge(8, 1, self.check)
+                row = selected_owner.case['rows'][-1]
+                column = selected_field if row_field else selected_path[0] if len(selected_path) == 1 else None
+                deferred = (column is not None and (row[1] == 'jobs' and column == 'script_text'
+                    or any(column == name for name, _ in selected_owner.sql_columns.get(row[1], ()))))
+        else:
+            deferred = selected is not None and _EvidenceObservations.encoded(selected_path)
         if route == 2 and char != "[" or route == 3 and char != "{":
             raise ValueError("Relay entry shape withheld")
         if char == '"':
             value = self.string()
             try:
-                if scalar is not None and not deferred:
+                if scalar is not None and not deferred and not matching:
                     scalar(value)
                 if selected is not None:
-                    selected(selected_path, 'scalar', value)
+                    if primitive_field or row_field or case_field:
+                        selected(selected_path, 'scalar', value, field=selected_field)
+                    else:
+                        selected(selected_path, 'scalar', value)
                 if event is not None:
-                    event("scalar", value)
+                    if matching:
+                        event('scalar', value, expected, selected_field, depth)
+                    else:
+                        event("scalar", value)
                 return value
             except BaseException:
                 value = None
@@ -3311,38 +3895,83 @@ class _EvidenceJSON:
         if char in "-0123456789":
             value = self.number()
             if selected is not None:
-                selected(selected_path, 'scalar', value)
+                if primitive_field or row_field or case_field:
+                    selected(selected_path, 'scalar', value, field=selected_field)
+                else:
+                    selected(selected_path, 'scalar', value)
             if event is not None:
-                event("scalar", value)
+                if matching:
+                    event('scalar', value, expected, selected_field, depth)
+                else:
+                    event("scalar", value)
             return value
         for spelling, primitive in (("true", True), ("false", False), ("null", None)):
             if self.text.startswith(spelling, self.index, self.end):
                 self.index += len(spelling)
                 if selected is not None:
-                    selected(selected_path, 'scalar', primitive)
+                    if primitive_field or row_field or case_field:
+                        selected(selected_path, 'scalar', primitive, field=selected_field)
+                    else:
+                        selected(selected_path, 'scalar', primitive)
                 if event is not None:
-                    event("scalar", primitive)
+                    if matching:
+                        event('scalar', primitive, expected, selected_field, depth)
+                    else:
+                        event("scalar", primitive)
                 return primitive
         if char not in "[{":
             self.error()
         self.ledger.charge(8, 1, self.check)
-        # Active original-key set only in scan mode; arrays have no retained
-        # members. The same recursion is the charged depth-bounded syntax stack.
-        output = ({} if tree else set()) if char == "{" else ([] if tree else None)
+        # A complete Case row already retains EVERY original scalar key in
+        # its own private fact dict. The SAME occurrence owns duplicate-key
+        # membership before the next value; no second syntax set is populated.
+        # Non-retaining rows and unrelated syntax callers keep their key set.
+        borrowed_keys = False
+        command_keys = None
+        if (not tree and char == '{' and isinstance(selected_owner, _EvidenceObservations)
+                and descendants is not None and descendants.__func__ is _EvidenceObservations.case_row_event):
+            row = selected_owner.case['rows'][-1]
+            borrowed_keys = row[1] == 'jobs' or row[1] in ('tasks', 'results') and row[3] in ('parked', 'first_terminal')
+        if char == '{':
+            command_owner = getattr(descendants, '__self__', None) if descendants is not None else selected_owner
+            if isinstance(command_owner, _EvidenceSubmission) and (command_owner.copy
+                    or command_owner.metadata.get('action') in ('jobs-submit', 'jobs-block', 'jobs-final')):
+                self.ledger.charge(16, 2, self.check)  # Same owner/shape references.
+                shape = command_owner.shapes.get(() if descendants is not None else selected_path)
+                if shape is not None and type(shape[1]) is dict:
+                    command_keys = shape[1]
+                    borrowed_keys = not tree
+        if char == '{':
+            output = {} if tree else command_keys if command_keys is not None else row[4] if borrowed_keys else None if matching else set()
+        else:
+            output = [] if tree else None
         proof = _EvidenceRelay(relay_context, self.ledger, self.check, relay_sanitize, depth) if route == 3 else None
         selection = None
         close = "}" if char == "{" else "]"
         if event is not None:
-            event("object" if char == "{" else "array", None)
+            if matching:
+                event('object' if char == '{' else 'array', None, expected, selected_field, depth)
+            else:
+                event("object" if char == "{" else "array", None)
         self.index += 1
         self.whitespace()
         member_index = 0
+        previous_key = None
+        expected_keys = None
+        if matching and char == '{' and ordered:
+            self.ledger.charge(8, 1, self.check)
+            expected_keys = iter(expected)
         try:
             if self.index < self.end and self.text[self.index] == close:
                 self.index += 1
-                if event is not None:
+                if matching:
+                    self.ledger.charge(8, 1, self.check)
+                    if len(expected):
+                        raise ValueError('completion complete waiting equality withheld' if char == '['
+                                         else 'submission complete equality withheld')
+                elif event is not None:
                     event("end-object" if char == "{" else "end-array", None)
-                if selected is not None:
+                if selected is not None and selected_end:
                     selected(selected_path, 'end-object' if char == '{' else 'end-array', None)
                 if selection is not None:
                     self.relay_captured = selection.close() or self.relay_captured
@@ -3352,22 +3981,43 @@ class _EvidenceJSON:
             while True:
                 if char == "{":
                     key = self.string()
-                    if key in output:
+                    if matching:
+                        # Strict expected membership/order replaces BOTH the
+                        # syntax set and the old key-event frame update. Pay
+                        # the two live references before lookup/advancement.
+                        self.ledger.charge(16, 2, self.check)
+                        if (key not in expected or expected_keys is not None and key != next(expected_keys, None)
+                                or expected_keys is None and previous_key is not None and key <= previous_key):
+                            raise ValueError('submission sorted fields withheld')
+                        previous_key = key
+                        member_index += 1
+                    elif key in output:
                         self.error()  # Decoded escaped-equal keys, before their value.
                     if scalar is not None:
                         scalar(key)
-                    if selected is not None:
-                        selected(selected_path, 'key', key)
+                    if command_keys is None:
+                        if descendants is not None:
+                            descendants((), 'key', key)
+                        elif selected is not None:
+                            selected(selected_path, 'key', key)
                     if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') and selection is None:
                         selection = _EvidenceObservations(relay_context, self.ledger, self.check, relay_sanitize, depth, submission_identity)
-                    if event is not None:
+                    if event is not None and not matching:
                         event("key", key)
                     self.whitespace()
                     if self.index >= self.end or self.text[self.index] != ":":
                         self.error()
                     self.index += 1
-                    self.ledger.charge(16, 1, self.check)
-                    if not tree:
+                    if command_keys is not None:
+                        self.whitespace()
+                        if self.index < self.end and self.text[self.index] in '[{':
+                            if descendants is not None:
+                                descendants((), 'key', key)
+                            else:
+                                selected(selected_path, 'key', key)
+                    if not matching and not borrowed_keys:
+                        self.ledger.charge(16, 1, self.check)
+                    if not tree and not matching and not borrowed_keys:
                         output.add(key)  # Same decoded key, no additional string copy.
                     if proof is not None and key == "response_text":
                         self.whitespace()
@@ -3378,9 +4028,10 @@ class _EvidenceJSON:
                         event=(proof.response_event if key == "response" else proof.request_event
                                if key == "request" else None) if proof is not None else event,
                         relay_context=relay_context, relay_sanitize=relay_sanitize,
-                        selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') else selected,
-                        selected_path=(key,) if route == 1 else selected_path + (key,) if selected is not None else (),
-                        submission_identity=submission_identity)
+                        selected=selection.event if route == 1 and key in ('starts', 'durable', 'provider_commands', 'provider_attempts') else descendants if descendants is not None else selected if selected_children else None,
+                        selected_path=() if route == 1 or descendants is not None else selected_path,
+                        selected_field=key, submission_identity=submission_identity,
+                        expected=expected[key] if matching else _EvidenceUnsafe)
                     if proof is not None:
                         proof.field(key, child)
                     if tree:
@@ -3388,10 +4039,13 @@ class _EvidenceJSON:
                     child = None
                 else:
                     self.ledger.charge(8, 1, self.check)
+                    if matching and member_index >= len(expected):
+                        raise ValueError('completion complete waiting equality withheld')
                     child = self.value(depth + 1, scalar, tree=tree, route=3 if route == 2 else 0,
                                        event=event, relay_context=relay_context, relay_sanitize=relay_sanitize,
-                                       selected=selected, selected_path=selected_path + (member_index,) if selected is not None else (),
-                                       submission_identity=submission_identity)
+                                       selected=selected if selected_children else None, selected_path=selected_path,
+                                       selected_field=member_index, submission_identity=submission_identity,
+                                       expected=expected[member_index] if matching else _EvidenceUnsafe)
                     member_index += 1
                     if tree:
                         output.append(child)
@@ -3402,9 +4056,14 @@ class _EvidenceJSON:
                 delimiter = self.text[self.index]
                 self.index += 1
                 if delimiter == close:
-                    if event is not None:
+                    if matching:
+                        self.ledger.charge(8, 1, self.check)
+                        if member_index != len(expected):
+                            raise ValueError('completion complete waiting equality withheld' if char == '['
+                                             else 'submission complete equality withheld')
+                    elif event is not None:
                         event("end-object" if char == "{" else "end-array", None)
-                    if selected is not None:
+                    if selected is not None and selected_end:
                         selected(selected_path, 'end-object' if char == '{' else 'end-array', None)
                     if selection is not None:
                         self.relay_captured = selection.close() or self.relay_captured
@@ -3415,7 +4074,7 @@ class _EvidenceJSON:
                     self.error()
                 self.whitespace()
         except BaseException:
-            if output is not None:
+            if output is not None and not borrowed_keys:
                 output.clear()
             raise
         finally:
@@ -3423,7 +4082,7 @@ class _EvidenceJSON:
                 selection.release()
             if proof is not None:
                 proof.release()
-            if not tree:
+            if not tree and not borrowed_keys:
                 if output is not None:
                     output.clear()
             key = None
@@ -3444,10 +4103,15 @@ class _EvidenceJSON:
     def scan(self, top: str, scalar: Callable[[str], None] | None, *, jsonl: bool = False,
              tree: bool = False, observations: bool = False, context: tuple | list = (),
              sanitize: Callable | None = None, depth: int = 0, event: Callable | None = None,
-             submission_identity: tuple | None = None) -> Any:
+             submission_identity: tuple | None = None,
+             expected: object = _EvidenceUnsafe, ordered: bool = False) -> Any:
         """Validate the SAME image; JSONL bounds are indices, never line copies."""
         records = result = None
         try:
+            if expected is not _EvidenceUnsafe and (
+                    type(expected) is not dict or tree or jsonl or observations
+                    or event is None or top != '{' or submission_identity is not None):
+                raise ValueError('submission comparison shape withheld')
             if tree and jsonl:
                 self.ledger.charge(8, 1, self.check)
                 records = []
@@ -3463,7 +4127,8 @@ class _EvidenceJSON:
                     self.error()
                 self.ledger.charge(8, 1, self.check)  # Record's root syntax frame, before entry.
                 result = self.value(depth, scalar=scalar, tree=tree, route=1 if observations else 0,
-                                    event=event, relay_context=context, relay_sanitize=sanitize, submission_identity=submission_identity)
+                                    event=event, relay_context=context, relay_sanitize=sanitize, submission_identity=submission_identity,
+                                    expected=expected, ordered=ordered)
                 self.whitespace()
                 if self.index != self.end:
                     self.error()

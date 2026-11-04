@@ -622,8 +622,11 @@ checks surround one byte-bounded binary read. Collector text precharges both
 original bytes and strict UTF8 decoding, including the rejection-only sentinel;
 CRLF is preserved and refused returned work is never refunded. Character/UTF8
 annotations describe the actual decoded original. Early remaining-capacity
-refusal has no returned-slice/input-cap witness. JSON scalars use bounded local
-fragments and fixed reference slots. Literal-only chunks are direct original
+refusal has no returned-slice/input-cap witness. After full grammar/size preflight,
+unescaped JSON strings use one precharged complete original scalar slice, with
+separate paid flag/branch work and no intermediate construction or join.
+Escaped JSON scalars use bounded local fragments and fixed reference slots.
+Within that escaped path, literal-only chunks are direct original
 slices with no intermediate fragment/join. Mixed/escaped construction,
 slot storage/writes/clearing and join reference reads are paid before work,
 alongside retained chunks/final join and bounded scratch. Only the two
@@ -752,7 +755,7 @@ assignment/publication under the same C8388608/F200000/depth64/end, without refu
 The existing aggregate --controls fixture covers typed writer, raw observations,
 raw prefix and required-prefix preparation with full original/prior-file oracles.
 The additive PR1260 case record carries four answers/keepers and proof limits;
-own durable receipts record actual execution. Case copies, human show and later
+own durable receipts record actual execution. Other Case copies, human show and later
 families remain unfinished whole-member refusals. No Product/native/temporal proof,
 new execution allowance, test-only production seam or CI/trigger change follows.
 
@@ -802,9 +805,102 @@ complete independent literal expectations and prior file/output/result/FAIL
 preservation. Missing baseline artifacts remain incomplete/TWO REQUIRED-MISSING.
 Receipts in PR1260's case record distinguish actual controls/static results from
 individual-negative/temporal/allocation/native PROOF NOT RUN. Case
-refusal/positive-oracle, copied commands, marked/scenario/cross-member/human,
+refusal/positive-oracle, copied receipt/show/output/wait/tail, marked/scenario/cross-member/human,
 cancellation/thread-frame/remaining columns/browser/direct/E05/E07/hex and
 compound obligations remain unfinished whole-member refusals until scoped.
+
+Canonical Case.jobs[*].submit, Case.block and Case.final_callback now retain
+the complete original ProviderCommand at their actual jobs.py assignments.
+Each occurrence owes its own selected safety/shape scan and full unique canonical
+command equality, preserving all fields, builtin types, key/list order and full
+script/file/payload/argv/wire/output/timing/child/executable content. S1 block uses
+the actually submitted waiting IDs in producer order; final uses actual S2, or
+original S1 for index1, with the original completed/done summary. Index1 has no
+job/block. Private charged command facts close after all actual facts, including
+late canonical commands and jobs-last, before assignment/staging/pending/output.
+Copies never create another execution, canonical command index, submission,
+child/job identity or session close, and cannot satisfy an absent/ambiguous
+canonical command. Repeated copies pay their whole work; release never refunds.
+Raw Case/command descendants use local selector paths after their original owner
+opens; absolute depth and root closure remain. Complete finite command wire
+facts replace unused receipt-reader scratch. Full equality compares ordered
+container/key facts and their typed scalars in one traversal, with full argv/wait
+array comparison. The separate scalar-map traversal/reference pairs disappear;
+direct lookups are charged and full primitive/key comparison debits remain.
+Nested file/stdout comparison avoids copied/sorted expected-key lists using
+original-key membership, sorted spelling (or declared order) and complete count;
+strict decoded duplicates and full values/types remain. Inert finite-command
+end forwarding is omitted before dispatch; syntax events, unknown-action legacy
+discovery and owner close remain. Validation aliases are not traversed twice.
+Named shape lookups replace recursive comparison of
+synthesized selector paths. Open Case rows receive local field paths with all
+row checks and absolute nested depth preserved. Typed writers use the same
+owner-local dispatch as raw/prepared scans. Finite command scalar callbacks
+reuse their existing parent path and field, avoiding full ancestor-path
+construction and slicing; legacy discovery retains complete paths and pays
+its additional parent slice. Canonical receipt/wait SOURCE selection preserves
+every original wire position, including the job response after discovery, with
+its own receipt/read closure and complete SOURCE validation unchanged.
+Ordinary Case display containers stop selected descendant forwarding at their
+existing opening event. Their original syntax, depth and scalar safety still run;
+reached-stage keys, SQL/command holders, pending/output leaves and late snapshot
+prefixes keep their owning callbacks. Only the removed selector-path copies lose
+their per-path debit; retained parsing/safety/comparison charges do not change.
+Original shape/key/value retention and independent
+occurrence safety remain. Each remaining operation retains its original debit;
+source reductions alone establish no capacity fit;
+the allowance and both original prefix source files remain unchanged.
+Fixed canonical running/oracle rows end after complete own validation, without
+self-selection/comparison. The existing retained-row validation traversal now
+selects the running/oracle/last-pending references for the two finite job roles
+and performs each row's complete owner/SOURCE/type/state validation. One later
+charged traversal retains EVERY distinct full unknown-column/builtin-type row
+comparison. Separate per-job selections and validation rescans are absent.
+Original per-row validation, selected-reference retention and full-comparison
+debits stay; new local references/counters are explicitly charged before use.
+Original absent-ID partial-job and non-job precharges remain. No index/cache or safety
+admission is shared across occurrences. SQL scalar callers now pass the original
+field reference directly instead of creating one-element selector tuples. The
+row event retains its field/retention debit; only absent tuple-copy work loses
+its charge. Full original safety, strict scalar checks and nested depth remain.
+Deferred Case-row string classification executes only for string tokens; all
+other grammar/container/event/row checks and every string's own lexical/nested
+SQL safety and accounting remain. Enclosing traversal/retention charges remain;
+only actually eliminated operations lose their separate debit.
+Finite submit/block/final key events retain their original ordered shape keys
+before general value/legacy routing. Unknown canonical actions still use the
+original discovery path. The key-list retention debit stays; the bypassed
+general routing debit disappears only on that finite key branch. The existing
+unique actual-submit-ID join now carries the original complete command facts.
+Each assigned submit copy compares in full against that joined original, without
+searching the command population again; block/final matching remains unchanged.
+The additional original reference is charged before retention. No original
+command is reconstructed, indexed, or exempted from its own safety or comparison.
+Direct job rows use their already-validated source slot in subsequent role
+selection; snapshots still select by actual full job ID. Canonical running/oracle
+rows have no peer-reference selection in the comparison traversal. Every own
+row validation and every distinct full row/command comparison remains. The
+row-population selector debit applies on the absent-ID branch that can still
+scan rows; complete jobs no longer perform that removed traversal. All remaining
+retention, validation and comparison work keeps its original rates. These source
+changes alone establish no capacity fit or behavioral/proof result.
+Required direct copies follow reached source assignments; genuine pre-submit,
+submit-before-ID, block-before-parked and final-before-snapshot partials retain
+only reached fields. Existing complete SQL fixture inputs now supply formerly
+missing copies, without claiming healthy native Cases. SAME C5/C9 controls own
+the four file boundaries, complete original/prior-byte preservation and honest
+incomplete/TWO REQUIRED-MISSING baseline. Individual-negative, decode-count,
+temporal, allocation and native proof remain limited to actual recorded evidence.
+
+Case snapshot membership/order and parked/first-terminal pair selection now run
+in the existing retained-row validation traversal. Strict original traversal
+keeps each snapshot's rows contiguous; current-holder counters close complete
+task/job cardinality and sorted IDs, including refusal of an empty holder. Four
+local pair references retain their original cardinality and both complete typed
+row comparisons. The separate per-snapshot row rescans and four pair selection
+lists are absent. Their isolated traversal debits disappear; fixed admissions,
+new local selection/counter work, every row's safety and every distinct full
+comparison remain charged. This source change alone establishes no capacity fit.
 
 The same finite source-owned admission now covers canonical
 observations.provider_commands[*] jobs-submit/jobs-refuse-review only, including
@@ -2754,3 +2850,81 @@ test/protected proof/dispatch or deployment is allocated to this source chain.
 Failed12753/12755/BLOCK22272/12793 REVISE and latest40047851140 FAILED/HealthFAIL11/
 EACH56UNKNOWN-null-zeroPASS/skipped0 persist; old12724 custody/effects/retirement
 stay separate OPEN/UNKNOWN. Consumed ONE362/12741 is never reused.
+
+The Case command close compares closed primitive facts with the existing direct
+full-scalar comparator. Its argv and waiting-ID lists retain their original
+sequence/type/cardinality and member traversal charges; primitive leaves no
+longer enter recursive dictionary/list classification. Ordered shape keys, every
+full original scalar and every list member still compare, with per-occurrence
+SOURCE/file/wire validation unchanged. This removes actual generic container
+dispatch, without reducing the direct scalar comparison rate or any allowance.
+The restored SOURCE controls and full result reconciliation must establish fit;
+source inspection or an earlier capacity failure does not establish it.
+
+Named Case scalars use their original parent and field directly in both the
+typed writer and raw/prepared parser. Finite command primitives likewise bypass
+general syntax/legacy event dispatch; their original scalar, ordered-key, field
+and list retention debits remain. The six existing running/oracle/last-pending
+row references are selected at original row opening, with unchanged retention
+charges. Closure performs each row's own validation and every distinct full-row
+comparison in one traversal, including late and jobs-last inputs. Referenced
+rows must still pass their own complete validation before publication. No
+comparison result, SOURCE safety or other occurrence's admission is reused.
+Only omitted path construction, general dispatch and the removed second row
+traversal lose their charges. No allowance or retained-work rate is reduced;
+complete restored controls must establish the actual capacity result.
+
+Nested command file/stdout comparison carries its original expected holder in
+the existing parser recursion. It checks sorted or original key order and full
+cardinality there, rejecting decoded duplicates before their values. Each key
+and scalar still receives its own safety check, full builtin-type/value equality
+and SOURCE admission where required. The separate comparison frame stack and
+duplicate syntax key set are absent. A scan-only Case row that already retains
+every original scalar key likewise supplies duplicate membership from that
+same row's private fact dictionary; other rows and required trees keep their
+existing syntax storage. No retained row/key/scalar/full-comparison rate or
+collector allowance changes. Complete restored controls and typed, ordered
+result reconciliation remain necessary to establish fit.
+
+The nested comparison route is confined to Submission's existing single-object
+scan: it cannot materialize a tree, process JSONL, or open an observations owner.
+The original scalar comparison and own safety charges remain. Removing the
+key-event invocation/frame update and syntax-set insertion leaves an explicit
+16-byte/two-fact debit for expected-holder/key references, and an eight-byte/one-
+fact closing count check. Ordered roots pay for their iterator; nested objects
+retain strict sorted spelling. A reused Case row dictionary belongs to that
+SAME occurrence and remains charged/retained until full late closure. No other
+occurrence's safety or comparison supplies its admission.
+
+Finite command objects retain original key order in their existing scalar fact
+maps. Each recognized scalar enters its map once, with its value; there is no
+preceding placeholder write or separate ordered-key append for that scalar.
+Container keys still enter before descent, and unknown scalar keys still enter
+before another key can be parsed, with their original key-retention charge.
+Thus a decoded duplicate, including an unknown key, refuses before its value.
+Raw scan-only syntax borrows the SAME occurrence's maps; required-tree parsing
+still builds its complete independent output. Copies use these maps from their
+opening; canonical nested objects use them only after their finite action is
+known. Earlier canonical holders and other action families keep legacy storage.
+Provider identity still compares the complete original key order. Selecting
+these owner/shape references pays 16 bytes/two facts per object; all scalar,
+container-key and remaining syntax retention rates stay unchanged. Only absent
+scalar placeholder/append writes and absent syntax-set insertions lose their
+isolated charges. Every own SOURCE/file/stdout/wire/shape/owner safety check and
+every late full command/SQL-row comparison remains. This shares storage within
+one occurrence and supplies no cross-occurrence admission. Complete original-cap
+controls and the intended equality-omission assertion must establish fit/proof.
+
+The shared JSON string method keeps its complete codepoint/quote/surrogate/size
+preflight. An unescaped original spelling then pays 8+UTF8-size bytes/one fact
+for its retained complete slice before creating it; flag/selection tracking pays
+another 16 bytes at the existing fixed construction-slot rate, with no additional
+retained scalar/chunk fact. No chunk/fragment arrays, intermediate chunks,
+chunk references or final join exist on that branch. Escaped construction and
+its shorter-chunk carry clearing retain their original charges and behavior,
+plus the explicit tracking charge. No retained-work rate or allowance changes.
+Required context/scenario trees, Controller preparation, raw/JSONL scans, Relay
+and Submission comparisons, and Case/final-snapshot SQL scans all depend on this
+method. Renew their full existing controls and reconcile every published result's
+full builtin values/types/key/list order; do not infer unchanged dependencies or
+sufficient fit from static success or a local debit calculation.
