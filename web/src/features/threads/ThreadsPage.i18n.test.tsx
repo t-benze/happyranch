@@ -13,8 +13,8 @@
  *    (`HTTP 500`, a raw string equal to English catalog text, and the empty
  *    string) render exactly.
  */
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { notifyManager } from '@tanstack/react-query';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { notifyManager, type Query } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -31,12 +31,26 @@ import { translate } from '@/lib/i18n';
 const mermaidChunk = vi.hoisted(() => {
   let release!: () => void;
   const ready = new Promise<void>((resolve) => { release = resolve; });
-  return { ready, release };
+  return { ready, release, observe: undefined as ((original: Promise<unknown>, phase: string) => void) | undefined };
 });
 // External library-load delay; actual Markdown, lazy import and callers stay real.
-vi.mock('mermaid', async () => {
-  await mermaidChunk.ready;
-  return { default: { initialize: vi.fn(), render: vi.fn(async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' })) } };
+vi.mock('mermaid', () => {
+  const original = (async () => {
+    await mermaidChunk.ready;
+    return { default: { initialize: vi.fn(), render: vi.fn(() => {
+      const result = (async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' }))();
+      mermaidChunk.observe?.(result, 'library render');
+      return result;
+    }) } };
+  })();
+  mermaidChunk.observe?.(original, 'external library factory');
+  return original;
+});
+// Observe the actual module result; React's internal lazy transport is separate.
+vi.mock('@/design-system/patterns/Mermaid', (importOriginal) => {
+  const original = importOriginal<typeof import('@/design-system/patterns/Mermaid')>();
+  mermaidChunk.observe?.(original, 'actual Mermaid module factory');
+  return original;
 });
 
 const SLUG = 'alpha';
@@ -1179,27 +1193,137 @@ describe('ThreadsPage dream-origin badge accessible names across a locale switch
 });
 
 test('Thread Mermaid loading copy switches in place without disturbing the composer or issuing requests', async () => {
-  const thread = mkThread('THR-77', 'raw title');
-  stubList([thread]);
-  stubDetail(thread, [mkMessage(1, 'founder', 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```')]);
-  const view = mount(`/orgs/${SLUG}/threads/THR-77`, 'en');
+  const client = makeQueryClient();
+  let view: ReturnType<typeof mount> | undefined;
+  type Occurrence = { phase: string; error: unknown; next?: Occurrence };
+  const errors: { first?: Occurrence; last?: Occurrence } = {};
+  const remember = (phase: string, error: unknown) => {
+    const occurrence: Occurrence = { phase, error };
+    if (errors.last) errors.last.next = occurrence;
+    else errors.first = occurrence;
+    errors.last = occurrence;
+  };
+  type Operation = { original: Promise<unknown>; completion: Promise<void>; next?: Operation };
+  let first: Operation | undefined;
+  let last: Operation | undefined;
+  const observe = (original: Promise<unknown>, phase: string) => {
+    for (let owned = first; owned; owned = owned.next) {
+      if (owned.original === original) return;
+    }
+    const completion = original.then(() => undefined, (error: unknown) => { remember(phase, error); });
+    // Both handles enter custody before any fallible diagnostic bookkeeping.
+    const owned: Operation = { original, completion };
+    if (last) last.next = owned;
+    else first = owned;
+    last = owned;
+  };
+  type Restore = { run: () => void; next?: Restore };
+  let restores: Restore | undefined;
+  const ownRestore = (run: () => void) => { restores = { run, next: restores }; };
+  const previousObserve = mermaidChunk.observe;
+  const captureListRuns = () => {
+    try {
+      for (const query of client.getQueryCache().findAll({ queryKey: ['threads', SLUG] })) {
+        for (const original of getCommittedThreadPageRuns(client, query.queryKey)) observe(original, 'committed list run');
+      }
+    } catch (error) { remember('capture original list returns', error); }
+  };
+  let joined: Operation | undefined;
+  const drain = async () => {
+    for (;;) {
+      captureListRuns();
+      let next = joined ? joined.next : first;
+      while (next) {
+        joined = next;
+        await next.completion;
+        captureListRuns();
+        next = joined.next;
+      }
+      // Original completion and actual React delivery are separate stages.
+      try { await act(async () => {}); } catch (error) { remember('React delivery', error); }
+      captureListRuns();
+      if (!(joined ? joined.next : first)) return;
+    }
+  };
   try {
-    await waitFor(() => expect(view.container.querySelector('.gl-prose-mermaid-loading')).not.toBeNull());
-    const fallback = view.container.querySelector('.gl-prose-mermaid-loading');
-    const article = view.container.querySelector('article');
+    mermaidChunk.observe = observe;
+    const cache = client.getQueryCache();
+    const captureQuery = (query: Query) => {
+      const fetch = query.fetch;
+      const spy = vi.spyOn(query, 'fetch');
+      ownRestore(() => spy.mockRestore());
+      spy.mockImplementation(function (this: typeof query, ...args) {
+        const original = fetch.apply(this, args);
+        observe(original, 'query fetch outer');
+        return original;
+      });
+    };
+    ownRestore(cache.subscribe((event) => {
+      try {
+        if (event.type === 'added') captureQuery(event.query);
+        captureListRuns();
+      } catch (error) { remember('query capture callback', error); }
+    }));
+    const thread = mkThread('THR-77', 'raw title');
+    stubList([thread]);
+    stubDetail(thread, [mkMessage(1, 'founder', 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```')]);
+    for (const handler of server.listHandlers()) {
+      const run = handler.run;
+      const spy = vi.spyOn(handler, 'run');
+      ownRestore(() => spy.mockRestore());
+      spy.mockImplementation(function (this: typeof handler, ...args) {
+        const original = run.apply(this, args);
+        observe(original, 'HTTP handler run');
+        return original;
+      });
+    }
+    const mounted = mount(`/orgs/${SLUG}/threads/THR-77`, 'en', client);
+    view = mounted;
+    captureListRuns();
+    await waitFor(() => expect(mounted.container.querySelector('.gl-prose-mermaid-loading')).not.toBeNull());
+    const fallback = mounted.container.querySelector('.gl-prose-mermaid-loading');
+    const article = mounted.container.querySelector('article');
     const input = screen.getByRole('textbox', { name: 'Compose follow-up' });
     fireEvent.change(input, { target: { value: 'raw unsent /任务' } }); input.focus();
     const requests = await countRequests(async () => {
       for (const locale of ['zh-CN', 'en'] as const) {
         await switchLocale(locale);
         expect(fallback?.textContent).toBe(locale === 'en' ? 'Rendering diagram…' : '正在渲染图表…');
-        expect(view.container.querySelector('.gl-prose-mermaid-loading')).toBe(fallback);
-        expect(view.container.querySelector('article')).toBe(article);
+        expect(mounted.container.querySelector('.gl-prose-mermaid-loading')).toBe(fallback);
+        expect(mounted.container.querySelector('article')).toBe(article);
         expect(input).toHaveFocus(); expect(input).toHaveValue('raw unsent /任务');
         expect(screen.getByText('Rendering diagram…', { selector: 'p' })).toBeInTheDocument();
       }
     });
     expect(requests).toEqual([]);
-  } finally { await act(async () => mermaidChunk.release()); }
-  await waitFor(() => expect(view.container.querySelector('svg[data-w5a-diagram]')).not.toBeNull());
+  } catch (error) {
+    remember('original UI/assertion', error);
+  } finally {
+    try { mermaidChunk.release(); } catch (error) { remember('release same library gate', error); }
+    try { await drain(); } catch (error) { remember('join originals', error); }
+    // An earlier failure must not skip the original mounted terminal oracle.
+    if (view) {
+      const mounted = view;
+      try {
+        await waitFor(() => expect(mounted.container.querySelector('svg[data-w5a-diagram]')).not.toBeNull());
+      } catch (error) { remember('loaded SVG assertion', error); }
+    }
+    try { await drain(); } catch (error) { remember('join post-oracle originals', error); }
+    // Keep capture live through unmount, then independently restore and clear.
+    try { if (view) view.unmount(); else cleanup(); } catch (error) { remember('unmount', error); }
+    try { await drain(); } catch (error) { remember('join unmount originals', error); }
+    try { mermaidChunk.observe = previousObserve; } catch (error) { remember('restore factory observation', error); }
+    for (let restore = restores; restore; restore = restore.next) {
+      try { restore.run(); } catch (error) { remember('restore pass-through observation', error); }
+    }
+    try { client.clear(); } catch (error) { remember('clear supplied client', error); }
+  }
+  const primary = errors.first;
+  if (primary) {
+    if (primary.next) {
+      try { console.error('Later Mermaid test errors (original first error retained)', primary.next); }
+      catch (error) { remember('report later errors', error); }
+    }
+    throw primary.error;
+  }
 });
