@@ -16,7 +16,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { notifyManager, type Query } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { http, HttpHandler, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
@@ -1268,6 +1268,7 @@ test('Thread Mermaid loading copy switches in place without disturbing the compo
     stubList([thread]);
     stubDetail(thread, [mkMessage(1, 'founder', 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```')]);
     for (const handler of server.listHandlers()) {
+      if (!(handler instanceof HttpHandler)) continue;
       const run = handler.run;
       const spy = vi.spyOn(handler, 'run');
       ownRestore(() => spy.mockRestore());
