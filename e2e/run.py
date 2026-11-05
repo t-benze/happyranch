@@ -2811,7 +2811,7 @@ class _EvidenceObservations:
             if table in ('tasks', 'results', 'audit', 'jobs') and type(index) is int:
                 return base + (table, index), table, None, base[0]
         if len(local) >= 3 and local[0] == 'jobs' and type(local[1]) is int:
-            if local[2] in ('running', 'terminal'):
+            if local[2] in ('running', 'terminal', 'running_browser'):
                 return local[:3], 'jobs', local[1], local[2]
             if len(local) >= 5 and local[2] == 'pending' and type(local[3]) is int:
                 if local[4] == 'row':
@@ -3049,7 +3049,9 @@ class _EvidenceObservations:
                 raise ValueError('Case SQL row shape withheld')
             elif len(local) > len(row_path):
                 if (len(local) != len(row_path) + 1 or kind != 'scalar'
-                        or type(value) not in (str, int, float, type(None))):
+                        or type(value) not in (str, int, float, type(None))
+                            and not (holder == 'running_browser' and local[-1] in ('review_required', 'persistent')
+                                     and type(value) is bool)):
                     raise ValueError('Case SQL scalar withheld')
                 if not c['rows'] or c['rows'][-1][0] != row_path:
                     raise ValueError('Case SQL row owner withheld')
@@ -3070,7 +3072,7 @@ class _EvidenceObservations:
                 or len(local) == 2 and local[0] == 'live_s2' and local[1] != 'snapshot'
                 or len(local) == 3 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] not in ('id', 'script', 'script_sha256', 'token', 'label', 'code', 'cap',
-                                        'out', 'err', 'running', 'terminal', 'pending', 'oracle', 'rejection_drain')
+                                        'out', 'err', 'running', 'terminal', 'running_browser', 'pending', 'oracle', 'rejection_drain')
                 or len(local) == 5 and local[0] == 'jobs' and type(local[1]) is int
                     and local[2] == 'pending' and type(local[3]) is int and local[4] not in ('row', 'audit')
                 or len(local) == 4 and local[0] == 'jobs' and type(local[1]) is int
@@ -3084,11 +3086,14 @@ class _EvidenceObservations:
         self.ledger.charge(8, 1, self.check)
         c = self.case
         row_path, table, job_index, holder, row, links = c['rows'][-1]
-        if ((len(local) != 1 if field is None else bool(local)) or kind != 'scalar'
-                or type(value) not in (str, int, float, type(None))):
+        if ((len(local) != 1 if field is None else bool(local)) or kind != 'scalar'):
             raise ValueError('Case SQL scalar withheld')
         if field is None:
             field = local[0]
+        if (type(value) not in (str, int, float, type(None))
+                and not (holder == 'running_browser' and field in ('review_required', 'persistent')
+                         and type(value) is bool)):
+            raise ValueError('Case SQL scalar withheld')
         # Pair task/results compare the complete original parked
         # rows, including unknown scalar columns, after late closure.
         if table == 'jobs' or table in ('tasks', 'results') and holder in ('parked', 'first_terminal'):
@@ -3551,6 +3556,52 @@ class _EvidenceObservations:
                 jid, original_command = owner
                 proof, submitted, provider = original_command[2], original_command[4], original_command[1]
                 job = jobs[job_number]
+                if holder == 'running_browser':
+                    # This exact direct Case path owns a public JobRecord.
+                    # Its independent ordered schema differs from Store.jobs;
+                    # neither a body wrapper nor an SQL projection selects it.
+                    self.ledger.charge(64, 8, self.check)
+                    running_original = c['running_first'] if job_number == 0 else c['running_second']
+                    if running_original is None:
+                        raise ValueError('Case direct public running SQL unavailable')
+                    peer = running_original[4]
+                    if len(row) != len(_EvidenceSubmission.detail_fields) or len(peer) != len(self.job_columns):
+                        raise ValueError('Case direct public schema withheld')
+                    # Pay both original operand traversals, lookups and the
+                    # schema iterator before construction. Every scalar/key
+                    # comparison still uses the full builtin-type comparator.
+                    self.ledger.charge(32 * len(row) + 32 * len(peer) + 8,
+                                       4 * len(row) + 4 * len(peer) + 1, self.check)
+                    columns = iter(_EvidenceSubmission.detail_fields)
+                    for column in row:
+                        if not same(column, next(columns)) or column not in peer:
+                            raise ValueError('Case direct public order withheld')
+                        if column in ('review_required', 'persistent'):
+                            if (type(row[column]) is not bool or row[column] is not False
+                                    or type(peer[column]) is not int or peer[column] != 0
+                                    or not same(row[column], proof[column])):
+                                raise ValueError('Case direct public declared flags withheld')
+                        elif not same(row[column], peer[column]):
+                            raise ValueError('Case direct public full running equality withheld')
+                    if (any(type(row[k]) is not str or not row[k] for k in
+                            ('id','task_id','agent_name','title','rationale','script_text','interpreter','status','created_at'))
+                            or any(type(row[k]) not in (str,type(None)) for k in
+                                ('cwd_hint','reason','stdout_head','stderr_head','stdout_path','stderr_path','started_at',
+                                 'finished_at','reviewed_at','reviewed_by','reject_reason','cwd_resolved'))
+                            or any(type(row[k]) not in (int,type(None)) for k in ('exit_code','duration_ms','max_runtime_seconds'))
+                            or type(row['max_output_bytes']) is not int or row['max_output_bytes'] <= 0
+                            or row['status'] != 'running' or any(row[k] is not None for k in
+                                ('exit_code','reason','stdout_head','stderr_head','duration_ms','finished_at'))
+                            or not same(row['script_text'], job['script'])
+                            or not same(row['agent_name'], provider['agent'])
+                            or any(not same(row['script_text' if k == 'script' else k], proof[k])
+                                   for k in _EvidenceSubmission.payload_fields if k != 'session_id')
+                            or any(not same(row[k], submitted[k]) for k in ('created_at','started_at','cwd_resolved'))):
+                        raise ValueError('Case direct public full submitted running row withheld')
+                    # The same SQL occurrence independently validates owner,
+                    # state, paths and all Store27 keys in this close traversal,
+                    # even when it follows this public occurrence in the input.
+                    continue
                 # Select the same original peer before the column traversal.
                 # The independent Store27 and peer order/value comparisons
                 # now share this row's ONE original-key traversal.
@@ -4732,7 +4783,9 @@ class _EvidenceJSON:
                         child = self.value(depth + 1, scalar, tree=tree, event=event,
                             relay_context=relay_context, relay_sanitize=relay_sanitize,
                             submission_identity=submission_identity)
-                        if type(child) not in (str, int, float, type(None)):
+                        if (type(child) not in (str, int, float, type(None))
+                                and not (row[3] == 'running_browser' and key in ('review_required', 'persistent')
+                                         and type(child) is bool)):
                             raise ValueError('Case SQL scalar withheld')
                         self.ledger.charge(16 + _evidence_utf8_size(key, self.check)
                             + (_evidence_utf8_size(child, self.check) if type(child) is str else 8), 2, self.check)

@@ -3450,9 +3450,32 @@ not repeat that unchanged proof. Proportionate new pre-fix/restored evidence use
 the existing complete aggregate --controls and records its actual predicate;
 earlier unrelated guard failures establish whole refusal only. No per-row
 mutation campaign, new fixture framework or behavioral CI gate is added.
-Public-running/body/text admission and K1-K6/private-copy gaps remain OPEN with
-ROOT, as do independent accumulated review and separate same-final-head QA.
+Terminal public/body/text admission, reached-complete direct-public presence and
+K1-K6/private-copy gaps remain OPEN with ROOT, as do independent accumulated
+review and separate same-final-head QA.
 All original budgets, failure receipts, holds and proof limits remain in force.
+
+Present direct `Case.jobs[k].running_browser` objects now select the existing
+Case row owner. Each complete public27 independently scans its full original
+SOURCE, preserves public key order (including reason after the Boolean flags),
+requires genuinely running state and joins all fields to THIS submitted job's
+complete running Store27 row. Public built-in false and SQL built-in INTEGER0
+are checked against the original submission; other fields require exact built-in
+type/value equality. No wrapper, schema sorting, coercion or familiar-key fallback
+selects an object. Selected facts stay private and charged until the existing
+close completes. An unselected lookalike scalar retains ordinary R1 safety.
+
+The existing Case controls add all seven accepted running-public literals for
+0/7/timeout and both roles of both pair plans, retaining producer order and a
+separate enclosing Case-jobs-last image. Forty-four positive and188 refusal
+results use the same writer/raw/raw-prefix/required-prefix boundaries, entire
+typed/ordered trees, original framing and prior bytes/result/FAIL/no-pending
+assertions. All5428 previous results and5324/5208/4572 full expectations remain.
+Complete pre-fix SOURCE refusal, exact restoration, restored controls and static
+checks are PENDING until actual owned job receipts are inspected; source alone
+proves no fit or behavioral acceptance. Individual predicate/temporal/native proof
+remains PROOF NOT RUN. Existing SQL-only controls remain incomplete assessment
+subjects; they do not satisfy reached-complete public/text presence obligations.
 
 
 TASK14107 capacity correction after actual JOB5929 failure: the repeated-prefix
