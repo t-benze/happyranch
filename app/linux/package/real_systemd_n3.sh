@@ -465,6 +465,73 @@ print(i)
   [[ "$process" == "$peer_started" ]] || { virtual_peer_reason=changed; return 1; }
   virtual_peer_reason=observed
 }
+installer_destination() {
+  local observed="" candidate status attempt
+  sidecar_ip=""
+  # Consume only the existing capped SAME-peer status observation. Two complete
+  # reads must agree before retaining a destination for the real negative dial.
+  for attempt in 1 2; do
+    peer_current || { virtual_text_value=""; virtual_refuse final peer "$virtual_peer_reason"; return 1; }
+    status=0
+    candidate="$(timeout --kill-after=1 3 python -c '
+import ipaddress,json,sys
+def refuse(reason):
+    print(reason)
+    raise SystemExit(1)
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            refuse("duplicate_field")
+        result[key] = value
+    return result
+try:
+    d = json.load(sys.stdin, object_pairs_hook=unique,
+                  parse_constant=lambda _: refuse("json_invalid"))
+    peers = d.get("Peer")
+    if not isinstance(peers, dict):
+        refuse("status_shape")
+    matches = []
+    for key, peer in peers.items():
+        if not (isinstance(key,str) and key and key.isprintable() and isinstance(peer,dict)):
+            refuse("status_shape")
+        if peer.get("HostName") == "home-sidecar-ci":
+            matches.append(peer)
+    if len(matches) != 1:
+        refuse("missing" if not matches else "duplicate_field")
+    peer = matches[0]
+    node = peer.get("ID")
+    if not (isinstance(node,str) and node and node.isascii() and node.isalnum() and node != sys.argv[1]):
+        refuse("node_invalid")
+    ips = peer.get("TailscaleIPs")
+    if not (isinstance(ips,list) and ips and all(isinstance(ip,str) and ip for ip in ips)):
+        refuse("ips_invalid")
+    addresses = [ipaddress.ip_address(ip) for ip in ips]
+    if any(str(address) != raw for address, raw in zip(addresses, ips)):
+        refuse("ip_invalid")
+    ipv4 = [str(address) for address in addresses if address.version == 4]
+    if len(ipv4) != 1:
+        refuse("ips_invalid")
+except (ValueError, TypeError, RecursionError):
+    refuse("parse_loss")
+print(node + "|" + ipv4[0])
+' "$peer_node" <<<"$virtual_text_value" 2>/dev/null)" || status=$?
+    virtual_text_value=""
+    case "$status" in
+      0) ;;
+      124|137) virtual_refuse final probe timeout; return 1 ;;
+      *) case "$candidate" in
+           duplicate_field|json_invalid|status_shape|missing|node_invalid|ips_invalid|ip_invalid|parse_loss) virtual_refuse final probe "$candidate" ;;
+           *) virtual_refuse final probe unavailable ;;
+         esac
+         return 1 ;;
+    esac
+    [[ -z "$observed" || "$candidate" == "$observed" ]] || { virtual_refuse final probe changed; return 1; }
+    observed="$candidate"
+  done
+  sidecar_ip="${observed#*|}"
+  virtual_note final probe observed
+}
 peer_inventory_absent() {
   local process
   [[ -n "${peer_started:-}" && -n "${peer_node:-}" ]] || return 1
@@ -2051,6 +2118,9 @@ sidecar_ready="$(systemctl_number happyranch-tsnet-sidecar.service ActiveEnterTi
 [[ "$sidecar_ready" -le "$connector_ready" ]] || fail "installer-only READY ordering refused"
 sudo env "PATH=$PATH" uv run python "$installer_driver" current "$diagnostics/install-ready.json" ready || exit "$?"
 capture_failure_snapshot installer-only-positive || true
+# Missing, malformed, changed or unavailable destination refuses before uninstall.
+# Keep only its validated address in memory; raw status and keys are never logged.
+installer_destination || fail "installer-only teardown destination refused"
 # Capture original live SAME-instance Stop binding BEFORE conditional shipping
 # uninstall stops/removes anything. This is teardown, never another observation.
 bind_stop_instance final || fail "installer-only teardown binding refused"

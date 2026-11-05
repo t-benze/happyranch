@@ -38,7 +38,13 @@ owned group reap (within the allowed5s) extend no product deadline. Require all
 three actual native child successes, helper/wait0, body commit/cleanup and final
 Refresh/current, then installed-current/stopped and genuine READY. Only then may
 ONE shipping `uninstall_linux_package(Path('/'))` run as fixture teardown with
-its own original limits. No retry or uninstall after failed install/current/READY.
+its own original limits. Before that uninstall, acquire the unique fresh sidecar
+node and canonical IPv4 from two agreeing complete bounded SAME-peer status
+observations; retain the validated destination privately for the actual negative
+dial. Missing, malformed, changed or unavailable destination stops conditional
+uninstall. Preserve the original SAME-instance Stop binding and independent
+live-peer proof; negative dial alone is insufficient and unknown teardown remains
+unknown. No retry or uninstall after failed install/current/READY.
 Original status/diagnostics and independent always uploads survive later errors.
 
 The runner helper bounds observations only; it changes no product lifecycle,

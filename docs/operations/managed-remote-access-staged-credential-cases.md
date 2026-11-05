@@ -9,7 +9,11 @@ one publication and one automatic attempt remain manager-owned after LOCAL
 independent full review and same-C scoped QA. Historical3/3 grants remain spent.
 The sole `real_systemd_n3.sh --installer-only` entry requires authentic packaged
 help, ONE shipping install/body+final-current and genuine READY, then at most ONE
-conditional shipping uninstall as fixture teardown. No broader phase/full-N3 PASS,
+conditional shipping uninstall as fixture teardown. Before uninstall, two bounded
+SAME-peer status observations must agree on the unique fresh sidecar node/address;
+missing, malformed, changed or unavailable destination refuses. Retain the original
+SAME-instance Stop binding, actual negative dial and independent live-peer proof;
+unknown teardown stays unknown. No broader phase/full-N3 PASS,
 retry, Product E2E or same-boot image deletion follows. Original A10s/outer180s
 are unchanged;190s observation plus1s owned reap extends no operation deadline.
 Stock fresh bootstrap/current and installed+loaded proof are preserved, distinct
